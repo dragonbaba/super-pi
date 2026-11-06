@@ -78,10 +78,11 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["if true; then git push origin main; fi", "for r in origin; do git push origin main; done", "! git push", "{ git push; }"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // Dispatch wrappers run the command after them; `command -v` only looks it up.
-    for (const command of ["command git push origin main", "sudo -u ci env FOO=1 git push", "timeout 60 nohup git push"])
+    for (const command of ["command git push origin main", "sudo -u ci env FOO=1 git push", "timeout 60 nohup git push", "sudo -n git push",
+        "nice --adjustment 5 git push", "env --unset FOO git push"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     const lookup = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git *" }]);
-    assert.equal(shellRuleVerdict("bash", "command -v git", lookup), RULE_NONE);
+    for (const command of ["command -v git", "command -p -v git", "command -pv git"]) assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",

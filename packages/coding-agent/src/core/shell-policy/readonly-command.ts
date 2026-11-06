@@ -103,21 +103,36 @@ function isCommandPrefix(text: string, powerShell: boolean): boolean {
 }
 
 /** Bash builtins and launchers that run the command after them (`command git push`, `sudo -u x make`). */
-const BASH_DISPATCH_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "sudo", "doas", "env", "nohup", "nice", "timeout"]);
-/** Wrapper options that take the next word as their value. */
-const BASH_WRAPPER_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-a", "-n", "-u", "-g", "-s", "-k", "-C", "-D", "--signal", "--kill-after", "--user", "--group"]);
+/** Each wrapper with the options that take the next word as their value (`sudo -u ci`, `nice -n 5`). */
+const NO_VALUE_OPTIONS: ReadonlySet<string> = new Set();
+const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["command", NO_VALUE_OPTIONS], ["builtin", NO_VALUE_OPTIONS], ["nohup", NO_VALUE_OPTIONS],
+  ["exec", new Set(["-a"])],
+  ["sudo", new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-T", "-U", "--user", "--group", "--host", "--prompt", "--close-from",
+    "--chdir", "--role", "--type", "--command-timeout", "--other-user"])],
+  ["doas", new Set(["-u", "-C"])],
+  ["env", new Set(["-u", "-C", "--unset", "--chdir"])],
+  ["nice", new Set(["-n", "--adjustment"])],
+  ["timeout", new Set(["-s", "-k", "--signal", "--kill-after"])],
+]);
 const MAX_DISPATCH_WRAPPERS = 4;
 
-/** Where the dispatched command starts after leading wrappers, or 0 (none, or only a `command -v` query). */
+/** Where the dispatched command starts after leading wrappers, or 0 (none, or only a `command -v` lookup). */
 function dispatchedCommandStart(argv: readonly string[]): number {
   let index = 0;
-  for (let depth = 0; depth < MAX_DISPATCH_WRAPPERS && index < argv.length && BASH_DISPATCH_WRAPPERS.has(argv[index]!); depth++) {
-    const name = argv[index++]!;
-    if (name === "command" && (argv[index] === "-v" || argv[index] === "-V")) return 0;
+  for (let depth = 0; depth < MAX_DISPATCH_WRAPPERS && index < argv.length; depth++) {
+    const name = argv[index]!, valueOptions = BASH_DISPATCH_WRAPPERS.get(name);
+    if (!valueOptions) break;
+    index++;
     while (index < argv.length) {
       const word = argv[index]!;
       if (word === "--") { index++; break; }
-      if (word.length > 1 && word.charCodeAt(0) === 45) { index += BASH_WRAPPER_VALUE_OPTIONS.has(word) ? 2 : 1; continue; }
+      if (word.length > 1 && word.charCodeAt(0) === 45) {
+        // `command [-pVv]`: -v or -V anywhere in its options only looks the command up.
+        if (name === "command" && word.charCodeAt(1) !== 45 && (word.indexOf("v") > 0 || word.indexOf("V") > 0)) return 0;
+        index += valueOptions.has(word) ? 2 : 1;
+        continue;
+      }
       if (name === "env" && isAssignment(word)) { index++; continue; }
       break;
     }
