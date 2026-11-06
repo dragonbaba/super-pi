@@ -168,6 +168,8 @@ test("execution boundary admission checks have no normal-path allocation", () =>
   const sessionOwner = sessionSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "AgentSession") as ts.ClassDeclaration;
   const resume = sessionOwner.members.find(node => node.name?.getText(sessionSource) === "_canResumeAgentRun") as ts.MethodDeclaration;
   inspect(resume.body!);
+  const sessionPause = sessionOwner.members.find(node => node.name?.getText(sessionSource) === "requiresUserInput") as ts.GetAccessorDeclaration;
+  inspect(sessionPause.body!);
   const previewCheck = sessionOwner.members.find(node => node.name?.getText(sessionSource) === "_assertProviderPreviewCurrent") as ts.MethodDeclaration;
   inspect(previewCheck.body!);
   // The one closure is created at logical-summary admission; each later identity check allocates nothing.

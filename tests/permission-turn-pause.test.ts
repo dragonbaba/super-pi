@@ -11,6 +11,7 @@ import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { AgentSessionRuntime } from "../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
 import type { ToolDefinition } from "../packages/coding-agent/src/core/extensions/types.ts";
@@ -61,7 +62,7 @@ async function fixture(t: test.TestContext, customTools: ToolDefinition[] = []) 
       const stream = new AssistantMessageEventStream(); stream.push({ type: "done", reason: stopReason, message }); return stream;
     };
   }
-  return { cwd, outside, session, runtime, boundary, notices, events, response,
+  return { cwd, agentDir, outside, session, runtime, boundary, notices, events, response,
     get requests() { return requests; }, get dialogs() { return dialogs; },
     async run(code: string) { response([{ name: "codemode", arguments: { code } }]); await session.prompt("execute owned fixture"); },
     results() { return session.agent.state.messages.filter(message => message.role === "toolResult"); },
@@ -129,4 +130,45 @@ test("LSP write denial stops prepared parallel siblings before execution", { tim
   assert.match(JSON.stringify(f.results()), /EXTERNAL_FILE_WRITE_BLOCKED/);
   assert.equal(f.results().length, 3, "every unstarted call receives a terminal result");
   assert.equal(await fs.readFile(f.outside, "utf8"), "unchanged");
+});
+
+test("idle explicit shell D5 retains background completion as context without waking the model", async t => {
+  const f = await fixture(t); f.response([]);
+  const command = "printf changed > '" + f.outside.replaceAll("\\", "/").replaceAll("'", "'\\''") + "'";
+  await assert.rejects(f.session.executeBash(command), /EXTERNAL_FILE_WRITE_BLOCKED/);
+  assert.equal(f.events.some(event => event.type === "agent_end"), false);
+  await f.session.sendCustomMessage({ customType: "background-after-direct-command", content: "receipt retained", display: true }, { triggerTurn: true });
+  assert.equal(f.requests, 0); assert.equal(f.boundary.requiresUserInput, true);
+  assert.match(JSON.stringify(f.session.sessionManager.getBranch()), /receipt retained/);
+  assert.equal(await fs.readFile(f.outside, "utf8"), "unchanged");
+});
+
+test("same-session permission, directory and extension reloads retain D5 until fresh user input", { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  await f.run(`await tools.write(${JSON.stringify({ path: f.outside, content: "no" })})`);
+  const owner = new AgentSessionRuntime(f.session, { cwd: f.cwd, agentDir: f.agentDir } as never, async options => {
+    const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+    settings.setPermissionModeForSession(options.permissionMode!); settings.setSessionDirectories(options.directories ?? []);
+    const resourceLoader = new DefaultResourceLoader({ cwd: options.cwd, agentDir: options.agentDir, settingsManager: settings,
+      noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+      extensionFactories: [pi => { pi.on("session_start", async () => { await pi.transitionExecution!(() => undefined); }); }] });
+    await resourceLoader.reload();
+    const created = await createAgentSession({ ...options, settingsManager: settings, resourceLoader, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() });
+    return { ...created, services: { cwd: options.cwd, agentDir: options.agentDir } as never, diagnostics: [] };
+  });
+  t.after(async () => { await owner.dispose(); });
+  owner.setRebindSession(async session => { await session.bindExtensions({ mode: "tui" }); });
+  f.response([]);
+  const added = join(f.agentDir, "added"); await fs.mkdir(added);
+  for (const operation of [() => owner.setPermissionMode("host-write"), () => owner.setWorkingDirectories([added]), () => owner.session.reload()]) {
+    await operation();
+    const current = owner.session, boundary = current.resourceLoader.getExtensions().runtime.executionBoundary;
+    current.agent.streamFunction = f.session.agent.streamFunction;
+    assert.equal(boundary.requiresUserInput, true);
+    await assert.rejects(current.prompt("extension wake", { source: "extension" }), /REQUIRES_USER_INPUT/);
+    await current.sendCustomMessage({ customType: "reload-receipt", content: "preserved report", display: true }, { triggerTurn: true });
+    assert.equal(f.requests, 1);
+  }
+  await owner.session.prompt("fresh user instruction");
+  assert.equal(f.requests, 2); assert.equal(owner.session.agent.runControl?.requiresUserInput, false);
 });

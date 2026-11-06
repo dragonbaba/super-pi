@@ -371,7 +371,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         } else keys.push(fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
         if (decision === "deny" || keys.some(key => this.denied.has(key))) throw new Error(BLOCKED + "Explicitly denied operation");
         if (host?.externalOverwrite) {
-            this.runtime.executionBoundary.pauseForUser();
+            void this.runtime.executionBoundary.pauseForUser();
             this.refuse(ctx, "[EXTERNAL_FILE_WRITE_BLOCKED] ",
                 `禁止覆盖或编辑工作区外已有文件：${host.externalOverwrite}\n操作未执行。当前整轮任务已暂停，请告知用户并等待下一步指令。`);
         }

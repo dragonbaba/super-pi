@@ -1506,9 +1506,12 @@ export class AgentSession {
 	}
 
 	private _canResumeAgentRun(): boolean {
-		return !this._operationDisposed && !this._interactionPaused && !this.agent.runControl?.requiresUserInput && !this._agentRunAbortRequested
+		return !this._operationDisposed && !this.requiresUserInput && !this._agentRunAbortRequested
 			&& !this.agent.abortRequested;
 	}
+
+	/** Stable across cancellation and same-session runtime replacement until a fresh prompt is accepted. */
+	get requiresUserInput(): boolean { return this._interactionPaused || this.agent.runControl?.requiresUserInput === true; }
 
 	private _canContinueQueuedMessages(): boolean {
 		return this._canResumeAgentRun() && this.agent.hasQueuedMessages();
@@ -3332,7 +3335,7 @@ export class AgentSession {
 		} satisfies CustomMessage<T>;
 		// An idle trigger may have waited alongside another trigger. Re-evaluate
 		// streaming/interaction state below so only the first one starts a run.
-		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this._interactionPaused && !this.isStreaming) {
+		if (options?.triggerTurn && options.deliverAs !== "nextTurn" && !this.requiresUserInput && !this.isStreaming) {
 			try {
 				// A failed drain may have left reports queued without an active owner.
 				// Include them in this wake's first request; a concurrent run owns its
@@ -3352,7 +3355,7 @@ export class AgentSession {
 		if (this._operationDisposed) throw new Error("Cannot deliver a custom message to a disposed session");
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this._interactionPaused && options?.triggerTurn) {
+		} else if (this.requiresUserInput && options?.triggerTurn) {
 			// Keep the report as context; only actual user input can answer an interaction.
 			this._pendingCustomMessages.push(appMessage);
 			// The SDK Promise joins persistence; extension pi.sendMessage is fire-and-forget.
@@ -5193,6 +5196,7 @@ export class AgentSession {
 		this.agent.runControl = boundary;
 		boundary.register("agent-session", {
 			revoke: () => {
+				if (boundary.requiresUserInput) this._interactionPaused = true;
 				if (this._isAgentRunActive) this._agentRunAbortRequested = true;
 				this.abortRetry();
 				this.agent.abort();
@@ -5235,6 +5239,7 @@ export class AgentSession {
 	}
 
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
+		const requiresUserInput = this.requiresUserInput;
 		const oldRunner = this._extensionRunner;
 		const previousFlagValues = oldRunner.getFlagValues();
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
@@ -5253,6 +5258,7 @@ export class AgentSession {
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
+		if (requiresUserInput) await this._resourceLoader.getExtensions().runtime.executionBoundary.pauseForUser();
 
 		const hasBindings =
 			this._extensionUIContext ||

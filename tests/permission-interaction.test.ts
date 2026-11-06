@@ -104,9 +104,9 @@ test("native execution transition failures stay closed and disposal retains only
 
 test("permission pause closes admission through cleanup and mode changes until explicit user resume", async () => {
  const boundary = new SessionExecutionBoundary();
- let release!: () => void, revoked = 0, drained = 0;
+ let release!: () => void, revoked = 0, drained = 0, cleanupFails = false;
  const gate = new Promise<void>(resolve => { release = resolve; });
- boundary.register("owned", { revoke() { revoked++; }, async drain() { await gate; drained++; } });
+ boundary.register("owned", { revoke() { revoked++; }, async drain() { await gate; drained++; if (cleanupFails) throw new Error("latest cleanup failed"); } });
  const generation = boundary.beginPreparation(), signal = boundary.signal;
  boundary.pauseForUser(); boundary.pauseForUser();
  assert.equal(signal.aborted, true); assert.equal(boundary.requiresUserInput, true);
@@ -127,6 +127,12 @@ test("permission pause closes admission through cleanup and mode changes until e
  await boundary.transition(() => { published = true; });
  assert.equal(published, true); assert.equal(boundary.requiresUserInput, true);
  assert.throws(() => boundary.assertCurrent(), /REQUIRES_USER_INPUT/);
+ cleanupFails = true;
+ await assert.rejects(boundary.transition(() => undefined), /latest cleanup failed/);
+ await assert.rejects(boundary.resumeForUser(), /latest cleanup failed/);
+ assert.throws(() => boundary.assertCurrent(), /REQUIRES_USER_INPUT/);
+ cleanupFails = false;
+ await boundary.transition(() => undefined);
  await boundary.resumeForUser(); boundary.assertCurrent();
  await boundary.dispose(); assert.equal(boundary.participantCount, 0); assert.equal(boundary.requiresUserInput, false);
 });

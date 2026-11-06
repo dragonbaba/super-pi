@@ -62,21 +62,22 @@ export class SessionExecutionBoundary {
   }
 
   /** Close admission now; never await the containing tool/prompt from its own hook. */
-  pauseForUser(): void {
-    if (this.awaitingUser) return;
+  pauseForUser(): Promise<void> {
+    if (this.awaitingUser) return this.heldCleanup!;
     this.assertCurrent();
     this.awaitingUser = true;
-    this.heldCleanup = this.start();
-    void this.heldCleanup.catch(observeHeldCleanupFailure);
+    return this.start();
   }
 
   /** Only a fresh explicit user input may call this, before it owns a preparation. */
   async resumeForUser(): Promise<void> {
     if (this.disposed) throw new Error(STALE);
     if (!this.awaitingUser) return;
-    await this.heldCleanup;
-    if (this.disposed || this.operation || this.draining) throw new Error(STALE);
+    const cleanup = this.heldCleanup;
+    await cleanup;
+    if (this.disposed) throw new Error(STALE);
     if (!this.awaitingUser) return;
+    if (this.operation || this.draining || cleanup !== this.heldCleanup) throw new Error(STALE);
     this.heldCleanup = undefined;
     this.awaitingUser = false;
     this.cancellation = new AbortController();
@@ -135,6 +136,10 @@ export class SessionExecutionBoundary {
     this.epoch++;
     // Establish ownership before abort observers can reenter disposal.
     this.operation = Promise.resolve().then(() => this.run(publish));
+    if (this.awaitingUser) {
+      this.heldCleanup = this.operation;
+      void this.heldCleanup.catch(observeHeldCleanupFailure);
+    }
     if (!this.cancellation.signal.aborted) {
       const reason = new Error(STALE); reason.stack = reason.message; this.cancellation.abort(reason);
     }
