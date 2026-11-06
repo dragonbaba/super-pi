@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * Project-shared permission rules (R4): `<agentDir>/projects/<hash>/permissions.json`.
@@ -16,7 +17,13 @@ export const MAX_PROJECT_RULES = 256;
 /** Claude Code saves at most five prefix rules for one compound command. */
 export const MAX_REMEMBERED_RULES = 5;
 const MAX_FILE_BYTES = 256 * 1024;
-const MAX_COMMAND = 4096;
+/** The longest `command` the file accepts; generated prefix rules stay within it. */
+export const MAX_RULE_COMMAND = 4096;
+const MAX_COMMAND = MAX_RULE_COMMAND;
+const LOCK_STALE_MS = 10000;
+const LOCK_WAIT_MS = 3000;
+const LOCK_RETRY_MS = 50;
+const MAX_SAVE_ATTEMPTS = 4;
 const STAR = 42;
 const DECISIONS: Readonly<Record<string, number>> = Object.freeze({ allow: RULE_ALLOW, ask: RULE_ASK, deny: RULE_DENY });
 
@@ -26,12 +33,28 @@ interface CompiledShellRule { readonly decision: number; readonly words: readonl
 function compileWords(command: string | undefined, folded: boolean): readonly string[] {
   if (command === undefined) return ["*"];
   const words = command.trim().split(/\s+/);
-  if (folded) for (let index = 0; index < words.length; index++) words[index] = words[index]!.toLowerCase();
+  if (folded) for (let index = 0; index < words.length; index++) words[index] = foldWord(words[index]!);
   return words;
 }
 
-function foldCode(code: number, folded: boolean): number {
-  return folded && code >= 65 && code <= 90 ? code + 32 : code;
+/**
+ * PowerShell case folding, one UTF-16 unit at a time on both the pattern and the command, so
+ * they always agree. ASCII takes the arithmetic path; other letters fold through the engine.
+ */
+function foldCode(code: number): number {
+  if (code < 128) return code >= 65 && code <= 90 ? code + 32 : code;
+  const lower = String.fromCharCode(code).toLowerCase();
+  return lower.length === 1 ? lower.charCodeAt(0) : code;
+}
+
+/** The folded word; the original string when nothing folds. */
+function foldWord(word: string): string {
+  let index = 0;
+  while (index < word.length && foldCode(word.charCodeAt(index)) === word.charCodeAt(index)) index++;
+  if (index === word.length) return word;
+  let text = word.slice(0, index);
+  for (; index < word.length; index++) text += String.fromCharCode(foldCode(word.charCodeAt(index)));
+  return text;
 }
 
 /** `*` inside one word; two-pointer matching with one backtrack point, no allocation. */
@@ -39,7 +62,8 @@ function wordMatches(pattern: string, text: string, folded: boolean): boolean {
   let p = 0, t = 0, star = -1, mark = 0;
   while (t < text.length) {
     if (p < pattern.length && pattern.charCodeAt(p) === STAR) { star = p++; mark = t; continue; }
-    if (p < pattern.length && pattern.charCodeAt(p) === foldCode(text.charCodeAt(t), folded)) { p++; t++; continue; }
+    const code = text.charCodeAt(t);
+    if (p < pattern.length && pattern.charCodeAt(p) === (folded ? foldCode(code) : code)) { p++; t++; continue; }
     if (star < 0) return false;
     p = star + 1; t = ++mark;
   }
@@ -77,7 +101,7 @@ class ShellRuleIndex {
   match(argv: readonly string[], count: number): number {
     if (count === 0) return RULE_NONE;
     let verdict = RULE_NONE;
-    const name = argv[0]!, list = this.byName.get(this.folded ? name.toLowerCase() : name);
+    const name = argv[0]!, list = this.byName.get(this.folded ? foldWord(name) : name);
     if (list) for (let index = 0; index < list.length; index++) {
       const rule = list[index]!;
       if (rule.decision > verdict && wordsMatch(rule.words, argv, count, this.folded)) verdict = rule.decision;
@@ -100,15 +124,18 @@ export class ProjectRuleSet {
     this.rules = rules;
     for (const rule of rules) {
       const decision = DECISIONS[rule.decision]!;
-      if (rule.tool === "bash" || rule.tool === "powershell") {
+      const shell = rule.tool === "bash" || rule.tool === "powershell";
+      if (shell) {
         const powerShell = rule.tool === "powershell";
         (powerShell ? this.powerShell : this.bash).add(Object.freeze({ decision, words: Object.freeze(compileWords(rule.command, powerShell)) }));
-      } else if (decision > (this.tools.get(rule.tool) ?? RULE_NONE)) this.tools.set(rule.tool, decision);
+      }
+      // A rule without `command` covers the whole tool, whatever its input parses into.
+      if ((!shell || rule.command === undefined) && decision > (this.tools.get(rule.tool) ?? RULE_NONE)) this.tools.set(rule.tool, decision);
     }
   }
   get empty(): boolean { return this.rules.length === 0; }
   hasShellRules(powerShell: boolean): boolean { return (powerShell ? this.powerShell : this.bash).size > 0; }
-  /** Rules for a whole non-shell tool (exact name, such as an MCP tool). */
+  /** Rules for a whole tool by exact name: MCP and file tools, or a shell rule without `command`. */
   toolDecision(tool: string): number { return this.tools.get(tool) ?? RULE_NONE; }
   /** Strongest decision for one simple command's words (PowerShell compares without case). */
   matchShellWords(powerShell: boolean, argv: readonly string[], count = argv.length): number {
@@ -201,24 +228,63 @@ export class ProjectPermissionStore {
     return { file: this.file!, project: this.project!, rules: rules.rules, error: this.failure };
   }
 
-  /** Appends rules not already present; refuses while the file on disk does not parse. */
+  /**
+   * Appends rules not already present; refuses while the file on disk does not parse.
+   * Sessions of one project serialize saves with a lock file. A manual edit that lands
+   * between reading and replacing the file is detected by its mtime/size and merged again.
+   */
   async remember(additions: readonly ProjectPermissionRule[]): Promise<void> {
-    const current = await this.refresh();
-    if (this.failure !== undefined) throw new Error(`项目权限规则无法解析，未保存：${this.file}\n${this.failure}`);
-    const rules = [...current.rules];
-    for (const rule of additions) {
-      let present = false;
-      for (const existing of rules) if (existing.tool === rule.tool && existing.decision === rule.decision && existing.command === rule.command) { present = true; break; }
-      if (!present) rules.push(Object.freeze({ ...rule }));
-    }
-    if (rules.length > MAX_PROJECT_RULES) throw new Error(`规则最多 ${MAX_PROJECT_RULES} 条，未保存：${this.file}`);
-    const file = this.file!, parent = dirname(file);
+    const file = await this.location(), parent = dirname(file);
     await mkdir(parent, { recursive: true, mode: 0o700 });
-    const temporary = join(parent, randomBytes(16).toString("hex") + ".tmp");
-    await writeFile(temporary, JSON.stringify({ version: 1, project: this.project, rules }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-    try { await rename(temporary, file); }
-    catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
+    const lock = await acquireLock(join(parent, "permissions.lock"));
+    try {
+      for (let attempt = 1; ; attempt++) {
+        this.mtime = -1;
+        const current = await this.refresh();
+        if (this.failure !== undefined) throw new Error(`项目权限规则无法解析，未保存：${file}\n${this.failure}`);
+        const readMtime = this.mtime, readSize = this.size, rules = [...current.rules];
+        for (const rule of additions) {
+          let present = false;
+          for (const existing of rules) if (existing.tool === rule.tool && existing.decision === rule.decision && existing.command === rule.command) { present = true; break; }
+          if (!present) rules.push(Object.freeze({ ...rule }));
+        }
+        const text = JSON.stringify({ version: 1, project: this.project, rules }, null, 2) + "\n";
+        // The reader's limits apply to what is written, so a save never leaves a file that will not load.
+        if (Buffer.byteLength(text) > MAX_FILE_BYTES) throw new Error(`规则文件将超过 256 KB，未保存：${file}`);
+        try { parseRules(text); } catch (error) { throw new Error(`规则无效，未保存：${error instanceof Error ? error.message : String(error)}`); }
+        const temporary = join(parent, randomBytes(16).toString("hex") + ".tmp");
+        await writeFile(temporary, text, { flag: "wx", mode: 0o600 });
+        let changed: boolean;
+        try { const stat = await lstat(file); changed = stat.mtimeMs !== readMtime || stat.size !== readSize; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { await unlink(temporary); throw error; } changed = readMtime !== -1; }
+        if (changed) {
+          await unlink(temporary);
+          if (attempt === MAX_SAVE_ATTEMPTS) throw new Error(`规则文件正在被修改，未保存：${file}`);
+          continue;
+        }
+        try { await rename(temporary, file); }
+        catch (error) { await unlink(temporary).catch(ignoreError); throw error; }
+        break;
+      }
+    } finally { await unlink(lock).catch(ignoreError); }
     this.mtime = -1;
     await this.refresh();
+    if (this.failure !== undefined) throw new Error(`保存后的规则文件无法解析：${file}\n${this.failure}`);
+  }
+}
+
+function ignoreError(): void {}
+
+/** An exclusive lock file; one left by a crashed session expires after ten seconds. */
+async function acquireLock(lock: string): Promise<string> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try { await writeFile(lock, String(process.pid), { flag: "wx", mode: 0o600 }); return lock; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    try {
+      if (Date.now() - (await lstat(lock)).mtimeMs > LOCK_STALE_MS) { await unlink(lock).catch(ignoreError); continue; }
+    } catch { continue; }
+    if (Date.now() > deadline) throw new Error("另一个会话正在保存本项目的权限规则，未保存");
+    await delay(LOCK_RETRY_MS);
   }
 }

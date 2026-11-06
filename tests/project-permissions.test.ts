@@ -154,6 +154,33 @@ test("project deny and ask rules apply in every tier; allow rules do not lift ou
     assert.equal(await restricted.decide("bash", { command: `npm test > ${outside.replaceAll("\\", "/")}/log.txt` }), "ask");
 });
 
+test("whole-tool shell rules, batch operations and non-ASCII PowerShell spellings cannot slip past project rules", async t => {
+    const host = await fixture(t, "trusted-host", "host-write");
+    await host.writeRules([{ tool: "bash", decision: "deny" }, { tool: "write", decision: "deny" }]);
+    // An assignment-only segment has no command words; the whole-tool rule still applies.
+    assert.equal(await host.decide("bash", { command: "FOO=$(git push origin main)" }), "deny");
+    assert.equal(await host.decide("file_batch", { operations: [{ operation: "write", path: "a.txt", content: "x" }] }), "deny");
+    const rules = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "npm run DÉPLOY *" }]);
+    for (const word of ["DÉPLOY", "déploy"]) assert.equal(rules.matchShellWords(true, ["npm", "run", word, "prod"]), RULE_DENY, word);
+});
+
+test("saves from concurrent sessions are merged, and a rule the reader would reject is never written", async t => {
+    const root = await temporary(t, "sp-project-store-"), agentDir = await temporary(t, "sp-project-agent-");
+    const first = new ProjectPermissionStore(agentDir, root), second = new ProjectPermissionStore(agentDir, root);
+    const file = projectPermissionsFile(agentDir, root);
+    await Promise.all([first.remember([{ tool: "bash", decision: "allow", command: "npm test *" }]),
+        second.remember([{ tool: "bash", decision: "allow", command: "make" }])]);
+    const commands = JSON.parse(await fs.readFile(file, "utf8")).rules.map((rule: any) => rule.command).sort();
+    assert.deepEqual(commands, ["make", "npm test *"]);
+    assert.deepEqual(await fs.readdir(path.dirname(file)), ["permissions.json"]);
+    // A long literal argument falls back to the program's prefix; an oversized rule is refused.
+    assert.deepEqual(suggestShellRules("bash", "curl " + "x".repeat(5000)), ["curl *"]);
+    const before = await fs.readFile(file, "utf8");
+    await assert.rejects(first.remember([{ tool: "bash", decision: "allow", command: "curl " + "x".repeat(5000) }]), /未保存/);
+    assert.equal(await fs.readFile(file, "utf8"), before);
+    assert.equal((await first.refresh()).rules.length, 2);
+});
+
 test("a shell analysis owner shared with the rule check is released", async t => {
     const root = await temporary(t, "sp-project-owner-");
     const owner = new ShellAnalysisOwner("npm test", root, 0, "bash");

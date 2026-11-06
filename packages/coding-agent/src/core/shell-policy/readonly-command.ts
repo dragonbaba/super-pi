@@ -1,4 +1,4 @@
-import { MAX_REMEMBERED_RULES, type ProjectRuleSet, RULE_ALLOW, RULE_ASK, RULE_DENY, RULE_NONE } from "../project-permissions.ts";
+import { MAX_REMEMBERED_RULES, MAX_RULE_COMMAND, type ProjectRuleSet, RULE_ALLOW, RULE_ASK, RULE_DENY, RULE_NONE } from "../project-permissions.ts";
 import type { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { lexBash } from "./syntax/bash.ts";
 import {
@@ -221,10 +221,12 @@ const RULE_UNSAFE_WORD = /[\s*]/;
 /** `npm test -x` → `npm test *`; `ls -la` → `ls *`; a lone `make` stays exact. */
 function prefixRule(argv: readonly string[]): string | undefined {
   const name = argv[0]!;
-  if (RULE_UNSAFE_WORD.test(name)) return undefined;
+  // The rule file rejects longer commands, so such a rule could never be saved.
+  if (RULE_UNSAFE_WORD.test(name) || name.length + 2 > MAX_RULE_COMMAND) return undefined;
   if (argv.length === 1) return name;
   const second = argv[1]!;
-  return second.charCodeAt(0) === HYPHEN || RULE_UNSAFE_WORD.test(second) ? name + " *" : name + " " + second + " *";
+  return second.charCodeAt(0) === HYPHEN || RULE_UNSAFE_WORD.test(second) || name.length + second.length + 3 > MAX_RULE_COMMAND
+    ? name + " *" : name + " " + second + " *";
 }
 
 /**

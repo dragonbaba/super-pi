@@ -515,6 +515,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 const count = item.destination === undefined ? 1 : 2;
                 const itemDecision = await this.decision(item.operation, undefined, paths.slice(index, index + count), ctx.cwd, decision); check();
                 if (itemDecision === "deny" || decision !== "deny" && itemDecision === "ask") decision = itemDecision;
+                // Each operation also answers to the project rules for its own tool.
+                const itemVerdict = project ? project.toolDecision(item.operation) : RULE_NONE;
+                if (itemVerdict > projectVerdict) projectVerdict = itemVerdict;
                 index += count;
             }
         }
