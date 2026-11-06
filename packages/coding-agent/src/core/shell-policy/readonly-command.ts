@@ -139,7 +139,9 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
     if (kind === SEGMENT_FILE) {
       result = HOST_SHELL_FILE_COMMANDS;
       if ((powerShell ? POWERSHELL_RELOCATING_COMMANDS : RELOCATING_COMMANDS).has(name)) moved = true;
-    } else if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(name)) moved = true;
+    }
+    // A redirected `Set-Location x > log` is a file segment and still moves.
+    if (powerShell && POWERSHELL_LOCATION_COMMANDS.has(name)) moved = true;
   }
   argv.length = 0;
   return result;
