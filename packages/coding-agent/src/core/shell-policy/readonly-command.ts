@@ -112,6 +112,11 @@ function hashtableKey(argv: string[], word: string, quoted: boolean): number {
   return HASH_NONE;
 }
 
+/** `switch` in any case; its next brace opens a body of labels and action blocks. */
+function isSwitchKeyword(text: string): boolean {
+  return text.length === 6 && (text === "switch" || text.toLowerCase() === "switch");
+}
+
 function isQuoteCode(code: number): boolean {
   return code === 39 || code === 34;
 }
@@ -435,7 +440,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
   // brace, set for a hashtable (`@{ npm = "10" }`), whose keys are not commands either.
   // A hashtable key opens the hashtable or follows `;` or a line break, never `(` or `&`
   // (`@{ out = (git push) }`, `@{ out = & git push }` run their command for the value).
-  let caseDepth = 0, casePattern = false, braceKinds = 0, braceDepth = 0, hashEntry = HASH_NONE, keyPosition = false;
+  // A `switch` body (`switch ($t) { git { … } }`) is tracked the same way: its labels are not commands.
+  let caseDepth = 0, casePattern = false, braceKinds = 0, switchKinds = 0, braceDepth = 0, hashEntry = HASH_NONE, keyPosition = false, switchPending = false;
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
     argv.length = 0;
     hashEntry = HASH_NONE;
@@ -474,7 +480,7 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
           if (equals < 0) { hashEntry = HASH_OPERATOR; continue; }
           if (equals === text.length - 1) { hashEntry = HASH_VALUE; continue; }
           text = text.slice(equals + 1); valued = true;
-        }
+        } else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0 && !braced) continue; // a switch label
         const start = table.starts[index]!;
         sliced = valued;
         expression = argv.length === 0 && (valued ? rawValueQuoted(table.source, start, table.ends[index]!)
@@ -486,14 +492,14 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         let open = 0, close = 0;
         while (start + open < stop && raw.charCodeAt(start + open) === 123) open++;
         while (stop - close > start + open && raw.charCodeAt(stop - close - 1) === 125) close++;
-        if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; braceKinds = braceKinds << open; braceDepth += open; }
+        if (open > 0) { verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; braceKinds = braceKinds << open; switchKinds = switchKinds << open; braceDepth += open; switchPending = false; }
         if (open > 0 || close > 0) {
           const word = text.slice(open, Math.max(open, text.length - close));
           if (word || expression) argv.push(expression ? "" : word);
           if (close > 0) {
             verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0;
             const closed = close < braceDepth ? close : braceDepth;
-            braceKinds >>>= closed; braceDepth -= closed;
+            braceKinds >>>= closed; switchKinds >>>= closed; braceDepth -= closed; keyPosition = (switchKinds & 1) !== 0;
           }
           continue;
         }
@@ -541,17 +547,25 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
                 keyPosition = false;
                 if (atKey && hashEntry === HASH_NONE && argv.length === 0 && (braceKinds & 1) !== 0) hashEntry = hashtableKey(argv, word, false);
                 else if (expression && argv.length === 0) { hashEntry = HASH_NONE; argv.push(""); }
-                else { hashEntry = HASH_NONE; if (!(argv.length === 0 && isCommandPrefix(word, true))) argv.push(word); }
+                else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0) hashEntry = HASH_NONE; // a switch label
+                else {
+                  hashEntry = HASH_NONE;
+                  if (argv.length > 0 || !isCommandPrefix(word, true)) argv.push(word);
+                  else if (isSwitchKeyword(word)) switchPending = true;
+                }
               }
               if (code !== -1) {
                 verdict = strongerRuleVerdict(rules, true, argv, verdict); argv.length = 0; hashEntry = HASH_NONE;
                 // `@{` opens a hashtable; any other `{` a script block.
                 if (code === 123) {
                   const hash = cursor > low && scan.charCodeAt(cursor - 1) === 64;
-                  braceKinds = braceKinds << 1 | (hash ? 1 : 0); braceDepth++; keyPosition = hash;
+                  const body = switchPending && !hash;
+                  braceKinds = braceKinds << 1 | (hash ? 1 : 0); switchKinds = switchKinds << 1 | (body ? 1 : 0);
+                  braceDepth++; keyPosition = hash || body; switchPending = false;
                 } else {
-                  if (braceDepth > 0) { braceKinds >>>= 1; braceDepth--; }
-                  keyPosition = false;
+                  if (braceDepth > 0) { braceKinds >>>= 1; switchKinds >>>= 1; braceDepth--; }
+                  // After an action block, a switch body's next word is another label.
+                  keyPosition = (switchKinds & 1) !== 0;
                 }
               }
               from = cursor + 1;
@@ -563,7 +577,10 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         if (argv.length === 0 && !powerShell && text === "function") { index++; continue; }
         // `coproc NAME { git push; }`: a name is optional and only precedes a compound command.
         if (argv.length === 0 && !powerShell && text === "coproc") { if (index + 2 < end && table.texts![index + 2] === "{") index++; continue; }
-        if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) continue;
+        if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) {
+          if (powerShell && isSwitchKeyword(text)) switchPending = true;
+          continue;
+        }
       }
       argv.push(expression && argv.length === 0 ? "" : text);
     }

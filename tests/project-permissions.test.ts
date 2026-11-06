@@ -112,6 +112,9 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
     for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    // Switch labels are not commands; their action blocks are matched.
+    assert.equal(shellRuleVerdict("powershell", "switch ($tool) { npm { Write-Output \"npm\" }; default { Write-Output other } }", npm), RULE_NONE);
+    assert.equal(shellRuleVerdict("powershell", "switch ($tool) { a { Write-Output x } b { npm test } }", npm), RULE_DENY);
     // A quoted brace is text, not a block.
     assert.equal(shellRuleVerdict("powershell", 'rg --replace="{npm}" pattern file', npm), RULE_NONE);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);
