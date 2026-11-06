@@ -1,5 +1,6 @@
 import { boundedShellInput } from "../tools/bounded-shell-input.ts";
 import { extractCommandSubstitutions, prepareShellAnalysis, type CommandSubstitutionScan, type ShellAnalysisView } from "./shell-substitution.ts";
+import { DIALECT_POWERSHELL, lexWindowsScript, type ShellTokenTable } from "./syntax/windows.ts";
 
 export const MAX_ANALYSIS_ENTRIES = 128;
 export const MAX_ANALYSIS_BYTES = 512 * 1024;
@@ -34,6 +35,9 @@ export function analyzeShellSource(source: string): PreparedShellAnalysis {
  */
 export class ShellAnalysisOwner {
   private readonly entries = new Map<string, PreparedShellAnalysis>();
+  /** PowerShell and cmd token tables, one per source and dialect. */
+  private readonly powerShellTables = new Map<string, ShellTokenTable>();
+  private readonly cmdTables = new Map<string, ShellTokenTable>();
   private command: string | undefined;
   private cwd: string | undefined;
   private released = false;
@@ -56,7 +60,26 @@ export class ShellAnalysisOwner {
     shellAnalysisOwnership.liveOwners++;
   }
 
-  get size(): number { return this.entries.size; }
+  get size(): number { return this.entries.size + this.powerShellTables.size + this.cmdTables.size; }
+
+  /** Tokenize a PowerShell or cmd source once per authorization; every scanner reads the same table. */
+  windowsTable(source: string, dialect: number): ShellTokenTable {
+    if (this.released) throw new Error("Shell analysis owner is released");
+    const tables = dialect === DIALECT_POWERSHELL ? this.powerShellTables : this.cmdTables;
+    const cached = tables.get(source);
+    if (cached) { this.hits++; shellAnalysisOwnership.hits++; return cached; }
+    this.misses++;
+    shellAnalysisOwnership.misses++;
+    const table = lexWindowsScript(source, dialect);
+    const bytes = table.byteLength;
+    if (this.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
+      tables.set(source, table);
+      this.retainedBytes += bytes;
+      shellAnalysisOwnership.liveEntries++;
+      shellAnalysisOwnership.liveBytes += bytes;
+    } else { this.overflows++; shellAnalysisOwnership.overflows++; }
+    return table;
+  }
 
   /** Observe only operands the existing scanners already recognized; never scan source here. */
   observeMutationTarget(raw: string, cwd: string, expansion: number, target: string | undefined, kind: "delete" | "write" | "move" | "contents"): void {
@@ -98,7 +121,7 @@ export class ShellAnalysisOwner {
     for (const nested of analysis.view.substitutions) bytes += nested.length * 2;
     for (const nested of analysis.substitutions.scripts) bytes += nested.length * 2;
     if (analysis.view.hereDocuments) for (const document of analysis.view.hereDocuments) bytes += 2 * document.body.length;
-    if (this.entries.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
+    if (this.size < MAX_ANALYSIS_ENTRIES && this.retainedBytes + bytes <= MAX_ANALYSIS_BYTES) {
       this.entries.set(source, analysis);
       this.retainedBytes += bytes;
       shellAnalysisOwnership.liveEntries++;
@@ -111,9 +134,11 @@ export class ShellAnalysisOwner {
     if (this.released) return;
     shellAnalysisOwnership.released++;
     shellAnalysisOwnership.liveOwners--;
-    shellAnalysisOwnership.liveEntries -= this.entries.size;
+    shellAnalysisOwnership.liveEntries -= this.size;
     shellAnalysisOwnership.liveBytes -= this.retainedBytes;
     this.entries.clear();
+    this.powerShellTables.clear();
+    this.cmdTables.clear();
     if (this.nativeTargets) this.nativeTargets.length = 0;
     this.nativeTargets = undefined;
     this.nativeShell = undefined;

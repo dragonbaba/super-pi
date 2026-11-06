@@ -26,6 +26,12 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("coprocBodyIndex");
   for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
   for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
+  // Native PowerShell and cmd scripts: one cached token table per source, one word buffer per script.
+  targets.get("permission-bash.ts")!.add("inspectWindowsScript");
+  targets.get("core.ts")!.add("inspectWindowsShellScript");
+  targets.get("shell-analysis.ts")!.add("windowsTable");
+  targets.set("syntax/windows.ts", new Set(["lexWindowsScript", "windowsWordText", "fillWindowsSegment"]));
+  targets.set("syntax/token-table.ts", new Set(["fillSegmentWords", "isNullDevice", "pushToken", "endSegment", "pushNested", "segmentStart"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();
