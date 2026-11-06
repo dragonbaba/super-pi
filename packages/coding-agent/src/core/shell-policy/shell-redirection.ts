@@ -455,10 +455,10 @@ function isReadOnlySpecialParameter(code: number): boolean {
 }
 
 /** argv compaction retains operands after interleaved redirections. Call-owned. */
-export function stripShellRedirections(tokens: string[] & { expansions?: number[] }, redirections: readonly number[]): void {
+export function stripShellRedirections(tokens: string[] & { expansions?: number[]; commas?: number[] }, redirections: readonly number[]): void {
   let output = 0;
   let redirect = 0;
-  const expansions = tokens.expansions;
+  const expansions = tokens.expansions, commas = tokens.commas;
   for (let index = 0; index < tokens.length; index++) {
     if (index === redirections[redirect]) {
       redirect++;
@@ -466,9 +466,11 @@ export function stripShellRedirections(tokens: string[] & { expansions?: number[
     } else {
       tokens[output] = tokens[index]!;
       if (expansions) expansions[output] = expansions[index] ?? 0;
+      if (commas) commas[output] = commas[index] ?? 0;
       output++;
     }
   }
   tokens.length = output;
   if (expansions) expansions.length = output;
+  if (commas) commas.length = output;
 }

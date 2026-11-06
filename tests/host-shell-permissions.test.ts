@@ -124,9 +124,12 @@ test("PowerShell backslash paths keep their separators before native authorizati
 });
 
 test("native authorization reads PowerShell file cmdlets and cmd /c operands like rm and redirection",{skip:process.platform!=="win32"},async t=>{
-  const f=await fixture(t);await fs.writeFile(join(f.outside,"existing.txt"),"original");
+  const f=await fixture(t);await fs.writeFile(join(f.outside,"existing.txt"),"original");await fs.writeFile(join(f.outside,"a,b.txt"),"original");
   // After Claude Code's PowerShell scope checks: cmdlet writers and cmd deletions use the existing outside-path rules.
-  for(const command of ["Set-Content ..\\outside\\existing.txt changed","Copy-Item a.txt -Destination ..\\outside\\existing.txt"]) {
+  // Named parameters bind before positionals, a quoted comma stays in one path, and New-Item -Name joins its Path.
+  for(const command of ["Set-Content ..\\outside\\existing.txt changed","Copy-Item a.txt -Destination ..\\outside\\existing.txt",
+    "Copy-Item ..\\outside\\existing.txt -Path a.txt","Set-Content -Path \"../outside/a,b.txt\" changed",
+    "New-Item -Path ../outside -Name existing.txt -ItemType File -Force"]) {
     await assert.rejects(f.authorize("powershell",command),/EXTERNAL_FILE_WRITE_BLOCKED/,command);await f.resume();
   }
   for(const command of ["Move-Item ..\\outside\\existing.txt b.txt","ri ..\\outside\\x -r -fo","cmd /c rd /s /q ..\\outside\\x","cmd /c \"del /q ..\\outside\\existing.txt\""]) {
