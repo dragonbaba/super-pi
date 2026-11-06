@@ -5,6 +5,7 @@ import path from "node:path";
 import ts from "typescript";
 import { Session } from "node:inspector/promises";
 import { setImmediate } from "node:timers/promises";
+import { isProtectedWorkspaceName } from '../../packages/coding-agent/src/core/sandbox/workspace-policy.mjs';
 
 assert.equal(typeof globalThis.gc, "function", "Run with --expose-gc");
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
@@ -16,7 +17,7 @@ const profiler = new Session(); profiler.connect();
 const weak = [], checks = 200000;
 function run() {
     const io = { existsSync() { return false; } };
-    const local = new Function("fs", "path", pattern + "\n" + helper + "\nreturn local;")(io, path);
+    const local = new Function("fs", "path", "isProtectedWorkspaceName", pattern + "\n" + helper + "\nreturn local;")(io, path, isProtectedWorkspaceName);
     weak.push(new WeakRef(io), new WeakRef(local));
     const root = path.resolve("fixture"); let length = 0;
     for (let i = 0; i < checks; i++) length += local(root, "src/example.txt").length;

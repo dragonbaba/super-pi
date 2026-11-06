@@ -7,6 +7,10 @@ import { isUtf8 } from "node:buffer";
 import test from "node:test";
 import ts from "typescript";
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from "../packages/coding-agent/src/utils/image-signature.mjs";
+import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName } from "../packages/coding-agent/src/core/sandbox/workspace-policy.mjs";
+import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
+import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
 // Run the complete guest entry against owned temporary roots; no command or VM is launched.
@@ -14,7 +18,7 @@ const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
     && !(ts.isFunctionDeclaration(node) && node.name?.text === "commandWorkspace")
     && !(ts.isVariableStatement(node) && ["SOURCE", "WORK", "EXCHANGE"].includes(node.declarationList.declarations[0]!.name.getText(source))))
     .map(node => node.getText(source)).join("\n");
-const execute = new Function("detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest).bind(undefined, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
+const execute = new Function("isVmPrivateName", "isVmPrivatePath", "isProtectedWorkspaceName", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "commandWorkspace", guest).bind(undefined, isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
 
 test("both shell requests map every workspace drive independently of toolchain drives", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-workspace-drives-")));
@@ -135,6 +139,8 @@ test("both sandbox modes search normalized directories and exact files without p
     for (const directory of [inputRoot, exchange, path.join(inputRoot, "src"), path.join(inputRoot, "src-other")]) fs.mkdirSync(directory);
     fs.writeFileSync(path.join(inputRoot, "src/example.txt"), "needle\n");
     fs.writeFileSync(path.join(inputRoot, "src-other/other.txt"), "needle\n");
+    fs.mkdirSync(path.join(inputRoot, ".git")); fs.writeFileSync(path.join(inputRoot, ".git/config"), "metadata");
+    fs.mkdirSync(path.join(inputRoot, "empty"));
     let runs = 0;
     function run(mode: string, operation: string, scope: string | undefined) {
         const processState = { exitCode: 0 };
@@ -153,7 +159,8 @@ test("both sandbox modes search normalized directories and exact files without p
             }
             for (const scope of [undefined, ".", "./"]) {
                 const result = run(mode, operation, scope); assert.equal(result.ok, true);
-                assert.match(result.text, /src\/example/); assert.match(result.text, /src-other\/other/);
+                if (operation === "ls") assert.deepEqual(result.text.split("\n").sort(), ["empty/", "src-other/", "src/"]);
+                else { assert.match(result.text, /src\/example/); assert.match(result.text, /src-other\/other/); }
             }
             for (const scope of ["../exchange", inputRoot, ".git", ".sp", "src/missing.txt"]) assert.equal(run(mode, operation, scope).ok, false, scope);
         }
@@ -161,25 +168,23 @@ test("both sandbox modes search normalized directories and exact files without p
     t.diagnostic(JSON.stringify({ guestSearchInvocations: runs, commandSpawns: 0, maximumRows: 200 }));
 });
 
-test("catalog scope matching creates no per-entry closures, objects, regex or normalized strings", t => {
-    const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "matchesScope") as ts.FunctionDeclaration;
+test("scoped search has no per-entry callbacks, regular expressions or result wrappers", () => {
     function inspect(node: ts.Node): void {
         assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isObjectLiteralExpression(node)
-            || ts.isArrayLiteralExpression(node) || ts.isNewExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-        if (ts.isCallExpression(node)) assert.equal(node.expression.getText(source), "name.startsWith");
-        if (ts.isBinaryExpression(node)) assert.notEqual(node.operatorToken.kind, ts.SyntaxKind.PlusToken);
+            || ts.isNewExpression(node) || ts.isRegularExpressionLiteral(node) || ts.isAwaitExpression(node), false, node.getText(source));
         ts.forEachChild(node, inspect);
     }
-    inspect(helper.body!);
-    const match = new Function(helper.getText(source) + "\nreturn matchesScope;")();
-    let matches = 0;
-    for (let index = 0; index < 200000; index++) if (match(index % 2 ? "src-other/file" : "src/file", "src")) matches++;
-    assert.equal(matches, 100000);
-    t.diagnostic(JSON.stringify({ scopeChecks: 200000, matches, perEntryNormalization: 0, perEntryRegex: 0, perEntryObjects: 0 }));
+    for (const name of ["search", "searchScope", "local", "read", "grepRows"]) {
+        const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name) as ts.FunctionDeclaration;
+        inspect(helper.body!);
+    }
+    const policy = ts.createSourceFile("workspace-policy.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-policy.mjs", "utf8"), ts.ScriptTarget.Latest, true);
+    for (const node of policy.statements) if (ts.isFunctionDeclaration(node)) inspect(node.body!);
 });
 
-test("guest npm dependencies stay private without traversal or writeback candidates", t => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sp-guest-dependencies-")));
+test("guest private metadata and dependencies stay out of command and native writeback", t => {
+    const owned = createOwnedTaskFixture("sandbox-private-");
+    const root = fs.realpathSync.native(owned.root);
     const inputRoot=path.join(root,"input"),work=path.join(root,"work"),exchange=path.join(root,"exchange");
     for(const directory of [inputRoot,exchange]) fs.mkdirSync(directory);
     fs.writeFileSync(path.join(inputRoot,"fixture.txt"),"fixture\n");
@@ -192,6 +197,10 @@ test("guest npm dependencies stay private without traversal or writeback candida
             spawns++;
             fs.mkdirSync(path.join(work,"node_modules"));
             fs.writeFileSync(path.join(work,"node_modules","native.bin"),Buffer.alloc(3*1024*1024));
+            for (const name of [".artifacts", ".codegraph", "nested/.git", "nested/.sp"]) {
+                fs.mkdirSync(path.join(work, name), { recursive: true });
+                fs.writeFileSync(path.join(work, name, "private.txt"), "VM only");
+            }
             fs.writeFileSync(path.join(work,"package.json"),'{}\n');
             fs.writeFileSync(path.join(exchange,"command-result.json"),JSON.stringify({closed:true,timedOut:false,exitCode:0,stdoutBase64:"",stderrBase64:""}));
             return {status:0};
@@ -214,14 +223,62 @@ test("guest npm dependencies stay private without traversal or writeback candida
         assert.equal(dependencyReads,0);
         const listed=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
         assert.equal(listed.ok,true);assert.doesNotMatch(listed.text,/node_modules/);
+        assert.match(listed.text, /\.artifacts\//);
+        request.operation="write";request.input={path:".artifacts/new.txt",content:"private write"} as any;
+        fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
+        execute(fs,path,createHash,isUtf8,() => assert.fail("write must not spawn"),processState,inputRoot,work,exchange);
+        const written=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
+        assert.equal(written.ok,true);assert.deepEqual(written.changes,[]);
+        assert.equal(fs.readFileSync(path.join(work,".artifacts/new.txt"),"utf8"),"private write");
         request.operation="read";request.input={path:"node_modules/native.bin"} as any;
         fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify(request));
         execute(fs,path,createHash,isUtf8,() => assert.fail("read must not spawn"),processState,inputRoot,work,exchange);
         assert.equal(JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8")).ok,false);
         t.diagnostic(JSON.stringify({dependencyDirectoryReads:dependencyReads,dependencyWritebacks:0,commandSpawns:spawns}));
-    } finally {
-        for(const file of ["input/fixture.txt","work/fixture.txt","work/package.json","work/node_modules/native.bin","exchange/request.json","exchange/response.json","exchange/command-result.json","exchange/command.txt"]) fs.unlinkSync(path.join(root,file));
-        for(const directory of ["work/node_modules","work","input","exchange"]) fs.rmdirSync(path.join(root,directory));
-        fs.rmdirSync(root);
+    } finally { owned.cleanup(); }
+});
+
+test("scoped search avoids unrelated trees and reports only actual row overflow", () => {
+    const owned = createOwnedTaskFixture("sandbox-search-limit-"), root = fs.realpathSync.native(owned.root);
+    const input = path.join(root,"input"), exchange = path.join(root,"exchange"), work = path.join(root,"work");
+    for (const directory of [input, exchange, path.join(input,"scope"), path.join(input,"outside")]) fs.mkdirSync(directory);
+    for (let index = 0; index < 200; index++) fs.writeFileSync(path.join(input,"scope",index+".txt"),"hit\n");
+    const observed = Object.create(fs);
+    observed.readdirSync = (directory: string, ...args: any[]) => {
+        assert.notEqual(directory, input, "scoped search must not enumerate the workspace root");
+        assert.notEqual(directory, path.join(input,"outside"));
+        return (fs.readdirSync as any)(directory, ...args);
+    };
+    function run(operation: string) {
+        fs.writeFileSync(path.join(exchange,"request.json"),JSON.stringify({id:"d".repeat(32),mode:"read-only",operation,
+            maxWriteBytes:1024*1024,input:{path:"scope",pattern:operation==="find"?".txt":"hit"}}));
+        execute(observed,path,createHash,isUtf8,() => assert.fail("search must not spawn"),{exitCode:0},input,work,exchange);
+        const result=JSON.parse(fs.readFileSync(path.join(exchange,"response.json"),"utf8"));
+        assert.equal(result.ok,true,JSON.stringify(result));return result.text as string;
     }
+    try {
+        for (const operation of ["ls","find","grep"]) {
+            const text=run(operation);assert.equal(text.split("\n").length,200);assert.doesNotMatch(text,/truncated/);
+        }
+        fs.writeFileSync(path.join(input,"scope","overflow.txt"),"hit\n");
+        for (const operation of ["ls","find","grep"]) {
+            const text=run(operation);assert.equal(text.split("\n").length,201);assert.match(text,/Results truncated at 200 rows/);
+        }
+    } finally { owned.cleanup(); }
+});
+
+test("host rejects a private candidate before publishing an earlier ordinary candidate", async t => {
+    const owned=createOwnedTaskFixture("sandbox-candidate-"), boundary=new SessionExecutionBoundary();
+    const runtime: any={executionBoundary:boundary,nativePermissions:{mode:"sandbox-write"}};
+    const owner=new WorkspaceSandboxTools(owned.root,owned.root,"sandbox-write",() => runtime);
+    const internal=owner as any;let published=0,discarded=0;
+    t.mock.method(internal.backend,"invoke",async () => ({id:"fixture",ok:true,execution:{exitCode:0,timedOut:false,closed:true,stdout:"",stderr:""},
+        changes:[{path:"ordinary.txt",before:null,content:"b2s="},{path:".artifacts/private.txt",before:null,content:"b2s="}]}));
+    t.mock.method(internal,"publish",async () => {published++;});
+    t.mock.method(internal.backend,"discardSnapshot",async () => {discarded++;});
+    try {
+        const result:any=await owner.definition("bash")!.execute("fixture",{command:"fixture"},boundary.signal,undefined,{cwd:owned.root} as any);
+        assert.equal(result.isError,true);assert.equal(result.details.published,0);
+        assert.match(result.content[0].text,/VM-private candidate/);assert.equal(published,0);assert.equal(discarded,1);
+    } finally {await owner.close();await boundary.dispose();owned.cleanup();}
 });

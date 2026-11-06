@@ -71,7 +71,7 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
   }
   inspect(helper.body!);
   // Execute the actual pure guest helper without booting its VM-only entry point.
-  const search = new Function(helper.getText(source) + "\nreturn grepRows;")();
+  const search = new Function("SEARCH_ROWS", helper.getText(source) + "\nreturn grepRows;")(200);
   function measure(text: string, pattern: string) {
     let patternScans = 0, lineScans = 0, slices = 0; const rows: string[] = [];
     const input = { length: text.length, indexOf(value: string, start?: number) {
@@ -85,7 +85,7 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
   const tail = measure("plain\n".repeat(100000) + "needle", "needle");
   assert.equal(tail.patternScans, 2); assert.equal(tail.lineScans, 100001); assert.deepEqual(tail.rows, ["file:100001:needle"]);
   const dense = measure("hit\n".repeat(1000), "hit");
-  assert.equal(dense.rows.length, 200); assert.equal(dense.slices, 200); assert.equal(dense.lineScans, 200);
+  assert.equal(dense.rows.length, 200); assert.equal(dense.slices, 200); assert.equal(dense.lineScans, 201);
   t.diagnostic(JSON.stringify({ absentPatternScans: 1, tailPatternScans: 2, tailLineScans: 100001, maximumRows: 200, lineArrays: 0 }));
 });
 

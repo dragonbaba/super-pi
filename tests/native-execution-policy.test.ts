@@ -38,6 +38,17 @@ test("native sandbox denies unsupported aliases and respects exact deny before b
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "ok" }), f.ctx, { name: "powershell" } as any), /SANDBOX_UNSUPPORTED/);
 });
 
+test("sandbox observation authorizes guest-only paths while preserving workspace and explicit deny", async t => {
+    const f = await fixture(t, { rules: [{ tool: "*", path: "blocked", decision: "deny" }] }, "sandbox", "sandbox-write");
+    for (const [tool, target] of [["read", ".artifacts/guest.txt"], ["ls", "guest-only-directory"]]) {
+        (await f.owner.authorize(f.event(tool!, { path: target }), f.ctx, f.definition(tool!))).release();
+    }
+    await assert.rejects(f.owner.authorize(f.event("read", { path: "blocked/guest.txt" }), f.ctx, f.definition("read")), /Explicitly denied/);
+    await assert.rejects(f.owner.authorize(f.event("read", { path: "../outside.txt" }), f.ctx, f.definition("read")), /outside the workspace/);
+    const host = await fixture(t, {}, "trusted-host", "host-write");
+    await assert.rejects(host.owner.authorize(host.event("read", { path: "missing.txt" }), host.ctx), { code: "ENOENT" });
+});
+
 test("search scopes enforce nested deny/ask on explicit and default roots without widening scoped allow", async t => {
     for (const mode of ["read-only", "sandbox-write", "host-write"] as const) {
         for (const decision of ["deny", "ask"] as const) {

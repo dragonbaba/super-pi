@@ -57,6 +57,9 @@ test("live unified workspace: both shells, additional directory, byte artifacts,
   for (const directory of [project, assets, artifacts]) await fs.mkdir(directory);
   await fs.writeFile(path.join(project, "baseline.txt"), "baseline");
   await fs.writeFile(path.join(assets, "input.txt"), "input");
+  for (const name of [".artifacts", ".codegraph"]) {
+    await fs.mkdir(path.join(project, name)); await fs.writeFile(path.join(project, name, "host-only.txt"), "host preserved");
+  }
   const runtime = createRuntime(); let journals = 0;
   runtime.appendEntry = () => { journals++; };
   const policy = runtime.nativePermissions = new Policy(runtime, "sandbox", {}, "sandbox-write", [assets]);
@@ -116,10 +119,30 @@ $observed | ConvertTo-Json -Compress
     assert.equal((await fs.readFile(path.join(assets, "moved.bin"))).toString("hex"), "89504e470d0a1a0a00000000");
     await invoke("bash", { command: "rm large.bin" });
     await assert.rejects(fs.stat(path.join(project, "large.bin")), { code: "ENOENT" });
+    const privateSource = "const fs=require('node:fs');for(const name of ['.artifacts','.codegraph']){if(fs.existsSync(name+'/host-only.txt'))throw Error('private host data imported');fs.mkdirSync(name,{recursive:true});fs.writeFileSync(name+'/guest.txt','VM only')}fs.mkdirSync('empty-parent/empty',{recursive:true});fs.mkdirSync('search');for(let i=0;i<201;i++)fs.writeFileSync('search/'+i+'.txt','needle\\n');fs.writeFileSync('ordinary.txt','published')";
+    const privateResult = await invoke("bash", { command: "git init -q nested && node -e " + bashQuote(privateSource), timeout: 120 });
+    assert.equal(privateResult.details.writeback.length, 202);
+    assert.equal(await fs.readFile(path.join(project,"ordinary.txt"),"utf8"),"published");
+    for (const name of [".artifacts", ".codegraph"]) {
+      assert.equal(await fs.readFile(path.join(project,name,"host-only.txt"),"utf8"),"host preserved");
+      await assert.rejects(fs.stat(path.join(project,name,"guest.txt")),{code:"ENOENT"});
+    }
+    await assert.rejects(fs.stat(path.join(project,"nested/.git")),{code:"ENOENT"});
+    const privateWrite = await invoke("write", {path:".artifacts/native.txt",content:"native VM only"});
+    assert.equal(privateWrite.details.writeback.length,0);
+    assert.match((await invoke("read",{path:".artifacts/native.txt"})).content[0].text,/native VM only/);
+    await assert.rejects(fs.stat(path.join(project,".artifacts/native.txt")),{code:"ENOENT"});
+    for (const operation of ["ls","find","grep"]) {
+      const limited=await invoke(operation,{path:"search",pattern:operation==="find"?".txt":"needle"});
+      assert.match(limited.content[0].text,/Results truncated at 200 rows/);
+    }
+    const empty=await invoke("ls",{path:"empty-parent"});assert.equal(empty.content[0].text,"empty-parent/empty/");
+    const rootList=await invoke("ls",{path:"nested"});assert.equal(rootList.content[0].text,"(no output)");
     await fs.writeFile(path.join(project, "baseline.txt"), "external editor");
     await assert.rejects(invoke("bash", { command: "printf changed > baseline.txt" }), /Original source identity changed/);
     assert.equal(await fs.readFile(path.join(project, "baseline.txt"), "utf8"), "external editor");
-    console.log("EXECUTION_CONTRACT_LIVE " + JSON.stringify({ filesPublished: 50, largeBytes: 2 * 1024 * 1024, secondaryWrite: true, conflictPreserved: true, additionalDriveWithoutToolchain: true, environment, journals }));
+    console.log("EXECUTION_CONTRACT_LIVE " + JSON.stringify({ initialFilesPublished: 50, privateProbeFilesPublished: 202, privateHostDataPreserved: true,
+      scopedSearchTruncation: true, largeBytes: 2 * 1024 * 1024, secondaryWrite: true, conflictPreserved: true, additionalDriveWithoutToolchain: true, environment, journals }));
   } finally {
     await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose();
     assert.equal(owner.diagnostics.ownedArtifacts, 0); assert.equal(owner.diagnostics.sourceFiles, 0);

@@ -7,6 +7,7 @@ import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./network-policy.ts";
 import { workspaceInput } from "./workspace-paths.ts";
 import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
+import { isVmPrivateName } from "./workspace-policy.mjs";
 
 export interface WorkspaceSandboxOptions {
   settings?: { include?: string[]; exclude?: string[] };
@@ -26,7 +27,6 @@ export class WorkspaceOperationError extends Error {
     + (reply.execution ? "\nCommand exit=" + reply.execution.exitCode + "; timedOut=" + reply.execution.timedOut + "\n" + reply.execution.stdout + reply.execution.stderr : "")); this.reply = reply; }
 }
 const ARTIFACT_NAME = /^[a-f0-9]{32}-[0-9]{1,4}\.bin$/;
-const EXCLUDED = new Set([".git", ".sp", ".artifacts", ".codegraph", "node_modules"]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WORKSPACE] " + reason); }
 const xml = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -82,7 +82,7 @@ export class WorkspaceSandboxBackend {
       signal?.throwIfAborted(); const [from, to] = stack.pop()!;
       await fs.mkdir(to); await this.remember(to);
       for (const entry of await fs.readdir(from, { withFileTypes: true })) {
-        if (EXCLUDED.has(entry.name.toLowerCase())) continue;
+        if (isVmPrivateName(entry.name.toLowerCase())) continue;
         need(++this.capturedEntries <= 20000 && !entry.isSymbolicLink(), "Workspace entry limit or redirected path: " + entry.name);
         const sourcePath = path.join(from, entry.name), target = path.join(to, entry.name);
         if (this.root && (sourcePath === this.root || this.root.startsWith(sourcePath + path.sep))) continue;
@@ -162,6 +162,7 @@ export class WorkspaceSandboxBackend {
     const worker = new URL("./workspace-worker.mjs", import.meta.url);
     for (const name of ["core", "core/sandbox", "utils"]) { const directory = path.join(tools, name); await fs.mkdir(directory); await this.remember(directory); }
     for (const [from, name] of [[process.execPath, "node.exe"], [fileURLToPath(worker), "core/sandbox/workspace-worker.mjs"],
+      [fileURLToPath(new URL("./workspace-policy.mjs", import.meta.url)), "core/sandbox/workspace-policy.mjs"],
       [fileURLToPath(new URL("../../utils/image-signature.mjs", import.meta.url)), "utils/image-signature.mjs"], [fileURLToPath(new URL("windows-sandbox-task-worker.cs", runtimeUrl)), "command.cs"]]) {
       const bytes = await fs.readFile(from); const target = path.join(tools, name); await fs.writeFile(target, bytes, { flag: "wx" }); await this.remember(target);
       need(hash(await fs.readFile(target)) === hash(bytes), "Tool copy changed");

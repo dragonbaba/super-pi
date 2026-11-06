@@ -178,7 +178,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         for (const target of targets) {
             if (typeof target !== "string" || target.length > 4096 || target.includes("\0")) throw new Error(BLOCKED + "Invalid path");
             const absolute = resolve(ctx.cwd, target);
-            const canonical = mutation ? await canonicalizeProspectivePath(absolute) : await realpath(absolute); check();
+            // Guest-only files need not exist on the host; the worker owns their actual read validation.
+            const canonical = mutation || this.environment === "sandbox" ? await canonicalizeProspectivePath(absolute) : await realpath(absolute); check();
             for (const directory of unavailable) {
                 if (inside(directory, absolute) || inside(directory, canonical)) throw new Error(BLOCKED + "Additional workspace is unavailable or redirected: " + directory);
             }
