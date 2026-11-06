@@ -564,8 +564,10 @@ function isDescriptor(text: string): boolean {
 /** `NAME=value` before the command changes its environment (`PAGER`, `GIT_*`). */
 function isAssignment(text: string): boolean {
   const equals = text.indexOf("=");
-  if (equals <= 0) return false;
-  for (let index = 0; index < equals; index++) {
+  // `CI+=x` appends; the name ends before the `+`.
+  const name = equals > 1 && text.charCodeAt(equals - 1) === 43 ? equals - 1 : equals;
+  if (name <= 0) return false;
+  for (let index = 0; index < name; index++) {
     const code = text.charCodeAt(index) | 0x20;
     const letter = code >= 97 && code <= 122 || text.charCodeAt(index) === 95;
     if (!letter && (index === 0 || text.charCodeAt(index) < 48 || text.charCodeAt(index) > 57)) return false;
