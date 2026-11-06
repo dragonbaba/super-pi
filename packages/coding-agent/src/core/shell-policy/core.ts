@@ -41,7 +41,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashDoubleBracketCloseBoundary, isBashNetworkRedirectionTarget, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
-import { CMD_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
+import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
 import { isCodeMethodNamePart, writeCodeMethodName, writeEscapedNodeMethodKey } from "./code-method-names.ts";
 import { diagnosticForPrimitives, policyMetadata, renderPolicyDiagnostic, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 
@@ -365,7 +365,8 @@ export function inspectHighRiskBashMutation(input: unknown, cwd: string, shellOp
 		mutationDetected: false,
 		unverifiableMutation: false,
 	};
-	inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
+	if (shellOperation === "powershell" && analysisOwner?.nativeTool === "powershell") inspectWindowsShellScript(command, resolve(cwd), 0, builder, DIALECT_POWERSHELL);
+	else inspectShellScript(command, resolve(cwd), 0, builder, shellOperation);
 	// Parser uncertainty is not itself evidence of a mutation. The permission
 	// classifier retains that uncertainty as opaque input in every access mode.
 	if (builder.primitives.length === 0) return undefined;
@@ -529,6 +530,47 @@ function inspectShellScript(script: string, initialCwd: string, depth: number, b
 	}
 }
 
+/**
+ * A PowerShell or cmd script under native authorization: the same per-command checks as
+ * inspectShellScript, over that dialect's token table. Bash-only state does not apply;
+ * `$(...)` and `@(...)` bodies are PowerShell scripts. One word buffer serves every segment.
+ */
+function inspectWindowsShellScript(script: string, initialCwd: string, depth: number, builder: ScanBuilder, dialect: number): void {
+	if (depth > MAX_WRAPPER_DEPTH) {
+		markUnverifiable(builder, builder.mutationDetected);
+		return;
+	}
+	const table = builder.analysisOwner ? builder.analysisOwner.windowsTable(script, dialect) : lexWindowsScript(script, dialect);
+	if (table.unterminated) { addPrimitive(builder, "shell_context_uninspectable"); markUnverifiable(builder); }
+	for (let nested = 0; nested < table.nestedCount; nested++) {
+		inspectWindowsShellScript(script.slice(table.nestedStarts[nested]!, table.nestedEnds[nested]!), initialCwd, depth + 1, builder, DIALECT_POWERSHELL);
+	}
+	const tokens: ShellSegment = [];
+	let workingDirectory = initialCwd;
+	for (let segment = 0; segment < table.segmentCount; segment++) {
+		builder.segmentsVisited++;
+		if (builder.segmentsVisited > MAX_SCRIPT_SEGMENTS) {
+			markUnverifiable(builder, builder.mutationDetected);
+			return;
+		}
+		fillWindowsSegment(table, segment, tokens);
+		inspectOutputRedirections(tokens, workingDirectory, builder);
+		const commandIndex = commandTokenIndex(tokens);
+		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
+		const executableIndex = tokens[commandIndex] === "{" ? commandIndex + 1 : commandIndex;
+		if (executableIndex >= tokens.length) continue;
+		if (tokens[executableIndex] === "cd" && commandIndex === 0) {
+			const target = tokens[executableIndex + 1];
+			if (!target || hasDynamicSyntax(target)) {
+				builder.dynamicScope = true;
+				builder.unverifiableScope = true;
+			} else workingDirectory = resolve(workingDirectory, target);
+			continue;
+		}
+		inspectCommand(tokens, executableIndex, commandName(tokens[executableIndex]!), workingDirectory, depth, builder, "powershell");
+	}
+}
+
 function inspectCommand(
 	tokens: ShellSegment,
 	commandIndex: number,
@@ -625,10 +667,10 @@ function inspectScriptWrapper(
 			builder.unverifiableScope = true;
 			return;
 		}
-		// Native authorization reads a cmd script's backslashes as separators, as cmd does.
-		const source = flags === CMD_SCRIPT_FLAGS && builder.analysisOwner?.nativeTool !== undefined
-			? respellUnquotedBackslashes(script, CMD_ESCAPE, false) : script;
-		inspectShellScript(source, cwd, depth + 1, builder, shellOperation);
+		// Native authorization reads cmd and PowerShell scripts with their own tokens.
+		if (builder.analysisOwner?.nativeTool !== undefined && flags !== SHELL_SCRIPT_FLAGS) {
+			inspectWindowsShellScript(script, cwd, depth + 1, builder, flags === CMD_SCRIPT_FLAGS ? DIALECT_CMD : DIALECT_POWERSHELL);
+		} else inspectShellScript(script, cwd, depth + 1, builder, shellOperation);
 		return;
 	}
 }
@@ -1966,7 +2008,8 @@ function hasDynamicSyntax(value: string): boolean {
 export function staticMutationTarget(target: string, cwd: string, expansion = 0): string | undefined {
 	if (expansion & ~48) return undefined;
 	if (expansion & 32) {
-		if (target !== "~" && !target.startsWith("~/")) return undefined;
+		// PowerShell keeps `~\x` as written; either separator names a path under HOME.
+		if (target !== "~" && !target.startsWith("~/") && !target.startsWith("~\\")) return undefined;
 		cwd = homedir();
 		target = "." + target.slice(1); // The OS-provided HOME is a path, not shell source.
 	}

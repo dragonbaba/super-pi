@@ -9,7 +9,7 @@ import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
-import { CMD_ESCAPE, POWERSHELL_ESCAPE, respellUnquotedBackslashes } from "./windows-separators.ts";
+import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
 import { bashPipelinePrefixEnd, bashScriptOperandIndex, hasStatefulBashPrintf, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeCommandQueryOperand, isBashDoubleBracketCloseBoundary, isBashDoubleBracketHead, isBashProcessSubstitutionStart, isBashTestWhitespace, isShellDynamicDescriptor, isShellFileDescriptor, isShellOutputFileRedirection, isSimpleBashAnsiCQuote, isStaticDescriptorCopy, shellRedirectionLength, stripShellRedirections } from "./shell-redirection.ts";
 
 const MAX_COMMAND_CHARS = 128 * 1024;
@@ -451,7 +451,7 @@ function inspectNativeCmdWrapper(tokens: PermissionTokens, start: number, cwd: s
     const previous = builder.cmdOptions, previousShell = builder.nestedShell;
     builder.cmdOptions = true; builder.nestedShell = 2;
     try {
-      if (index + 2 === tokens.length) inspectScript(respellUnquotedBackslashes(tokens[index + 1]!, CMD_ESCAPE, false), cwd, depth + 1, builder);
+      if (index + 2 === tokens.length) inspectWindowsScript(tokens[index + 1]!, DIALECT_CMD, cwd, depth + 1, builder);
       // cmd strips the quotes of `"del /q" path` and runs the joined text; a quoted
       // fragment followed by more words is not re-split here, so it asks.
       else if (hasWhitespace(tokens[index + 1]!)) { markMutation(builder, "cmd"); markUnverifiableCmdletTarget(builder); }
@@ -685,7 +685,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     const powerShell = POWERSHELL_WRAPPERS.has(command), previous = builder.nestedShell;
     builder.nestedShell = powerShell ? 1 : 2;
     try {
-      inspectScript(powerShell && builder.analysisOwner?.nativeTool !== undefined ? respellUnquotedBackslashes(source, POWERSHELL_ESCAPE, true) : source, cwd, depth + 1, builder);
+      if (powerShell && builder.analysisOwner?.nativeTool !== undefined) inspectWindowsScript(source, DIALECT_POWERSHELL, cwd, depth + 1, builder);
+      else inspectScript(source, cwd, depth + 1, builder);
     } finally { builder.nestedShell = previous; }
     return cwd;
   }
@@ -725,7 +726,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
 
 type PermissionTokens = string[] & { expansions?: number[]; wordFlags?: number[]; redirections?: number[]; redirectionFds?: (string | undefined)[]; firstWordQuoted?: boolean; secondWordQuoted?: boolean; thirdWordQuoted?: boolean; bashTestOpenAt?: number; bashTestClosed?: boolean; bashTestProcessSubstitution?: boolean; bashArithmeticCommandAt?: number };
 
-function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder): string {
+function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number, builder: ScopeBuilder, bashRules = true): string {
   if (tokens.length === 0) return cwd;
   builder.segmentCount += 1;
   if (builder.segmentCount > MAX_SEGMENTS) {
@@ -737,9 +738,9 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
     markOpaque(builder, "unverifiable_process_substitution");
     return cwd;
   }
-  if (hasUnsafeBashTestOperand(tokens)) markUncertainContext(builder, "unverifiable_bash_test_operand");
-  if (shellExpansionRisk(tokens) !== 0) markUncertainContext(builder, "stateful_shell_expansion");
-  const arithmeticHead = isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
+  if (bashRules && hasUnsafeBashTestOperand(tokens)) markUncertainContext(builder, "unverifiable_bash_test_operand");
+  if (bashRules && shellExpansionRisk(tokens) !== 0) markUncertainContext(builder, "stateful_shell_expansion");
+  const arithmeticHead = bashRules && isBashArithmeticCommandHead(tokens, bashPipelinePrefixEnd(tokens, 0));
   const redirections = tokens.redirections;
   if (redirections) {
     for (let position = 0; position < redirections.length; position++) {
@@ -769,6 +770,30 @@ function inspectTokenBuffer(tokens: PermissionTokens, cwd: string, depth: number
   }
   if (arithmeticHead) { markUncertainContext(builder, "unverifiable_arithmetic_command"); return cwd; }
   return tokens.length > 0 ? inspectSegment(tokens, cwd, depth, builder) : cwd;
+}
+
+/**
+ * A PowerShell or cmd script under native authorization, read with that dialect's own
+ * tokens instead of Bash rules. Bash-only state (heredocs, traps, `$((...))`) does not
+ * apply. `$(...)` and `@(...)` bodies are PowerShell scripts of their own. One word
+ * buffer serves every segment of this script.
+ */
+function inspectWindowsScript(source: string, dialect: number, initialCwd: string, depth: number, builder: ScopeBuilder): void {
+  if (depth > MAX_DEPTH) {
+    markOpaque(builder, "command_substitution_depth");
+    return;
+  }
+  const table = builder.analysisOwner ? builder.analysisOwner.windowsTable(source, dialect) : lexWindowsScript(source, dialect);
+  if (table.unterminated) markOpaque(builder, "unterminated_shell_syntax");
+  for (let nested = 0; nested < table.nestedCount; nested++) {
+    inspectWindowsScript(source.slice(table.nestedStarts[nested]!, table.nestedEnds[nested]!), DIALECT_POWERSHELL, initialCwd, depth + 1, builder);
+  }
+  const tokens: PermissionTokens = [];
+  let cwd = initialCwd;
+  for (let segment = 0; segment < table.segmentCount; segment++) {
+    fillWindowsSegment(table, segment, tokens);
+    cwd = inspectTokenBuffer(tokens, cwd, depth, builder, false);
+  }
 }
 
 function inspectScript(command: string, initialCwd: string, depth: number, builder: ScopeBuilder): void {
@@ -1051,6 +1076,10 @@ export function inspectBashPermissionScope(input: unknown, cwd: string, analysis
   };
   if (command.length > MAX_COMMAND_CHARS) {
     markOpaque(builder, "oversized_command");
+    return publicScope(builder);
+  }
+  if (analysisOwner?.nativeTool === "powershell") {
+    inspectWindowsScript(command, DIALECT_POWERSHELL, resolve(cwd), 0, builder);
     return publicScope(builder);
   }
   if (isLiteralReadLoop(command)) {
