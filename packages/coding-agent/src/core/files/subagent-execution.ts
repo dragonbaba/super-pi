@@ -7,6 +7,7 @@ import { assertPermissionMode } from "../permission-mode.ts";
 import { resolveToCwd } from "../tools/path-utils.ts";
 import { assertCheckpointJson } from "../tasks/checkpoints.ts";
 import { resolveToolPath } from "./file-path.ts";
+import type { TSchema } from "typebox";
 
 export const WORKSPACE_MESSAGE_PREFIX = "sp-workspace-v1:";
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
@@ -14,6 +15,16 @@ const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SEARCH_TOOLS = new Set(["grep", "find", "ls"]);
 const READY_TIMEOUT_MS = 30_000;
+const PARENT_EXECUTION_TOOL = Symbol.for("pi.parent-execution-tool.v1");
+/** Marks the built-in orchestration definitions, not arbitrary tools with the same name. */
+export function parentExecutionTool<T extends TSchema, D, S = any>(definition: ToolDefinition<T, D, S>): ToolDefinition<T, D, S> {
+    Object.defineProperty(definition, PARENT_EXECUTION_TOOL, { value: true });
+    return definition;
+}
+export function isParentExecutionTool(definition: ToolDefinition): boolean {
+    return (definition.name === "subagent" || definition.name === "subagent_tasks")
+        && (definition as any)[PARENT_EXECUTION_TOOL] === true;
+}
 type NestedToolDispatch = ReturnType<Agent["createDelegatedToolDispatch"]>;
 interface Descriptor { name: string; label: string; description: string; parameters: ToolDefinition["parameters"]; }
 export interface SubagentExecutionProfile {

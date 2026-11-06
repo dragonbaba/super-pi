@@ -14,11 +14,16 @@ import { WORKSPACE_TOOL_NAMES } from "../session-execution-profile.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
 import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
 import { processImage } from "../../utils/image-process.ts";
+import { SubagentScheduler, type TaskWorkspace } from "../tasks/scheduler.ts";
+import { HARD_MAX_CONCURRENT } from "../tasks/limits.ts";
 
 const names = WORKSPACE_TOOL_NAMES;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TRAILING_PATH_PATTERN = /[. ]$/;
+const OPERATION_LIMITS = Object.freeze({ maxConcurrent: 1, maxTasks: HARD_MAX_CONCURRENT + 1 });
+// Queue admission only; native permissions and publication own mutation authorization.
+const OPERATION_SLOT: readonly TaskWorkspace[] = Object.freeze([{ canonicalCwd: "", allowMutation: false }]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WRITEBACK] " + reason); }
 function needImage(value: unknown, reason: string): asserts value { if (!value) throw new Error(reason); }
@@ -36,6 +41,8 @@ export class WorkspaceSandboxTools {
   private readonly backend: WorkspaceSandboxBackend;
   private readonly runtime: () => ExtensionRuntime;
   private readonly definitions = new Map<string, ToolDefinition>();
+  private readonly operations = new SubagentScheduler(OPERATION_LIMITS, "Sandbox operation");
+  private readonly shutdown = new AbortController();
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}) {
     this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
     const workspace = " Session host workspace: " + cwd + ". Additional working directories: " + (toolchainOptions.directories?.join("; ") || "none")
@@ -43,7 +50,7 @@ export class WorkspaceSandboxTools {
     const commandEnvironment = " Command cwd: " + cwd
       + ". Commands and file tools use the same workspace paths. Inside the VM these name isolated snapshots. Network access: " + parseSandboxNetwork(toolchainOptions.network) + ".";
     for (const name of names) {
-      const parameters = name === "powershell" || name === "bash" ? Type.Object({ command: Type.String(), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
+      const parameters = name === "powershell" || name === "bash" ? Type.Object({ command: Type.String(), cwd: Type.Optional(Type.String({ description: "Literal working directory inside the primary or added workspace; defaults to the primary workspace." })), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
         : name === "file_batch" ? Type.Object({ operations: Type.Array(Type.Any(), { minItems: 1, maxItems: 16 }) })
         : name === "write" ? Type.Object({ path: Type.String(), content: Type.String(), snapshot: Type.Optional(Type.String()) })
         : name === "edit" ? Type.Object({ path: Type.String(), snapshot: Type.String(), edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })) })
@@ -66,14 +73,26 @@ export class WorkspaceSandboxTools {
   definition(name: string): ToolDefinition | undefined { return this.definitions.get(name); }
   private async execute(name: string, id: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) {
     const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
+    const operationSignal = AbortSignal.any(signal ? [signal, boundary.signal, this.shutdown.signal] : [boundary.signal, this.shutdown.signal]);
+    const reservation = this.operations.reserve(OPERATION_SLOT);
+    try {
+      return await this.operations.run(operationSignal, async () => {
+        boundary.assertCurrent(generation);
+        return this.perform(name, id, input, ctx, operationSignal);
+      });
+    } finally { reservation.release(); }
+  }
+  private async perform(name: string, id: string, input: Record<string, unknown>, ctx: ExtensionContext, signal: AbortSignal) {
+    const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
     const check = () => { boundary.assertCurrent(generation); signal?.throwIfAborted(); };
+    const cwd = typeof input.cwd === "string" ? path.resolve(this.backend.workspace(), input.cwd) : this.backend.workspace();
     check();
     let reply;
     try { reply = await this.backend.invoke(name, input, signal); }
     catch (error) {
       if (error instanceof WorkspaceOperationError) return { isError: true, content: [{ type: "text" as const, text: error.message }],
         details: { sandbox: true, phase: error.reply.phase, execution: error.reply.execution,
-          shellExecution: shellFacts(error.reply, this.backend.workspace(), error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), published: 0 } };
+          shellExecution: shellFacts(error.reply, cwd, error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), published: 0 } };
       throw error;
     }
     if (reply.image !== undefined) return this.readImage(name, reply, ctx, check);
@@ -87,7 +106,7 @@ export class WorkspaceSandboxTools {
       for (let i = 0; i < changes.length; i++) { check(); await this.publish(changes[i]!, contents[i], id, ctx, signal, check, receipts); }
       await this.backend.releaseCandidates(changes);
       return { content: [{ type: "text" as const, text: reply.text || "(no output)" }], details: { sandbox: true, snapshot: reply.snapshot, execution: reply.execution,
-        shellExecution: shellFacts(reply, this.backend.workspace()), writeback: receipts } };
+        shellExecution: shellFacts(reply, cwd), writeback: receipts } };
     } catch (error) {
       let published = 0, partial = 0;
       for (const receipt of receipts) { if (receipt.ok) published++; else if (receipt.stateChanged !== false) partial++; }
@@ -95,7 +114,7 @@ export class WorkspaceSandboxTools {
       try { await this.backend.discardSnapshot(); }
       catch (cleanupError) { throw new AggregateError([failure, cleanupError], "Sandbox writeback failed and cleanup remains unresolved"); }
       if (reply.execution) return { isError: true, content: [{ type: "text" as const, text: failure.message }], details: { sandbox: true, phase: "publication",
-        execution: reply.execution, shellExecution: shellFacts(reply, this.backend.workspace(), failure.message), published, partial, writeback: receipts } };
+        execution: reply.execution, shellExecution: shellFacts(reply, cwd, failure.message), published, partial, writeback: receipts } };
       throw failure;
     }
   }
@@ -205,7 +224,11 @@ export class WorkspaceSandboxTools {
       } finally { authorization.release(); }
     } finally { service.dispose(); }
   }
-  async close(): Promise<void> { await this.backend.close(); }
-  async drain(): Promise<void> { await this.backend.drain(); }
-  get diagnostics() { return this.backend.diagnostics; }
+  async close(): Promise<void> {
+    this.shutdown.abort(); this.operations.dispose();
+    await this.operations.waitForIdle(); await this.backend.close();
+  }
+  async drain(): Promise<void> { await this.operations.waitForIdle(); await this.backend.drain(); }
+  get diagnostics() { return { ...this.backend.diagnostics, active: this.operations.active, queued: this.operations.queued,
+    reservations: this.operations.reservationCount, highWaterMark: this.operations.highWaterMark, queueHighWaterMark: this.operations.queueHighWaterMark }; }
 }

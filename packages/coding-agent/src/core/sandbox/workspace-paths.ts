@@ -26,7 +26,17 @@ function translatePaths(cwd: string, input: Record<string, unknown>): Record<str
 /** Runs once per explicit tool invocation, preserving the original authorization arguments. */
 export function workspaceInput(cwd: string, operation: string, input: Record<string, unknown>, directories: readonly string[] = []): Record<string, unknown> {
     if (Object.hasOwn(input, "workspaceIndex")) throw new Error("[SANDBOX_PATH] Workspace identity is assigned by the host, not a tool argument");
-    if (operation === "powershell" || operation === "bash") return input; // Shell source is never rewritten as text.
+    if (operation === "powershell" || operation === "bash") {
+        if (input.cwd === undefined) return input;
+        if (typeof input.cwd !== "string" || !input.cwd.length) throw new Error("[SANDBOX_PATH] Invalid command cwd");
+        let index = 0, selected = cwd;
+        const target = path.resolve(cwd, input.cwd);
+        for (let i = 0; i < directories.length; i++) if (containsDirectory(directories[i], target)) { selected = directories[i]; index = i + 1; break; }
+        // Validate the original spelling too (drive-relative and device paths are not relative directories).
+        relativeWorkspacePath(selected, input.cwd);
+        const relative = relativeWorkspacePath(selected, target);
+        return { ...input, cwd: relative, workspaceIndex: index }; // Shell source remains untouched.
+    }
     const primary = cwd; let index = 0;
     if (typeof input.path === "string" && path.isAbsolute(input.path)) {
         for (let i = 0; i < directories.length; i++) if (containsDirectory(directories[i], input.path)) { cwd = directories[i]; index = i + 1; break; }

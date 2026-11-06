@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -25,7 +26,7 @@ process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("fixtures/subagent-parent
 delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(agentDir, "agents"), { recursive: true }); mkdirSync(join(agentDir, "config"));
 writeFileSync(join(agentDir, "agents", "reader.md"), "---\nname: reader\ndescription: Owned fixture\n---\nRead the assigned fixture.");
-writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,write,edit,delete,move,file_batch,bash\n---\nExecute the assigned fixture.");
+writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,find,write,edit,delete,move,file_batch,bash\n---\nExecute the assigned fixture.");
 const { default: subagent } = await import("../packages/extensions/subagent/index.ts");
 test.after(async () => {
   await disposeNativeFileWorker();
@@ -33,12 +34,17 @@ test.after(async () => {
   owned.cleanup();
 });
 
-async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string) {
+async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-write" | "read-only" | "sandbox-write" = "host-write") {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), cwd = join(root, "project 中文 space");
   await fs.mkdir(cwd); await fs.writeFile(join(cwd, "sample.txt"), "marker\n");
   await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false } }));
   const settings = SettingsManager.inMemory({ executionEnvironment: environment, shellCommandPrefix, compaction: { enabled: false }, retry: { enabled: false }, executionPermissions: { rules: [{ tool: "*", decision: "allow" }] } });
-  settings.setPermissionModeForSession("host-write");
+  settings.setPermissionModeForSession(mode);
+  const additional = join(root, "Assets 中文 ' space");
+  if (mode !== "host-write") {
+    await fs.mkdir(additional); await fs.writeFile(join(additional, "sample.txt"), "additional marker\n");
+    settings.setSessionDirectories([await fs.realpath(additional)]);
+  }
   // Prefix compatibility also exercises the same Windows directory with a different spelling.
   const sessionCwd = shellCommandPrefix && process.platform === "win32" ? cwd.toUpperCase() : cwd;
   const resources = new DefaultResourceLoader({ cwd: sessionCwd, agentDir, settingsManager: settings, noExtensions: true,
@@ -68,12 +74,76 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
       const stream = new AssistantMessageEventStream(); stream.push({ type: "done", reason: stopReason, message }); return stream;
     };
     await session.prompt("Run owned subagent");
-    const result = session.agent.state.messages.find(message => message.role === "toolResult");
+    const result = session.agent.state.messages.filter(message => message.role === "toolResult").at(-1);
     return result;
   }
-  return { root, cwd, session, runtime, notices, run, get requests() { return requests; }, get dialogs() { return dialogs; },
+  return { root, cwd, additional, session, runtime, notices, run, get requests() { return requests; }, get dialogs() { return dialogs; },
     async observations(path = cwd) { return (await fs.readFile(join(path, "child-observation.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)); } };
 }
+
+const liveSandbox = process.platform === "win32" && process.env.SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE === "1";
+test("live sandbox parent shares one VM with real read-only children and drains concurrent calls", { skip: !liveSandbox, timeout: 240000 }, async t => {
+  const f = await fixture(t, "trusted-host", false, undefined, "read-only");
+  assert.ok(f.session.getAllTools().some(tool => tool.name === "subagent"));
+  const task = { agent: "reader", task: "Read fixture", scope: "Owned files", deliverable: "Read receipt", stopCondition: "After read", cwd: f.cwd };
+  const start = performance.now();
+  const result = await f.run('console.log(await tools.read({path:"sample.txt"})); console.log(await tools.ls({}));', "reader", f.cwd,
+    { agent: undefined, task: undefined, tasks: [task, task], timeoutMs: 180000 });
+  assert.equal((result as any)?.isError, false, JSON.stringify(result));
+  const entries = await f.observations(), owner = (f.session as any)._workspaceSandbox;
+  assert.equal(entries.filter(entry => entry.event === "start").length, 2);
+  assert.ok(entries.filter(entry => entry.event === "profile").every(entry => entry.profile.mode === "read-only" && !entry.profile.writable));
+  assert.ok(entries.filter(entry => entry.event === "result").every(entry => !entry.isError), JSON.stringify(entries));
+  assert.equal(owner.diagnostics.starts, 1); assert.equal(owner.diagnostics.highWaterMark, 1); assert.ok(owner.diagnostics.queueHighWaterMark >= 1);
+  assert.equal(owner.diagnostics.reservations, 0); assert.equal(await fs.readFile(join(f.cwd, "sample.txt"), "utf8"), "marker\n");
+  t.diagnostic(JSON.stringify({ mode: "read-only", children: 2, vmStarts: 1, elapsedMs: performance.now() - start, ...owner.diagnostics }));
+});
+
+test("live sandbox-write child uses literal additional cwd and publishes through its parent VM", { skip: !liveSandbox, timeout: 240000 }, async t => {
+  const f = await fixture(t, "trusted-host", false, undefined, "sandbox-write"), owner = (f.session as any)._workspaceSandbox;
+  const result = await f.run(`const r=await tools.read({path:"sample.txt"}); console.log(await tools.write({path:"sample.txt",content:"child published",snapshot:r.details.snapshot})); console.log(await tools.bash({command:"printf 'guest cwd\\n'; pwd",cwd:${JSON.stringify(f.additional)}})); console.log(await tools.write({path:"target/vm.txt",content:"VM only"})); console.log(await tools.find({path:"target",pattern:"vm"}));`, "writer", f.cwd, { timeoutMs: 180000 });
+  assert.equal((result as any)?.isError, false, JSON.stringify(result));
+  const entries = await f.observations();
+  assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "sandbox-write");
+  const tools = entries.filter(entry => entry.event === "result" && entry.name !== "codemode");
+  assert.ok(tools.every(entry => !entry.isError), JSON.stringify(entries)); assert.equal(tools.length, 5, JSON.stringify(entries));
+  assert.match(JSON.stringify(tools.find(entry => entry.name === "bash").content), /Assets 中文 ' space/);
+  assert.equal(await fs.readFile(join(f.cwd, "sample.txt"), "utf8"), "child published");
+  await assert.rejects(fs.stat(join(f.cwd, "target")), { code: "ENOENT" });
+  assert.equal(owner.diagnostics.starts, 1); assert.equal(owner.diagnostics.reservations, 0);
+  t.diagnostic(JSON.stringify({ mode: "sandbox-write", parentPublication: true, literalAdditionalCwd: true, privateWriteback: 0, ...owner.diagnostics }));
+});
+
+test("live parent pause cancels a real child command and queued VM request before a fresh user restart", { skip: !liveSandbox, timeout: 240000 }, async t => {
+  const f = await fixture(t, "trusted-host", false, undefined, "sandbox-write"), owner = (f.session as any)._workspaceSandbox;
+  const backend = owner.backend, boundary = f.runtime.executionBoundary;
+  // This existing exchange filename is already owned by the VM supervisor and its cleanup.
+  const command = `printf '{"fixtureStarted":true}' > /c/SuperPiExchange/command-result.json; sleep 30`;
+  const running = f.run(`await tools.read({path:"sample.txt"}); await tools.bash({command:${JSON.stringify(command)}}); await tools.write({path:"after-pause.txt",content:"must not run"});`, "writer", f.cwd, { timeoutMs: 180000 });
+  const observedRun = Promise.allSettled([running]);
+  let started = false;
+  for (let i = 0; i < 600; i++) {
+    if (backend.root) {
+      try { started = JSON.parse(await fs.readFile(join(backend.root, "exchange", "command-result.json"), "utf8")).fixtureStarted === true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    if (started) break; await delay(50);
+  }
+  assert.equal(started, true, "guest command must actually start before cancellation");
+  const scope = f.session.agent.createDelegatedToolDispatch("parent-queued", boundary.signal, () => {}, [...(f.session as any)._toolRegistry.values()]);
+  const queued = Promise.allSettled([scope.callTool("read", { path: "sample.txt" })]);
+  for (let i = 0; owner.diagnostics.queued === 0 && i < 100; i++) await delay(10);
+  assert.equal(owner.diagnostics.queued, 1);
+  const calls = owner.diagnostics.calls;
+  await boundary.pauseForUser(); await observedRun; await queued; await scope.close();
+  assert.equal(boundary.requiresUserInput, true); assert.equal(owner.diagnostics.calls, calls);
+  assert.equal(owner.diagnostics.vm, false); assert.equal(owner.diagnostics.ownedArtifacts, 0);
+  assert.equal(owner.diagnostics.active, 0); assert.equal(owner.diagnostics.queued, 0); assert.equal(owner.diagnostics.reservations, 0);
+  await assert.rejects(fs.stat(join(f.cwd, "after-pause.txt")), { code: "ENOENT" });
+  const result = await f.run('console.log(await tools.read({path:"sample.txt"}));', "reader", f.cwd, { timeoutMs: 180000 });
+  assert.equal((result as any)?.isError, false, JSON.stringify(result)); assert.equal(owner.diagnostics.starts, 2);
+  t.diagnostic(JSON.stringify({ guestCommandStarted: true, pausedVmReleased: true, queuedBackendCalls: 0, afterPauseWrites: 0, freshUserVmStarts: 2 }));
+});
 
 test("real CLI children inherit explicit host mode across all global defaults and use parent read tools", { timeout: 90000 }, async t => {
   for (const environment of [undefined, "trusted-host", "sandbox"] as const) {

@@ -296,6 +296,10 @@ try {
     text = search(root, operation, searchScope(root, input.path), input.pattern);
   } else if (command) {
     needInput(typeof input.command === 'string' && input.command.length <= 32768, 'Invalid command');
+    phase = 'read';
+    const commandPath = searchScope(root, input.cwd);
+    needInput(fs.statSync(path.resolve(root, commandPath)).isDirectory(), 'Command cwd must be a directory');
+    const cwd = commandPath ? path.win32.resolve(workspaces[workspaceIndex], commandPath) : workspaces[workspaceIndex];
     phase = 'launch';
     let drives = '';
     for (let i = 0; i < roots.length; i++) {
@@ -303,10 +307,10 @@ try {
       const drive = workspaces[i][0].toUpperCase();
       if (drive !== 'C' && !drives.includes(drive)) drives += (drives ? ';' : '') + drive;
     }
-    const cwd = request.workspace;
     const timeout = Math.min(120000, Math.max(1, (input.timeout ?? 30) * 1000));
     fs.writeFileSync(path.join(EXCHANGE, 'command.txt'), input.command, 'utf8');
-    const child = spawnSync('C:\\SuperPiTools\\command.exe', [EXCHANGE, root, String(timeout), cwd, operation, drives], { windowsHide: true, encoding: 'utf8', timeout: timeout + 10000, maxBuffer: 65536 });
+    // The supervisor's second argument identifies this workspace runtime, not the selected cwd.
+    const child = spawnSync('C:\\SuperPiTools\\command.exe', [EXCHANGE, roots[0], String(timeout), cwd, operation, drives], { windowsHide: true, encoding: 'utf8', timeout: timeout + 10000, maxBuffer: 65536 });
     need(!child.error && child.status === 0, 'Command supervisor failed');
     const result = JSON.parse(fs.readFileSync(path.join(EXCHANGE, 'command-result.json'), 'utf8'));
     result.stdout = Buffer.from(result.stdoutBase64, 'base64').toString('utf8');

@@ -44,7 +44,7 @@ import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
 import { ForegroundTask } from "./foreground.ts";
 import { CHECKPOINT_PLANNING, type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
-import { SubagentExecutionServer, type SubagentExecution } from "@super-pi/coding-agent/internal/files/subagent-execution";
+import { parentExecutionTool, SubagentExecutionServer, type SubagentExecution } from "@super-pi/coding-agent/internal/files/subagent-execution";
 import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
@@ -1499,7 +1499,7 @@ export default function (pi: ExtensionAPI) {
 			foreground.delete(task.id);
 		},
 	});
-	pi.registerTool({
+	pi.registerTool(parentExecutionTool({
 		name: "subagent_tasks", label: "Subagent tasks",
 		description: `Manage session subagent tasks and saved history: list, status, wait, cancel, or steer one ID. Steer requires a running checkpoint task and text within its existing assignment: one pending correction, 4096 characters, at most 8 per task. It is delivered after a complete turn, without interrupting tools or granting permissions; acceptance is not consumption. Waiting (0–60000ms, at most 64 pending waits) never cancels execution. Prefer completion notifications to polling. Keep the latest ${limits.maxTasks} terminal tasks, at most 12000 characters per result. Persistent sessions restore historical results and mark unfinished work interrupted; memory-only sessions lose history on close. No replay, new permissions or current verification evidence.`,
 		modelOnly: true,
@@ -1518,7 +1518,7 @@ export default function (pi: ExtensionAPI) {
 				details: { task: { id: task.id, agent: task.agent, state: task.state, historical: task.recovered === true, cwd: task.cwd, branchId: task.branchId,
 					checkpointAvailable: task.checkpointAvailable === true }, historyError: tasks.historyError } };
 		},
-	});
+	}));
 
 	pi.registerCommand("subagent-model", {
 		description: "Assign exact provider/model/thinking routes to subagent roles",
@@ -1605,7 +1605,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	pi.registerTool(parentExecutionTool({
 		name: "subagent",
 		label: "Subagent",
 		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Runtime: default 1800000ms, maximum 7200000ms after launch; split work and reserve time for handoff. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
@@ -1880,5 +1880,5 @@ export default function (pi: ExtensionAPI) {
 			component.setStatus(details, counts, theme);
 			return component;
 		},
-	});
+	}));
 }
