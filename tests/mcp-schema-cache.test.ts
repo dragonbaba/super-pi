@@ -53,6 +53,11 @@ test("schema cache preserves long tool instructions and invalidates old truncate
 	data.entries[0].tools[0].description = description.slice(0, 999) + "…";
 	writeFileSync(f.path, JSON.stringify(data));
 	assert.equal(new McpSchemaCache().get(CONFIG, f.root), null, "old abbreviated cache must be rediscovered");
+	// v3.full-description entries never stored the destructive annotation that approval reads.
+	data.entries[0].fingerprint = createHmac("sha256", key).update("super-pi.mcp-schema-cache.v3.full-description\0").update(configFingerprint(CONFIG, f.root)).digest("hex");
+	data.entries[0].tools[0].description = description;
+	writeFileSync(f.path, JSON.stringify(data));
+	assert.equal(new McpSchemaCache().get(CONFIG, f.root), null, "cache without annotations must be rediscovered");
 });
 
 test("an individually uncacheable catalog preserves existing server entries and disk contents", t => {

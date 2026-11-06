@@ -458,7 +458,10 @@ export class McpBridgeRuntime {
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
     if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
-    const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "").digest("hex");
+    // Destructive tools ask before execution even when every other hint is less privileged.
+    const destructive = remoteTool.annotations?.destructiveHint === true;
+    const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "")
+      .update(destructive ? "\0destructive" : "").digest("hex");
     if (existing && this.registeredSchemas.get(name) === signature) return;
     this.registeredSchemas.set(name, signature);
     this.registeredNames.set(name, `${state.config.id}\0${remoteTool.name}`);
@@ -473,6 +476,7 @@ export class McpBridgeRuntime {
     this.pi.registerTool({
       name,
       requiresMcp: true,
+      mcpDestructive: destructive,
       label: `MCP ${sanitizeText(state.config.id, 32)} / ${sanitizeText(remoteTool.name, 80)}`,
       description: sanitizeText(fullDescription, 1000),
       fullDescription,

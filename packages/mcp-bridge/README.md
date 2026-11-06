@@ -36,7 +36,7 @@ and persistent enable/disable remain in the configuration files; the manager
 does not rewrite them. Connection credentials, environment values and command
 arguments are omitted from its status/tool views.
 
-Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and execute sequentially. They are deferred by default: call `tools.mcp_search_tools` with capability words to activate up to eight matching tools, then use `callTool(name, args)` in the same Codemode script. Changed schemas are refreshed on reconnect; tools removed from the server catalog are rejected before any remote execution. Remote `readOnlyHint` alone does not authorize concurrent execution.
+Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-checked) and execute sequentially. They are deferred by default: call `tools.mcp_search_tools` with capability words to activate up to eight matching tools, then use `callTool(name, args)` in the same Codemode script. Changed schemas are refreshed on reconnect; tools removed from the server catalog are rejected before any remote execution. Remote `readOnlyHint` alone does not authorize concurrent execution. A tool that declares `destructiveHint: true` is marked `mcpDestructive`, including when restored from the schema cache; native host permissions ask before each such call unless an `executionPermissions` allow rule names the tool or its server (`mcp__<server>` / `mcp__<server>__*`).
 
 ## Startup and restoring activated tools
 

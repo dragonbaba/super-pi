@@ -67,6 +67,21 @@ function fingerprint(value: unknown): string {
 function invocationFingerprint(name: string, input: unknown): string {
     return isMutation(name, input) ? mutationRequestHash(name as PermissionPathApproval["operation"], input) : fingerprint(input);
 }
+/**
+ * Exact names and `*` as before, plus MCP server rules: `mcp__<server>` or a trailing glob such as
+ * `mcp__<server>__*` / `mcp__<server>__get_*`. An allow glob must name one server; ask/deny may use `mcp__*`.
+ */
+function ruleToolMatches(pattern: string, tool: string, decision: PermissionDecision): boolean {
+    if (pattern === "*" || pattern === tool) return true;
+    if (!pattern.startsWith("mcp__") || !tool.startsWith("mcp__")) return false;
+    if (pattern.endsWith("*")) {
+        const prefix = pattern.slice(0, -1);
+        if (prefix.includes("*") || decision === "allow" && prefix.indexOf("__", 5) < 0) return false;
+        return tool.startsWith(prefix);
+    }
+    return pattern.indexOf("__", 5) < 0 && tool.startsWith(pattern + "__");
+}
+
 function isMutation(name: string, input: unknown): boolean {
     return MUTATIONS.has(name) || name === "lsp_fix" && (input as { write?: unknown } | null)?.write === true;
 }
@@ -229,7 +244,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     private async decision(tool: string, command: unknown, paths: readonly string[], cwd: string, fallback?: PermissionDecision): Promise<PermissionDecision> {
         let selected: PermissionDecision | undefined;
         for (const rule of this.rules) {
-            if (rule.tool !== "*" && rule.tool !== tool || rule.command !== undefined && rule.command !== command) continue;
+            if (!ruleToolMatches(rule.tool, tool, rule.decision) || rule.command !== undefined && rule.command !== command) continue;
             if (rule.path !== undefined) {
                 if (!paths.length) continue;
                 const root = await canonicalizeProspectivePath(resolve(cwd, rule.path));
@@ -246,6 +261,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (selected !== "ask") selected = rule.decision;
         }
         return selected ?? fallback ?? (this.mode !== undefined || SAFE.has(tool) || tool === "read" || tool === "powershell" && this.environment === "sandbox" ? "allow" : "ask");
+    }
+    /** An allow rule that names this tool or its MCP server, not the catch-all `*`. */
+    private namedAllow(tool: string): boolean {
+        for (const rule of this.rules) if (rule.decision === "allow" && rule.tool !== "*" && rule.command === undefined && rule.path === undefined
+            && ruleToolMatches(rule.tool, tool, "allow")) return true;
+        return false;
     }
     private restoreRefusals(manager: ReadonlySessionManager): void {
         if (!manager.isHistoryConsistent()) throw new Error(BLOCKED + "Permission history is uncertain; reload the session before continuing");
@@ -381,10 +402,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 `禁止覆盖或编辑工作区外已有文件：${host.externalOverwrite}\n操作未执行。当前整轮任务已暂停，请告知用户并等待下一步指令。`);
         }
         if (host?.ask) decision = "ask";
+        // Like Codex, a declared destructive MCP tool asks even when its other hints look harmless.
+        // A rule naming the tool or its server is the user's explicit standing approval.
+        const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName);
+        if (destructiveMcp) decision = "ask";
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
             const details = shell ? `cwd: ${shellCwd}\ncommand: ${input.command}\n${host!.details}`
-                : mutation ? host?.details || paths.join("\n") : JSON.stringify(input, null, 2);
+                : mutation ? host?.details || paths.join("\n")
+                : (destructiveMcp ? "MCP 工具声明了 destructiveHint，可能产生破坏性副作用。\n" : "") + JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
             const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,

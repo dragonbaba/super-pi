@@ -18,7 +18,7 @@
 					"items": {
 						"type": "object", "additionalProperties": false, "required": ["tool", "decision"],
 						"properties": {
-							"tool": { "type": "string", "minLength": 1, "description": "Exact registered tool name." },
+							"tool": { "type": "string", "minLength": 1, "description": "Exact registered tool name, `*`, or an MCP server pattern: `mcp__<server>` or a trailing glob such as `mcp__<server>__*`. An allow glob must name one server; ask/deny may use `mcp__*`." },
 							"decision": { "enum": ["allow", "ask", "deny"], "description": "Decision for matching invocations." },
 							"command": { "type": "string", "description": "Optional exact command, without shell parsing or prefix matching." },
 							"path": { "type": "string", "description": "Optional workspace-relative subtree containing every target." }
