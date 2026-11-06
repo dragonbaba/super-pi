@@ -85,6 +85,12 @@ const MAX_HOST_SEGMENTS = 64;
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
 const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
+/**
+ * Unquoted words that open a segment without being its program: Bash keywords and prefixes
+ * (`then git push`), PowerShell block braces and dot-sourcing. Deny/ask rules skip them.
+ */
+const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "time"]);
+const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", "."]);
 /** `ruleWords` results: not matchable, plain words, or words with a literal file redirection. */
 const RULE_WORDS_NONE = 0, RULE_WORDS_PLAIN = 1, RULE_WORDS_WRITES = 2;
 /** `classifyHostShellCommand` results. RULE_ALLOWED: every other segment matched a project allow rule. */
@@ -181,7 +187,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       const flags = table.flags[index]!;
       if (flags & WORD_REDIRECTION) { index++; continue; }
       const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-      if (argv.length === 0 && !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text)) continue;
+      if ((flags & WORD_QUOTED) === 0 && (argv.length === 0 && (powerShell ? POWERSHELL_COMMAND_PREFIXES : BASH_COMMAND_PREFIXES).has(text)
+        || argv.length === 0 && !powerShell && isAssignment(text) || powerShell && text === "}")) continue;
       argv.push(text);
     }
     const matched = argv.length ? rules.matchShellWords(powerShell, argv) : RULE_NONE;
@@ -261,7 +268,9 @@ function ruleWords(table: ShellTokenTable, segment: number, powerShell: boolean,
     }
     if (flags & (DYNAMIC_WORD | EXPANSION_BRACE) || argv.length === 0 && flags & EXPANSION_GLOB) return RULE_WORDS_NONE;
     const text = table.texts ? table.texts[index]! : windowsWordText(table, index);
-    if (argv.length === 0 && (!text || !powerShell && (flags & WORD_QUOTED) === 0 && isAssignment(text))) return RULE_WORDS_NONE;
+    // A segment that opens with control flow (`then npm test`) is not one plain command.
+    if (argv.length === 0 && (!text || (flags & WORD_QUOTED) === 0
+      && ((powerShell ? POWERSHELL_COMMAND_PREFIXES : BASH_COMMAND_PREFIXES).has(text) || !powerShell && isAssignment(text)))) return RULE_WORDS_NONE;
     argv.push(text);
   }
   return argv.length > 0 ? result : RULE_WORDS_NONE;

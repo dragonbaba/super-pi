@@ -74,6 +74,14 @@ test("host-restricted classification lifts only literal segments, and suggestion
     ] as const) assert.equal(classifyHostShellCommand("bash", command, undefined, rules), expected, command);
     assert.equal(shellRuleVerdict("bash", "ls && FOO=1 git push $REMOTE", rules), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", "(git push origin)", rules), RULE_DENY);
+    // Control-flow keywords open a segment without being its program.
+    for (const command of ["if true; then git push origin main; fi", "for r in origin; do git push origin main; done", "! git push", "{ git push; }"])
+        assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
+    const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
+    assert.equal(shellRuleVerdict("powershell", "if ($true) { git push origin main }", exact), RULE_DENY);
+    // An allow rule never lifts a segment that opens with control flow.
+    assert.equal(classifyHostShellCommand("bash", "if true; then npm test; fi", undefined, rules), HOST_SHELL_OTHER);
+    assert.equal(suggestShellRules("bash", "if true; then npm test; fi"), undefined);
     assert.equal(shellRuleVerdict("bash", "npm test", rules), RULE_NONE);
     assert.deepEqual(suggestShellRules("bash", "npm test -- --grep x && git status"), ["npm test *"]);
     assert.deepEqual(suggestShellRules("bash", "make"), ["make"]);
@@ -127,7 +135,11 @@ test("host-restricted offers 不再询问 for other commands and MCP tools, then
     f.ctx.ui.select = async (_title: string, choices: string[]) => { offered = choices; return choices[0]; };
     assert.equal(await f.decide("bash", { command: `npm test > ${outside.replaceAll("\\", "/")}/log.txt` }), "allow");
     assert.equal(offered.includes(REMEMBER), false);
-    const mcp = { name: "mcp__docs__search", mcpServer: "docs", mcpToolPrefix: "mcp__docs__" };
+    // A write into an existing directory asks even with a saved rule, so none is offered.
+    await fs.mkdir(path.join(f.root, "dist"));
+    assert.equal(await f.decide("bash", { command: "cp a.txt dist/ && make" }), "allow");
+    assert.equal(offered.includes(REMEMBER), false);
+    const mcp ={ name: "mcp__docs__search", mcpServer: "docs", mcpToolPrefix: "mcp__docs__" };
     f.ctx.ui.select = async (_title: string, choices: string[]) => { offered = choices; return REMEMBER; };
     assert.equal(await f.decide("mcp__docs__search", {}, mcp), "allow");
     f.ctx.ui.select = async () => { throw new Error("asked again"); };

@@ -502,11 +502,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         let fallback = explicitUserCommand ? "allow"
             : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition, projectToolAllow) : undefined;
         // Only an ask that a project allow rule could lift offers "不再询问": not outside paths, uncertain targets or writes into directories.
-        const liftable = restricted && fallback === "ask" && (resolved ?? delegated)?.outside !== true
+        let liftable = restricted && fallback === "ask" && (resolved ?? delegated)?.outside !== true
             && (shellTool ? shellClass === HOST_SHELL_OTHER : definition?.mcpServer !== undefined);
         // `cp a.txt dir/` writes `dir/a.txt`, which the recognized target `dir` does not show
-        // (it may be a link out of the workspace), so a write into an existing directory asks.
-        if (fallback === "allow" && restricted && shell && await writesIntoDirectory(shell, paths)) fallback = "ask";
+        // (it may be a link out of the workspace), so a write into an existing directory asks,
+        // with or without a saved rule.
+        if ((fallback === "allow" || liftable) && restricted && shell && await writesIntoDirectory(shell, paths)) { fallback = "ask"; liftable = false; }
         check();
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, fallback, definition); check();
         if (event.toolName === "file_batch") {
