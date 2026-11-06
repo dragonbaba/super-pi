@@ -6326,6 +6326,7 @@ export class InteractiveMode {
 				const accepted = await new Promise<boolean>((resolve) => {
 					let admitted = false;
 					const operation = session.prompt(message.text, { streamingBehavior: message.mode,
+						deferredInput: true,
 						queueOnly: options?.willRetry, images: message.images, submission: message.submission,
 						preflightResult: success => { if (success) { admitted = true; resolve(true); } },
 					});

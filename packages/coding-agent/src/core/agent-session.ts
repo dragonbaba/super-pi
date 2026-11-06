@@ -493,6 +493,8 @@ export interface PromptOptions {
 	streamingBehavior?: "steer" | "followUp";
 	/** Intercept a submitted input and queue it without starting a new run (compaction retry ingress). */
 	queueOnly?: boolean;
+	/** Previously queued input must not resume a permission pause as a fresh instruction. */
+	deferredInput?: boolean;
 	/** Source of input for extension input event handlers. Defaults to "interactive". */
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
@@ -1504,7 +1506,7 @@ export class AgentSession {
 	}
 
 	private _canResumeAgentRun(): boolean {
-		return !this._operationDisposed && !this._interactionPaused && !this._agentRunAbortRequested
+		return !this._operationDisposed && !this._interactionPaused && !this.agent.runControl?.requiresUserInput && !this._agentRunAbortRequested
 			&& !this.agent.abortRequested;
 	}
 
@@ -2991,6 +2993,11 @@ export class AgentSession {
 				throw new Error(
 					"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
 				);
+			}
+			if (boundary.requiresUserInput) {
+				if (this.isStreaming || options?.queueOnly || options?.deferredInput || options?.source === "extension")
+					throw new Error("[EXECUTION_REQUIRES_USER_INPUT] 当前任务已暂停；排队消息不能恢复，请等待用户下一步指令。");
+				await boundary.resumeForUser();
 			}
 			generation = boundary.beginPreparation();
 
@@ -5183,6 +5190,7 @@ export class AgentSession {
 			this._extensionRunnerOptions,
 		);
 		const boundary = extensionsResult.runtime.executionBoundary, runner = this._extensionRunner;
+		this.agent.runControl = boundary;
 		boundary.register("agent-session", {
 			revoke: () => {
 				if (this._isAgentRunActive) this._agentRunAbortRequested = true;

@@ -47,6 +47,7 @@ async function fixture(t:test.TestContext, orchestration=false) {
   t.after(async()=>{agent.abort();await agent.waitForIdle();await codemode?.close();runner.invalidate();await tasks?.dispose();policy.dispose();await runtime.executionBoundary.dispose();events.clear();});
   function event(name:string,input:object):any {return {type:"tool_call",toolName:name,toolCallId:"native-"+(++sequence),input};}
   return {root,cwd,outside,added,policy,dialogs,notices,tasks,ctx:()=>runner.createContext(),event,
+    async resume(){assert.equal(runtime.executionBoundary.requiresUserInput,true);await runtime.executionBoundary.resumeForUser();},
     select(value:"allow"|"cancel"){choice=value;},
     async call(name:string,command:string,directory?:string){const input={command,...(directory===undefined?{}:{cwd:directory})},request=event(name,input);
       return agent.dispatchHostTool({type:"toolCall",id:request.toolCallId,name,arguments:input});},
@@ -98,6 +99,7 @@ test("existing mutation evidence distinguishes external writes from reads and re
   const f=await fixture(t), file=join(f.outside,"existing.txt");await fs.writeFile(file,"original");
   await assert.rejects(f.authorize("bash","printf changed > "+quote("bash",file)),/EXTERNAL_FILE_WRITE_BLOCKED/);
   assert.equal(await fs.readFile(file,"utf8"),"original");assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,1);
+  await f.resume();
   await fs.writeFile(join(f.cwd,"local.txt"),"owned");
   const mixed=await f.call("bash","cat "+quote("bash",file)+"; rm -f local.txt");
   assert.equal(mixed.isError,false,text(mixed));assert.equal(f.dialogs.length,0);
@@ -149,6 +151,7 @@ test("native evidence preserves independent writes and does not treat search sco
   const target=quote("bash",file);
   await t.test("write then delete keeps the write decision",async()=>{
     await assert.rejects(f.authorize("bash","printf changed > "+target+"; rm "+target),/EXTERNAL_FILE_WRITE_BLOCKED/);
+    await f.resume();
   });
   await t.test("existing find scope asks without an invented overwrite",async()=>{
     const before=f.dialogs.length;await f.authorize("bash","find "+target+" -delete");
