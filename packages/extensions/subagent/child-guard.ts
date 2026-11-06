@@ -9,13 +9,15 @@ import {
 import { OUTSIDE_CD_COMMAND_PATTERN } from "./regex.ts";
 import { installChildControl } from "./child-control.ts";
 
-const FILE_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
+const FILE_TOOLS = new Set(["read", "write", "edit", "delete", "move", "grep", "find", "ls"]);
 const RECURSIVE_FILE_TOOLS = new Set(["grep", "find", "ls"]);
+type FileInput = { path?: unknown; file_path?: unknown; destination?: unknown };
 
 export default function childGuard(pi: ExtensionAPI): void {
+	const parentExecution = process.env.SP_SUBAGENT_PARENT_EXECUTION === "1";
 	installChildControl(pi);
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Access files only inside the assigned canonical workspace. Shells are not sandboxes; Bash is available only when explicitly permitted, and PowerShell is disabled.\n</subagent-security>`,
+		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Stay within the assigned task scope. ${parentExecution ? "Workspace operations execute in the parent under its original workspace and permissions; the assigned cwd grants no additional permission." : "Access files only inside the assigned canonical workspace."} Shells are not sandboxes; Bash is available only when explicitly permitted, and PowerShell is disabled.\n</subagent-security>`,
 	}));
 
 	pi.on("tool_call", (event, ctx) => {
@@ -28,18 +30,24 @@ export default function childGuard(pi: ExtensionAPI): void {
 			return { block: true, reason: "Subagent guard: workspace cannot be safely resolved" };
 		}
 
-		if (FILE_TOOLS.has(event.toolName)) {
-			const input = event.input as { path?: unknown; file_path?: unknown };
-			const supplied = typeof input.path === "string" ? input.path : input.file_path;
-			const candidate = typeof supplied === "string" ? supplied : (RECURSIVE_FILE_TOOLS.has(event.toolName) ? "." : undefined);
-			if (candidate === undefined) return { block: true, reason: "Subagent guard: missing file path" };
-			const reason = sensitivePathReason(candidate, workspace);
-			if (reason) return { block: true, reason: `Subagent guard: ${reason}` };
-			try { resolveWorkspacePath(candidate, workspace, false); }
-			catch { return { block: true, reason: "Subagent guard: path escapes the assigned workspace (including via symlink)" }; }
-			if (RECURSIVE_FILE_TOOLS.has(event.toolName)) {
-				const traversalReason = recursiveTraversalRiskReason(candidate, workspace);
-				if (traversalReason) return { block: true, reason: `Subagent guard: ${traversalReason}` };
+		if (FILE_TOOLS.has(event.toolName) || event.toolName === "file_batch") {
+			const input = event.input as FileInput & { operations?: FileInput[] };
+			const operations = event.toolName === "file_batch" ? input.operations ?? [] : [input];
+			for (const operation of operations) {
+				const supplied = typeof operation.path === "string" ? operation.path : operation.file_path;
+				const candidate = typeof supplied === "string" ? supplied : (RECURSIVE_FILE_TOOLS.has(event.toolName) ? "." : undefined);
+				if (candidate === undefined) return { block: true, reason: "Subagent guard: missing file path" };
+				const reason = sensitivePathReason(candidate, workspace)
+					?? (typeof operation.destination === "string" ? sensitivePathReason(operation.destination, workspace) : undefined);
+				if (reason) return { block: true, reason: `Subagent guard: ${reason}` };
+				if (!parentExecution) {
+					try { resolveWorkspacePath(candidate, workspace, false); }
+					catch { return { block: true, reason: "Subagent guard: path escapes the assigned workspace (including via symlink)" }; }
+				}
+				if (RECURSIVE_FILE_TOOLS.has(event.toolName)) {
+					const traversalReason = recursiveTraversalRiskReason(candidate, workspace);
+					if (traversalReason) return { block: true, reason: `Subagent guard: ${traversalReason}` };
+				}
 			}
 		}
 
@@ -48,8 +56,8 @@ export default function childGuard(pi: ExtensionAPI): void {
 			const input = event.input as { command?: unknown };
 			if (typeof input.command !== "string") return { block: true, reason: "Subagent guard: missing Bash command" };
 			const reason = bashRiskReason(input.command);
-			if (reason) return { block: true, reason: `Subagent guard: ${reason}` };
-			if (OUTSIDE_CD_COMMAND_PATTERN.test(input.command)) {
+			if (reason && !(parentExecution && reason === "command may write outside the assigned workspace")) return { block: true, reason: `Subagent guard: ${reason}` };
+			if (!parentExecution && OUTSIDE_CD_COMMAND_PATTERN.test(input.command)) {
 				return { block: true, reason: "Subagent guard: Bash may not change outside the assigned workspace" };
 			}
 		}

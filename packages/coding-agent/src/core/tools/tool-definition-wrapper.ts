@@ -5,7 +5,7 @@ import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TDetails = unknown>(
 	definition: ToolDefinition<any, TDetails>,
-	ctxFactory?: () => ExtensionContext,
+	ctxFactory?: (signal?: AbortSignal) => ExtensionContext,
 ): AgentTool<any, TDetails> {
 	const protectedExecute = getProtectedWriteExecute(definition);
 	return {
@@ -27,7 +27,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, context?: AgentToolExecutionContext | ExtensionContext) => {
 			const nested = context && "callTool" in context ? context : undefined;
-			const ctx = context && !nested ? context as ExtensionContext : ctxFactory?.() as ExtensionContext;
+			const ctx = context && !nested ? context as ExtensionContext : ctxFactory?.(signal) as ExtensionContext;
 			return (protectedExecute ?? definition.execute).call(definition, toolCallId, params, signal, onUpdate, ctx, nested);
 		},
 	};
@@ -36,7 +36,7 @@ export function wrapToolDefinition<TDetails = unknown>(
 /** Wrap multiple ToolDefinitions into AgentTools for the core runtime. */
 export function wrapToolDefinitions(
 	definitions: ToolDefinition<any, any>[],
-	ctxFactory?: () => ExtensionContext,
+	ctxFactory?: (signal?: AbortSignal) => ExtensionContext,
 ): AgentTool<any>[] {
 	return definitions.map((definition) => wrapToolDefinition(definition, ctxFactory));
 }

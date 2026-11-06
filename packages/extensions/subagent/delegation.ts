@@ -4,10 +4,13 @@ import {
 	consumeSubagentWorkspaceDelegation,
 	type SessionPermissionMode,
 	type SubagentWorkspaceGrant,
+	type SubagentWorkspaceDelegation,
 } from "../resource-lifecycle-guard/permission-contract.ts";
 import { canonicalWorkspace, isPathInside } from "./child-security.ts";
 
 export interface DelegatedTaskPolicy extends SubagentWorkspaceGrant {
+	parentExecution?: SubagentWorkspaceDelegation["parentExecution"];
+	parentToolCallId?: string;
 	allowMutation: boolean;
 	assertCurrent(): void;
 	revocationSignal: AbortSignal;
@@ -59,7 +62,8 @@ export function consumeDelegatedTaskPolicies(
 		if (grant.source === "primary" && !isPathInside(granted, canonicalPrimary)) {
 			throw new Error("Subagent primary-workspace grant escapes the active project.");
 		}
-		policies.push({ ...grant, canonicalCwd: granted, allowMutation: grant.writable, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal });
+		policies.push({ ...grant, canonicalCwd: granted, allowMutation: grant.writable, assertCurrent: delegation.assertCurrent, revocationSignal: delegation.revocationSignal,
+			parentExecution: delegation.parentExecution, parentToolCallId: `${delegation.toolCallId}:task:${index}` });
 	}
 	return policies;
 }

@@ -44,6 +44,7 @@ import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
 import { ForegroundTask } from "./foreground.ts";
 import { CHECKPOINT_PLANNING, type TaskCheckpoint } from "./checkpoints.ts";
 import { SubagentControl } from "./control.ts";
+import { SubagentExecutionServer, type SubagentExecution } from "@super-pi/coding-agent/internal/files/subagent-execution";
 import { assignmentProperties, assertAssignments, formatAssignment, CHILD_RESPONSIBILITIES, MAX_TASK_CHARS } from "./assignments.ts";
 import { SESSION_PERMISSION_EVENT } from "../resource-lifecycle-guard/permission-contract.ts";
 import {
@@ -73,7 +74,7 @@ const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
-const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "bash", "powershell"]);
+const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "delete", "move", "file_batch", "grep", "find", "ls", "bash", "powershell"]);
 const CHILD_GUARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-guard.ts");
 
 function formatTokens(count: number): string {
@@ -477,7 +478,7 @@ export function effectiveTools(agent: AgentConfig, allowMutation: boolean): { to
 	const tools: string[] = [];
 	for (const tool of requested) {
 		if (!BUILTIN_AGENT_TOOLS.has(tool)) continue;
-		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "bash" || tool === "powershell")) continue;
+		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "delete" || tool === "move" || tool === "file_batch" || tool === "bash" || tool === "powershell")) continue;
 		if (tool === "bash" && !allowBash) continue;
 		if (tool === "powershell") continue;
 		if (tools.includes(tool)) continue;
@@ -733,6 +734,10 @@ function processIsAlive(pid: number): boolean {
 }
 
 class SubagentProcessCleanupError extends Error {}
+async function closeWorkspaceChannel(channel?: SubagentExecutionServer): Promise<void> {
+	try { await channel?.dispose(); }
+	catch (error) { throw new SubagentProcessCleanupError(error instanceof Error ? error.message : String(error)); }
+}
 
 /** Root exit must not cancel escalation while its owned POSIX group still has descendants. */
 export function finishCancelledProcessGroup(pid: number | undefined): void {
@@ -851,6 +856,7 @@ export class SubagentProcessRun {
 		timeoutMs: number,
 		result: SingleResult,
 		control?: SubagentControl,
+		workspace?: SubagentExecutionServer,
 	) {
 		this.control = control;
 		this.signal = signal;
@@ -863,6 +869,7 @@ export class SubagentProcessRun {
 				SP_SUBAGENT_WORKSPACE: childCwd,
 				SP_SUBAGENT_ALLOW_BASH: allowBash ? "1" : "0",
 				SP_SUBAGENT_CONTROL: control ? "1" : "0",
+				SP_SUBAGENT_PARENT_EXECUTION: workspace ? "1" : "0",
 			}),
 			shell: false,
 			windowsHide: true,
@@ -870,6 +877,7 @@ export class SubagentProcessRun {
 			stdio: ["ignore", "pipe", "pipe", "ipc"],
 		}) as ChildProcessByStdio<null, Readable, Readable>;
 		control?.attach(this.proc, this.controlFailure);
+		workspace?.attach(this.proc, this.controlFailure);
 	}
 	private onControlFailure(reason: string): void {
 		this.result.errorMessage = capText(reason, 4096);
@@ -1106,6 +1114,8 @@ async function runSingleAgent(
 
 	emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
 	let primaryError: unknown;
+	let executionOwner: SubagentExecution | undefined;
+	let workspaceChannel: SubagentExecutionServer | undefined;
 	try {
 		if (task.length > MAX_TASK_CHARS) throw new Error(`Task exceeds ${MAX_TASK_CHARS} characters`);
 		policy.assertCurrent();
@@ -1125,6 +1135,14 @@ async function runSingleAgent(
 			throw new Error("Delegated workspace identity changed before subagent launch.");
 		}
 		policy.assertCurrent();
+		if (policy.parentExecution) {
+			if (!signal) throw new Error("Delegated execution requires a task lifetime signal");
+			executionOwner = policy.parentExecution.open({
+				profile: { ...policy.parentExecution.profile, cwd: childCwd, writable: policy.allowMutation },
+				toolCallId: policy.parentToolCallId!, tools: toolPolicy.tools, signal, assertCurrent: policy.assertCurrent,
+			});
+			workspaceChannel = new SubagentExecutionServer(executionOwner);
+		}
 		const processRun = new SubagentProcessRun(
 			args,
 			childCwd,
@@ -1134,15 +1152,21 @@ async function runSingleAgent(
 			timeoutMs,
 			currentResult,
 			control,
+			workspaceChannel,
 		);
 		const exitCode = await processRun.run();
+		await closeWorkspaceChannel(workspaceChannel);
 
 		currentResult.exitCode = exitCode;
 		currentResult.completedAt = Date.now();
 		currentResult.handoff = control.handoffReason;
 		emitSingleResultUpdate(onUpdate, makeDetails, currentResult);
 		if (processRun.cleanupError) throw new SubagentProcessCleanupError(processRun.cleanupError);
-		if (processRun.wasAborted) throw new Error("Subagent was aborted");
+		if (processRun.wasAborted) {
+			currentResult.exitCode = 1;
+			currentResult.errorMessage = executionOwner?.failureReason ?? "Subagent was aborted";
+			return currentResult;
+		}
 		if (processRun.timedOut) throw new Error(currentResult.errorMessage ?? `Subagent timed out after ${timeoutMs}ms.`);
 		return currentResult;
 	} catch (error) {
@@ -1156,6 +1180,7 @@ async function runSingleAgent(
 		throw error;
 	} finally {
 		control.dispose();
+		await closeWorkspaceChannel(workspaceChannel);
 		if (tmpPromptDir) {
 			try {
 				fs.rmSync(tmpPromptDir, { recursive: true, force: true });
@@ -1753,6 +1778,7 @@ export default function (pi: ExtensionAPI) {
 							}
 							finally { controls.delete(record.id); control.dispose(); }
 						});
+						if (childSignal.aborted) record.controller?.abort();
 						tasks.finish(record, getResultOutput(result), isFailedResult(result));
 						return result;
 					} catch (error) {

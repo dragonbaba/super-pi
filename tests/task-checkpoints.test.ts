@@ -23,6 +23,9 @@ test("only completed, paired context is retained; hidden reasoning, credentials 
 	c.messages.pop(); assert.throws(() => decodeCheckpoint(encodeCheckpoint(c), "id", "scout", "/fixture"), /unfinished tool/);
 });
 test("context bounds are checked before serialization and unsupported data is not silently truncated", () => {
+    assert.throws(() => assertCheckpointJson({ optional: undefined }), /non-JSON/);
+    assert.doesNotThrow(() => assertCheckpointJson({ optional: undefined, text: "x" }, 12, true));
+    assert.throws(() => assertCheckpointJson({ optional: undefined, text: "x" }, 11, true), /exceeds/);
 	for (const value of [[], {}, { empty: [], text: '😀\n"\\\uD800', flag: false }, [1, null, true, []]]) {
 		const bytes = Buffer.byteLength(JSON.stringify(value));
 		assert.doesNotThrow(() => assertCheckpointJson(value, bytes));

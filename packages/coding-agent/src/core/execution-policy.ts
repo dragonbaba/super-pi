@@ -148,9 +148,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (SANDBOX_TOOLS.has(definition.name) && (definition.name !== "bash" || this.mode !== undefined)) this.definitions.add(definition);
     }
     supports(definition: ToolDefinition): boolean { return this.environment !== "sandbox" || this.definitions.has(definition); }
-    private guard(ctx: ExtensionContext): () => void {
+    private guard(ctx: ExtensionContext, lifetimeSignal?: AbortSignal): () => void {
         this.runtime.executionBoundary.assertCurrent();
-        const owner = new WeakRef(this), generation = this.epoch, signal = ctx.signal ?? this.runtime.executionBoundary.signal;
+        const owner = new WeakRef(this), generation = this.epoch, signal = lifetimeSignal ?? ctx.signal ?? this.runtime.executionBoundary.signal;
         return function assertNativePermission() {
             const active = owner.deref();
             if (!active || active.closed || active.epoch !== generation)
@@ -340,7 +340,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             check();
         }
         const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
-            ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
+            ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || this.runtime.executionBoundary.getToolSelectionMode() === "plan") : undefined;
         check();
         const resolved = delegation ? undefined : await this.paths(ctx, targets, mutation || shell !== undefined, event.toolName, shell === undefined); check();
         const paths = delegation?.paths ?? resolved!.paths;
@@ -410,8 +410,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         }
         shellBinding?.setAuthority(check);
         invocation.consume(event.input, event.toolCallId, event.toolName, ctx.signal);
-        if (delegation?.subagent) attachSubagentWorkspaceDelegation(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
-            toolCallId: event.toolCallId, grants: delegation.subagent, assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
+        if (delegation?.subagent) {
+            const signal = this.runtime.executionBoundary.signal;
+            const open = this.runtime.openSubagentExecution;
+            if (this.mode !== undefined && !open) throw new Error(BLOCKED + "Parent execution channel is unavailable");
+            attachSubagentWorkspaceDelegation(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
+                toolCallId: event.toolCallId, grants: delegation.subagent, assertCurrent: this.guard(ctx, signal), revocationSignal: signal,
+                parentExecution: this.mode && open ? { profile: { mode: this.mode, workspace: ctx.cwd,
+                    directories: this.directories, generation: this.runtime.executionBoundary.generation }, open } : undefined });
+        }
         if (delegation?.structured) attachStructuredReadonlyWorkspaceDelegation(input, { ...delegation.structured, schemaVersion: 1,
             sequence: this.runtime.executionBoundary.generation, toolCallId: event.toolCallId, requestHash: structuredReadonlyRequestHash(input),
             assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });

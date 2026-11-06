@@ -55,6 +55,10 @@ export interface SubagentWorkspaceDelegation extends CurrentInvocationAuthority 
   sequence: number;
   toolCallId: string;
   grants: readonly SubagentWorkspaceGrant[];
+  parentExecution?: {
+    profile: Omit<import("./subagent-execution.ts").SubagentExecutionProfile, "cwd" | "writable">;
+    open: import("./subagent-execution.ts").OpenSubagentExecution;
+  };
 }
 
 export interface StructuredReadonlyPathGrant {

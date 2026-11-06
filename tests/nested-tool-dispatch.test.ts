@@ -46,6 +46,36 @@ function tool(name: string, execute: AgentTool<any>["execute"], read = false): A
 		executionPath: read ? { access: "read", cwd: process.cwd(), argument: "path", defaultPath: "." } : undefined };
 }
 
+test("delegated scope shares hooks during a parent run without owning its provider lifecycle", async () => {
+  let ready!: () => void, release!: () => void, executions = 0;
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let admittedSignal: AbortSignal | undefined;
+  const f = fixture(async () => { ready(); await held; }, [tool("child", async (_id, _args, signal) => {
+    assert.equal(signal, admittedSignal); executions++; return result("delegated receipt");
+  })]);
+  f.agent.beforeToolCall = async ({ toolCall, parentToolCallId }, signal) => {
+    if (toolCall.name === "child") { assert.equal(parentToolCallId, "task-owned"); admittedSignal = signal; }
+    return undefined;
+  };
+  const parent = f.agent.prompt("parent remains active"); await started;
+  const controller = new AbortController(), delegatedEvents: AgentEvent[] = [];
+  const scope = f.agent.createDelegatedToolDispatch("task-owned", controller.signal, event => { delegatedEvents.push(event); });
+  try {
+    const first = await scope.callTool("child", {}); assert.equal(first.isError, false);
+    assert.equal(f.events.filter(event => event.type === "agent_start").length, 1);
+    assert.equal(f.agent.state.messages.some(message => message.role === "toolResult" && message.toolName === "child"), false);
+    release(); await parent;
+    const requests = f.wires.length;
+    f.agent.abort();
+    assert.equal((await scope.callTool("child", {})).isError, false);
+    assert.equal(f.wires.length, requests); assert.equal(executions, 2);
+    controller.abort(); await assert.rejects(scope.callTool("child", {}), /closed, cancelled/);
+  } finally { release(); await parent; await scope.close(); }
+  assert.equal((scope as any).invoke, undefined); assert.equal((scope as any).getCurrentTools, undefined);
+  assert.equal(delegatedEvents.filter(event => event.type === "tool_execution_end").length, 2);
+});
+
 test("agent-owned pre-execution status survives observation errors and ignores tool forgeries", async () => {
   let executions = 0;
   let replay: AgentToolResult<any> | undefined;

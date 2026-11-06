@@ -2,6 +2,7 @@ import type { Message } from "@super-pi/ai";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
 import { checkpointMessage, CheckpointCapacityError, CHECKPOINT_BYTES, CHECKPOINT_MESSAGES, CHECKPOINT_PLANNING } from "./checkpoints.ts";
 import { decodeControl, encodeControl, TASK_GUIDANCE_MESSAGE_CHARS } from "./control.ts";
+import { WORKSPACE_MESSAGE_PREFIX } from "@super-pi/coding-agent/internal/files/subagent-execution";
 
 /** One outstanding intercepting request; no IPC traffic on provider deltas or tool progress. */
 export class ChildControl {
@@ -67,6 +68,7 @@ export class ChildControl {
 	private onSend(error: Error | null): void { if (error) this.stop(error); }
 	private onDisconnect(): void { this.stop(new Error("Subagent parent disconnected; stopping owned work.")); }
 	private onMessage(raw: unknown): void {
+		if (typeof raw === "string" && raw.startsWith(WORKSPACE_MESSAGE_PREFIX)) return;
 		try {
 			const packet = decodeControl(raw);
 			if (!this.resolve || packet.id !== this.sequence || typeof packet.ok !== "boolean") throw new Error("Invalid subagent control reply.");

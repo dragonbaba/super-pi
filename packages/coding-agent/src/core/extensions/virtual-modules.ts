@@ -38,6 +38,7 @@ import * as fileResults from "../files/file-results.ts";
 import * as fileChangeReceipts from "../files/change-receipts.ts";
 import * as fileChanges from "../files/changes.ts";
 import * as fileHost from "../files/file-host.ts";
+import * as subagentExecution from "../files/subagent-execution.ts";
 import * as sessionLease from "../session-lease.ts";
 import * as shellCore from "../shell-policy/core.ts";
 import * as shellPermissionBash from "../shell-policy/permission-bash.ts";
@@ -104,6 +105,7 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@super-pi/coding-agent/internal/files/change-receipts": fileChangeReceipts,
 	"@super-pi/coding-agent/internal/files/changes": fileChanges,
 	"@super-pi/coding-agent/internal/files/file-host": fileHost,
+	"@super-pi/coding-agent/internal/files/subagent-execution": subagentExecution,
 	"@super-pi/coding-agent/internal/tasks/foreground": taskForeground,
 	"@super-pi/coding-agent/internal/tasks/scheduler": taskScheduler,
 	"@super-pi/coding-agent/internal/tasks/tasks": taskRecords,

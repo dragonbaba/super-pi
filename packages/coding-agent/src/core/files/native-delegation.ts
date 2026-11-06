@@ -1,6 +1,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { HARD_MAX_TASKS } from "../tasks/limits.ts";
+import { canonicalSessionDirectory } from "../session-execution-profile.ts";
 import { classifyStructuredReadonlyArguments } from "./structured-argv.ts";
 import type { StructuredReadonlyWorkspaceDelegation, StructuredReadonlyPathGrant, SubagentWorkspaceGrant } from "./extension-permissions.ts";
 
@@ -20,7 +21,7 @@ function inside(root: string, target: string): boolean {
 }
 async function directory(cwd: string, raw: unknown) {
     need(raw === undefined || typeof raw === "string" && raw.length > 0 && raw.length <= 4096 && !raw.includes("\0"), "Invalid delegated cwd");
-    const canonical = await realpath(resolve(cwd, raw ?? ".")), identity = await lstat(canonical);
+    const canonical = canonicalSessionDirectory(resolve(cwd, raw ?? ".")), identity = await lstat(canonical);
     need(identity.isDirectory() && !identity.isSymbolicLink(), "Delegation requires an ordinary directory");
     return { canonical, identity };
 }

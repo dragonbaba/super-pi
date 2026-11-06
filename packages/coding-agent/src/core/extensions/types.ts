@@ -1948,6 +1948,8 @@ export interface ExtensionRuntimeState {
 	nativeTasks?: SessionTasks;
 	nativeFiles?: SessionFiles;
 	nativePermissions?: import("../execution-policy.ts").SessionExecutionPolicy;
+	parentExecution?: import("../files/subagent-execution.ts").SubagentParentClient;
+	openSubagentExecution?: import("../files/subagent-execution.ts").OpenSubagentExecution;
 	flagValues: Map<string, boolean | string>;
 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
