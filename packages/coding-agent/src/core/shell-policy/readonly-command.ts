@@ -503,9 +503,14 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
   let caseDepth = 0, casePattern = false, braceKinds = 0, switchKinds = 0, braceDepth = 0, hashEntry = HASH_NONE, keyPosition = false, switchPending = false;
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
     argv.length = 0;
-    hashEntry = HASH_NONE;
     const previous = segment > 0 ? table.segmentSeparators[segment - 1]! : -1;
-    keyPosition = previous === SEGMENT_SEQUENCE || previous === SEGMENT_LF || previous === SEGMENT_CR;
+    // The PowerShell lexer records a line break as SEGMENT_SEQUENCE too; only the source tells it from `;`.
+    const firstToken = table.segmentStart(segment);
+    const lineBreak = previous === SEGMENT_LF || previous === SEGMENT_CR || powerShell && previous === SEGMENT_SEQUENCE
+      && table.source.lastIndexOf(";", table.starts[firstToken]!) < table.ends[firstToken - 1]!;
+    // `@{ result =⏎ git push }`: a line break may separate `=` from its value.
+    hashEntry = hashEntry === HASH_VALUE && lineBreak ? HASH_VALUE : HASH_NONE;
+    keyPosition = hashEntry === HASH_NONE && (previous === SEGMENT_SEQUENCE || lineBreak);
     const end = table.segmentEnds[segment]!;
     if (!powerShell) {
       const first = table.segmentStart(segment);

@@ -114,7 +114,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A string in command position is a value; a call operator invokes it.
     for (const command of ["$label = 'npm'", "$label='npm'", "@{ label = 'npm' }", "@{label='npm'}", "$data=@{label='npm'}"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_NONE, command);
     assert.equal(shellRuleVerdict("powershell", "& 'npm' test", npm), RULE_DENY);
-    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
+    for (const command of ["@{ result = (npm test) }", "@{ result = & npm test }", "pwsh -NoProfile -Command npm test", "@{ result =\n  npm test\n}"]) assert.equal(shellRuleVerdict("powershell", command, npm), RULE_DENY, command);
     // Switch labels are not commands; their action blocks are matched.
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { npm { Write-Output \"npm\" }; default { Write-Output other } }", npm), RULE_NONE);
     assert.equal(shellRuleVerdict("powershell", "switch ($tool) { a { Write-Output x } b { npm test } }", npm), RULE_DENY);
@@ -241,6 +241,9 @@ test("whole-tool shell rules, batch operations and non-ASCII PowerShell spelling
     const npm = new ProjectRuleSet([{ tool: "bash", decision: "allow", command: "npm test *" }]);
     assert.equal(classifyHostShellCommand("bash", "npm test -- --grep '<<'", undefined, npm), HOST_SHELL_RULE_ALLOWED);
     assert.deepEqual(suggestShellRules("bash", "npm test -- --grep '<<'"), ["npm test *"]);
+    // A here-string is input, not a heredoc: unrelated restrictive rules do not make it ask.
+    const push = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git push *" }]);
+    assert.equal(shellRuleVerdict("bash", "cat <<< 'hello'", push), RULE_NONE);
 });
 
 test("saves from concurrent sessions are merged, and a rule the reader would reject is never written", async t => {
