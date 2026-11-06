@@ -1,5 +1,6 @@
 import { MAX_REMEMBERED_RULES, MAX_RULE_COMMAND, type ProjectRuleSet, RULE_ALLOW, RULE_ASK, RULE_DENY, RULE_NONE } from "../project-permissions.ts";
 import type { ShellAnalysisOwner } from "./shell-analysis.ts";
+import { prepareShellAnalysis } from "./shell-substitution.ts";
 import { lexBash } from "./syntax/bash.ts";
 import {
   DIALECT_POWERSHELL, EXPANSION_BRACE, EXPANSION_GLOB, EXPANSION_MASK, EXPANSION_QUOTED_VARIABLE, EXPANSION_SUBSTITUTION, EXPANSION_VARIABLE,
@@ -143,7 +144,8 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
   // The native scanners stop after 64 segments; a file command must be scanned whole.
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return HOST_SHELL_OTHER;
   const argv: string[] = [];
-  const ruled = rules !== undefined && rules.hasShellRules(powerShell);
+  // Heredoc bodies are data the raw table cannot delimit, so allow rules leave such commands alone.
+  const ruled = rules !== undefined && rules.hasShellRules(powerShell) && (powerShell || command.indexOf("<<") < 0);
   let result: HostShellCommandClass = HOST_SHELL_READ_ONLY, moved = false;
   for (let segment = 0; segment < table.segmentCount; segment++) {
     const kind = classifySegment(table, segment, powerShell, NO_SUBCOMMANDS, true, argv);
@@ -172,14 +174,21 @@ export function classifyHostShellCommand(tool: "bash" | "powershell", command: s
 
 /**
  * The strongest project deny or ask rule any segment matches (subshell segments included,
- * `$(...)` bodies not). Words are compared as written and leading Bash assignments are
- * skipped, so `git push *` also matches `FOO=1 git push $REMOTE`.
+ * `$(...)` bodies and heredoc bodies not). Words are compared as written and leading Bash
+ * assignments are skipped, so `git push *` also matches `FOO=1 git push $REMOTE`.
  */
 export function shellRuleVerdict(tool: "bash" | "powershell", command: string, rules: ProjectRuleSet, analysisOwner?: ShellAnalysisOwner): number {
   const powerShell = tool === "powershell";
   if (!rules.hasShellRules(powerShell) || !command.trim()) return RULE_NONE;
-  const table = commandTable(powerShell, command, analysisOwner), argv: string[] = [];
-  let verdict = RULE_NONE;
+  let source = command, verdict = RULE_NONE;
+  if (!powerShell) {
+    // Match the commands around heredoc bodies, not the bodies (a stray quote in one would
+    // swallow the commands after it). A heredoc that cannot be delimited asks.
+    const view = analysisOwner ? analysisOwner.get(command).view : prepareShellAnalysis(command);
+    source = view.command;
+    if (view.uncertain && rules.hasRestrictiveShellRules(false)) verdict = RULE_ASK;
+  }
+  const table = commandTable(powerShell, source, analysisOwner), argv: string[] = [];
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
     argv.length = 0;
     const end = table.segmentEnds[segment]!;
@@ -204,7 +213,9 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
  * the command's structure rather than its programs asks, or when more than five are needed.
  */
 export function suggestShellRules(tool: "bash" | "powershell", command: string): string[] | undefined {
-  const powerShell = tool === "powershell", table = commandTable(powerShell, command, undefined);
+  const powerShell = tool === "powershell";
+  if (!powerShell && command.indexOf("<<") >= 0) return undefined;
+  const table = commandTable(powerShell, command, undefined);
   if (table.unterminated || table.nestedCount > 0 || table.segmentCount === 0 || table.segmentCount > MAX_HOST_SEGMENTS) return undefined;
   const argv: string[] = [], suggestions: string[] = [];
   let moved = false;

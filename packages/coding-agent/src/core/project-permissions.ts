@@ -89,8 +89,11 @@ class ShellRuleIndex {
   readonly byName = new Map<string, CompiledShellRule[]>();
   readonly globbed: CompiledShellRule[] = [];
   readonly folded: boolean;
+  /** The strongest decision any rule in this index carries. */
+  strongest = RULE_NONE;
   constructor(folded: boolean) { this.folded = folded; }
   add(rule: CompiledShellRule): void {
+    if (rule.decision > this.strongest) this.strongest = rule.decision;
     const first = rule.words[0]!;
     if (first.indexOf("*") >= 0) { this.globbed.push(rule); return; }
     const list = this.byName.get(first);
@@ -135,6 +138,8 @@ export class ProjectRuleSet {
   }
   get empty(): boolean { return this.rules.length === 0; }
   hasShellRules(powerShell: boolean): boolean { return (powerShell ? this.powerShell : this.bash).size > 0; }
+  /** Whether a command-pattern rule for this shell can deny or ask. */
+  hasRestrictiveShellRules(powerShell: boolean): boolean { return (powerShell ? this.powerShell : this.bash).strongest >= RULE_ASK; }
   /** Rules for a whole tool by exact name: MCP and file tools, or a shell rule without `command`. */
   toolDecision(tool: string): number { return this.tools.get(tool) ?? RULE_NONE; }
   /** Strongest decision for one simple command's words (PowerShell compares without case). */

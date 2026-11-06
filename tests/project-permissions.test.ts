@@ -181,6 +181,16 @@ test("whole-tool shell rules, batch operations and non-ASCII PowerShell spelling
     assert.equal(await host.decide("file_batch", { operations: [{ operation: "write", path: "a.txt", content: "x" }] }), "deny");
     const rules = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "npm run DÉPLOY *" }]);
     for (const word of ["DÉPLOY", "déploy"]) assert.equal(rules.matchShellWords(true, ["npm", "run", word, "prod"]), RULE_DENY, word);
+    // A quote inside a literal heredoc body does not swallow the command after the terminator.
+    const sandbox = await fixture(t, "sandbox", "sandbox-write");
+    await sandbox.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
+    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\nEOF\ngit push origin main" }), "deny");
+    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\ngit push" }), "ask");
+    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\ngit push\nEOF" }), "allow");
+    // Allow rules and 不再询问 leave heredoc commands to the ask.
+    const allow = new ProjectRuleSet([{ tool: "bash", decision: "allow", command: "cat *" }]);
+    assert.equal(classifyHostShellCommand("bash", "cat <<'EOF'\n'\nEOF\nmake", undefined, allow), HOST_SHELL_OTHER);
+    assert.equal(suggestShellRules("bash", "make <<EOF\nx\nEOF"), undefined);
 });
 
 test("saves from concurrent sessions are merged, and a rule the reader would reject is never written", async t => {
