@@ -198,7 +198,11 @@ export interface AgentChangedToolUpdate {
 	readonly finalized: boolean;
 }
 
+/** Session-owned stop state; cancellation and explicit resume belong to that lifecycle owner. */
+export interface AgentRunControl { readonly requiresUserInput: boolean; }
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
+	runControl?: AgentRunControl;
 	model: Model<any>;
 	/** Current authorized tools, re-read before a queued nested call executes. */
 	getCurrentTools?: () => readonly AgentTool<any>[];

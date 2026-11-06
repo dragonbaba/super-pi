@@ -27,6 +27,7 @@ import type {
 	AgentEvent,
 	AgentEventInstrumentation,
 	AgentLoopConfig,
+	AgentRunControl,
 	AgentLoopTurnUpdate,
 	AgentLlmConverter,
 	AgentMessage,
@@ -342,6 +343,7 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	public runControl?: AgentRunControl;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -616,6 +618,7 @@ export class Agent {
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
 			toolExecution: this.toolExecution,
+			runControl: this.runControl,
 			getCurrentTools: this.getCurrentTools,
 			eventInstrumentation: this.eventInstrumentation,
 			beforeToolCall: this.beforeToolCall,
@@ -709,7 +712,7 @@ export class Agent {
 		await this.processEvents({ type: "message_start", message: failureMessage });
 		await this.processEvents({ type: "message_end", message: failureMessage });
 		await this.processEvents({ type: "turn_end", message: failureMessage, toolResults: [] });
-		await this.processEvents({ type: "agent_end", messages: [failureMessage] });
+		await this.processEvents({ type: "agent_end", messages: [failureMessage], requiresUserInput: this.runControl?.requiresUserInput });
 	}
 
 	private finishRun(): void {

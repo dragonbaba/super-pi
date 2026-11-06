@@ -55,7 +55,8 @@ async function fixture(t: test.TestContext, config: ExecutionPermissions = {}) {
     try { return await definitions.read.execute(request.toolCallId, input, ctx.signal, undefined, ctx); } finally { grant.release(); }
   }
   t.after(async () => { owner.dispose(); await runtime.executionBoundary.dispose(); await files.dispose(); await disposeNativeFileWorker(); });
-  return { root, workspace, outside, added, owner, files, manager, ctx, call, read, event, dialogs, notices };
+  return { root, workspace, outside, added, owner, files, manager, ctx, call, read, event, dialogs, notices,
+    async resume() { assert.equal(runtime.executionBoundary.requiresUserInput, true); await runtime.executionBoundary.resumeForUser(); ctx.signal = runtime.executionBoundary.signal; } };
 }
 
 test("native delete/move and mixed batches ask once outside; primary and added workspaces stay allowed", async t => {
@@ -117,11 +118,13 @@ test("external existing write/edit/LSP and mixed batches are blocked; previews a
   const f = await fixture(t), target = join(f.outside, "existing.txt"); await fs.writeFile(target, "unchanged");
   for (const tool of ["write", "edit", "lsp_fix"]) {
     await assert.rejects(f.owner.authorize(f.event(tool, { path: target, content: "forbidden", edits: [], write: true }), f.ctx), /EXTERNAL_FILE_WRITE_BLOCKED/);
+    await f.resume();
   }
   const input = { operations: [{ operation: "write", path: "new.txt", mode: "create", content: "new" },
     { operation: "write", path: target, mode: "overwrite", content: "forbidden" }] };
   await assert.rejects(f.call("file_batch", input), /EXTERNAL_FILE_WRITE_BLOCKED/);
   await assert.rejects(fs.stat(join(f.workspace, "new.txt")), { code: "ENOENT" });
+  await f.resume();
   assert.equal(await fs.readFile(target, "utf8"), "unchanged"); assert.deepEqual(f.owner.listRefusals(f.ctx), []); assert.equal(f.dialogs.length, 0);
   (await f.owner.authorize(f.event("file_batch", { ...input, dryRun: true }), f.ctx)).release();
   assert.equal((await f.call("write", { path: join(f.outside, "created.txt"), content: "new" })).isError, false);

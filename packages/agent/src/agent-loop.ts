@@ -224,6 +224,9 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let firstTurn = true;
+	if (config.runControl?.requiresUserInput) {
+		await emit({ type: "agent_end", messages: newMessages, requiresUserInput: true }); return;
+	}
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -233,6 +236,9 @@ async function runLoop(
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
+			if (config.runControl?.requiresUserInput) {
+				await emit({ type: "agent_end", messages: newMessages, requiresUserInput: true }); return;
+			}
 			if (!firstTurn) {
 				await emit({ type: "turn_start" });
 			} else {
@@ -256,7 +262,7 @@ async function runLoop(
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				await emit({ type: "turn_end", message, toolResults: [] });
-				await emit({ type: "agent_end", messages: newMessages });
+				await emit({ type: "agent_end", messages: newMessages, requiresUserInput: config.runControl?.requiresUserInput });
 				return;
 			}
 
@@ -285,7 +291,7 @@ async function runLoop(
 			}
 
 			await emit({ type: "turn_end", message, toolResults });
-			if (interactionPaused) {
+			if (interactionPaused || config.runControl?.requiresUserInput) {
 				await emit({ type: "agent_end", messages: newMessages, requiresUserInput: true });
 				return;
 			}
@@ -319,7 +325,7 @@ async function runLoop(
 					newMessages,
 				})
 			) {
-				await emit({ type: "agent_end", messages: newMessages });
+				await emit({ type: "agent_end", messages: newMessages, requiresUserInput: config.runControl?.requiresUserInput });
 				return;
 			}
 
@@ -338,7 +344,7 @@ async function runLoop(
 		break;
 	}
 
-	await emit({ type: "agent_end", messages: newMessages });
+	await emit({ type: "agent_end", messages: newMessages, requiresUserInput: config.runControl?.requiresUserInput });
 }
 
 /**
@@ -872,13 +878,6 @@ async function prepareToolCall(
 				signal,
 			);
 			finalAuthorization = beforeResult?.finalAuthorization;
-			if (signal?.aborted) {
-				return {
-					kind: "immediate",
-					result: createPreExecutionError(tool.name, "Operation aborted"),
-					isError: true,
-				};
-			}
 			if (beforeResult?.block) {
 				const refusal = projectStructuredPolicyRefusal(beforeResult.reason);
 				const directReason = nonEmptyReason(beforeResult.reason);
@@ -943,6 +942,10 @@ async function executePreparedToolCall(
 	let durationMs: number | undefined;
 
 	try {
+		if (signal?.aborted) return {
+			result: createPreExecutionError(prepared.tool.name, "Operation aborted before tool execution"),
+			isError: true, authorizationVeto: true,
+		};
 		const onUpdate = ((partialResult: AgentToolResult<any>) => {
 			if (!acceptingUpdates) return;
 			void progress.publish(partialResult);

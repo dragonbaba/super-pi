@@ -8,6 +8,8 @@ export interface ExecutionBoundaryParticipant {
 
 const MAX_PARTICIPANTS = 16;
 const STALE = "[EXECUTION_BOUNDARY_CHANGED] Execution is paused or belongs to a previous boundary.";
+const USER_PAUSED = "[EXECUTION_REQUIRES_USER_INPUT] 当前任务已暂停；请等待用户下一步指令。";
+function observeHeldCleanupFailure(): void {} // Explicit resume awaits and reports the same failed cleanup.
 
 /** One session/runtime owner. This coordinates lifecycle; it makes no allow/ask/deny decision. */
 export class SessionExecutionBoundary {
@@ -25,6 +27,8 @@ export class SessionExecutionBoundary {
   private preparations = 0;
   private preparationIdle: Promise<void> | undefined;
   private finishPreparations: (() => void) | undefined;
+  private awaitingUser = false;
+  private heldCleanup: Promise<void> | undefined;
 
   constructor(deadlineMs = 10_000) {
     if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 30_000) throw new Error("Invalid execution transition deadline.");
@@ -38,6 +42,7 @@ export class SessionExecutionBoundary {
   get isDraining(): boolean { return this.draining !== undefined; }
   get hasDeadline(): boolean { return this.deadline !== undefined; }
   get preparationCount(): number { return this.preparations; }
+  get requiresUserInput(): boolean { return this.awaitingUser; }
 
   /** Catalog reads and registration selection. Admission and final authorization remain separate. */
   getToolSelectionMode(): "default" | "plan" {
@@ -52,7 +57,31 @@ export class SessionExecutionBoundary {
   }
 
   assertCurrent(generation = this.epoch): void {
+    if (this.awaitingUser) throw new Error(USER_PAUSED);
     if (!this.accepting || this.disposed || generation !== this.epoch) throw new Error(STALE);
+  }
+
+  /** Close admission now; never await the containing tool/prompt from its own hook. */
+  pauseForUser(): Promise<void> {
+    if (this.awaitingUser) return this.heldCleanup!;
+    this.assertCurrent();
+    this.awaitingUser = true;
+    return this.start();
+  }
+
+  /** Only a fresh explicit user input may call this, before it owns a preparation. */
+  async resumeForUser(): Promise<void> {
+    if (this.disposed) throw new Error(STALE);
+    if (!this.awaitingUser) return;
+    const cleanup = this.heldCleanup;
+    await cleanup;
+    if (this.disposed) throw new Error(STALE);
+    if (!this.awaitingUser) return;
+    if (this.operation || this.draining || cleanup !== this.heldCleanup) throw new Error(STALE);
+    this.heldCleanup = undefined;
+    this.awaitingUser = false;
+    this.cancellation = new AbortController();
+    this.accepting = true;
   }
 
   /** Prompt/preflight boundary only, never a per-event or per-progress operation. */
@@ -96,7 +125,9 @@ export class SessionExecutionBoundary {
   dispose(): Promise<void> {
     this.disposed = true;
     if (this.operation) return this.operation;
-    if (this.participants.size === 0 && !this.draining && this.preparations === 0) { this.accepting = false; this.cancellation.abort(); return Promise.resolve(); }
+    if (this.participants.size === 0 && !this.draining && this.preparations === 0) {
+      this.accepting = false; this.awaitingUser = false; this.heldCleanup = undefined; this.cancellation.abort(); return Promise.resolve();
+    }
     return this.start();
   }
 
@@ -105,6 +136,10 @@ export class SessionExecutionBoundary {
     this.epoch++;
     // Establish ownership before abort observers can reenter disposal.
     this.operation = Promise.resolve().then(() => this.run(publish));
+    if (this.awaitingUser) {
+      this.heldCleanup = this.operation;
+      void this.heldCleanup.catch(observeHeldCleanupFailure);
+    }
     if (!this.cancellation.signal.aborted) {
       const reason = new Error(STALE); reason.stack = reason.message; this.cancellation.abort(reason);
     }
@@ -116,7 +151,7 @@ export class SessionExecutionBoundary {
     if (this.disposed) {
       let clean = !this.revocationFailed;
       for (const result of results) if (result.status === "rejected") clean = false;
-      if (clean) this.participants.clear();
+      if (clean) { this.participants.clear(); this.awaitingUser = false; this.heldCleanup = undefined; }
     }
     return results;
   };
@@ -152,6 +187,7 @@ export class SessionExecutionBoundary {
       const returned = publish?.();
       if (returned !== undefined) throw new Error("Execution boundary publication must be synchronous and return undefined.");
       if (this.disposed) { this.participants.clear(); return; }
+      if (this.awaitingUser) return;
       this.cancellation = new AbortController();
       this.accepting = true;
     } finally {
@@ -159,6 +195,7 @@ export class SessionExecutionBoundary {
       this.deadline = undefined;
       this.rejectDeadline = undefined;
       this.operation = undefined;
+      if (this.disposed && this.participants.size === 0) { this.awaitingUser = false; this.heldCleanup = undefined; }
       // Timed-out or failed cleanup retains exact owners; successful disposal releases them.
     }
   }

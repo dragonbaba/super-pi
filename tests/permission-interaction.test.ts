@@ -102,6 +102,97 @@ test("native execution transition failures stay closed and disposal retains only
  }
 });
 
+test("permission pause closes admission through cleanup and mode changes until explicit user resume", async () => {
+ const boundary = new SessionExecutionBoundary();
+ let release!: () => void, revoked = 0, drained = 0, cleanupFails = false;
+ const gate = new Promise<void>(resolve => { release = resolve; });
+ boundary.register("owned", { revoke() { revoked++; }, async drain() { await gate; drained++; if (cleanupFails) throw new Error("latest cleanup failed"); } });
+ const generation = boundary.beginPreparation(), signal = boundary.signal;
+ boundary.pauseForUser(); boundary.pauseForUser();
+ assert.equal(signal.aborted, true); assert.equal(boundary.requiresUserInput, true);
+ assert.throws(() => boundary.beginPreparation(), /REQUIRES_USER_INPUT/);
+ let resumed = false;
+ let firstResumedSignal: AbortSignal | undefined;
+ const resume = boundary.resumeForUser().then(() => { resumed = true; firstResumedSignal = boundary.signal; });
+ const concurrentResume = boundary.resumeForUser();
+ await tick(); assert.equal(revoked, 1); assert.equal(resumed, false);
+ release(); await tick(); assert.equal(drained, 1); assert.equal(resumed, false, "containing prompt still owns preparation");
+ boundary.endPreparation(); await resume; await concurrentResume;
+ assert.equal(boundary.signal, firstResumedSignal, "concurrent inputs cannot replace the resumed cancellation owner");
+ assert.equal(boundary.requiresUserInput, false); assert.equal(boundary.hasDeadline, false);
+ assert.equal(boundary.preparationCount, 0); boundary.assertCurrent();
+ assert.throws(() => boundary.assertCurrent(generation), /BOUNDARY_CHANGED/);
+ boundary.pauseForUser(); await tick();
+ let published = false;
+ await boundary.transition(() => { published = true; });
+ assert.equal(published, true); assert.equal(boundary.requiresUserInput, true);
+ assert.throws(() => boundary.assertCurrent(), /REQUIRES_USER_INPUT/);
+ cleanupFails = true;
+ await assert.rejects(boundary.transition(() => undefined), /latest cleanup failed/);
+ await assert.rejects(boundary.resumeForUser(), /latest cleanup failed/);
+ assert.throws(() => boundary.assertCurrent(), /REQUIRES_USER_INPUT/);
+ cleanupFails = false;
+ await boundary.transition(() => undefined);
+ await boundary.resumeForUser(); boundary.assertCurrent();
+ await boundary.dispose(); assert.equal(boundary.participantCount, 0); assert.equal(boundary.requiresUserInput, false);
+});
+
+test("failed permission pause cleanup cannot reopen admission", async () => {
+ const boundary = new SessionExecutionBoundary(10);
+ let release!: () => void;
+ const gate = new Promise<void>(resolve => { release = resolve; });
+ boundary.register("owned", { revoke() {}, drain() { return gate; } });
+ boundary.pauseForUser();
+ await assert.rejects(boundary.resumeForUser(), /DRAIN_TIMEOUT/);
+ assert.equal(boundary.requiresUserInput, true); assert.equal(boundary.hasDeadline, false);
+ await assert.rejects(boundary.resumeForUser(), /DRAIN_TIMEOUT/);
+ assert.throws(() => boundary.assertCurrent(), /REQUIRES_USER_INPUT/);
+ await assert.rejects(boundary.dispose(), /DRAIN_TIMEOUT/);
+ release(); await tick();
+ assert.equal(boundary.participantCount, 0); assert.equal(boundary.requiresUserInput, false);
+ assert.equal((boundary as any).heldCleanup, undefined, "late cleanup after disposal releases the held pause");
+ await assert.rejects(boundary.resumeForUser(), /BOUNDARY_CHANGED/);
+ await boundary.dispose(); assert.equal(boundary.participantCount, 0); assert.equal(boundary.requiresUserInput, false);
+});
+
+test("permission pause admission and cleanup have bounded allocations and release retained owners", async t => {
+ const profiler = new InspectorSession(); profiler.connect();
+ const refs: WeakRef<object>[] = [];
+ let checks = 0, revokes = 0, drains = 0;
+ async function exercise() {
+  const boundary = new SessionExecutionBoundary();
+  const owner = { revoke() { revokes++; }, async drain() { drains++; } };
+  boundary.register("owned", owner);
+  for (let index = 0; index < 100000; index++) {
+   boundary.assertCurrent(); if (boundary.requiresUserInput) throw new Error("Unexpected paused admission"); checks++;
+  }
+  for (let index = 0; index < 32; index++) {
+   refs.push(new WeakRef(boundary.signal));
+   boundary.pauseForUser();
+   refs.push(new WeakRef((boundary as any).heldCleanup));
+   await boundary.resumeForUser();
+   assert.equal((boundary as any).heldCleanup, undefined);
+   assert.equal(boundary.hasDeadline, false); assert.equal(boundary.isDraining, false);
+  }
+  boundary.pauseForUser(); await boundary.dispose();
+  assert.equal(boundary.participantCount, 0); assert.equal(boundary.preparationCount, 0);
+  assert.equal((boundary as any).heldCleanup, undefined);
+  refs.push(new WeakRef(owner), new WeakRef(boundary));
+ }
+ try {
+  await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+  await exercise();
+  const { profile } = await profiler.post("HeapProfiler.stopSampling");
+  let sampledBytes = 0; const sites: { name: string; bytes: number }[] = [], pending = [profile.head];
+  while (pending.length) { const node = pending.pop()!; sampledBytes += node.selfSize; if (node.selfSize) sites.push({ name: node.callFrame.functionName, bytes: node.selfSize }); for (const child of node.children) pending.push(child); }
+  for (let index = 0; index < 3; index++) { await tick(); await profiler.post("HeapProfiler.collectGarbage"); }
+  assert.equal(refs.filter(ref => ref.deref()).length, 0);
+  assert.equal(revokes, 33); assert.equal(drains, 33);
+  t.diagnostic(JSON.stringify({ checks, pauseCycles: 33, revokes, drains, releasedReferences: refs.length, sampledBytes,
+   leading: sites.sort((a, b) => b.bytes - a.bytes).slice(0, 6) }));
+ } finally { profiler.disconnect(); }
+});
+
 async function permissionFixture(t: test.TestContext, aliasedRoot = false) {
  const root = mkdtempSync(join(tmpdir(), "pi-permission-wait-")); let cwd = root;
  if (aliasedRoot) { const physical = join(root, "physical"); mkdirSync(physical); cwd = join(root, "alias"); symlinkSync(physical, cwd, process.platform === "win32" ? "junction" : "dir"); }

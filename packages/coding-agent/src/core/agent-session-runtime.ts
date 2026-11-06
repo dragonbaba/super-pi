@@ -181,6 +181,7 @@ export class AgentSessionRuntime {
 		options: Parameters<CreateAgentSessionRuntimeFactory>[0],
 		generation: number,
 	): Promise<boolean> {
+		const requiresUserInput = options.sessionManager === this.session.sessionManager && this.session.requiresUserInput;
 		const result = await this.createRuntime(options);
 		if (options.directories !== undefined) {
 			const actual = result.session.settingsManager.getSessionDirectories();
@@ -194,6 +195,12 @@ export class AgentSessionRuntime {
 		if (options.permissionMode !== undefined && result.session.settingsManager.getPermissionMode() !== options.permissionMode) {
 			result.session.dispose(); await result.session.waitForSessionLeaseRelease?.();
 			throw new Error("Runtime factory did not apply the selected permission mode; execution remains stopped");
+		}
+		if (requiresUserInput) {
+			try { await result.session.resourceLoader.getExtensions().runtime.executionBoundary.pauseForUser(); }
+			catch (error) {
+				result.session.dispose(); await result.session.waitForSessionLeaseRelease?.(); throw error;
+			}
 		}
 		if (!this.isReplacementCurrent(generation)) {
 			result.session.dispose();
