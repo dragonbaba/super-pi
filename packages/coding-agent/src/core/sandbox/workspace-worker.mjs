@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from '../../utils/image-signature.mjs';
+import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName } from './workspace-policy.mjs';
 
 const SOURCE = 'C:\\SuperPiInput';
 const WORK = 'C:\\SuperPiWorkspace';
@@ -14,6 +15,9 @@ const IMAGE_LIMIT = 16 * 1024 * 1024;
 const OUTPUT_LIMIT = 16 * 1024 * 1024;
 const ARTIFACT_LIMIT = 256 * 1024 * 1024;
 const ARTIFACT_FILES = 1024;
+const SEARCH_ROWS = 200;
+const SEARCH_ENTRIES = 20000;
+const DIRECTORY_ENTRIES = Object.freeze({ withFileTypes: true });
 const TRAILING_PATH_PATTERN = /[. ]$/;
 const RESERVED_WORKSPACE_ROOTS = ['c:\\windows', 'c:\\superpiinput', 'c:\\superpiworkspace', 'c:\\superpiexchange', 'c:\\superpitools', 'c:\\superpitoolchains', 'c:\\superpicommand', 'c:\\superpivolume'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -51,7 +55,7 @@ function local(root, name) {
   const parts = name.replaceAll('\\', '/').split('/');
   for (const part of parts) {
     const lower = part.toLowerCase();
-    need(part && part !== '..' && !TRAILING_PATH_PATTERN.test(part) && lower !== '.git' && lower !== '.sp' && lower !== 'node_modules', 'Protected workspace path');
+    need(part && part !== '..' && !TRAILING_PATH_PATTERN.test(part) && !isProtectedWorkspaceName(lower), 'Protected workspace path');
   }
   const target = path.resolve(root, name);
   need(target.startsWith(root + path.sep), 'Workspace escape');
@@ -87,10 +91,10 @@ function catalog(root, hashes = false) {
   const scratch = hashes === true ? Buffer.allocUnsafe(256 * 1024) : undefined;
   while (pending.length) {
     const relative = pending.pop();
-    for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(path.join(root, relative), DIRECTORY_ENTRIES)) {
+      // Match host capture before inspecting or traversing private metadata/dependencies.
+      if (isVmPrivateName(entry.name.toLowerCase())) continue;
       need(!entry.isSymbolicLink(), 'Workspace contains a redirected entry');
-      // Installed dependencies stay private to the VM, including package links and binary assets.
-      if (entry.isDirectory() && entry.name.toLowerCase() === 'node_modules') continue;
       const name = relative ? relative + '/' + entry.name : entry.name;
       if (entry.isDirectory()) pending.push(name);
       else { const file = local(root, name), stat = fs.lstatSync(file); bytes += stat.size; need(stat.isFile() && bytes <= 16 * 1024 * 1024 * 1024 && files.size < 20000, 'Workspace capacity exceeded');
@@ -101,7 +105,7 @@ function catalog(root, hashes = false) {
 }
 function selected(root, scope) {
   const output = new Map(), scratch = Buffer.allocUnsafe(256 * 1024);
-  for (const name of scope) { const file = local(root, name); if (fs.existsSync(file)) output.set(name, fileHash(file, scratch)); }
+  for (const name of scope) { const file = local(root, name); if (!isVmPrivatePath(name) && fs.existsSync(file)) output.set(name, fileHash(file, scratch)); }
   return output;
 }
 function searchScope(root, raw) {
@@ -112,17 +116,49 @@ function searchScope(root, raw) {
   // local rejects escapes, protected components and redirected entries before realpath.
   return path.relative(root, fs.realpathSync(local(root, normalized))).replaceAll('\\', '/');
 }
-function matchesScope(name, scope) {
-  return scope === '' || name === scope || name.startsWith(scope) && name[scope.length] === '/';
-}
 function grepRows(source, pattern, name, rows) {
   let match = source.indexOf(pattern), start = 0, line = 1;
-  while (match >= 0 && start < source.length && rows.length < 200) {
+  while (match >= 0 && start < source.length) {
     const next = source.indexOf('\n', start), end = next < 0 ? source.length : next;
-    if (match >= start && match < end) rows.push(name + ':' + line + ':' + source.slice(start, Math.min(end, start + 256)));
+    if (match >= start && match < end) {
+      if (rows.length === SEARCH_ROWS) return true;
+      rows.push(name + ':' + line + ':' + source.slice(start, Math.min(end, start + 256)));
+    }
     start = end + 1; line++;
     if (match < start) match = source.indexOf(pattern, start);
   }
+  return false;
+}
+function search(root, operation, scope, pattern) {
+  if (operation === 'grep') need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
+  const pending = [scope], rows = []; let visited = 0, truncated = false;
+  try {
+    while (pending.length && !truncated) {
+      const name = pending.pop(), file = name ? local(root, name) : root, stat = fs.lstatSync(file);
+      if (stat.isDirectory()) {
+        for (const entry of fs.readdirSync(file, DIRECTORY_ENTRIES)) {
+          if (isProtectedWorkspaceName(entry.name.toLowerCase())) continue;
+          need(++visited <= SEARCH_ENTRIES, 'Search entry capacity exceeded');
+          need(!entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()), 'Search contains a non-ordinary or redirected entry');
+          const child = name ? name + '/' + entry.name : entry.name;
+          if (operation === 'ls') {
+            if (rows.length === SEARCH_ROWS) { truncated = true; break; }
+            rows.push(child + (entry.isDirectory() ? '/' : ''));
+          } else pending.push(child);
+        }
+      } else {
+        need(stat.isFile() && !stat.isSymbolicLink(), 'Search requires an ordinary file or directory');
+        if (operation === 'find' && pattern && !name.includes(pattern)) continue;
+        if (operation === 'grep') {
+          if (stat.size > FILE_LIMIT) continue;
+          const bytes = read(file); if (!isUtf8(bytes)) continue;
+          truncated = grepRows(bytes.toString('utf8'), pattern, name, rows);
+        } else if (rows.length === SEARCH_ROWS) truncated = true;
+        else rows.push(name);
+      }
+    }
+    return rows.join('\n') + (truncated ? '\n[Results truncated at ' + SEARCH_ROWS + ' rows; narrow the search scope.]' : '');
+  } finally { pending.length = 0; rows.length = 0; }
 }
 function changes(before, root, scope, maxWriteBytes, artifactId, artifactOffset = 0) {
   const after = scope ? selected(root, scope) : catalog(root, true), output = []; let bytes = 0;
@@ -245,20 +281,7 @@ try {
       text = source.slice(start, Math.min(end, start + 32768)) + '\n[Snapshot: ' + snapshot + ']';
     }
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
-    const searchRoot = searchScope(root, input.path), files = catalog(root); const rows = [];
-    for (const name of files.keys()) {
-      if (!matchesScope(name, searchRoot)) continue;
-      if (operation === 'find' && input.pattern && !name.includes(input.pattern)) continue;
-      if (operation === 'grep') {
-        need(typeof input.pattern === 'string' && input.pattern.length > 0, 'Literal search pattern required');
-        if (fs.statSync(local(root, name)).size > FILE_LIMIT) continue;
-        const bytes = read(local(root, name)); if (!isUtf8(bytes)) continue;
-        const source = bytes.toString('utf8');
-        grepRows(source, input.pattern, name, rows);
-      } else rows.push(name);
-      if (rows.length >= 200) break;
-    }
-    text = rows.join('\n');
+    text = search(root, operation, searchScope(root, input.path), input.pattern);
   } else if (command) {
     need(typeof input.command === 'string' && input.command.length <= 32768, 'Invalid command');
     phase = 'launch';

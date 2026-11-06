@@ -15,12 +15,13 @@ import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.t
 import { encodingFixture } from "./helpers/image-encoding-fixtures.ts";
 import { loadPhoton } from "../packages/coding-agent/src/utils/photon.ts";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
+import { isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName } from "../packages/coding-agent/src/core/sandbox/workspace-policy.mjs";
 
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
 const guest = source.statements.filter(node => !ts.isImportDeclaration(node)
   && !(ts.isVariableStatement(node) && ["SOURCE", "WORK", "EXCHANGE"].includes(node.declarationList.declarations[0]!.name.getText(source))))
   .map(node => node.getText(source)).join("\n");
-const execute = new Function("fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", guest);
+const execute = new Function("isVmPrivateName", "isVmPrivatePath", "isProtectedWorkspaceName", "fs", "path", "createHash", "isUtf8", "spawnSync", "process", "SOURCE", "WORK", "EXCHANGE", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", guest).bind(undefined, isVmPrivateName, isVmPrivatePath, isProtectedWorkspaceName);
 const png = Buffer.from(await encodingFixture("transparent", 256, 256));
 assert.ok(png.length > 32768, "fixture must exceed shell output capacity");
 

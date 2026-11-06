@@ -17,7 +17,9 @@ const resources = ["windows-sandbox-volume-native.cs", "windows-sandbox-volume-c
     "windows-sandbox-input-install.cs", "windows-sandbox-task-install.cs", "windows-sandbox-task-worker.cs",
     "windows-sandbox-volume-helper.ps1", "windows-sandbox-powershell7.config.json", "windows-sandbox-bootstrap.wsb"];
 fs.mkdirSync(destination, { recursive: true });
-fs.copyFileSync(path.join(root, "packages/coding-agent/src/core/sandbox/workspace-worker.mjs"), path.join(destination, "..", "workspace-worker.mjs"));
+for (const name of ["workspace-worker.mjs", "workspace-policy.mjs", "workspace-policy.d.mts"]) {
+    fs.copyFileSync(path.join(root, "packages/coding-agent/src/core/sandbox", name), path.join(destination, "..", name));
+}
 for (const name of ["image-signature.mjs", "image-signature.d.mts"]) {
     fs.copyFileSync(path.join(root, "packages/coding-agent/src/utils", name), path.join(root, "packages/coding-agent/dist/utils", name));
 }
