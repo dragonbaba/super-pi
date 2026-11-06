@@ -217,6 +217,7 @@ test("MCP complete persisted catalog restores lazily and validates a later-page 
 	assert.equal(f.registered.get("mcp__fixture__first").mcpDestructive, false);
 	assert.equal(f.registered.get("mcp__fixture__last").mcpDestructive, true);
 	assert.equal(f.registered.get("mcp__fixture__last").mcpServer, "fixture");
+	assert.equal(f.registered.get("mcp__fixture__last").mcpToolPrefix, "mcp__fixture__");
 	const restoredTools = new Map<string, any>(), cache = new McpSchemaCache();
 	const restored = new McpBridgeRuntime({ registerTool(value: any) { restoredTools.set(value.name, value); } }, f.root, cache);
 	t.after(() => restored.close());

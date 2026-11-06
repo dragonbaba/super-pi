@@ -17,6 +17,7 @@ import {
   MAX_TOOL_CATALOG_BYTES,
   canonicalJsonShape,
   piToolName,
+  piToolServerPrefix,
   sanitizeText,
   validateJsonShape,
 } from "./security.js";
@@ -478,6 +479,7 @@ export class McpBridgeRuntime {
       requiresMcp: true,
       mcpDestructive: destructive,
       mcpServer: state.config.id,
+      mcpToolPrefix: piToolServerPrefix(state.config.id),
       label: `MCP ${sanitizeText(state.config.id, 32)} / ${sanitizeText(remoteTool.name, 80)}`,
       description: sanitizeText(fullDescription, 1000),
       fullDescription,
