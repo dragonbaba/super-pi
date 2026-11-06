@@ -83,12 +83,13 @@ test("host-restricted classification lifts only literal segments, and suggestion
         "nice --adjustment 5 git push", "env --unset FOO git push", "time -p git push", "git branch | xargs -n 1 git push origin", "coproc git push"])
         assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     const lookup = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "git *" }]);
-    for (const command of ["command -v git", "command -p -v git", "command -pv git"]) assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
+    for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
+        assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
         "Try { npm test } catch [System.Exception] { Write-Error x } finally { git push origin main }", "1..2 | ForEach-Object { git push origin main }",
-        "try {git push origin main} catch {}"])
+        "try {git push origin main} catch {}", "$null = git push origin main", "$out += git push origin main", "$r=git push origin main", "git.exe push origin main"])
         assert.equal(shellRuleVerdict("powershell", command, exact), RULE_DENY, command);
     assert.equal(shellRuleVerdict("powershell", "try { git status } catch { }", exact), RULE_NONE);
     const blocks = new ProjectRuleSet([{ tool: "powershell", decision: "allow", command: "ForEach-Object *" }]);

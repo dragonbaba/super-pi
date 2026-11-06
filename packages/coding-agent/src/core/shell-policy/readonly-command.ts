@@ -94,6 +94,8 @@ const BASH_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["if", "then", "else"
 const POWERSHELL_COMMAND_PREFIXES: ReadonlySet<string> = new Set(["{", ".", "try", "catch", "finally", "if", "elseif", "else",
   "do", "while", "until", "foreach", "for", "switch", "trap"]);
 
+const POWERSHELL_ASSIGNMENT_OPERATORS: ReadonlySet<string> = new Set(["=", "+=", "-=", "*=", "/=", "%=", "??="]);
+
 /** Whether `text` opens a command without being its program (PowerShell keywords in any case). */
 function isCommandPrefix(text: string, powerShell: boolean): boolean {
   if (!powerShell) return BASH_COMMAND_PREFIXES.has(text);
@@ -132,6 +134,8 @@ function dispatchedCommandStart(argv: readonly string[]): number {
       if (word.length > 1 && word.charCodeAt(0) === 45) {
         // `command [-pVv]`: -v or -V anywhere in its options only looks the command up.
         if (name === "command" && word.charCodeAt(1) !== 45 && (word.indexOf("v") > 0 || word.indexOf("V") > 0)) return 0;
+        // `sudo -l cmd` only lists whether the command is permitted.
+        if (name === "sudo" && (word === "--list" || word.charCodeAt(1) !== 45 && word.indexOf("l") > 0)) return 0;
         index += valueOptions.has(word) ? 2 : 1;
         continue;
       }
@@ -156,6 +160,14 @@ function strongerRuleVerdict(rules: ProjectRuleSet, powerShell: boolean, argv: s
     argv.length -= start;
     const dispatched = rules.matchShellWords(false, argv);
     if (dispatched > matched) matched = dispatched;
+  }
+  // On Windows `git.exe push` runs the program a `git push *` rule names.
+  const first = argv[0]!, length = first.length;
+  if (matched !== RULE_DENY && length > 4 && first.charCodeAt(length - 4) === 46 && (first.charCodeAt(length - 3) | 32) === 101
+    && (first.charCodeAt(length - 2) | 32) === 120 && (first.charCodeAt(length - 1) | 32) === 101) {
+    argv[0] = first.slice(0, length - 4);
+    const bare = rules.matchShellWords(powerShell, argv);
+    if (bare > matched) matched = bare;
   }
   return matched >= RULE_ASK && matched > verdict ? matched : verdict;
 }
@@ -268,6 +280,12 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         // A PowerShell segment keeps its script blocks (`try { git push } catch { … }`), and a
         // brace may touch a word (`try {git push}`). Each brace ends the command before it.
         if (powerShell) {
+          // `$null = git push` / `$out += npm test`: the command is on the assignment's right-hand side.
+          if (argv.length === 0 && text.charCodeAt(0) === 36) {
+            if (index + 1 < end && POWERSHELL_ASSIGNMENT_OPERATORS.has(windowsWordText(table, index + 1))) { index++; continue; }
+            const equals = text.indexOf("=");
+            if (equals > 1 && equals < text.length - 1) { argv.push(text.slice(equals + 1)); continue; }
+          }
           let open = 0, close = text.length;
           while (open < close && text.charCodeAt(open) === 123) open++;
           while (close > open && text.charCodeAt(close - 1) === 125) close--;
