@@ -181,6 +181,14 @@ function isInvokedWord(source: string, start: number): boolean {
 }
 
 /** Whether the separator at `at` (after any blank lines) ends a Bash `case` arm: `;;`, `;&` or `;;&`. */
+/** Whether the `(` at `at` is followed by `)`: `name()` declares a function and runs nothing yet. */
+function opensEmptyParens(source: string, at: number): boolean {
+  if (source.charCodeAt(at) !== 40) return false;
+  let index = at + 1;
+  while (source.charCodeAt(index) === 32 || source.charCodeAt(index) === 9) index++;
+  return source.charCodeAt(index) === 41;
+}
+
 /** Whether a Bash case pattern segment ends at its `)`; a line break after it is recorded as the separator instead. */
 function closesCasePattern(table: ShellTokenTable, segment: number): boolean {
   return table.segmentSeparators[segment] === SEGMENT_CLOSE || table.source.charCodeAt(table.segmentSourceEnds[segment]!) === 41;
@@ -364,12 +372,32 @@ let rulesPowerShell = false;
 
 /**
  * The rule verdict for the literal script a shell runs (`bash -lc 'git push'`,
- * `pwsh -Command git push`, `cmd /c git push`), or -1 when `argv` runs no script operand. The program name
+ * `pwsh -Command git push`, `cmd /c git push`, `env -S 'git push'`), or -1 when `argv` runs no script operand. The program name
  * has already been reduced to its basename by `matchCommandWords`.
  */
 function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], powerShell: boolean): number {
   const first = argv[0]!;
   if (scriptNesting >= MAX_SCRIPT_NESTING) return -1;
+  // `env -S 'git push origin main'` / `--split-string=…`: env splits the string into the command's words.
+  if (first === "env") {
+    for (let index = 1; index < argv.length; index++) {
+      const word = argv[index]!;
+      if (word.length < 2 || word.charCodeAt(0) !== 45 || word === "--") return -1;
+      let script: string;
+      if (word === "-S" || word === "--split-string") {
+        if (++index >= argv.length) return -1;
+        script = argv[index]!;
+      } else if (word.charCodeAt(1) === 83) script = word.slice(2); // `-S'git push'`
+      else if (word.startsWith("--split-string=")) script = word.slice(15);
+      else {
+        if (word === "-u" || word === "-C" || word === "--unset" || word === "--chdir") index++;
+        continue;
+      }
+      for (let rest = index + 1; rest < argv.length; rest++) script += " " + argv[rest]!;
+      return nestedScriptVerdict(rules, "bash", script);
+    }
+    return -1;
+  }
   // `cmd /c git push` / `cmd /d /c "git push"`: the rest is parsed in the calling shell's dialect.
   if (first.length === 3 && (first.charCodeAt(0) | 32) === 99 && (first.charCodeAt(1) | 32) === 109 && (first.charCodeAt(2) | 32) === 100) {
     for (let index = 1; index < argv.length; index++) {
@@ -586,6 +614,9 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
     const end = table.segmentEnds[segment]!;
     if (!powerShell) {
       if (arrayDepth > 0) { if (table.segmentDepths[segment]! >= arrayDepth) continue; arrayDepth = 0; }
+      // `git() { … }` names a function; its body segments are matched as usual.
+      if (table.segmentSeparators[segment] === SEGMENT_OPEN && end - firstToken === 1 && (table.flags[firstToken]! & WORD_QUOTED) === 0
+        && opensEmptyParens(table.source, table.segmentSourceEnds[segment]!)) continue;
       // The segment's first command word, past control-flow prefixes (`then case …`, `do case …`).
       let first = table.segmentStart(segment);
       while (first < end - 1 && (table.flags[first]! & WORD_QUOTED) === 0 && isCommandPrefix(table.texts![first]!, false)) first++;

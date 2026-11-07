@@ -87,10 +87,11 @@ test("host-restricted classification lifts only literal segments, and suggestion
     // A rule naming a wrapper matches it at any level.
     const wrapper = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "sudo *" }]);
     for (const command of ["env sudo git push origin main", "command sudo git push"]) assert.equal(shellRuleVerdict("bash", command, wrapper), RULE_DENY, command);
-    for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
+    // A function declaration (`git() { … }`) runs nothing; its body still matches.
+    for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push", "git() { printf x; }"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     // A shell's literal script operand is matched as a command of its own.
-    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'", "bash -euo pipefail -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
+    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'", "bash -euo pipefail -c 'git push'", "env -S 'git push origin main'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // `-n` reads the script without running it.
     for (const command of ["bash -c 'git status'", "bash -n -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_NONE, command);
     // `find -exec` runs its command; `case` arm patterns are not commands, their bodies are.
