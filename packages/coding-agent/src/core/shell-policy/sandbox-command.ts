@@ -61,6 +61,11 @@ const POWERSHELL_SHELLS: ReadonlySet<string> = new Set(["pwsh", "powershell"]);
 /** Commands whose arguments are text, not paths; their redirection targets still count. */
 const TEXT_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf", "write", "write-output", "write-host", "write-information",
   "write-warning", "write-error", "write-verbose", "write-debug"]);
+/** Search option values that are text/numbers, never files. This only narrows path diagnostics. */
+const SEARCH_TEXT_OPTIONS: ReadonlySet<string> = new Set(["--glob", "--iglob", "--replace", "--type", "--type-not", "--type-add", "--type-clear",
+  "--label", "--include", "--exclude", "--exclude-dir", "--color", "--colors", "--encoding", "--engine", "--sort", "--sortr",
+  "--after-context", "--before-context", "--context", "--max-count", "--max-depth", "--max-filesize", "--path-separator"]);
+const SEARCH_FILE_OPTIONS: ReadonlySet<string> = new Set(["--ignore-file", "--exclude-from"]);
 const OPEN_BRACE = "{", CLOSE_BRACE = "}", DYNAMIC = "$", EQUALS = "=", ASSIGNMENT = "_=";
 
 const words: string[] = [];
@@ -131,7 +136,9 @@ function inspectSegment(table: ShellTokenTable, segment: number, powerShell: boo
     }
   }
   if (program >= 0 && depth < MAX_SCRIPT_NESTING) script = scriptOperand(name, program);
-  const text = TEXT_COMMANDS.has(name);
+  const search = name === "rg" || name === "grep";
+  if (search) { addSearchPath(words[program]!, facts); searchPaths(name, program + 1, facts); }
+  const text = search || TEXT_COMMANDS.has(name);
   for (let index = start; index < end && facts.paths.length < MAX_SANDBOX_COMMAND_PATHS; index++) {
     const flags = table.flags[index]!, target = (flags & WORD_REDIRECTION) !== 0;
     if (target) index++;
@@ -145,6 +152,51 @@ function inspectSegment(table: ShellTokenTable, segment: number, powerShell: boo
     }
   }
   return script;
+}
+
+/** rg/grep patterns are data, including the first positional pattern and -e/--regexp.
+ * File operands, -f pattern files and shell redirections keep their existing checks.
+ * Read the already-tokenized words; this neither approves nor rejects any command.
+ */
+function searchPaths(name: string, start: number, facts: SandboxCommandFacts): void {
+  let options = true, hasPattern = false, implicitPattern: string | undefined;
+  for (let index = start; index < words.length; index++) {
+    const word = words[index]!;
+    if (options && word === "--") { options = false; continue; }
+    if (options && word.length > 1 && word.charCodeAt(0) === 45) {
+      let pattern = false, file = false;
+      let value: string | undefined;
+      if (word.charCodeAt(1) === 45) {
+        const equals = word.indexOf("="), option = equals < 0 ? word : word.slice(0, equals);
+        pattern = option === "--regexp" || option === "--file" || name === "rg" && option === "--files";
+        file = option === "--file" || SEARCH_FILE_OPTIONS.has(option);
+        if (option !== "--files" && (pattern || file || SEARCH_TEXT_OPTIONS.has(option))) value = equals < 0 ? words[++index] : word.slice(equals + 1);
+      } else {
+        // A short option taking a value ends its cluster: -Fe PATTERN, -fFILE, -gGLOB.
+        for (let at = 1; at < word.length; at++) {
+          const flag = word.charAt(at);
+          if (flag !== "e" && flag !== "f" && !"ABCm".includes(flag) && !(name === "rg" && "grtT".includes(flag))) continue;
+          pattern = flag === "e" || flag === "f";
+          file = flag === "f";
+          value = at + 1 < word.length ? word.slice(at + 1) : words[++index];
+          break;
+        }
+      }
+      if (pattern) {
+        // With an explicit pattern, an earlier positional word was a file after all.
+        if (!hasPattern && implicitPattern !== undefined) addSearchPath(implicitPattern, facts);
+        hasPattern = true;
+      }
+      if (file && value !== undefined) addSearchPath(value, facts);
+      continue;
+    }
+    if (!hasPattern && implicitPattern === undefined) implicitPattern = word;
+    else addSearchPath(word, facts);
+  }
+}
+
+function addSearchPath(word: string, facts: SandboxCommandFacts): void {
+  if (facts.paths.length < MAX_SANDBOX_COMMAND_PATHS && isDriveAbsolute(word, 0)) facts.paths.push(word);
 }
 
 /** `bash -c 'npm install'`, `pwsh -Command "npm install"`: the literal script, tagged with its dialect. */

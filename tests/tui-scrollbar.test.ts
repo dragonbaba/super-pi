@@ -85,6 +85,22 @@ test("hidden auto scrollbar keeps every reserved row on the cached full-width fa
 	assert.deepEqual(thumbRows(steady.lines), []);
 });
 
+test("changing scrollbar reservation cannot reuse rows painted at the previous content width", () => {
+	const { scroll } = createScroll("hidden", Array<string>(5).fill("ABCDEFGH"));
+	const scratch = new LayoutFrameScratch();
+	const freshScratch = new LayoutFrameScratch();
+	try {
+		render(scroll, scratch, 8, 3);
+		for (const mode of ["auto", "hidden", "always", "hidden"] as const) {
+			scroll.setScrollbar(mode);
+			const cached = render(scroll, scratch, 8, 3);
+			freshScratch.clear();
+			const fresh = render(scroll, freshScratch, 8, 3);
+			assert.deepEqual(cached.lines, fresh.lines, mode);
+		}
+	} finally { scratch.clear(); freshScratch.clear(); }
+});
+
 test("visible scrollbar paints thumb cells inline while the other rows stay cached", () => {
 	const { scroll } = createScroll("auto");
 	const scratch = new LayoutFrameScratch();

@@ -63,6 +63,26 @@ function fixture(options: { session?: SandboxNetworkSession; hasUI?: boolean; ch
     async close() { await owner.close(); await runtime.executionBoundary.dispose(); } };
 }
 
+test("sandbox search patterns stay text while search files and redirections stay paths", async () => {
+  const f = fixture({ hasUI: false });
+  try {
+    for (const command of ["rg -F -e 'D:/outside' .", "rg --regexp=D:/outside .", "rg -F 'D:/outside' .", "grep -F -e 'D:/outside' .",
+      "rg -FeD:/outside .", "rg -g D:/glob -e D:/pattern ."]) {
+      await f.run(command);
+      assert.deepEqual(f.invoked.at(-1), undefined, command);
+    }
+    await f.run("rg -F -e 'D:/pattern' D:/outside > D:/result.txt");
+    assert.deepEqual(f.invoked.at(-1), ["D:/outside", "D:/result.txt"]);
+    await f.run("rg -f D:/patterns.txt D:/outside");
+    assert.deepEqual(f.invoked.at(-1), ["D:/patterns.txt", "D:/outside"]);
+    await f.run("rg D:/outside -e needle");
+    assert.deepEqual(f.invoked.at(-1), ["D:/outside"]);
+    const facts: SandboxCommandFacts = { network: undefined, paths: [] };
+    inspectSandboxCommand("powershell", "& 'D:\\tools\\rg.exe' -e 'D:\\pattern' D:\\outside", facts);
+    assert.deepEqual(facts.paths, ["D:\\tools\\rg.exe", "D:\\outside"]);
+  } finally { await f.close(); }
+});
+
 test("an offline sandbox asks once before a network command; consent rebuilds for the session, refusal does not run", async () => {
   const session = new SandboxNetworkSession();
   const allowed = fixture({ session, choice: "允许本会话联网" });
