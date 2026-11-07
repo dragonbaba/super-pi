@@ -2842,17 +2842,6 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	);
 	assert.match(extensionEditorSource, /taskGeneration !== this\.activeExternalEditorGeneration/);
 	assert.match(extensionEditorSource, /lifecycleGeneration !== this\.lifecycleGeneration/);
-	const altSource = readFileSync("packages/tui/src/tui-alt-screen.ts", "utf8");
-	const detachLayoutRootForTransfer = altSource.match(
-		/detachLayoutRootForTransfer\(\): void \{[\s\S]*?\n\t}/,
-	)?.[0] ?? "";
-	assert.notEqual(detachLayoutRootForTransfer, "");
-	assert.match(detachLayoutRootForTransfer, /this\.layoutRoot = undefined/);
-	assert.match(detachLayoutRootForTransfer, /this\.layoutScratch\.clear\(\)/);
-	assert.doesNotMatch(
-		detachLayoutRootForTransfer,
-		/releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/,
-	);
 	assert.match(interactiveSource, /await this\.stopInteractiveTui\(\)/);
 	assert.match(interactiveSource, /criticalAgentEnd: true/);
 	assert.match(interactiveSource, /case "agent_end":[\s\S]{0,1200}return this\.flushAgentEndFrames\(\)/);

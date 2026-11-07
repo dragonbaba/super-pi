@@ -455,9 +455,10 @@ test("TUI instrumentation records retained reuse, overlay, diff, bytes, and pend
 		tui.renderNow();
 		let metrics = instrumentation.snapshot();
 		assert.equal(metrics.rootRenders, 1);
-		// The first frame is a width change: every record is measured without keeping
-		// lines, so the active record is composed once more (completed: cached).
-		assert.equal(metrics.transcriptItemRenders, 3);
+		// The first frame is a width change: uncached tail records keep their measured
+		// lines for composition, so the active record renders once (completed: cached).
+		assert.equal(metrics.transcriptItemRenders, 2);
+		assert.equal(metrics.activeItemRenders, 1);
 		assert.equal(metrics.overlayRenders, 1);
 		assert.equal(metrics.generatedLines, 2);
 		assert.equal(metrics.terminalDiffLines, 20);

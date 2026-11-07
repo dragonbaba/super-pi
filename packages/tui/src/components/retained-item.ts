@@ -943,7 +943,16 @@ export class RetainedContainer extends Container implements LineViewportComponen
 			this.viewportWidth = safeWidth;
 			this.dirtyViewportRecords.clear();
 			this.clearPreparedViewportLines();
-			for (const record of this.viewportRecords) this.measureViewportRecord(record, safeWidth, false);
+			// Completed records hit their retained cache on the next render, so keep
+			// lines only for uncached records near the tail, at most one height block.
+			// The caller's composition consumes them; the rest are cleared with the
+			// other prepared lines.
+			const records = this.viewportRecords;
+			const retainFrom = retainPreparedLines ? Math.max(0, records.length - VIEWPORT_HEIGHT_BLOCK_SIZE) : records.length;
+			for (let index = 0; index < records.length; index++) {
+				const record = records[index]!;
+				this.measureViewportRecord(record, safeWidth, index >= retainFrom && record.retained?.completed !== true);
+			}
 			this.rebuildViewportBlockHeights();
 			return;
 		}

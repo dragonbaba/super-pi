@@ -141,6 +141,7 @@ test("layout frame scope hands measured lines to composition without per-frame a
 	const hotNodes: Array<{ node: ts.Node; source: ts.SourceFile }> = [
 		{ node: findMethod(retainedSource, "RetainedContainer", "getContentHeight"), source: retainedSource },
 		{ node: findMethod(retainedSource, "RetainedContainer", "releaseLayoutFrameScopedState"), source: retainedSource },
+		{ node: findMethod(retainedSource, "RetainedContainer", "prepareViewportIndex"), source: retainedSource },
 		{ node: findFunction(scopeSource, "beginLayoutFrameScope"), source: scopeSource },
 		{ node: findFunction(scopeSource, "endLayoutFrameScope"), source: scopeSource },
 		{ node: findFunction(scopeSource, "isLayoutFrameScopeActive"), source: scopeSource },
@@ -170,6 +171,13 @@ test("layout frame scope hands measured lines to composition without per-frame a
 		getContentHeight,
 		/if \(isLayoutFrameScopeActive\(\)\) \{[\s\S]*?!this\.layoutFrameScopeRegistered[\s\S]*?registerLayoutFrameScopedOwner\(this\);[\s\S]*?this\.prepareViewportIndex\(width, true\);/,
 	);
+	const prepare = findMethod(retainedSource, "RetainedContainer", "prepareViewportIndex").getText(retainedSource);
+	// Width changes keep lines only for uncached records in the last height block.
+	assert.match(
+		prepare,
+		/retainPreparedLines \? Math\.max\(0, records\.length - VIEWPORT_HEIGHT_BLOCK_SIZE\) : records\.length/,
+	);
+	assert.match(prepare, /index >= retainFrom && record\.retained\?\.completed !== true/);
 	const release = findMethod(retainedSource, "RetainedContainer", "releaseLayoutFrameScopedState").getText(retainedSource);
 	assert.match(release, /this\.layoutFrameScopeRegistered = false;\s*this\.clearPreparedViewportLines\(\);/);
 
