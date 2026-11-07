@@ -105,7 +105,7 @@ test("publication failure retains committed receipts when baseline bookkeeping f
   } finally { await owner.close(); runtime.nativePermissions.dispose(); await runtime.executionBoundary.dispose(); await fs.rm(root, { recursive: true }); }
 });
 
-test("permissions menu exposes exactly four modes and never switches after cancellation or stale UI", async t => {
+test("permissions menu exposes exactly five modes and never switches after cancellation or stale UI", async t => {
   const fixture = await alphaSession();
   let choices: string[] = [], selection = 1, confirms = 0; const switched: string[] = [];
   fixture.internal.createExtensionUIContext = () => ({
@@ -116,12 +116,12 @@ test("permissions menu exposes exactly four modes and never switches after cance
   fixture.internal.showExtensionNotify = () => {};
   try {
     await fixture.internal.showPermissionsSelector();
-    assert.equal(choices.length, 4); assert.match(choices[0], /只读.*沙箱/); assert.match(choices[1], /沙箱读写/);
-    assert.match(choices[2], /宿主机受限/); assert.match(choices[3], /宿主机完全权限/);
+    assert.equal(choices.length, 5); assert.match(choices[0], /只读.*沙箱/); assert.match(choices[1], /沙箱读写/);
+    assert.match(choices[2], /^3 · 宿主机受限$/); assert.match(choices[3], /宿主机受限 · Auto 审查/); assert.match(choices[4], /宿主机完全权限/);
     assert.deepEqual(switched, ["sandbox-write"]);
-    // Both host tiers confirm first; a declined confirmation never switches.
-    for (selection of [2, 3]) await fixture.internal.showPermissionsSelector();
-    assert.equal(confirms, 2); assert.equal(switched.length, 1);
+    // Every host tier confirms first; a declined confirmation never switches.
+    for (selection of [2, 3, 4]) await fixture.internal.showPermissionsSelector();
+    assert.equal(confirms, 3); assert.equal(switched.length, 1);
     selection = -1; await fixture.internal.showPermissionsSelector(); assert.equal(switched.length, 1);
     fixture.internal.createExtensionUIContext = () => ({ select: async (_title: string, values: string[]) => {
       fixture.internal.tuiLifecycleGeneration++; return values[0];

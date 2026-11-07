@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { assertPermissionMode, isHostPermissionMode, type SessionPermissionMode } from "./permission-mode.ts";
+import { assertPermissionMode, isHostPermissionMode, isRestrictedHostMode, type SessionPermissionMode } from "./permission-mode.ts";
+import { AutoReviewBreaker, runAutoReview } from "./auto-review.ts";
 import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
@@ -58,6 +59,7 @@ const REFUSAL_KEY = /^[a-f0-9]{64}$/;
 const APPROVAL_CHOICES = ["允许一次", "拒绝", "拒绝并说明原因"];
 const REMEMBER_CHOICE = "允许，并在本项目不再询问";
 const REMEMBER_CHOICES = [APPROVAL_CHOICES[0]!, REMEMBER_CHOICE, APPROVAL_CHOICES[1]!, APPROVAL_CHOICES[2]!];
+const AUTO_PAUSED_STATUS = "宿主机受限 · Auto 已暂停（改为询问）";
 const assertSignal = AbortSignal.prototype.throwIfAborted;
 function inside(root: string, target: string): boolean {
     const part = relative(root, target);
@@ -133,6 +135,25 @@ function describeRules(rules: readonly ProjectPermissionRule[]): string {
     return text;
 }
 
+/** A delete (or a move, which deletes its source) by a file tool, a batch item or a recognized shell target. */
+function deletes(tool: string, input: Record<string, any>, shell: NativeShellMutations | undefined): boolean {
+    if (tool === "delete" || tool === "move") return true;
+    if (tool === "file_batch") {
+        for (const item of input.operations) if (item.operation === "delete" || item.operation === "move") return true;
+        return false;
+    }
+    if (shell) for (const target of shell.targets) if (target.kind !== "write") return true;
+    return false;
+}
+
+/** The request as the approval dialog and the Auto reviewer both show it. */
+function askDetails(input: Record<string, any>, shell: NativeShellMutations | undefined, shellCwd: string | undefined,
+    host: { details: string } | undefined, mutation: boolean, paths: readonly string[], destructiveMcp: boolean): string {
+    return shell ? `cwd: ${shellCwd}\ncommand: ${input.command}\n${host!.details}`
+        : mutation ? host?.details || paths.join("\n")
+        : (destructiveMcp ? "MCP 工具声明了 destructiveHint，可能产生破坏性副作用。\n" : "") + JSON.stringify(input, null, 2);
+}
+
 /** A recognized shell write whose canonical target is an existing directory; `paths` is index-aligned with the targets. */
 async function writesIntoDirectory(shell: NativeShellMutations, paths: readonly string[]): Promise<boolean> {
     for (let index = 0; index < shell.targets.length; index++) {
@@ -195,11 +216,14 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     private readonly directories: readonly string[];
     /** Project-shared rules (R4), read before every authorization when the file changed. */
     private readonly project?: ProjectPermissionStore;
+    /** host-auto only: rejections that hand the asks back to the user for this runtime. */
+    private readonly autoReview?: AutoReviewBreaker;
     constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode,
         directories: readonly string[] = [], project?: ProjectPermissionStore) {
         this.directories = directories;
         this.project = project;
         this.mode = mode;
+        if (mode === "host-auto") this.autoReview = new AutoReviewBreaker();
         if (mode !== undefined) { assertPermissionMode(mode); if (isHostPermissionMode(mode) !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
         if (environment !== "sandbox" && environment !== "trusted-host") throw new Error("Invalid executionEnvironment");
         if (config.approval !== undefined && config.approval !== "interactive" && config.approval !== "never") throw new Error("Invalid executionPermissions.approval");
@@ -344,6 +368,36 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         for (const rule of suggestions) rules.push({ tool, decision: "allow", command: rule });
         return rules;
     }
+    /** An explicit ask rule covers this request (or a batch item), apart from the defaults. */
+    private async ruleAsks(tool: string, input: Record<string, any>, paths: readonly string[], cwd: string,
+        definition: McpRuleIdentity | undefined): Promise<boolean> {
+        if (await this.decision(tool, input.command, paths, cwd, "allow", definition) === "ask") return true;
+        if (tool !== "file_batch") return false;
+        let index = 0;
+        for (const item of input.operations) {
+            const count = item.destination === undefined ? 1 : 2;
+            if (await this.decision(item.operation, undefined, paths.slice(index, index + count), cwd, "allow") === "ask") return true;
+            index += count;
+        }
+        return false;
+    }
+    /** One Auto review; a rejection or any review failure leaves the operation unexecuted. */
+    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, check: () => void): Promise<void> {
+        if (request.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one review; configure an explicit scoped rule");
+        const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal);
+        // A cancelled turn or a stale permission context is not the reviewer's rejection.
+        check();
+        const tripped = this.autoReview!.record(verdict.approved);
+        if (ctx.hasUI) {
+            ctx.ui.notify(`Auto 审查${verdict.approved ? "批准" : "拒绝"}：${tool}${verdict.reason ? " — " + verdict.reason : ""}`, verdict.approved ? "info" : "warning");
+            if (tripped) {
+                ctx.ui.setStatus("permissions", AUTO_PAUSED_STATUS);
+                ctx.ui.notify("Auto 审查连续拒绝 3 次或最近 50 次中拒绝 10 次，本次运行改回人工询问；重新选择 /permissions 可恢复。", "warning");
+            }
+        }
+        if (!verdict.approved) throw new Error("[AUTO_REVIEW_DENIED] Auto review rejected this operation; it was not executed"
+            + (verdict.reason ? ": " + verdict.reason : "") + ". Do not retry it in another form; tell the user or take an approach that needs no approval.");
+    }
     /** Project rules for `/permissions rules`; undefined when this session has no project store. */
     describeProjectRules(): ReturnType<ProjectPermissionStore["describe"]> | undefined {
         return this.project?.describe();
@@ -448,7 +502,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const project = this.project ? await this.project.refresh() : undefined; check();
         const projectWarning = this.project?.takeWarning();
         if (projectWarning && ctx.hasUI) ctx.ui.notify(projectWarning, "warning");
-        const restricted = this.mode === "host-restricted";
+        const restricted = isRestrictedHostMode(this.mode);
         const shellTool = event.toolName === "bash" || event.toolName === "powershell";
         const hostShell = isHostPermissionMode(this.mode) && shellTool;
         const shellBinding = hostShell ? await prepareShellCwd(input, ctx.cwd) : undefined; check();
@@ -549,11 +603,19 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition)
             && !projectToolAllow;
         if (destructiveMcp) decision = "ask";
+        // host-auto: the session model answers an ordinary ask in the user's place; explicit ask
+        // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
+        if (decision === "ask" && this.autoReview && !this.autoReview.tripped && this.approval !== "never"
+            && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
+            && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
+            check();
+            await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`
+                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), check);
+            decision = "allow";
+        }
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
-            const details = shell ? `cwd: ${shellCwd}\ncommand: ${input.command}\n${host!.details}`
-                : mutation ? host?.details || paths.join("\n")
-                : (destructiveMcp ? "MCP 工具声明了 destructiveHint，可能产生破坏性副作用。\n" : "") + JSON.stringify(input, null, 2);
+            const details = askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const remembered = liftable && !host?.ask && projectVerdict === RULE_NONE
                 ? await this.rememberableRules(event.toolName, input.command, paths, ctx.cwd, definition) : undefined;
