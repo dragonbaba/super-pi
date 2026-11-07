@@ -255,7 +255,9 @@ function wrapperOptions(values: readonly string[], queries = ""): WrapperOptions
 }
 const NO_WRAPPER_OPTIONS = wrapperOptions([]);
 const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, WrapperOptions> = new Map([
-  ["command", wrapperOptions([], "vV")], ["builtin", NO_WRAPPER_OPTIONS], ["nohup", NO_WRAPPER_OPTIONS], ["time", NO_WRAPPER_OPTIONS],
+  ["command", wrapperOptions([], "vV")], ["builtin", NO_WRAPPER_OPTIONS], ["nohup", NO_WRAPPER_OPTIONS],
+  // GNU `time -f FORMAT -o FILE cmd`; the Bash keyword `time -p` takes no value.
+  ["time", wrapperOptions(["-f", "-o", "--format", "--output"])],
   // `--replace[=R]`, `--eof[=E]` and `--max-lines[=N]` take only an attached optional value.
   ["xargs", wrapperOptions(["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter",
     "--max-args", "--max-procs", "--max-chars", "--process-slot-var"])],
@@ -780,6 +782,8 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         }
       }
       if (declaration && argv.length === 0) { declaration = false; continue; }
+      // `git --% push origin main`: the stop-parsing token itself is not passed to the program.
+      if (powerShell && argv.length > 0 && (flags & WORD_QUOTED) === 0 && text === "--%") continue;
       argv.push(expression && argv.length === 0 ? "" : text);
     }
     verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
