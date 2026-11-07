@@ -36,7 +36,9 @@ const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-P", "--paginate", "-p", "--no-
 const RSYNC_VALUE_OPTIONS = new Set(["--exclude", "--include", "--filter", "--exclude-from", "--include-from", "--files-from", "--rsh",
   "--rsync-path", "--log-file", "--temp-dir", "--backup-dir", "--partial-dir", "--compare-dest", "--copy-dest", "--link-dest", "--chmod",
   "--chown", "--password-file", "--suffix", "--timeout", "--bwlimit", "--max-size", "--min-size", "--port", "--out-format", "--usermap",
-  "--groupmap", "--modify-window", "--contimeout", "--iconv", "--remote-option"]);
+  "--groupmap", "--modify-window", "--contimeout", "--iconv", "--remote-option", "--max-delete", "--max-alloc", "--block-size", "--checksum-choice",
+  "--compress-choice", "--compress-level", "--skip-compress", "--info", "--debug", "--stop-after", "--stop-at", "--outbuf", "--sockopts", "--address",
+  "--protocol", "--checksum-seed", "--write-batch", "--only-write-batch", "--read-batch", "--copy-as"]);
 /** Short rsync options that take the next word when they end their cluster (`-e ssh`, `-avf 'merge x'`). */
 const RSYNC_SHORT_VALUE_OPTIONS = "efTBM";
 // Native authorization only: PowerShell file cmdlets, after Claude Code's PowerShell
@@ -219,24 +221,32 @@ function addPositionalTargets(
 /**
  * `rsync [options] source… destination`: a local destination is written, and with `--delete*`
  * files there are deleted. A remote destination (`host:path`, `host::module`, `rsync://`) or a
- * single operand (a listing) is left to the unknown-command handling.
+ * single operand (a listing) is left to the unknown-command handling. A dry run (`-n`,
+ * `--dry-run`, `--list-only`) changes nothing.
  */
 function inspectRsync(tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
-  let destination = -1, operands = 0, deletes = false;
+  let destination = -1, operands = 0, deletes = false, dryRun = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
     if (token === "--") { operands += tokens.length - index - 1; if (index + 1 < tokens.length) destination = tokens.length - 1; break; }
     if (token.startsWith("--")) {
       if (token.startsWith("--delete") || token === "--del") deletes = true;
+      else if (token === "--dry-run" || token === "--list-only") dryRun = true;
       else if (RSYNC_VALUE_OPTIONS.has(token)) index++;
       continue;
     }
     if (token.length > 1 && token.charCodeAt(0) === 45) {
-      if (RSYNC_SHORT_VALUE_OPTIONS.includes(token[token.length - 1]!)) index++;
+      // `-avn`: letters up to the first value option; that option takes the rest or, at the end, the next word.
+      for (let letter = 1; letter < token.length; letter++) {
+        const code = token.charCodeAt(letter);
+        if (code === 110) dryRun = true; // `n`
+        else if (RSYNC_SHORT_VALUE_OPTIONS.includes(token[letter]!)) { if (letter === token.length - 1) index++; break; }
+      }
       continue;
     }
     operands++; destination = index;
   }
+  if (dryRun) return true;
   if (operands < 2 || isRemoteRsyncOperand(tokens[destination]!)) return false;
   markMutation(builder, deletes ? "rsync_delete" : "rsync");
   addTarget(builder, tokens[destination]!, cwd, true, tokens.expansions?.[destination], deletes);
@@ -261,6 +271,7 @@ function inspectTarExtract(tokens: PermissionTokens, start: number, cwd: string,
     if (token === "--extract" || token === "--get") extract = true;
     else if (token === "-C" || token === "--directory") { directory = ++index; directoryValue = tokens[index]; }
     else if (token.startsWith("--directory=")) { directory = index; directoryValue = token.slice(12); }
+    else if (token.length > 2 && token.charCodeAt(0) === 45 && token.charCodeAt(1) === 67) { directory = index; directoryValue = token.slice(2); } // `-C../out`
     else if (!token.startsWith("--") && (token.charCodeAt(0) === 45 || index === start) && token.includes("x")) extract = true;
   }
   if (!extract) return false;
@@ -796,7 +807,8 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
     markMutation(builder, `git_${subcommand}`);
-    addTarget(builder, directory ? directory + "/.git" : ".git", cwd, true, expansion);
+    // With `-C` the repository is that directory (its `.git` may be a linked worktree's pointer file, which is not written).
+    addTarget(builder, directory || ".git", cwd, true, expansion);
     // `git worktree remove [--force] <path>` deletes that worktree's directory.
     if (subcommand === "worktree" && tokens[at + 1] === "remove") {
       let path = at + 2;

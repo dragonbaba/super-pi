@@ -27,7 +27,7 @@ test("sandbox command facts: common network commands and static absolute paths, 
     ["bash", "echo npm install", undefined], ["powershell", "Get-ChildItem", undefined],
     // An explicit offline flag never reaches the network; `--prefer-offline` still may.
     ["bash", "npm ci --offline", undefined], ["bash", "cargo build --offline", undefined], ["bash", "pip install --no-index -f wheels x", undefined],
-    ["bash", "npm install --prefer-offline", "npm install"],
+    ["bash", "npm install --prefer-offline", "npm install"], ["bash", "pip install --no-index --find-links https://example.test/whl torch", "pip install"],
   ];
   for (const [tool, command, expected] of network) {
     inspectSandboxCommand(tool, command, facts);

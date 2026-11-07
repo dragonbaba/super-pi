@@ -20,13 +20,16 @@ test("a PowerShell location change makes later targets uncertain, like Bash cd",
 });
 
 test("git -C, worktree remove, rsync and tar extraction name the directory they change", () => {
-  assert.deepEqual(scan("bash", "git -C sub clean -fdx"), { targets: [`write:${resolve(cwd, "sub/.git")}`], uncertain: false });
+  // With -C the repository directory is the target (a linked worktree's `.git` is a pointer file that is not written).
+  assert.deepEqual(scan("bash", "git -C sub clean -fdx"), { targets: [`write:${resolve(cwd, "sub")}`], uncertain: false });
   assert.deepEqual(scan("bash", "git worktree remove --force ../wt"),
     { targets: [`delete:${resolve(cwd, "../wt")}`, `write:${resolve(cwd, ".git")}`], uncertain: false });
   assert.deepEqual(scan("bash", "rsync -a --delete src/ dest/"), { targets: [`delete:${resolve(cwd, "dest")}`], uncertain: false });
   assert.deepEqual(scan("bash", "rsync -a src/ ../outside/b"), { targets: [`write:${resolve(cwd, "../outside/b")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "rsync -a --delete src/ ../outside/ --max-delete 100"), { targets: [`delete:${resolve(cwd, "../outside")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar -C out -xf a.tar"), { targets: [`write:${resolve(cwd, "out")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar xf a.tar"), { targets: [`write:${cwd}`], uncertain: false });
+  assert.deepEqual(scan("bash", "tar -xf a.tar -C../outside"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
   // Reads, remote destinations and archive creation change nothing here.
-  for (const command of ["git -C sub status", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist"]) assert.equal(scan("bash", command), undefined, command);
+  for (const command of ["git -C sub status", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist", "rsync -an --delete ../build/ .", "rsync -a --dry-run --delete src/ dest/"]) assert.equal(scan("bash", command), undefined, command);
 });

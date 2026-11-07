@@ -243,12 +243,18 @@ function networkCommand(name: string, program: number, powerShell: boolean): str
   return subcommands.has(subcommand) && !explicitlyOffline(index) ? name + " " + subcommand : undefined;
 }
 
-/** `npm ci --offline`, `cargo fetch --offline`, `pip install --no-index -f wheels x`: the user asked for no network. */
+/**
+ * `npm ci --offline`, `cargo fetch --offline`, `pip install --no-index -f wheels x`: the user asked
+ * for no network. A URL argument (`--no-index --find-links https://…`) still fetches.
+ */
 function explicitlyOffline(subcommand: number): boolean {
+  let offline = false;
   for (let index = subcommand + 1; index < words.length && words[index] !== CLOSE_BRACE; index++) {
-    if (OFFLINE_FLAGS.has(words[index]!)) return true;
+    const word = words[index]!;
+    if (OFFLINE_FLAGS.has(word)) offline = true;
+    else if (word.includes("://")) return false;
   }
-  return false;
+  return offline;
 }
 
 /** Only `--version` / `--help` style words follow the command. */
