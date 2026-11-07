@@ -2926,6 +2926,7 @@ export class InteractiveMode {
 		const mode = modes[choices.indexOf(selected)];
 		if (!mode) return;
 		if (mode === "host-restricted" && !await ui.confirm("切换到宿主机受限", "此模式退出沙箱隔离，工具在本机执行。工作区内的文件操作和只读命令直接执行；其余命令、MCP 调用和工作区外的读写会先询问。是否切换？")) return;
+		if (mode === "host-auto" && !await ui.confirm("切换到宿主机受限 · Auto 审查", "此模式与宿主机受限相同，但本来要询问你的操作先交给当前会话模型审查：批准则直接执行，拒绝则不执行并把原因告诉模型。每次审查调用一次当前模型，会产生费用。显式的 ask 规则和工作区外的删除仍由你确认；连续拒绝 3 次或最近 50 次中拒绝 10 次后，本次运行改回询问你。审查结果不会保存为规则。是否切换？")) return;
 		if (mode === "host-write" && !await ui.confirm("切换到宿主机完全权限", "此模式退出沙箱隔离，工具在本机执行，并可按授权修改本机文件，除敏感目标外不再逐项询问。是否切换？")) return;
 		if (this.session !== session || this.tuiLifecycleGeneration !== generation) return;
 		try {
