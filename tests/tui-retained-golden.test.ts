@@ -14,7 +14,7 @@ import { RetainedContainer, type RetainedRenderContext } from "../packages/tui/s
 import { Spacer } from "../packages/tui/src/components/spacer.ts";
 import { Text } from "../packages/tui/src/components/text.ts";
 import { Container } from "../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 const EMPTY_USAGE = {
@@ -177,15 +177,24 @@ test("production message rendering stays golden-equivalent across retained inval
 		retained.container.invalidate();
 		assertEquivalent(100, "explicit invalidate");
 
-		const referenceTui = new TuiMainScreen(new FakeTerminal(100, 30), false);
-		const retainedTui = new TuiMainScreen(new FakeTerminal(100, 30), false);
+		const referenceTui = new TuiAltScreen(new FakeTerminal(100, 30), false, undefined, { mouse: false });
+		const retainedTui = new TuiAltScreen(new FakeTerminal(100, 30), false, undefined, { mouse: false });
 		referenceTui.addChild(reference.container);
 		retainedTui.addChild(retained.container);
 		referenceTui.showOverlay(new Markdown("Overlay 中文 😀", 1, 0, getMarkdownTheme()), { width: 30 });
 		retainedTui.showOverlay(new Markdown("Overlay 中文 😀", 1, 0, getMarkdownTheme()), { width: 30 });
-		referenceTui.renderNow();
-		retainedTui.renderNow();
-		assert.deepEqual(retainedTui.captureRenderState().previousLines, referenceTui.captureRenderState().previousLines);
+		referenceTui.start();
+		retainedTui.start();
+		try {
+			referenceTui.renderNow();
+			retainedTui.renderNow();
+			const screen = (tui: TuiAltScreen) => (tui as unknown as { previousScreen: string[] }).previousScreen;
+			assert.ok(screen(referenceTui).length > 0);
+			assert.deepEqual(screen(retainedTui), screen(referenceTui));
+		} finally {
+			referenceTui.stop();
+			retainedTui.stop();
+		}
 	} finally {
 		setTheme("dark");
 	}

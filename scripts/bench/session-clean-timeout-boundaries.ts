@@ -7,7 +7,6 @@ import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../..
 import { getKeybindings } from "../../packages/tui/src/keybindings.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { runBenchmarkMain, readIntegerOption } from "./benchmark.ts";
 
 class NoopTerminal implements Terminal {
@@ -58,7 +57,7 @@ function selectorItems(): Array<{ value: number; label: string; selectable?: boo
 
 interface SelectorRun {
 	renderCalls: number; renderedLines: number; detailWrapCalls: number;
-	mainFrameWrites: number; altFrameWrites: number; totalFrameUtf16CodeUnits: number; maximumFrameUtf16CodeUnits: number;
+	firstFrameWrites: number; secondFrameWrites: number; totalFrameUtf16CodeUnits: number; maximumFrameUtf16CodeUnits: number;
 	maximumCacheLines: number; maximumVisibleDetailRows: number; finalCacheLines: number; releasedFieldCount: number;
 	ownerRefs?: WeakRef<object>[]; initialDetailRefs?: WeakRef<object>[]; resizedDetailRefs?: WeakRef<object>[];
 }
@@ -81,20 +80,20 @@ function instrumentSelector(selector: BoundedMemorySelector<number>, counters: S
 }
 
 async function runSelectorFixture(iterations: number, lifecycleDiagnostics: boolean): Promise<SelectorRun> {
-	const main = new NoopTerminal(60, 24);
-	const alt = new NoopTerminal(60, 24);
+	const first = new NoopTerminal(60, 24);
+	const second = new NoopTerminal(60, 24);
 	const counters = { renderCalls: 0, renderedLines: 0, maximumCacheLines: 0, maximumVisibleDetailRows: 0 };
 	const selectors = [
 		new BoundedMemorySelector("清理", selectorItems(), theme, keybindings, () => {}, () => 22, 30),
 		new BoundedMemorySelector("清理", selectorItems(), theme, keybindings, () => {}, () => 22, 30),
 	];
 	for (const selector of selectors) instrumentSelector(selector, counters);
-	const mainScreen = new TuiMainScreen(main, true);
-	const altScreen = new TuiAltScreen(alt, true);
-	mainScreen.addChild(selectors[0]!); altScreen.addChild(selectors[1]!);
-	mainScreen.setFocus(selectors[0]!); altScreen.setFocus(selectors[1]!);
-	mainScreen.start(); altScreen.start(); mainScreen.renderNow(true); altScreen.renderNow(true);
-	main.emit("\t"); alt.emit("\t"); mainScreen.renderNow(true); altScreen.renderNow(true);
+	const firstScreen = new TuiAltScreen(first, true);
+	const secondScreen = new TuiAltScreen(second, true);
+	firstScreen.addChild(selectors[0]!); secondScreen.addChild(selectors[1]!);
+	firstScreen.setFocus(selectors[0]!); secondScreen.setFocus(selectors[1]!);
+	firstScreen.start(); secondScreen.start(); firstScreen.renderNow(true); secondScreen.renderNow(true);
+	first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
 	const initialCaches: string[][] = [];
 	for (const selector of selectors) initialCaches.push((selector as unknown as { detailLines: string[] }).detailLines);
 	for (const cache of initialCaches) {
@@ -108,12 +107,12 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 		for (const cache of initialCaches) initialDetailRefs.push(new WeakRef<object>(cache));
 	}
 	for (let index = 1; index < iterations; index++) {
-		main.emit("\t"); alt.emit("\t"); mainScreen.renderNow(true); altScreen.renderNow(true);
+		first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
 	}
-	main.emit("\t"); alt.emit("\t"); mainScreen.renderNow(true); altScreen.renderNow(true);
-	if ((selectors[0] as unknown as { focus: string }).focus === "actions") main.emit("\t");
-	if ((selectors[1] as unknown as { focus: string }).focus === "actions") alt.emit("\t");
-	main.resizeTo(42, 16); alt.resizeTo(42, 16); mainScreen.renderNow(true); altScreen.renderNow(true);
+	first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
+	if ((selectors[0] as unknown as { focus: string }).focus === "actions") first.emit("\t");
+	if ((selectors[1] as unknown as { focus: string }).focus === "actions") second.emit("\t");
+	first.resizeTo(42, 16); second.resizeTo(42, 16); firstScreen.renderNow(true); secondScreen.renderNow(true);
 
 	const detailLines: string[][] = [];
 	for (const selector of selectors) detailLines.push((selector as unknown as { detailLines: string[] }).detailLines);
@@ -131,17 +130,17 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 		maximumCacheLines: counters.maximumCacheLines,
 		maximumVisibleDetailRows: counters.maximumVisibleDetailRows,
 		finalCacheLines: Math.max(detailLines[0]!.length, detailLines[1]!.length),
-		mainFrameWrites: main.frameWrites, altFrameWrites: alt.frameWrites,
-		totalFrameUtf16CodeUnits: main.totalFrameUtf16CodeUnits + alt.totalFrameUtf16CodeUnits,
-		maximumFrameUtf16CodeUnits: Math.max(main.maximumFrameUtf16CodeUnits, alt.maximumFrameUtf16CodeUnits),
+		firstFrameWrites: first.frameWrites, secondFrameWrites: second.frameWrites,
+		totalFrameUtf16CodeUnits: first.totalFrameUtf16CodeUnits + second.totalFrameUtf16CodeUnits,
+		maximumFrameUtf16CodeUnits: Math.max(first.maximumFrameUtf16CodeUnits, second.maximumFrameUtf16CodeUnits),
 	};
 	let ownerRefs: WeakRef<object>[] | undefined;
 	if (lifecycleDiagnostics) {
 		ownerRefs = [];
 		for (const selector of selectors) ownerRefs.push(new WeakRef<object>(selector));
 	}
-	await mainScreen.dispose({ preserveScreen: true });
-	await altScreen.dispose({ preserveScreen: true });
+	await firstScreen.dispose({ preserveScreen: true });
+	await secondScreen.dispose({ preserveScreen: true });
 	for (const selector of selectors) selector.dispose();
 	let releasedFieldCount = 0;
 	for (const selector of selectors) {
@@ -249,7 +248,7 @@ const emptySample: SamplingSummary = { sampledBytes: 0, sampledNodeCount: 0, top
 
 await runBenchmarkMain({
 	name: "session-clean-timeout-boundaries-production-paths",
-	fixture: "bounded-selector-main-alt-and-shell-contexts",
+	fixture: "bounded-selector-two-screens-and-shell-contexts",
 	run: async () => {
 		invocation++;
 		const sampleThisRun = sampleRequested && invocation === warmupRuns + measuredRuns;
@@ -279,7 +278,7 @@ await runBenchmarkMain({
 			selectorRenderCalls: selectorResult.value.renderCalls, selectorRenderedLines: selectorResult.value.renderedLines,
 			selectorDetailWrapCalls: selectorResult.value.detailWrapCalls, selectorMaximumCacheLines: selectorResult.value.maximumCacheLines,
 			selectorMaximumVisibleDetailRows: selectorResult.value.maximumVisibleDetailRows, selectorFinalCacheLines: selectorResult.value.finalCacheLines,
-			selectorFrameWrites: selectorResult.value.mainFrameWrites + selectorResult.value.altFrameWrites,
+			selectorFrameWrites: selectorResult.value.firstFrameWrites + selectorResult.value.secondFrameWrites,
 			selectorTotalFrameUtf16CodeUnits: selectorResult.value.totalFrameUtf16CodeUnits, selectorMaximumFrameUtf16CodeUnits: selectorResult.value.maximumFrameUtf16CodeUnits,
 			selectorReleasedFieldCount: selectorResult.value.releasedFieldCount,
 			shellCalls: shellResult.value.calls, shellMutationFindings: shellResult.value.mutationFindings, shellPermissionFindings: shellResult.value.permissionFindings,
@@ -314,7 +313,7 @@ await runBenchmarkMain({
 		selectorSamplingSiteTableTruncated: finalSampling?.selector.siteTableTruncated ?? false, shellSamplingSiteTableTruncated: finalSampling?.shell.siteTableTruncated ?? false,
 		selectorSamplingTraversalTruncated: finalSampling?.selector.traversalTruncated ?? false, shellSamplingTraversalTruncated: finalSampling?.shell.traversalTruncated ?? false,
 		lifecycle: lifecycleRequested ? (typeof globalThis.gc === "function" ? "final measured run only; three bounded GC turns after awaited dispose" : "requested but GC unavailable; WeakRef recovery undetermined") : "not requested; release counts intentionally omitted",
-		selectorOwner: "one selector-owned detail array per instance; fields cleared after awaited Main/Alt dispose",
+		selectorOwner: "one selector-owned detail array per instance; fields cleared after awaited screen dispose",
 		shellOwner: "call-owned parser views and bounded token scans; no command rewrite, probe, or retained result array",
 		objectPool: false, realFilesystemAccess: false,
 		postGcHeapMeaning: "only present for a run that executed lifecycle GC; final-run heapUsed net change, not cumulative allocation, peak memory, sampled bytes, or leak bytes",

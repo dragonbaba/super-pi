@@ -11,7 +11,6 @@ import { INTEGER_SECONDS_PATTERN } from "../packages/extensions/resource-lifecyc
 import { prepareShellAnalysis } from "../packages/extensions/resource-lifecycle-guard/shell-substitution.ts";
 import { TOOL_CALL_ID_SANITIZE_PATTERN } from "../packages/ai/src/api/anthropic-messages-regex.ts";
 import type { Terminal } from "../packages/tui/src/terminal.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { getKeybindings } from "../packages/tui/src/keybindings.ts";
 import { stripTerminalSequences } from "../packages/tui/src/utils.ts";
@@ -180,101 +179,61 @@ test("memory clean selector keeps a fixed detail area and bounds narrow windows"
   assert.ok(tight.render(40).length <= 11);
 });
 
-test("ordinary Main and Alt child frames stay bounded while toggling a selector", async () => {
-  const mainTerminal = new CaptureTerminal(50, 24);
-  const altTerminal = new CaptureTerminal(50, 24);
-  const main = new TuiMainScreen(mainTerminal, true);
-  const alt = new TuiAltScreen(altTerminal, true);
+test("ordinary Alt child frames stay bounded while toggling a selector", async () => {
+  const terminal = new CaptureTerminal(50, 24);
+  const alt = new TuiAltScreen(terminal, true);
   const selector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
-  const altSelector = new BoundedMemorySelector("清理", confirmationItems(), theme, keybindings, () => {}, () => 22, 1);
   const background = {
     render: () => Array.from({ length: 6 }, (_, index) => `BG-${index.toString().padStart(2, "0")} status 彩色输出 😀`),
     invalidate: () => {},
   };
-  const altBackground = {
-    render: () => Array.from({ length: 6 }, (_, index) => `BG-${index.toString().padStart(2, "0")} status 彩色输出 😀`),
-    invalidate: () => {},
-  };
-  main.addChild(background);
-  main.addChild(selector);
-  alt.addChild(altBackground);
-  alt.addChild(altSelector);
-  main.setFocus(selector);
-  alt.setFocus(altSelector);
-  main.start();
+  alt.addChild(background);
+  alt.addChild(selector);
+  alt.setFocus(selector);
   alt.start();
-  await mainTerminal.flush();
-  await altTerminal.flush();
-  main.renderNow(true);
+  await terminal.flush();
   alt.renderNow(true);
-  await mainTerminal.flush();
-  await altTerminal.flush();
+  await terminal.flush();
   let browseFrames = 0;
   let actionFrames = 0;
   for (let index = 0; index < 100; index++) {
-    mainTerminal.emit("\t");
-    altTerminal.emit("\t");
+    terminal.emit("\t");
     await new Promise<void>(resolve => setTimeout(resolve, 5));
-    main.renderNow(true);
     alt.renderNow(true);
     selector.render(50);
-    altSelector.render(50);
-    await mainTerminal.flush();
-    await altTerminal.flush();
+    await terminal.flush();
     const expectedBrowse = index % 2 === 0;
     assert.equal((selector as any).focus, expectedBrowse ? "browse" : "actions");
-    assert.equal((altSelector as any).focus, expectedBrowse ? "browse" : "actions");
-    const mainFrame = mainTerminal.writes[mainTerminal.writes.length - 1] ?? "";
-    const altFrame = altTerminal.writes[altTerminal.writes.length - 1] ?? "";
-    assert.match(mainFrame, /所选文件详情/);
-    assert.match(altFrame, /所选文件详情/);
+    assert.match(terminal.writes[terminal.writes.length - 1] ?? "", /所选文件详情/);
     if (expectedBrowse) browseFrames++; else actionFrames++;
   }
   assert.deepEqual([browseFrames, actionFrames], [50, 50]);
-  assert.ok(mainTerminal.writes.length > 1);
-  assert.ok(altTerminal.writes.length > 1);
-  const mainPaths = mainTerminal.visible().join("\n").match(/synthetic/g) ?? [];
-  const altPaths = altTerminal.visible().join("\n").match(/synthetic/g) ?? [];
-  assert.ok(mainPaths.length <= 1);
-  assert.ok(altPaths.length <= 1);
-  assert.ok(mainTerminal.writes.length < 500);
-  assert.ok(altTerminal.writes.length < 500);
-  const mainVisible = mainTerminal.visible();
-  const altVisible = altTerminal.visible();
-  assert.match(mainVisible.join("\n"), /BG-\d{2}/);
-  assert.match(altVisible.join("\n"), /BG-\d{2}/);
-  const mainPopupStart = mainVisible.findIndex(line => line.includes("清理"));
-  const altPopupStart = altVisible.findIndex(line => line.includes("清理"));
-  assert.ok(mainPopupStart >= 0 && mainVisible.slice(mainPopupStart).every(line => !line.includes("BG-")));
-  assert.ok(altPopupStart >= 0 && altVisible.slice(altPopupStart).every(line => !line.includes("BG-")));
-  mainTerminal.resizeTo(30, 14);
-  altTerminal.resizeTo(30, 14);
-  main.renderNow(true);
+  assert.ok(terminal.writes.length > 1);
+  assert.ok((terminal.visible().join("\n").match(/synthetic/g) ?? []).length <= 1);
+  assert.ok(terminal.writes.length < 500);
+  const visible = terminal.visible();
+  assert.match(visible.join("\n"), /BG-\d{2}/);
+  const popupStart = visible.findIndex(line => line.includes("清理"));
+  assert.ok(popupStart >= 0 && visible.slice(popupStart).every(line => !line.includes("BG-")));
+  terminal.resizeTo(30, 14);
   alt.renderNow(true);
-  await mainTerminal.flush();
-  await altTerminal.flush();
-  main.stop();
+  await terminal.flush();
   alt.stop();
   selector.dispose();
-  altSelector.dispose();
-  for (const owner of [selector, altSelector]) {
-    assert.equal((owner as any).items.length, 0);
-    assert.equal((owner as any).detailLines.length, 0);
-    assert.equal((owner as any).done, undefined);
-    assert.equal((owner as any).getAvailableRows, undefined);
-  }
-  mainTerminal.dispose();
-  altTerminal.dispose();
+  assert.equal((selector as any).items.length, 0);
+  assert.equal((selector as any).detailLines.length, 0);
+  assert.equal((selector as any).done, undefined);
+  assert.equal((selector as any).getAvailableRows, undefined);
+  terminal.dispose();
 });
 
 async function runProductionOverlayFixture(
-  Screen: typeof TuiMainScreen | typeof TuiAltScreen,
   columns: number,
   rows: number,
   count: number,
 ): Promise<{ before: string[]; opened: string[]; toggled: string[]; resized: string[]; closed: string[]; writes: number }> {
   const terminal = new CaptureTerminal(columns, rows);
-  const screen = new Screen(terminal, true);
+  const screen = new TuiAltScreen(terminal, true);
   const background = {
     render: () => Array.from({ length: rows }, (_, index) => `\x1b[38;5;${index % 8 + 30}mBG-${index.toString().padStart(2, "0")} 背景中文😀e\u0301 ${"x".repeat(index % 11)}\x1b[0m`),
     invalidate: () => {},
@@ -362,16 +321,15 @@ async function runProductionOverlayFixture(
   return { before, opened, toggled, resized, closed, writes: terminal.writes.length };
 }
 
-test("production Main/Alt session clean uses a real bounded overlay and restores screen cells", async () => {
-  const main = await runProductionOverlayFixture(TuiMainScreen, 50, 24, 4);
-  const alt = await runProductionOverlayFixture(TuiAltScreen, 50, 24, 4);
-  const one = await runProductionOverlayFixture(TuiMainScreen, 60, 20, 1);
-  const many = await runProductionOverlayFixture(TuiAltScreen, 90, 30, 30);
-  for (const snapshot of [main, alt, one, many]) {
+test("production session clean uses a real bounded overlay and restores screen cells", async () => {
+  const alt = await runProductionOverlayFixture(50, 24, 4);
+  const one = await runProductionOverlayFixture(60, 20, 1);
+  const many = await runProductionOverlayFixture(90, 30, 30);
+  for (const snapshot of [alt, one, many]) {
     assert.ok(snapshot.writes > 4);
     assert.equal(snapshot.closed.filter(line => line.includes("永久删除以上候选")).length, 0);
   }
-  console.log(JSON.stringify({ screenModel: "xterm-headless", main: main.opened.slice(0, 8), alt: alt.opened.slice(0, 8) }));
+  console.log(JSON.stringify({ screenModel: "xterm-headless", alt: alt.opened.slice(0, 8) }));
 });
 
 const commandOne = "cd /d && timeout 250 find . -maxdepth 5 -type d -iname \"*封神*\" 2>/dev/null | head -20";

@@ -152,7 +152,7 @@
 			"properties": {
 				"showImages": { "type": "boolean", "default": true, "description": "Show images when the terminal supports them." },
 				"imageWidthCells": { "type": "integer", "minimum": 1, "default": 60, "description": "Preferred inline image width in cells." },
-				"clearOnShrink": { "type": "boolean", "description": "Clear rows when content shrinks; otherwise SP_CLEAR_ON_SHRINK controls the default." },
+				"clearOnShrink": { "type": "boolean", "deprecated": true, "description": "Deprecated and ignored: the fullscreen renderer repaints the whole viewport." },
 				"showTerminalProgress": { "type": "boolean", "default": false, "description": "Enable OSC 9;4 terminal progress indicators." }
 			}
 		},

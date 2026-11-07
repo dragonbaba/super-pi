@@ -20,7 +20,7 @@ import { getCapabilities, setCapabilities } from "../../packages/tui/src/termina
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { Text } from "../../packages/tui/src/components/text.ts";
 import type { Component, TUI } from "../../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type BenchEvent = { type: string; [key: string]: unknown };
@@ -88,7 +88,9 @@ class NoopTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-class InstrumentedMainScreen extends TuiMainScreen {
+class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	doRenderCalls = 0;
 	override requestRender(force = false): void { this.requestRenderCalls++; super.requestRender(force); }
@@ -211,7 +213,7 @@ function customDefinition(): ToolDefinition<any, any> {
 type ToolFixtureKind = "generic" | "built-in" | "custom" | "image";
 
 function createFixture(kind: ToolFixtureKind, historyItems: number): {
-	renderer: InstrumentedMainScreen;
+	renderer: InstrumentedAltScreen;
 	terminal: NoopTerminal;
 	transcript: RetainedContainer;
 	component: ToolExecutionComponent;
@@ -220,7 +222,8 @@ function createFixture(kind: ToolFixtureKind, historyItems: number): {
 	instrumentation: TuiRenderInstrumentation;
 } {
 	const terminal = new NoopTerminal();
-	const renderer = new InstrumentedMainScreen(terminal, false);
+	const renderer = new InstrumentedAltScreen(terminal, false, undefined, { mouse: false });
+	renderer.start();
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	for (let index = 0; index < historyItems; index++) transcript.addRetainedChild(new Text(`history-${index}`, 0, 0), { id: `history-${index}`, version: 1, completed: true });
@@ -335,6 +338,7 @@ async function profileFixture(kind: ToolFixtureKind, paced: boolean): Promise<Re
 	const finalContent = (fixture.component as unknown as { result?: { content?: Array<{ text?: string }> } }).result?.content;
 	if (finalContent) for (const block of finalContent) if (block.text) finalText = block.text;
 	if (delivery) await delivery.dispose();
+	if (fixture.renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await fixture.renderer.dispose({ preserveScreen: true });
 	if (kind === "image") setCapabilities(previousCapabilities);
 	return {

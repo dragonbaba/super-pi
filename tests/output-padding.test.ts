@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Box, Container, Image, getCapabilities, setCapabilities, RELEASE_COMPONENT_RENDER_CACHE, RetainedContainer, Text, TuiAltScreen, TuiMainScreen, type Component, type TUI } from "@super-pi/tui";
+import { Box, Container, Image, getCapabilities, setCapabilities, RELEASE_COMPONENT_RENDER_CACHE, RetainedContainer, Text, TuiAltScreen, type Component, type TUI } from "@super-pi/tui";
 import { createToolHtmlRenderer } from "../packages/coding-agent/src/core/export-html/tool-renderer.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -88,13 +88,16 @@ test("tool images follow padding in both protocols and grouped Read preserves pr
 		row.setOutputPad(0); assert.equal(placement(row)[0], "\x1b");
 		row.setOutputPad(1); assert.equal(placement(row)[0], " ");
 		assert.equal(image.getImageId(), id); assert.ok(row.children.includes(image));
-		const terminal = new FakeTerminal(60, 24);
-		const renderer = protocol === "kitty" ? new TuiAltScreen(terminal, false, undefined, { mouse: false }) : new TuiMainScreen(terminal, false);
-		try {
-			if (renderer instanceof TuiAltScreen) renderer.setLayoutRoot(row); else renderer.addChild(row);
-			renderer.start(); renderer.renderNow();
-			assert.ok(terminal.writes.some(frame => protocol === "kitty" ? frame.includes(" \x1b_G") : / (?:\x1b\[\d+A)?\x1b\]1337;/.test(frame)), protocol);
-		} finally { await renderer.dispose({ preserveScreen: true }); }
+		// The fullscreen renderer shows iTerm2 images as placeholders, so only Kitty reaches the terminal.
+		if (protocol === "kitty") {
+			const terminal = new FakeTerminal(60, 24);
+			const renderer = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+			try {
+				renderer.setLayoutRoot(row);
+				renderer.start(); renderer.renderNow();
+				assert.ok(terminal.writes.some(frame => frame.includes(" \x1b_G")), protocol);
+			} finally { await renderer.dispose({ preserveScreen: true }); }
+		}
 		const group = new ReadToolGroupComponent(true, 60, undefined, 0);
 		t.after(() => group[RELEASE_COMPONENT_RENDER_CACHE]());
 		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 128 }, `padding-${protocol}`)!;

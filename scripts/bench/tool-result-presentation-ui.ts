@@ -12,7 +12,7 @@ import {
 	RELEASE_COMPONENT_RENDER_CACHE,
 	setCapabilities,
 	setKeybindings,
-	TuiMainScreen,
+	TuiAltScreen,
 	type Component,
 	type TUI,
 	type TuiRenderInstrumentation,
@@ -598,7 +598,7 @@ function toolResult(toolCallId: string, text: string): ToolResultMessage {
 
 interface InteractiveModeInternals {
 	isInitialized: boolean;
-	renderer: TuiMainScreen;
+	renderer: TuiAltScreen;
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
@@ -738,7 +738,7 @@ async function createModeFixture(
 	const internals = mode as unknown as InteractiveModeInternals;
 	await internals.renderer.dispose({ preserveScreen: true });
 	await yieldToEventLoop();
-	const renderer = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const renderer = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	renderer.setRenderInstrumentation(internals.renderInstrumentation);
 	internals.renderer = renderer;
 	return {

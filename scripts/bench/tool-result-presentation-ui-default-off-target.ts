@@ -9,7 +9,7 @@ import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 const targetRoot = resolve(process.argv[2] ?? ".");
 const moduleUrl = (relativePath: string): string => pathToFileURL(join(targetRoot, relativePath)).href;
 const [
-	{ TuiMainScreen },
+	{ TuiAltScreen },
 	{ AgentSessionRuntime },
 	{ DefaultResourceLoader },
 	{ createAgentSession },
@@ -142,7 +142,7 @@ async function measure(modeName: "absent" | "disabled"): Promise<any> {
 	const internals = interactive as any;
 	await internals.renderer.dispose({ preserveScreen: true });
 	await yieldToEventLoop();
-	const renderer = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const renderer = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	renderer.setRenderInstrumentation(internals.renderInstrumentation);
 	internals.renderer = renderer;
 	internals.isInitialized = true;

@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import { Input } from "../packages/tui/src/components/input.ts";
-import { ViewportContainer } from "../packages/tui/src/components/viewport-container.ts";
-import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { CURSOR_MARKER, renderFakeCursor } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { sliceByColumn, stripTerminalSequences, visibleWidth } from "../packages/tui/src/utils.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
@@ -16,7 +13,8 @@ const theme: EditorTheme = {
 	selectList: { selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity },
 };
 
-for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
+{
+	const Renderer = TuiAltScreen;
 	for (const kind of ["Input", "Editor"]) {
 		test(`${Renderer.name} ${kind}: hardware toggle preserves text, columns and IME without a second cursor`, async () => {
 			const terminal = new FakeTerminal(14, 8);
@@ -44,7 +42,7 @@ for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
 							const writes = terminal.writes.join("");
 							assert.equal(writes.includes("\x1b[7m"), !enabled, JSON.stringify({ text, position, enabled, writes }));
 							assert.ok(writes.includes(enabled ? "\x1b[?25h" : "\x1b[?25l"));
-							assert.ok(writes.includes(tui instanceof TuiMainScreen ? `\x1b[${col + 1}G` : `\x1b[${row + 1};${col + 1}H`), JSON.stringify({ row, col, writes }));
+							assert.ok(writes.includes(`\x1b[${row + 1};${col + 1}H`), JSON.stringify({ row, col, writes }));
 							assert.ok(!writes.includes("\x1b_pi:"), "internal cursor markers must not reach the terminal");
 							assert.deepEqual(input.render(terminal.columns).map(stripTerminalSequences), raw.map(stripTerminalSequences));
 						}
@@ -84,7 +82,7 @@ for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
 				tui.renderNow();
 				const writes = terminal.writes.join("");
 				assert.equal(writes.includes("\x1b[7m"), !enabled);
-				assert.ok(writes.includes(tui instanceof TuiMainScreen ? "\x1b[6G" : "\x1b[2;6H"), JSON.stringify(writes));
+				assert.ok(writes.includes("\x1b[2;6H"), JSON.stringify(writes));
 				assert.ok(cached?.[0]?.includes(CURSOR_MARKER));
 				assert.ok(!writes.includes("\x1b_pi:"));
 			}
@@ -106,7 +104,7 @@ for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
 			assert.ok(writes.includes("XXX"));
 			assert.ok(writes.includes("中def"));
 			assert.ok(writes.includes("\x1b[?25h"));
-			assert.ok(writes.includes(tui instanceof TuiMainScreen ? "\x1b[4G" : "\x1b[1;4H"), JSON.stringify(writes));
+			assert.ok(writes.includes("\x1b[1;4H"), JSON.stringify(writes));
 			assert.ok(!writes.includes("\x1b[7m"));
 		} finally { await tui.dispose({ preserveScreen: true }); }
 	});
@@ -127,29 +125,6 @@ for (const Renderer of [TuiMainScreen, TuiAltScreen]) {
 		} finally { await tui.dispose({ preserveScreen: true }); }
 	});
 }
-
-test("Main bounded viewport resolves cached cursors after changing hardware visibility", async () => {
-	const terminal = new FakeTerminal(20, 4);
-	const tui = new TuiMainScreen(terminal, false);
-	const metrics = new TuiRenderInstrumentation();
-	const document = new ViewportContainer();
-	const lines = Object.freeze(["history", "history", "history", "history", `ab${CURSOR_MARKER}${renderFakeCursor("c")}`]) as unknown as string[];
-	for (const line of lines) {
-		const childLines = Object.freeze([line]) as unknown as string[];
-		document.addChild({ render: () => childLines, invalidate() {} });
-	}
-	tui.addChild(document); tui.setRenderInstrumentation(metrics);
-	try {
-		tui.start(); tui.renderNow();
-		metrics.reset(); terminal.writes.length = 0;
-		tui.setShowHardwareCursor(true); tui.renderNow();
-		assert.equal(metrics.snapshot().fullHistoryFallbacks, 0);
-		assert.equal(tui.captureRenderState().viewportWindowStart, 1);
-		assert.ok(!terminal.writes.join("").includes("\x1b[7m"));
-		assert.ok(terminal.writes.join("").includes("\x1b[3G\x1b[?25h"), JSON.stringify(terminal.writes));
-		assert.ok(lines[4]!.includes(CURSOR_MARKER));
-	} finally { await tui.dispose({ preserveScreen: true }); }
-});
 
 test("Alt resolves fake cursors before selection and before normal-stop document replay", async () => {
 	const terminal = new FakeTerminal(20, 4);

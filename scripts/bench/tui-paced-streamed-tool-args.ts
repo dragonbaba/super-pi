@@ -17,7 +17,7 @@ import { Text } from "../../packages/tui/src/components/text.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
@@ -120,7 +120,9 @@ class NoopTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-class InstrumentedMainScreen extends TuiMainScreen {
+class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	doRenderCalls = 0;
 	override requestRender(force = false): void { this.requestRenderCalls++; super.requestRender(force); }
@@ -258,7 +260,8 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	const warmup = readIntegerOption("--warmup", 2_000);
 	const samplingInterval = readIntegerOption("--sampling-interval", 8_192);
 	const terminal = new NoopTerminal();
-	const renderer = new InstrumentedMainScreen(terminal, false);
+	const renderer = new InstrumentedAltScreen(terminal, false, undefined, { mouse: false });
+	renderer.start();
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	for (let index = 0; index < historyItems; index++) {
@@ -466,6 +469,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 		throw new Error(`${scenario}: delivery state was not released`);
 	}
 	await delivery.dispose();
+	if (renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await renderer.dispose({ preserveScreen: true });
 	return {
 		name: scenario,

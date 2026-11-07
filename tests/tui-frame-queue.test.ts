@@ -9,8 +9,7 @@ import {
 	Loader,
 	ScrollView as InteractiveScrollView,
 	Text as InteractiveText,
-	TuiMainScreen as InteractiveTuiMainScreen,
-	type TuiMainScreenRenderState,
+	TuiAltScreen as InteractiveTuiAltScreen,
 	VStack as InteractiveVStack,
 } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
@@ -29,7 +28,6 @@ import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumenta
 import { ProcessTerminal, type Terminal } from "../packages/tui/src/terminal.ts";
 import { type Component, TuiBase } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 
 initTheme("dark");
 
@@ -174,14 +172,6 @@ class CountingComponentArray extends Array<Component> {
 	override [Symbol.iterator](): ArrayIterator<Component> {
 		this.iterationCount++;
 		return super[Symbol.iterator]();
-	}
-}
-
-class InstrumentedMainTui extends InteractiveTuiMainScreen {
-	captureRenderStateCalls = 0;
-	override captureRenderState(): TuiMainScreenRenderState {
-		this.captureRenderStateCalls++;
-		return super.captureRenderState();
 	}
 }
 
@@ -911,7 +901,7 @@ test("ProcessTerminal requires callback and drain in either order after Writable
 });
 
 test("cancelled physical write settles before a reused generation can start", async () => {
-	for (const boundary of ["Main-to-Alt", "suspend-resume", "external-editor-resume"] as const) {
+	for (const boundary of ["fullscreen-handoff", "suspend-resume", "external-editor-resume"] as const) {
 		const output = new ControlledFrameOutput();
 		const terminal = new ProcessTerminal(output as never);
 		const previousQueue = new TerminalFrameQueue(terminal);
@@ -1496,7 +1486,7 @@ test("ordinary input admission resumes after the same TUI restarts", async () =>
 	await tui.dispose();
 });
 
-function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Record<string, any> {
+function createModeSwitchHarness(previousUi: FrameTui | InteractiveTuiAltScreen): Record<string, any> {
 	const mode = Object.create(InteractiveMode.prototype) as Record<string, any>;
 	const settingsManager = {
 		getShowTerminalProgress(): boolean { return false; },
@@ -1531,7 +1521,7 @@ test("InteractiveMode stop cancels and settles timed extension dialogs", async (
 	for (const kind of ["selector", "input"] as const) {
 		const terminal = new ImmediateInputTerminal();
 		terminal.backpressure = false;
-		const previousUi = new InstrumentedMainTui(terminal);
+		const previousUi = new InteractiveTuiAltScreen(terminal, false, undefined, { mouse: false });
 		const mode = createModeSwitchHarness(previousUi);
 		let cancelCalls = 0;
 		const component = kind === "selector"
@@ -1572,7 +1562,7 @@ test("InteractiveMode stop cancels and settles timed extension dialogs", async (
 test("InteractiveMode stop disposes active session selector work", async () => {
 	const terminal = new ImmediateInputTerminal();
 	terminal.backpressure = false;
-	const previousUi = new InstrumentedMainTui(terminal);
+	const previousUi = new InteractiveTuiAltScreen(terminal, false, undefined, { mouse: false });
 	const mode = createModeSwitchHarness(previousUi);
 	let progress: ((loaded: number, total: number) => void) | undefined;
 	let resolveLoad: ((sessions: []) => void) | undefined;
@@ -1625,7 +1615,7 @@ test("InteractiveMode stop disposes active session selector work", async () => {
 test("InteractiveMode stop cancels and settles an extension editor", async () => {
 	const terminal = new ImmediateInputTerminal();
 	terminal.backpressure = false;
-	const previousUi = new InstrumentedMainTui(terminal);
+	const previousUi = new InteractiveTuiAltScreen(terminal, false, undefined, { mouse: false });
 	const mode = createModeSwitchHarness(previousUi);
 	let cancelCalls = 0;
 	const component = new ExtensionEditorComponent(
@@ -1670,7 +1660,7 @@ test("extension editor late external completion cannot restart a stopped owner",
 
 	const terminal = new ImmediateInputTerminal();
 	terminal.backpressure = false;
-	const tui = new InstrumentedMainTui(terminal);
+	const tui = new InteractiveTuiAltScreen(terminal, false, undefined, { mouse: false });
 	const mode = createModeSwitchHarness(tui);
 	let cancelCalls = 0;
 	const component = new DeferredExtensionEditor(
@@ -1707,7 +1697,7 @@ test("extension editor late external completion cannot restart a stopped owner",
 
 	const rejectionTerminal = new ImmediateInputTerminal();
 	rejectionTerminal.backpressure = false;
-	const rejectionTui = new InstrumentedMainTui(rejectionTerminal);
+	const rejectionTui = new InteractiveTuiAltScreen(rejectionTerminal, false, undefined, { mouse: false });
 	let observedErrors = 0;
 	const rejecting = new DeferredExtensionEditor(
 		rejectionTui,
@@ -1877,15 +1867,16 @@ test("late orphan stream failure permanently poisons the restarted queue", async
 	terminal.dispose();
 });
 
-test("Main to Alt uses the terminal orphan barrier rather than reusing the physical writer", async () => {
+test("fullscreen handoff uses the terminal orphan barrier rather than reusing the physical writer", async () => {
 	const output = new ControlledFrameOutput();
 	const terminal = new LifecycleProcessTerminal(output as never);
-	const main = new TuiMainScreen(terminal, false, undefined, 20);
-	main.addChild({ render: () => ["main-A"], invalidate: () => {} });
-	main.renderNow();
+	const first = new TuiAltScreen(terminal, false, undefined, { mouse: false, terminalBoundaryTimeoutMs: 20 });
+	first.addChild({ render: () => ["first-A"], invalidate: () => {} });
+	first.start();
+	first.renderNow();
 	const callbackA = output.callbacks[0];
 	assert.ok(callbackA);
-	await main.stop({ preserveScreen: true });
+	await first.stop({ preserveScreen: true });
 
 	const alt = new TuiAltScreen(terminal, false, undefined, {
 		mouse: false,
@@ -1910,15 +1901,16 @@ test("Main to Alt uses the terminal orphan barrier rather than reusing the physi
 	await alt.dispose({ preserveScreen: true });
 });
 
-test("Main to Alt replaces the unsent Alt frame with the latest logical generation", async () => {
+test("fullscreen handoff replaces the unsent frame with the latest logical generation", async () => {
 	const output = new ControlledFrameOutput();
 	const terminal = new LifecycleProcessTerminal(output as never);
-	const main = new TuiMainScreen(terminal, false, undefined, 20);
-	main.addChild({ render: () => ["main-A"], invalidate: () => {} });
-	main.renderNow();
+	const first = new TuiAltScreen(terminal, false, undefined, { mouse: false, terminalBoundaryTimeoutMs: 20 });
+	first.addChild({ render: () => ["first-A"], invalidate: () => {} });
+	first.start();
+	first.renderNow();
 	const callbackA = output.callbacks[0];
 	assert.ok(callbackA);
-	await main.stop({ preserveScreen: true });
+	await first.stop({ preserveScreen: true });
 
 	let generation = "B";
 	const alt = new TuiAltScreen(terminal, false, undefined, {
@@ -2357,15 +2349,21 @@ test("physical frame instrumentation records accepted and backpressured writes e
 	}
 });
 
-test("production Main reports the real active-plus-cursor frame queue depth", async () => {
+test("production fullscreen reports the real active-plus-cursor frame queue depth", async () => {
 	const terminal = new GatedTerminal();
 	const instrumentation = new TuiRenderInstrumentation();
-	const tui = new TuiMainScreen(terminal, false);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	tui.setRenderInstrumentation(instrumentation);
 	tui.addChild({
-		render: () => ["main-frame"],
+		render: () => ["fullscreen-frame"],
 		invalidate: () => {},
 	});
+	// Entering the alternate screen is a control write, not a frame; keep it
+	// out of the gated frame accounting below.
+	terminal.backpressure = false;
+	tui.start();
+	terminal.backpressure = true;
+	const controlWrites = terminal.writer.writes.length;
 	tui.renderNow();
 	let metrics = instrumentation.snapshot();
 	assert.equal(metrics.terminalActiveWriteHighWaterMark, 1);
@@ -2380,22 +2378,24 @@ test("production Main reports the real active-plus-cursor frame queue depth", as
 	assert.equal(metrics.framePromisesCreated, 0);
 	assert.equal(metrics.frameAbortControllersCreated, 0);
 	assert.equal(metrics.frameWrapperObjectsCreated, 0);
-	assert.equal(terminal.writer.writes.length, 1);
+	assert.equal(terminal.writer.writes.length, controlWrites + 1);
 
 	terminal.writer.gates[0]!.resolve();
 	await settle();
-	assert.equal(terminal.writer.writes.length, 1);
+	assert.equal(terminal.writer.writes.length, controlWrites + 1);
 	await tui.flushTerminalFrames();
 	metrics = instrumentation.snapshot();
 	assert.equal(metrics.terminalFrameWriteErrors, 0);
 	assert.equal(metrics.activeFrameUtf8Bytes, 0);
 	assert.equal(metrics.pendingFrameUtf8Bytes, 0);
+	terminal.backpressure = false;
+	await tui.dispose({ preserveScreen: true });
 });
 
 test("overlay scratch releases rendered lines when an overlay render throws", () => {
 	const terminal = new GatedTerminal();
 	terminal.backpressure = false;
-	const tui = new TuiMainScreen(terminal);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	tui.addChild({ render: () => ["base"], invalidate: () => {} });
 	tui.showOverlay({
 		render: () => {
@@ -2403,6 +2403,7 @@ test("overlay scratch releases rendered lines when an overlay render throws", ()
 		},
 		invalidate: () => {},
 	});
+	tui.start();
 	assert.throws(() => tui.renderNow(true), /overlay render failure/);
 	const scratch = tui as unknown as {
 		overlayLinesScratch: string[][];
@@ -2793,7 +2794,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 	assert.match(tuiSource, /awaitTerminalBoundary/);
 	assert.doesNotMatch(tuiSource, /void this\.terminal\.write\(/);
 
-	for (const path of ["packages/tui/src/tui-main-screen.ts", "packages/tui/src/tui-alt-screen.ts"]) {
+	for (const path of ["packages/tui/src/tui-alt-screen.ts"]) {
 		const rendererSource = readFileSync(path, "utf8");
 		assert.doesNotMatch(rendererSource, /recordTerminalFrame\([\s\S]{0,160}terminal\.write\(buffer\)/);
 		assert.match(rendererSource, /writeTerminalFrame\(buffer,/);
@@ -2883,7 +2884,8 @@ test("terminal lifecycle promises use stable observers and one-shot TUIs dispose
 
 	const startupSource = readFileSync("packages/coding-agent/src/cli/startup-ui.ts", "utf8");
 	assert.match(startupSource, /observeStartupLifecycle[\s\S]{0,220}promise\.then\(undefined, onRejected\)/);
-	assert.match(startupSource, /await ui\.dispose\(\)/);
+	assert.match(startupSource, /function closeStartupTui\(ui: TUI\): Promise<void> \{\n\treturn ui\.dispose\(\{ preserveScreen: true \}\);/);
+	assert.match(startupSource, /await closeStartupTui\(ui\)/);
 	assert.doesNotMatch(startupSource, /void ui\.stop\(\)\.then/);
 
 	for (const path of [
@@ -2891,7 +2893,7 @@ test("terminal lifecycle promises use stable observers and one-shot TUIs dispose
 		"packages/coding-agent/src/cli/session-picker.ts",
 	]) {
 		const source = readFileSync(path, "utf8");
-		assert.match(source, /await ui\.dispose\(\)/, path);
+		assert.match(source, /await ui\.dispose\((?:\{ preserveScreen: true \})?\)/, path);
 		assert.match(source, /observeStartupLifecycle\(/, path);
 		assert.doesNotMatch(source, /void ui\.(?:stop|dispose)\(\)\.(?:then|finally)/, path);
 	}

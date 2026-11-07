@@ -597,7 +597,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private lastRenderAt = 0;
 	private static readonly MIN_RENDER_INTERVAL_MS = 16;
 	private showHardwareCursor = process.env.SP_HARDWARE_CURSOR === "1";
-	private clearOnShrink = process.env.SP_CLEAR_ON_SHRINK === "1";
+	private clearOnShrink = false;
 	protected fullRedrawCount = 0;
 	protected stopped = false;
 	/** Concurrent callers share one query; one tombstone owns a timed-out physical reply. */
@@ -856,10 +856,6 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 	}
 
-	protected recordFullHistoryFallback(): void {
-		this.renderInstrumentation?.recordFullHistoryFallback();
-	}
-
 	getShowHardwareCursor(): boolean {
 		return this.showHardwareCursor;
 	}
@@ -873,15 +869,12 @@ export abstract class TuiBase extends Container implements TUI {
 		this.requestRender();
 	}
 
+	/** @deprecated Kept for extension compatibility; the fullscreen renderer always repaints its viewport. */
 	getClearOnShrink(): boolean {
 		return this.clearOnShrink;
 	}
 
-	/**
-	 * Set whether to trigger full re-render when content shrinks.
-	 * When true (default), empty rows are cleared when content shrinks.
-	 * When false, empty rows remain (reduces redraws on slower terminals).
-	 */
+	/** @deprecated Kept for extension compatibility; the value has no rendering effect. */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
 	}
@@ -1970,13 +1963,6 @@ export abstract class TuiBase extends Container implements TUI {
 			this.overlaySegmentsScratch.before = "";
 			this.overlaySegmentsScratch.after = "";
 			this.overlaySliceScratch.text = "";
-		}
-	}
-
-	/** Consume only caller-owned frame arrays; component render arrays may be borrowed. */
-	protected resolveFakeCursors(lines: string[]): void {
-		for (let row = 0; row < lines.length; row++) {
-			lines[row] = this.resolveFakeCursorLine(lines[row]!);
 		}
 	}
 

@@ -38,7 +38,7 @@ in every renderer. Ctrl+A/E are equivalent editor keys.
 In fullscreen mode, Ctrl+Home/End or Ctrl+Up/Down scroll to the beginning/end
 of the transcript; PageUp/PageDown continue to scroll the viewport. Use
 Ctrl+Up/Down in Windows Console, where Ctrl+Home/End may arrive as plain
-Home/End. Ctrl+Home/End are not default editor keys in main-screen mode.
+Home/End.
 Explicit user bindings take precedence over these transcript navigation defaults.
 Accepted extension shortcuts take precedence over viewport actions; unloading
 the shortcuts restores the configured viewport keys.
@@ -46,13 +46,13 @@ the shortcuts restores the configured viewport keys.
 ## Quick Start
 
 ```typescript
-import { type TUI, Text, Editor, ProcessTerminal, TuiMainScreen, matchesKey } from "@super-pi/tui";
+import { type TUI, Text, Editor, ProcessTerminal, TuiAltScreen, matchesKey } from "@super-pi/tui";
 
 // Create terminal
 const terminal = new ProcessTerminal();
 
-// Create the default main-screen renderer through the shared TUI interface
-const tui: TUI = new TuiMainScreen(terminal);
+// Create the fullscreen renderer through the shared TUI interface
+const tui: TUI = new TuiAltScreen(terminal);
 
 // Add components
 tui.addChild(new Text("Welcome to my app!"));
@@ -83,17 +83,14 @@ tui.start();
 
 ### TUI interface and renderers
 
-`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. Choose a concrete renderer only when constructing the application:
+`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. `TuiAltScreen` is the only concrete renderer: it renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document. Short-lived prompts can call `dispose({ preserveScreen: true })` to leave the main buffer exactly as it was before the prompt. Dialogs whose focused component owns Page Up/Down (selectors) should pass `{ mouse: false, viewportKeys: false }`: the renderer then leaves keyboard paging to the focused component and leaves the mouse to the terminal, so native right-click paste and text selection keep working.
 
-- `TuiMainScreen` renders into the main terminal buffer and preserves terminal scrollback.
-- `TuiAltScreen` renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document.
+The former main-buffer renderer (`TuiMainScreen`) has been removed. `TUI.clearOnShrink` and `setClearOnShrink()` remain as deprecated no-ops for extension compatibility; the alternate screen always repaints its own viewport.
 
 ```typescript
-import { type TUI, TuiAltScreen, TuiMainScreen } from "@super-pi/tui";
+import { type TUI, TuiAltScreen } from "@super-pi/tui";
 
-const tui: TUI = new TuiMainScreen(terminal);
-// To use an application-owned viewport in the alternate terminal buffer instead:
-// const tui: TUI = new TuiAltScreen(terminal);
+const tui: TUI = new TuiAltScreen(terminal);
 
 tui.addChild(component);
 tui.removeChild(component);
@@ -114,7 +111,7 @@ Terminal-input admission closes synchronously when `stop()` begins, including wh
 
 ### Alternate-screen viewport layouts
 
-`TuiAltScreen` can render an explicit terminal-height layout. `VStack` and `HStack` allocate constrained regions, while `ScrollView` owns scrolling for one region. These semantics are intentionally unavailable on `TuiMainScreen`, where the terminal owns scrollback.
+`TuiAltScreen` can render an explicit terminal-height layout. `VStack` and `HStack` allocate constrained regions, while `ScrollView` owns scrolling for one region.
 
 ```typescript
 import {
@@ -641,7 +638,7 @@ Failures retry only after registering a different converter and calling
 
 #### Alternate-screen image compatibility
 
-`TuiAltScreen` supports inline images and partial viewport cropping in terminals that implement the Kitty graphics protocol, including Kitty and Ghostty. iTerm2's inline-image protocol does not provide operations to delete an existing placement or crop its source while scrolling. To prevent stale images from remaining over repainted content, `TuiAltScreen` renders image components as text placeholders in iTerm2. `TuiMainScreen` continues to render iTerm2 inline images normally.
+`TuiAltScreen` supports inline images and partial viewport cropping in terminals that implement the Kitty graphics protocol, including Kitty and Ghostty. iTerm2's inline-image protocol does not provide operations to delete an existing placement or crop its source while scrolling. To prevent stale images from remaining over repainted content, `TuiAltScreen` renders image components as text placeholders in iTerm2.
 
 ## Autocomplete
 
@@ -698,15 +695,9 @@ if (matchesKey(data, Key.enter)) {
 
 ## Rendering modes
 
-`TuiMainScreen` uses three rendering strategies:
-
-1. **First Render**: Output all lines without clearing scrollback
-2. **Width Changed or Change Above Viewport**: Clear screen and fully re-render
-3. **Normal Update**: Move the cursor to the first changed line, clear to the end, and render changed lines
-
 `TuiAltScreen` owns a terminal-height viewport. Without an explicit layout root it preserves the legacy single-document scrolling behavior. With `setLayoutRoot()`, `VStack`, `HStack`, and nested `ScrollView` components can reserve fixed regions and independently scroll constrained regions. It updates changed viewport rows in place, follows streaming output while at the bottom, and preserves a manually selected scroll position while content grows. Mouse-wheel and configurable keyboard navigation scroll without modifying terminal scrollback, including jumps between OSC 133 semantic prompt markers. Clicking an OSC 8 hyperlink opens it with the configured URL handler. Dragging with the primary mouse button selects text and copies it to the clipboard with OSC 52; holding the drag at a scroll view's top or bottom edge auto-scrolls and extends the selection into off-screen content. Kitty images support vertical viewport cropping; iTerm2 inline images fall back to text because the iTerm2 protocol cannot delete or crop placements during viewport repainting.
 
-Both renderers wrap updates in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering.
+The renderer wraps updates in **synchronized output** (`\x1b[?2026h` ... `\x1b[?2026l`) for atomic, flicker-free rendering.
 
 ## Terminal Interface
 

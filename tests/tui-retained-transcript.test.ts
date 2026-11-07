@@ -11,7 +11,6 @@ import type { Component } from "../packages/tui/src/tui.ts";
 import { Image } from "../packages/tui/src/components/image.ts";
 import { setCapabilities, setCellDimensions } from "../packages/tui/src/terminal-image.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 class MutableLine implements Component {
@@ -440,41 +439,45 @@ test("10,000 active updates stay uncached until the final version is frozen", ()
 	assert.equal(instrumentation.snapshot().retainedCacheHits, 1);
 });
 
-test("TUI instrumentation records root, overlay, diff, bytes, and pending render requests", () => {
+test("TUI instrumentation records retained reuse, overlay, diff, bytes, and pending render requests", () => {
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	transcript.addRetainedChild(new MutableLine("history"), { id: "history", version: 1, completed: true });
 	const activeComponent = new MutableLine("active-0");
 	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
-	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	tui.setRenderInstrumentation(instrumentation);
 	tui.addChild(transcript);
 	tui.showOverlay(new MutableLine("overlay"), { width: 20 });
-	tui.renderNow();
+	tui.start();
+	try {
+		instrumentation.reset();
+		tui.renderNow();
+		let metrics = instrumentation.snapshot();
+		assert.equal(metrics.rootRenders, 1);
+		// The scroll view measures the dirty active record, then renders it again while composing.
+		assert.equal(metrics.transcriptItemRenders, 3);
+		assert.equal(metrics.overlayRenders, 1);
+		assert.equal(metrics.generatedLines, 2);
+		assert.equal(metrics.terminalDiffLines, 20);
+		assert.ok(metrics.terminalBytes > 0);
 
-	let metrics = instrumentation.snapshot();
-	assert.equal(metrics.rootRenders, 1);
-	assert.equal(metrics.transcriptItemRenders, 2);
-	assert.equal(metrics.overlayRenders, 1);
-	assert.equal(metrics.generatedLines, 2);
-	assert.equal(metrics.visibleLines, 2);
-	assert.equal(metrics.terminalDiffLines, 20);
-	assert.ok(metrics.terminalBytes > 0);
-	assert.equal(metrics.pendingRenderRequestHighWaterMark, 1);
-
-	instrumentation.reset();
-	activeComponent.value = "active-1";
-	active.updateVersion(1);
-	tui.requestRender();
-	tui.renderNow();
-	metrics = instrumentation.snapshot();
-	assert.equal(metrics.completedItemRenders, 0);
-	assert.equal(metrics.activeItemRenders, 1);
-	assert.equal(metrics.retainedCacheHits, 1);
-	assert.equal(metrics.rootRenders, 1);
-	assert.equal(metrics.overlayRenders, 1);
-	assert.equal(metrics.terminalDiffLines, 1);
-	assert.equal(metrics.pendingRenderRequestHighWaterMark, 1);
+		instrumentation.reset();
+		activeComponent.value = "active-1";
+		active.updateVersion(1);
+		tui.requestRender();
+		tui.renderNow();
+		metrics = instrumentation.snapshot();
+		assert.equal(metrics.completedItemRenders, 0);
+		assert.equal(metrics.activeItemRenders, 2);
+		assert.equal(metrics.retainedCacheHits, 1);
+		assert.equal(metrics.rootRenders, 1);
+		assert.equal(metrics.overlayRenders, 1);
+		assert.equal(metrics.terminalDiffLines, 1);
+		assert.equal(metrics.pendingRenderRequestHighWaterMark, 1);
+	} finally {
+		tui.stop();
+	}
 });
 
 test("instrumentation counts UTF-8 bytes, resets cleanly, and stays isolated per TUI", () => {

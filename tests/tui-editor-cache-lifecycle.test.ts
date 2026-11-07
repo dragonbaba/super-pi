@@ -11,7 +11,6 @@ import {
 	type TUI,
 } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { Box } from "../packages/tui/src/components/box.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import {
@@ -296,9 +295,9 @@ class SharedNestedTransitionDriver implements Component {
 class ReentrantStartContainer extends Container {
 	invalidateCalls = 0;
 	startError: unknown;
-	private readonly tui: TuiMainScreen;
+	private readonly tui: TuiAltScreen;
 
-	constructor(tui: TuiMainScreen) {
+	constructor(tui: TuiAltScreen) {
 		super();
 		this.tui = tui;
 	}
@@ -449,7 +448,7 @@ class SameOwnerNestedReplacementChild implements Component {
 	invalidate(): void {}
 }
 
-function createMainEditorTree(tui: TuiMainScreen, root: Container = new Container()): {
+function createMountedEditorTree(tui: TuiAltScreen, root: Container = new Container()): {
 	editor: Editor;
 	editorContainer: Container;
 	nestedContainer: Container;
@@ -467,10 +466,10 @@ function createMainEditorTree(tui: TuiMainScreen, root: Container = new Containe
 	return { editor, editorContainer, nestedContainer, root };
 }
 
-test("Main final dispose releases nested Editor cache while every owner remains reachable", async () => {
+test("mounted-root final dispose releases nested Editor cache while every owner remains reachable", async () => {
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new TuiMainScreen(terminal, false);
-	const tree = createMainEditorTree(tui);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+	const tree = createMountedEditorTree(tui);
 	const children = tui.children;
 	const baseText = tree.editor.getExpandedText();
 	const paste = "retained-paste-".repeat(80);
@@ -494,8 +493,8 @@ test("Main final dispose releases nested Editor cache while every owner remains 
 	assert.equal(tree.editor.getExpandedText(), baseText);
 });
 
-test("Main final dispose releases retained transcript sidecar cache while owners remain reachable", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+test("mounted-root final dispose releases retained transcript sidecar cache while owners remain reachable", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const transcript = new RetainedContainer();
 	const component = new StaticCacheLine("retained-sidecar-cache");
 	const item = transcript.addRetainedChild(component, { id: "retained-sidecar", version: 1, completed: true });
@@ -523,8 +522,8 @@ test("Main final dispose releases retained transcript sidecar cache while owners
 	assert.equal(item.component, component);
 });
 
-test("Main final dispose releases retained viewport indexes while logical owners remain reachable", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+test("mounted-root final dispose releases retained viewport indexes while logical owners remain reachable", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const transcript = new RetainedContainer();
 	const completedItems = new Array<RetainedItem>(5_000);
 	const completedComponents = new Array<StaticCacheLine>(5_000);
@@ -586,8 +585,8 @@ test("Main final dispose releases retained viewport indexes while logical owners
 	assert.doesNotThrow(() => activeItem.updateVersion(3));
 });
 
-test("Main final dispose traverses a directly mounted RetainedItem into its Editor", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+test("mounted-root final dispose traverses a directly mounted RetainedItem into its Editor", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const editor = new Editor(tui, EDITOR_THEME);
 	editor.setText(createEditorText());
 	const item = new RetainedItem(editor, { id: "direct-retained-editor", version: 1, completed: true });
@@ -604,8 +603,8 @@ test("Main final dispose traverses a directly mounted RetainedItem into its Edit
 	assert.equal(item.component, editor);
 });
 
-test("Main final dispose traverses Box ownership without semantic invalidation", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+test("mounted-root final dispose traverses Box ownership without semantic invalidation", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const editor = new Editor(tui, EDITOR_THEME);
 	editor.focused = true;
 	editor.setText(createEditorText());
@@ -628,10 +627,10 @@ test("Main final dispose traverses Box ownership without semantic invalidation",
 	assert.equal(nested.children[0], editor);
 });
 
-test("Main recoverable stop preserves mounted Editor cache and restart behavior", async () => {
+test("mounted-root recoverable stop preserves mounted Editor cache and restart behavior", async () => {
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new TuiMainScreen(terminal, false);
-	const tree = createMainEditorTree(tui);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
+	const tree = createMountedEditorTree(tui);
 	tui.start();
 	tui.renderNow();
 	assertCachePrimed(tree.editor);
@@ -646,13 +645,13 @@ test("Main recoverable stop preserves mounted Editor cache and restart behavior"
 	await tui.dispose({ preserveScreen: true });
 });
 
-test("Main concurrent disposal releases mounted caches once and closes start reentry", async () => {
+test("mounted-root concurrent disposal releases mounted caches once and closes start reentry", async () => {
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new TuiMainScreen(terminal, false);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	const root = new ReentrantStartContainer(tui);
-	const tree = createMainEditorTree(tui, root);
+	const tree = createMountedEditorTree(tui, root);
 	const countingRoot = new CountingCacheContainer();
-	const countingNested = createMainEditorTree(tui, countingRoot);
+	const countingNested = createMountedEditorTree(tui, countingRoot);
 	tui.start();
 	tui.renderNow();
 	assertCachePrimed(tree.editor);
@@ -671,11 +670,11 @@ test("Main concurrent disposal releases mounted caches once and closes start ree
 	assertCacheReleased(countingNested.editor);
 });
 
-test("Main final disposal continues cache release after an earlier sibling throws", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+test("mounted-root final disposal continues cache release after an earlier sibling throws", async () => {
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const throwingRoot = new ThrowingCacheRoot([]);
 	tui.addChild(throwingRoot);
-	const laterTree = createMainEditorTree(tui);
+	const laterTree = createMountedEditorTree(tui);
 	tui.start();
 	tui.renderNow();
 	assertCachePrimed(laterTree.editor);
@@ -687,7 +686,7 @@ test("Main final disposal continues cache release after an earlier sibling throw
 });
 
 test("final cache release snapshots root and nested sibling ownership before invoking hooks", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const laterRoot = new CountingCacheContainer();
 	const clearingRoot = new ClearingCacheOwner(() => { tui.children.length = 0; });
 	const nested = new Container();
@@ -1592,8 +1591,6 @@ test("lifecycle cleanup remains outside frame and recoverable-stop hot paths", a
 		"disposedOwnerRetainedLayoutLines",
 		"disposedOwnerLayoutRootReferences",
 		"disposedOwnerLayoutScratchReferences",
-		"disposedOwnerMainChildrenRetained",
-		"--editor-screen",
 	]) {
 		assert.match(benchmarkText, new RegExp(field));
 	}

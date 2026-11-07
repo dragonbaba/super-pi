@@ -4,7 +4,6 @@ import test from "node:test";
 import { CombinedAutocompleteProvider } from "../packages/tui/src/autocomplete.ts";
 import { Editor, type EditorTheme } from "../packages/tui/src/components/editor.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { highlightTerminalColumns, sliceByColumn, sliceWithWidth, sliceWithWidthInto } from "../packages/tui/src/utils.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
@@ -126,7 +125,7 @@ const EDITOR_THEME: EditorTheme = {
 };
 
 test("Editor input opens indented slash menu, Tab applies it and disposal releases autocomplete", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(80, 12), false);
+	const tui = new TuiAltScreen(new FakeTerminal(80, 12), false, undefined, { mouse: false });
 	const editor = new Editor(tui, EDITOR_THEME);
 	editor.setAutocompleteProvider(new CombinedAutocompleteProvider([{ name: "help" }], process.cwd()));
 	tui.addChild(editor);

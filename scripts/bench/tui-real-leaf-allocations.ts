@@ -17,7 +17,7 @@ import { getMarkdownTheme, initTheme } from "../../packages/coding-agent/src/mod
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 interface SamplingNode {
@@ -86,7 +86,9 @@ class NoopTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-class InstrumentedMainScreen extends TuiMainScreen {
+class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	override requestRender(force = false): void {
 		this.requestRenderCalls++;
@@ -257,8 +259,9 @@ function createSpacerLifecycleMessage(count: number, stopReason: AssistantMessag
 	return { role: "assistant", content, stopReason, timestamp: 0 } as AssistantMessage;
 }
 
-function createRenderer(): { renderer: InstrumentedMainScreen; reference: TUI; transcript: RetainedContainer } {
-	const renderer = new InstrumentedMainScreen(new NoopTerminal(), false);
+function createRenderer(): { renderer: InstrumentedAltScreen; reference: TUI; transcript: RetainedContainer } {
+	const renderer = new InstrumentedAltScreen(new NoopTerminal(), false, undefined, { mouse: false });
+	renderer.start();
 	const transcript = new RetainedContainer();
 	renderer.addChild(transcript);
 	const reference = createInteractiveTuiReference(() => renderer);
@@ -361,6 +364,7 @@ async function measureAssistantFixture(
 	await observerAgent.delivery.flushLatest("message");
 	const observerStatsAfter = observerAgent.delivery.stats;
 	observerAgent.unsubscribe();
+	if (renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await renderer.dispose({ preserveScreen: true });
 	return {
 		...(result as Record<string, unknown>),

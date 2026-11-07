@@ -18,7 +18,6 @@ import auxiliaryVision from "../packages/extensions/auxiliary-vision/index.ts";
 import { loadConfig } from "../packages/extensions/auxiliary-vision/core.ts";
 import { registerApiProvider, unregisterApiProviders } from "@super-pi/ai/compat";
 import { runClipboardCommand } from "../packages/coding-agent/src/utils/clipboard-image.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
@@ -331,9 +330,9 @@ for (const source of ["clipboard-image-paste", "path-paste"] as const) for (cons
 			assert.equal(mode.imageDraft.items[0].state, "ready");
 			const rendered = mode.defaultEditor.render(100).join("\n");
 			assert.match(rendered, /图片 1/); assert.match(rendered, /未发送/); events.push("visible");
-			for (const Screen of [TuiMainScreen, TuiAltScreen]) {
+			{
 				const terminal = new FakeTerminal(100, 24);
-				const screen = new Screen(terminal);
+				const screen = new TuiAltScreen(terminal);
 				screen.addChild(mode.defaultEditor); screen.setFocus(mode.defaultEditor); screen.start();
 				try {
 					screen.renderNow(true); await screen.flushTerminalFrames();

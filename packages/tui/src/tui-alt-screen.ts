@@ -164,6 +164,11 @@ export interface TuiAltScreenOptions {
 	wheelScrollLines?: number;
 	/** Capture mouse events for viewport scrolling and application-owned text selection. */
 	mouse?: boolean;
+	/**
+	 * Intercept keyboard viewport navigation (page, half-page, line, prompt, top/bottom).
+	 * Disable for dialogs whose focused component owns those keys, such as selectors.
+	 */
+	viewportKeys?: boolean;
 	/** Open an OSC 8 hyperlink activated with a primary-button click. */
 	openUrl?: (url: string) => void;
 	/** Handle an unmodified secondary-button press for clipboard paste. Currently enabled on Windows only. */
@@ -227,6 +232,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private resolvedSelectionColumnEnd = 0;
 	private readonly wheelScrollLines: number;
 	private readonly mouseEnabled: boolean;
+	private readonly viewportKeysEnabled: boolean;
 	private readonly openUrl?: (url: string) => void;
 	private readonly onRightClickPaste?: () => void;
 	private readonly scrollToBottomHint: boolean;
@@ -272,6 +278,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes = new AltScreenFlashContainer(() => this.requestRender());
 		this.wheelScrollLines = Math.max(1, Math.floor(options.wheelScrollLines ?? FULLSCREEN_WHEEL_SCROLL_LINES));
 		this.mouseEnabled = options.mouse ?? true;
+		this.viewportKeysEnabled = options.viewportKeys ?? true;
 		this.openUrl = options.openUrl;
 		this.onRightClickPaste = options.onRightClickPaste;
 		this.scrollToBottomHint = options.scrollToBottomHint ?? false;
@@ -889,6 +896,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return { consume: true };
 		}
 		if (this.isMouseSequence(data)) return { consume: true };
+		if (!this.viewportKeysEnabled) return undefined;
 
 		const keybindings = getKeybindings();
 		const isRelease = isKeyRelease(data);

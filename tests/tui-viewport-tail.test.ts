@@ -7,7 +7,6 @@ import { renderLayoutFrame } from "../packages/tui/src/layout.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { registerKittyImageMetadata } from "../packages/tui/src/terminal-image.ts";
 import { Container, CURSOR_MARKER, renderFakeCursor, type Component } from "../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { stripTerminalSequences } from "../packages/tui/src/utils.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
@@ -91,52 +90,19 @@ test("nested tail image boundaries match ordinary fullscreen scroll rendering", 
 	assert.deepEqual(renderLayoutFrame(actualScroll, 20, 4, () => {}).lines, renderLayoutFrame(referenceScroll, 20, 4, () => {}).lines);
 });
 
-for (const composite of [false, true]) {
-	test(`Main ${composite ? "composite root" : "single viewport"} keeps the last input line and cursor in bounded frames`, async () => {
-		const terminal = new FakeTerminal(20, 4);
-		const main = new TuiMainScreen(terminal, true);
-		const document = new ViewportContainer();
-		const child = new Lines(["h1", "h2", "h3", "h4", `ab${CURSOR_MARKER}${renderFakeCursor("c")}`]);
-		const metrics = new TuiRenderInstrumentation(); main.setRenderInstrumentation(metrics);
-		main.addChild(document);
-		if (composite) main.addChild(child); else document.addChild(child);
-		try {
-			main.renderNow();
-			for (let frame = 0; frame < 2; frame++) {
-				terminal.writes.length = 0; child.renderCalls = 0; metrics.reset();
-				main.renderNow();
-				const state = main.captureRenderState();
-				assert.deepEqual(state.previousLines.map(stripTerminalSequences), ["h2", "h3", "h4", "abc"]);
-				assert.equal(state.viewportWindowStart, 1);
-				assert.equal(state.hardwareCursorRow, 4);
-				assert.ok(terminal.writes.join("").includes("\x1b[3G\x1b[?25h"));
-				assert.equal(child.renderCalls, 1);
-				assert.equal(metrics.snapshot().fullHistoryFallbacks, 0);
-			}
-		} finally { await main.dispose({ preserveScreen: true }); }
-	});
-
-	test(`${composite ? "Main root" : "ViewportContainer"} releases borrowed tail arrays and image metadata when an earlier child throws`, async () => {
-		registerKittyImageMetadata({ imageId: 1705, columns: 4, rows: 4, widthPx: 40, heightPx: 40 });
-		const failing = new Lines(["prefix"]);
-		const retained = new RetainedContainer();
-		retained.addRetainedChild(new Lines(["\x1b_Ga=T,i=1705,r=4;payload\x1b\\", "", "", "", "after"]), { id: "image", version: 1, completed: true });
-		const owner = composite ? new TuiMainScreen(new FakeTerminal(20, 4), false) : new ViewportContainer();
-		owner.addChild(failing); owner.addChild(retained);
-		const raw = owner as unknown as {
-			renderRootViewportTail(width: number, height: number): unknown;
-			frameRootLines: unknown[]; frameRootLeadingKittyImages: unknown[];
-			tailChildLines: unknown[]; tailChildLeadingKittyImages: unknown[];
-		};
-		const render = (): unknown => owner instanceof ViewportContainer ? owner.renderViewportTail(20, 4) : raw.renderRootViewportTail(20, 4);
-		try {
-			failing.throwOnRender = true;
-			assert.throws(render, /tail fixture failure/);
-			const arrays = composite ? [raw.frameRootLines, raw.frameRootLeadingKittyImages] : [raw.tailChildLines, raw.tailChildLeadingKittyImages];
-			for (const entries of arrays) assert.ok(entries.every(value => value === undefined));
-			failing.throwOnRender = false;
-			assert.deepEqual(render(), { lines: ["", "", "", "after"], startLine: 2, totalHeight: 6, leadingKittyImage: { line: retained.render(20)[0], absoluteRow: 1 } });
-			for (const entries of arrays) assert.ok(entries.every(value => value === undefined));
-		} finally { if (owner instanceof TuiMainScreen) await owner.dispose({ preserveScreen: true }); }
-	});
-}
+test("ViewportContainer releases borrowed tail arrays and image metadata when an earlier child throws", () => {
+	registerKittyImageMetadata({ imageId: 1705, columns: 4, rows: 4, widthPx: 40, heightPx: 40 });
+	const failing = new Lines(["prefix"]);
+	const retained = new RetainedContainer();
+	retained.addRetainedChild(new Lines(["\x1b_Ga=T,i=1705,r=4;payload\x1b\\", "", "", "", "after"]), { id: "image", version: 1, completed: true });
+	const owner = new ViewportContainer();
+	owner.addChild(failing); owner.addChild(retained);
+	const raw = owner as unknown as { tailChildLines: unknown[]; tailChildLeadingKittyImages: unknown[] };
+	failing.throwOnRender = true;
+	assert.throws(() => owner.renderViewportTail(20, 4), /tail fixture failure/);
+	const arrays = [raw.tailChildLines, raw.tailChildLeadingKittyImages];
+	for (const entries of arrays) assert.ok(entries.every(value => value === undefined));
+	failing.throwOnRender = false;
+	assert.deepEqual(owner.renderViewportTail(20, 4), { lines: ["", "", "", "after"], startLine: 2, totalHeight: 6, leadingKittyImage: { line: retained.render(20)[0], absoluteRow: 1 } });
+	for (const entries of arrays) assert.ok(entries.every(value => value === undefined));
+});

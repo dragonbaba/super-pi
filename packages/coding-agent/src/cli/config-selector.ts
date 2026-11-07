@@ -2,11 +2,11 @@
  * TUI config selector for `pi config` command
  */
 
-import { ProcessTerminal, type TUI, TuiMainScreen } from "@super-pi/tui";
+import { ProcessTerminal, type TUI, TuiAltScreen } from "@super-pi/tui";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import { ConfigSelectorComponent, type ScopedResolvedPaths } from "../modes/interactive/components/config-selector.ts";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.ts";
-import { observeStartupLifecycle } from "./startup-ui.ts";
+import { observeStartupLifecycle, STARTUP_DIALOG_SCREEN_OPTIONS } from "./startup-ui.ts";
 
 export interface ConfigSelectorOptions {
 	resolvedPaths: ScopedResolvedPaths;
@@ -23,13 +23,14 @@ export async function selectConfig(options: ConfigSelectorOptions): Promise<void
 	initTheme(options.settingsManager.getTheme(), true);
 
 	return new Promise((resolve, reject) => {
-		const ui: TUI = new TuiMainScreen(new ProcessTerminal(), undefined, options.agentDir);
+		const ui: TUI = new TuiAltScreen(new ProcessTerminal(), undefined, options.agentDir, STARTUP_DIALOG_SCREEN_OPTIONS);
 		let resolved = false;
 		const finish = async (exit: boolean): Promise<void> => {
 			if (resolved) return;
 			resolved = true;
 			try {
-				await ui.dispose();
+				// Leaving the alternate screen restores the terminal as it was before the selector.
+				await ui.dispose({ preserveScreen: true });
 			} finally {
 				stopThemeWatcher();
 			}

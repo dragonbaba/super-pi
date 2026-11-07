@@ -22,7 +22,7 @@ import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrume
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { Text } from "../../packages/tui/src/components/text.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type BenchEvent = { type: string; [key: string]: unknown };
@@ -152,7 +152,9 @@ class NoopTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-class InstrumentedMainScreen extends TuiMainScreen {
+class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	doRenderCalls = 0;
 	override requestRender(force = false): void {
@@ -183,14 +185,15 @@ function resetMetrics(metrics: AssistantMessageAllocationMetrics): void {
 }
 
 function createRenderer(historyItems: number): {
-	renderer: InstrumentedMainScreen;
+	renderer: InstrumentedAltScreen;
 	reference: TUI;
 	transcript: RetainedContainer;
 	instrumentation: TuiRenderInstrumentation;
 	terminal: NoopTerminal;
 } {
 	const terminal = new NoopTerminal();
-	const renderer = new InstrumentedMainScreen(terminal, false);
+	const renderer = new InstrumentedAltScreen(terminal, false, undefined, { mouse: false });
+	renderer.start();
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	for (let index = 0; index < historyItems; index++) {
@@ -433,6 +436,7 @@ async function measureAssistant(
 	if (scheduler.pendingTasks !== 0) throw new Error(`${name}: scheduler retained a pending task after flush`);
 	await renderer.flushTerminalFrames();
 	await delivery.dispose();
+	if (renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await renderer.dispose({ preserveScreen: true });
 	return result;
 }
