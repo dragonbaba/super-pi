@@ -43,6 +43,8 @@ const RSYNC_VALUE_OPTIONS = new Set(["--exclude", "--include", "--filter", "--ex
   "--protocol", "--checksum-seed", "--write-batch", "--only-write-batch", "--read-batch", "--copy-as"]);
 /** Short rsync options that take the next word when they end their cluster (`-e ssh`, `-avf 'merge x'`). */
 const RSYNC_SHORT_VALUE_OPTIONS = "efTBM";
+/** GNU tar short options that take a value: the rest of the cluster or the next word. */
+const TAR_SHORT_VALUE_OPTIONS = "bCfFgHIKLNTVX";
 // Native authorization only: PowerShell file cmdlets, after Claude Code's PowerShell
 // scope checks. Kind codes keep the table allocation-free; ALIAS entries apply only to
 // the PowerShell tool because Bash may have an unrelated program of that name.
@@ -268,26 +270,45 @@ function isRemoteRsyncOperand(value: string): boolean {
 
 /**
  * `tar -xf a.tar [-C dir]` / `tar xf a.tar`: extraction writes into `-C`'s directory, else the cwd.
- * Successive `-C` options chain (`-C /tmp/out -C nested`); `-O`/`--to-stdout` writes no files.
+ * Short options are read as tar reads them: a value option takes the rest of its cluster or the
+ * next word (`-xC out -f a.tar`, `-tfexample.tar`), and old-style letters (`tar xfC a.tar out`)
+ * take the following words in order. Successive `-C` options chain; `-O`/`--to-stdout` writes no files.
  */
 function inspectTarExtract(tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
   let extract = false, stdout = false, directory = "", expansion = 0, missing = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
-    let value: string | undefined, at = index;
-    if (token === "--extract" || token === "--get") extract = true;
-    else if (token === "--to-stdout") stdout = true;
-    else if (token === "-C" || token === "--directory") { at = ++index; value = tokens[index]; if (value === undefined) missing = true; }
-    else if (token.startsWith("--directory=")) value = token.slice(12);
-    else if (token.length > 2 && token.charCodeAt(0) === 45 && token.charCodeAt(1) === 67) value = token.slice(2); // `-C../out`
-    else if (!token.startsWith("--") && (token.charCodeAt(0) === 45 || index === start)) {
-      if (token.includes("x")) extract = true;
-      if (token.includes("O")) stdout = true;
+    if (token === "--") break;
+    let value: string | undefined, at = index, hasValue = false;
+    if (token.startsWith("--")) {
+      if (token === "--extract" || token === "--get") extract = true;
+      else if (token === "--to-stdout") stdout = true;
+      else if (token === "--directory") { at = ++index; value = tokens[index]; hasValue = true; }
+      else if (token.startsWith("--directory=")) { value = token.slice(12); hasValue = true; }
+      else if (token === "--file") index++;
+    } else if (token.charCodeAt(0) === 45 || index === start) {
+      const dashed = token.charCodeAt(0) === 45;
+      let next = index + 1;
+      for (let letter = dashed ? 1 : 0; letter < token.length; letter++) {
+        const code = token.charCodeAt(letter);
+        if (code === 120) extract = true; // `x`
+        else if (code === 79) stdout = true; // `O`
+        else if (TAR_SHORT_VALUE_OPTIONS.includes(token[letter]!)) {
+          let optionValue: string | undefined, optionAt = index;
+          if (dashed && letter + 1 < token.length) optionValue = token.slice(letter + 1); // `-C../out`, `-fa.tar`
+          else { optionAt = next; optionValue = tokens[next++]; }
+          if (code === 67) { // `C`: an old-style word may name several directories in order
+            if (!optionValue) missing = true;
+            else { directory = chainTarDirectory(directory, optionValue); expansion |= tokens.expansions?.[optionAt] ?? 0; }
+          }
+          if (dashed) break;
+        }
+      }
+      index = next - 1;
     }
-    if (value !== undefined) {
+    if (hasValue) {
       if (!value) missing = true;
-      directory = !directory || isAbsolute(value) ? value : directory + "/" + value;
-      expansion |= tokens.expansions?.[at] ?? 0;
+      else { directory = chainTarDirectory(directory, value); expansion |= tokens.expansions?.[at] ?? 0; }
     }
   }
   if (!extract) return false;
@@ -296,6 +317,11 @@ function inspectTarExtract(tokens: PermissionTokens, start: number, cwd: string,
   if (missing) { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
   else addTarget(builder, directory || ".", cwd, true, expansion);
   return true;
+}
+
+/** `-C /tmp/out -C nested` works in `/tmp/out/nested`; an absolute value starts over. */
+function chainTarDirectory(directory: string, value: string): string {
+  return !directory || isAbsolute(value) ? value : directory + "/" + value;
 }
 
 function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
@@ -835,7 +861,12 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       while (path < tokens.length && tokens[path]!.charCodeAt(0) === 45) path++;
       const value = tokens[path];
       if (value === undefined) { builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
-      else addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
+      else if (value.indexOf("/") < 0 && value.indexOf("\\") < 0 && value !== "." && value !== "..") {
+        // A bare name may be a registered worktree's identifier (its last path component), not a cwd path:
+        // the deleted directory is unknown here, so the target is uncertain and the host asks.
+        addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
+          expansion | (tokens.expansions?.[path] ?? 0), false, "contents");
+      } else addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
         expansion | (tokens.expansions?.[path] ?? 0), true);
     }
     return cwd;

@@ -25,7 +25,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
   for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
-  for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer", "inspectRsync", "isRemoteRsyncOperand", "inspectTarExtract"]) targets.get("permission-bash.ts")!.add(name);
+  for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer", "inspectRsync", "isRemoteRsyncOperand", "inspectTarExtract", "chainTarDirectory"]) targets.get("permission-bash.ts")!.add(name);
   // Native PowerShell and cmd scripts: one cached token table per source, one word buffer per script.
   targets.get("permission-bash.ts")!.add("inspectWindowsScript");
   targets.get("core.ts")!.add("inspectWindowsShellScript");
