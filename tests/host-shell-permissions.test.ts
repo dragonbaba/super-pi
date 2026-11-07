@@ -219,11 +219,11 @@ test("native evidence preserves independent writes and does not treat search sco
 
 test("deleting files inside a workspace directory runs like other workspace deletes; the root, .git and outside ask",async t=>{
   const f=await fixture(t);await fs.mkdir(join(f.cwd,"dist"));await fs.mkdir(join(f.cwd,".git"));
-  for(const command of ["rsync -a --delete src/ dist/","find dist -name '*.map' -delete"]) {
+  for(const command of ["rsync -a --delete src/ dist/","find dist -name '*.map' -delete","find dist -name '-L' -delete"]) {
     const before=f.dialogs.length;await f.authorize("bash",command);assert.equal(f.dialogs.length,before,command);
   }
   for(const command of ["rsync -a --delete ../build/ .","find .git -name '*.lock' -delete","rsync -a --delete src/ "+quote("bash",f.outside),
-    "find dist "+quote("bash",f.outside)+" -type f -delete"]) {
+    "find dist "+quote("bash",f.outside)+" -type f -delete","find '' "+quote("bash",f.outside)+" -type f -delete"]) {
     const before=f.dialogs.length;await f.authorize("bash",command);
     assert.equal(f.dialogs.length,before+1,command);assert.match(f.dialogs.at(-1)!,/会删除目录中的文件/,command);
   }
