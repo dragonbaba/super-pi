@@ -29,7 +29,8 @@ rendered twice per frame.
   keeps the old behaviour: measure, then release immediately.
 - Not changed: the first frame or a width change measures every record without
   keeping lines, so the active record is composed once more there. That path
-  is rare and not per-frame.
+  is rare and not per-frame. Fixed in
+  [fullscreen-leftovers-2026-11-07.md](fullscreen-leftovers-2026-11-07.md).
 
 ## Hot-path audit
 

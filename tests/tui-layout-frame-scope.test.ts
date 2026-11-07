@@ -136,6 +136,37 @@ test("a measurement that throws inside the same container still releases lines i
 	assertScopeReleased();
 });
 
+test("width-change frames render an active item once and keep at most one tail block", () => {
+	const transcript = new RetainedContainer();
+	for (let index = 0; index < 300; index++) {
+		transcript.addRetainedChild(new CountingLine(`done-${index}`), { id: `done-${index}`, version: 1, completed: true });
+	}
+	const plain: CountingLine[] = [];
+	for (let index = 0; index < 300; index++) {
+		const line = new CountingLine(`plain-${index}`);
+		plain.push(line);
+		transcript.addChild(line);
+	}
+	const activeLine = new CountingLine("active");
+	transcript.addRetainedChild(activeLine, { id: "active", version: 0 });
+	const document = new ViewportContainer();
+	document.addChild(transcript);
+	const root = new ScrollView(document, { follow: "end", primary: true });
+	for (let width = 40; width <= 60; width += 5) {
+		const before = activeLine.renders;
+		const headBefore = plain[0]!.renders;
+		const tailBefore = plain[299]!.renders;
+		const frame = renderLayoutFrame(root, width, 10, noop);
+		assert.ok(frame.lines.some((line) => line.includes(`active:${width}`)), `width ${width}`);
+		assert.equal(activeLine.renders - before, 1, `active renders at width ${width}`);
+		assert.equal(plain[299]!.renders - tailBefore, 1, `visible plain tail renders at width ${width}`);
+		// Outside the retained tail block, an uncached record is measured and released.
+		assert.equal(plain[0]!.renders - headBefore, 1, `off-screen head renders at width ${width}`);
+		assertNoPreparedLines(transcript);
+		assertScopeReleased();
+	}
+});
+
 test("height queries outside a layout frame keep the previous release-immediately behaviour", () => {
 	const transcript = new RetainedContainer();
 	const activeLine = new CountingLine("active-0");

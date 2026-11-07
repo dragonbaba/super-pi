@@ -1,4 +1,4 @@
-import { type Component, Loader, RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
+import { Loader, RELEASE_COMPONENT_RENDER_CACHE, type TUI } from "@super-pi/tui";
 import type { WorkingIndicatorOptions } from "../../../core/extensions/index.ts";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
@@ -108,16 +108,5 @@ export class BranchSummaryStatusIndicator extends StatusIndicator {
 			(text) => theme.fg("muted", text),
 			`Summarizing branch... (${keyText("app.interrupt")} to cancel)`,
 		);
-	}
-}
-
-export class IdleStatus implements Component {
-	invalidate(): void {
-		// No cached state to invalidate.
-	}
-
-	render(width: number): string[] {
-		const emptyLine = " ".repeat(width);
-		return [emptyLine, emptyLine];
 	}
 }
