@@ -410,8 +410,8 @@ test("fullscreen active and overlay frames stay bounded by the visible transcrip
 			tui.renderNow();
 			let metrics = instrumentation.snapshot();
 			assert.equal(metrics.completedItemRenders, 0);
-			// Measure plus compose: the active record is rendered twice, completed records never.
-			assert.equal(metrics.activeItemRenders, 2);
+			// Measure and compose share one render of the active record; completed records never render.
+			assert.equal(metrics.activeItemRenders, 1);
 			assert.ok(metrics.retainedCacheHits < 100);
 			assert.ok(metrics.viewportItemVisits < 100);
 			assert.ok(metrics.viewportComposedLines <= 40);

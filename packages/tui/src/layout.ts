@@ -1,5 +1,6 @@
 import type { ScrollView } from "./components/scroll-view.ts";
 import { allocateStackSizesInto } from "./components/stack.ts";
+import { beginLayoutFrameScope, endLayoutFrameScope } from "./layout-frame-scope.ts";
 import { getLayoutNode, type LayoutViewport, type StackLayoutEntry } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
@@ -1292,6 +1293,7 @@ export function renderLayoutFrame(
 		context = activeScratch.begin(safeWidth, safeHeight, requestRender)!;
 	}
 	let completed = false;
+	beginLayoutFrameScope();
 	try {
 		const rootClip = createRect(context, 0, 0, safeWidth, safeHeight);
 		const rootBox = layoutComponent(context, root, 0, 0, safeWidth, safeHeight, rootClip);
@@ -1331,7 +1333,11 @@ export function renderLayoutFrame(
 		completed = true;
 		return frame;
 	} finally {
-		if (!completed) activeScratch!.abort();
+		try {
+			if (!completed) activeScratch!.abort();
+		} finally {
+			endLayoutFrameScope();
+		}
 	}
 }
 

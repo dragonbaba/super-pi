@@ -109,7 +109,7 @@ test("retained cache and instrumentation stay instance-local and retain no compo
 	const instrumentationText = readFileSync(INSTRUMENTATION_PATH, "utf8");
 	assert.match(
 		retainedText,
-		/class RetainedContainer extends Container implements LineViewportComponent \{[\s\S]*?private readonly retainedById/,
+		/class RetainedContainer extends Container implements LineViewportComponent, LayoutFrameScopedOwner \{[\s\S]*?private readonly retainedById/,
 	);
 	assert.doesNotMatch(retainedText, /^const .*new Map</m);
 	assert.doesNotMatch(instrumentationText, /Component|string\[\]|(?:^|\s)frames?\s*:/im);
@@ -131,6 +131,56 @@ test("viewport hot paths avoid full-history wrapper copies and global ownership"
 	assert.match(totalHeight, /return this\.viewportTotalHeight/);
 	assert.doesNotMatch(viewportText, /^const .*new (?:Map|Set)/m);
 	assert.doesNotMatch(`${retainedText}\n${viewportText}`, /ObjectPool|Proxy\s*\(/);
+});
+
+test("layout frame scope hands measured lines to composition without per-frame allocation", () => {
+	const retainedText = readFileSync(RETAINED_PATH, "utf8");
+	const retainedSource = ts.createSourceFile(RETAINED_PATH, retainedText, ts.ScriptTarget.Latest, true);
+	const scopePath = "packages/tui/src/layout-frame-scope.ts";
+	const scopeSource = ts.createSourceFile(scopePath, readFileSync(scopePath, "utf8"), ts.ScriptTarget.Latest, true);
+	const hotNodes: Array<{ node: ts.Node; source: ts.SourceFile }> = [
+		{ node: findMethod(retainedSource, "RetainedContainer", "getContentHeight"), source: retainedSource },
+		{ node: findMethod(retainedSource, "RetainedContainer", "releaseLayoutFrameScopedState"), source: retainedSource },
+		{ node: findFunction(scopeSource, "beginLayoutFrameScope"), source: scopeSource },
+		{ node: findFunction(scopeSource, "endLayoutFrameScope"), source: scopeSource },
+		{ node: findFunction(scopeSource, "isLayoutFrameScopeActive"), source: scopeSource },
+		{ node: findFunction(scopeSource, "registerLayoutFrameScopedOwner"), source: scopeSource },
+	];
+	const violations: string[] = [];
+	for (const { node, source } of hotNodes) {
+		const visit = (child: ts.Node): void => {
+			if (
+				ts.isArrowFunction(child) ||
+				ts.isFunctionExpression(child) ||
+				ts.isObjectLiteralExpression(child) ||
+				ts.isArrayLiteralExpression(child) ||
+				ts.isNewExpression(child) ||
+				ts.isSpreadElement(child)
+			) {
+				violations.push(`${source.fileName}:${source.getLineAndCharacterOfPosition(child.getStart(source)).line + 1}`);
+			}
+			ts.forEachChild(child, visit);
+		};
+		ts.forEachChild(node, visit);
+	}
+	assert.deepEqual(violations, []);
+
+	const getContentHeight = findMethod(retainedSource, "RetainedContainer", "getContentHeight").getText(retainedSource);
+	assert.match(
+		getContentHeight,
+		/if \(isLayoutFrameScopeActive\(\)\) \{[\s\S]*?this\.prepareViewportIndex\(width, true\);[\s\S]*?!this\.layoutFrameScopeRegistered/,
+	);
+	const release = findMethod(retainedSource, "RetainedContainer", "releaseLayoutFrameScopedState").getText(retainedSource);
+	assert.match(release, /this\.layoutFrameScopeRegistered = false;\s*this\.clearPreparedViewportLines\(\);/);
+
+	const layoutText = readFileSync("packages/tui/src/layout.ts", "utf8");
+	const layoutSource = ts.createSourceFile("packages/tui/src/layout.ts", layoutText, ts.ScriptTarget.Latest, true);
+	const frame = findFunction(layoutSource, "renderLayoutFrame").getText(layoutSource);
+	assert.ok(frame.indexOf("beginLayoutFrameScope();") < frame.indexOf("try {"));
+	assert.match(
+		frame,
+		/\} finally \{\s*try \{\s*if \(!completed\) activeScratch!\.abort\(\);\s*\} finally \{\s*endLayoutFrameScope\(\);/,
+	);
 });
 
 test("allocation hot paths keep cache hits and mutation writes allocation-free", () => {
