@@ -113,6 +113,14 @@ function hashtableKey(argv: string[], word: string, quoted: boolean, valueQuoted
   return HASH_NONE;
 }
 
+/** `function` or `filter` in any case: the next word names a declaration, not a command. */
+function isDeclarationKeyword(text: string): boolean {
+  if (text.length !== 8 && text.length !== 6) return false;
+  if (text === "function" || text === "filter") return true;
+  const lower = text.toLowerCase();
+  return lower === "function" || lower === "filter";
+}
+
 /** `switch` in any case; its next brace opens a body of labels and action blocks. */
 function isSwitchKeyword(text: string): boolean {
   return text.length === 6 && (text === "switch" || text.toLowerCase() === "switch");
@@ -599,10 +607,12 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
   // (`@{ out = (git push) }`, `@{ out = & git push }` run their command for the value).
   // A `switch` body (`switch ($t) { git { … } }`) is tracked the same way: its labels are not commands.
   let caseDepth = 0, casePattern = false, braceKinds = 0, switchKinds = 0, braceDepth = 0, hashEntry = HASH_NONE, keyPosition = false, switchPending = false;
+  // `function npm { … }` / `filter npm { … }`: the name after the keyword is skipped, the body matched.
+  let declaration = false;
   // Bash array elements (`packages=(git curl jq)`) are data: segments at or below this depth are skipped.
   let arrayDepth = 0;
   for (let segment = 0; segment < table.segmentCount && verdict !== RULE_DENY; segment++) {
-    argv.length = 0;
+    argv.length = 0; declaration = false;
     const previous = segment > 0 ? table.segmentSeparators[segment - 1]! : -1;
     // The PowerShell lexer records a line break as SEGMENT_SEQUENCE too; only the source tells it from `;`.
     const firstToken = table.segmentStart(segment);
@@ -734,8 +744,10 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
                 else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0) hashEntry = HASH_NONE; // a switch label
                 else {
                   hashEntry = HASH_NONE;
-                  if (argv.length > 0 || !isCommandPrefix(word, true)) argv.push(word);
+                  if (declaration && argv.length === 0) declaration = false;
+                  else if (argv.length > 0 || !isCommandPrefix(word, true)) argv.push(word);
                   else if (isSwitchKeyword(word)) switchPending = true;
+                  else if (isDeclarationKeyword(word)) declaration = true;
                 }
               }
               if (code !== -1) {
@@ -763,9 +775,11 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         if (argv.length === 0 && !powerShell && text === "coproc") { if (index + 2 < end && table.texts![index + 2] === "{") index++; continue; }
         if (argv.length === 0 && (isCommandPrefix(text, powerShell) || !powerShell && isAssignment(text))) {
           if (powerShell && isSwitchKeyword(text)) switchPending = true;
+          else if (powerShell && isDeclarationKeyword(text)) declaration = true;
           continue;
         }
       }
+      if (declaration && argv.length === 0) { declaration = false; continue; }
       argv.push(expression && argv.length === 0 ? "" : text);
     }
     verdict = strongerRuleVerdict(rules, powerShell, argv, verdict);
