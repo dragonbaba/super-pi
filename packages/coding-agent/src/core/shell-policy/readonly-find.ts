@@ -20,6 +20,25 @@ export function findPredicateHasOperand(word: string): boolean {
 	return FIND_OPERAND_PREDICATES.has(word) || FIND_NEWER_PREDICATE.test(word);
 }
 
+/**
+ * A search root: find takes every word up to the first option or expression operator. An empty
+ * word is an (invalid) root too; find reports it and goes on to the next one.
+ */
+export function isFindSearchRoot(value: string): boolean {
+	return value.length === 0 || value.charCodeAt(0) !== 45 /* - */ && value !== "(" && value !== "!" && value !== ",";
+}
+
+/** `-L` or `-follow`: deletion follows symbolic links, so the search roots do not bound it. Predicate operands are data. */
+export function findFollowsLinks(tokens: readonly string[], start: number): boolean {
+	for (let index = start; index < tokens.length; index++) {
+		const value = tokens[index]!;
+		if (value === "-L" || value === "-follow") return true;
+		if (findPredicateHasOperand(value) || value === "-fprint" || value === "-fprint0" || value === "-fls") index++;
+		else if (value === "-fprintf") index += 2;
+	}
+	return false;
+}
+
 /** One literal relative root; no options, devices, drives, expansion or UNC paths. */
 export function isReadOnlyFindRoot(value: string | undefined): boolean {
 	return value !== undefined && RELATIVE_ROOT.test(value);

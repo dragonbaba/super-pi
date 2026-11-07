@@ -72,6 +72,8 @@ export async function assessHostMutations(workspaces: readonly string[], paths: 
             if (reason) assessment.forbidden ??= `${operation} ${target}\n禁止原因：${reason}`;
             else if (external) assessment.ask = true;
         } else if (agentPath) assessment.ask = true;
+        // Deleting files inside a directory (shell `contents` targets): the caller decides on workspace scope.
+        else if (operation === "contents") { /* not an overwrite of an existing file */ }
         else if (external && !(batch && operation === "write" && item.mode === "create")) {
             if (await exists(target, existingFilesOnly)) assessment.externalOverwrite ??= `${operation} ${target}`;
             else if (operation === "write") (assessment.newExternalFiles ??= []).push(target);

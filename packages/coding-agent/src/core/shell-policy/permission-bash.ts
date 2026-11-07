@@ -5,7 +5,7 @@ import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
-import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
+import { findFollowsLinks, findPredicateHasOperand, isFindSearchRoot, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyGitAt, powerShellLocationTarget, type ReadOnlyShellSubcommands } from "./readonly-command.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
@@ -341,7 +341,10 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
       if (tokens[index] === "-delete" || tokens[index] === "-exec" || tokens[index] === "-execdir") {
         markMutation(builder, tokens[index] === "-delete" ? "find_delete" : "find_exec");
         if (root < 0) addResolvedTarget(builder, cwd);
-        else addTarget(builder, tokens[root]!, cwd, true, tokens.expansions?.[root], false, "contents");
+        // Every search root is a scope; following links (`-L`, `-follow`) leaves them, so the scope is uncertain.
+        else for (let scope = root; scope < tokens.length && isFindSearchRoot(tokens[scope]!); scope++)
+          addTarget(builder, tokens[scope]!, cwd, true, tokens.expansions?.[scope], false, "contents");
+        if (findFollowsLinks(tokens, start)) builder.analysisOwner?.observeMutationTarget(tokens[start]!, cwd, 0, undefined, "contents");
         if (tokens[index] !== "-delete") { markOpaque(builder, "find_exec_scope"); return true; }
         continue;
       }
@@ -864,8 +867,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       else if (value.indexOf("/") < 0 && value.indexOf("\\") < 0 && value !== "." && value !== "..") {
         // A bare name may be a registered worktree's identifier (its last path component), not a cwd path:
         // the deleted directory is unknown here, so the target is uncertain and the host asks.
-        addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
-          expansion | (tokens.expansions?.[path] ?? 0), false, "contents");
+        builder.analysisOwner?.observeMutationTarget(value, cwd, expansion | (tokens.expansions?.[path] ?? 0), undefined, "delete");
       } else addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
         expansion | (tokens.expansions?.[path] ?? 0), true);
     }

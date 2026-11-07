@@ -36,7 +36,7 @@ import {
 import { commandSubstitutionEnd, MAX_SUBSTITUTIONS } from "./shell-substitution.ts";
 import { analyzeShellSource, ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
-import { findPredicateHasOperand, isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
+import { findFollowsLinks, findPredicateHasOperand, isFindSearchRoot, isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { powerShellLocationTarget } from "./readonly-command.ts";
@@ -884,8 +884,11 @@ function inspectFind(tokens: readonly string[] & { expansions?: readonly number[
 	addMutationPrimitive(builder, deleteAction ? "find_delete" : "find_exec");
 	if (execAction) markUnverifiable(builder, true);
 	const target = findSearchRootIndex(tokens, start);
-	if (target >= 0) addTarget(builder, tokens[target]!, cwd, tokens.expansions?.[target], deleteAction ? "find" : false);
-	else markUnverifiable(builder, true);
+	if (target < 0) { markUnverifiable(builder, true); return; }
+	// Every search root is a scope; following links (`-L`, `-follow`) leaves them, so the scope is uncertain.
+	for (let index = target; index < tokens.length && isFindSearchRoot(tokens[index]!); index++)
+		addTarget(builder, tokens[index]!, cwd, tokens.expansions?.[index], deleteAction ? "find" : false);
+	if (deleteAction && findFollowsLinks(tokens, start)) builder.analysisOwner?.observeMutationTarget(tokens[target]!, cwd, 0, undefined, "contents");
 }
 
 function findSearchRootIndex(tokens: readonly string[], start: number): number {

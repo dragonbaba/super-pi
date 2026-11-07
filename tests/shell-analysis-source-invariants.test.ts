@@ -12,7 +12,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     ["code-method-names.ts", new Set(["isCodeMethodNamePart", "hexDigit", "writeCodeMethodName", "writeEscapedNodeMethodKey", "nodeDeletionName", "nodeKeyTriviaEnd", "hasBracketReceiver", "keyWhitespace", "failedName", "decodeNodeName", "writeName"])],
     ["permission-bash.ts", new Set(["inspectScript", "inspectBashPermissionScope", "inspectKnownMutation", "markMutation", "markUncertainContext", "addResolvedTarget", "addTarget"])],
     ["shell-redirection.ts", new Set(["isShellOutputFileRedirection", "isShellFileDescriptor", "shellRedirectionLength", "hasUnsafeBashTestOperand", "isBashIntegerLiteral", "hasOnlySimpleQueryVariables", "isQueryVariableStart", "isQueryVariablePart", "isQueryVariableDigit", "isReadOnlySpecialParameter", "bashPipelinePrefixEnd", "bashTimeOptionsEnd", "isQuotedBashWord"])],
-    ["readonly-find.ts", new Set(["findPredicateHasOperand"])],
+    ["readonly-find.ts", new Set(["findPredicateHasOperand", "isFindSearchRoot", "findFollowsLinks"])],
     ["sort-options.ts", new Set(["sortLongOption", "sortOptionRequiresValue", "sortHasTerminalOption"])],
     ["timeout-wrapper.ts", new Set(["parseTimeoutInvocation"])],
   ]);

@@ -24,8 +24,9 @@ test("git -C, worktree remove, rsync and tar extraction name the directory they 
   assert.deepEqual(scan("bash", "git -C sub clean -fdx"), { targets: [`write:${resolve(cwd, "sub")}`], uncertain: false });
   assert.deepEqual(scan("bash", "git worktree remove --force ../wt"),
     { targets: [`delete:${resolve(cwd, "../wt")}`, `write:${resolve(cwd, ".git")}`], uncertain: false });
-  // `--delete` removes files inside the destination, not the directory: like `find -delete`, the host asks (never a root refusal).
-  for (const command of ["rsync -a --delete src/ dest/", "rsync -a --delete --exclude=.git ../build/ ."]) assert.deepEqual(scan("bash", command), { targets: [], uncertain: true }, command);
+  // `--delete` removes files inside the destination, not the directory (like `find -delete`): a `contents` target, never a root refusal.
+  assert.deepEqual(scan("bash", "rsync -a --delete src/ dest/"), { targets: [`contents:${resolve(cwd, "dest")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "rsync -a --delete --exclude=.git ../build/ ."), { targets: [`contents:${cwd}`], uncertain: false });
   assert.deepEqual(scan("bash", "rsync -a src/ ../outside/b"), { targets: [`write:${resolve(cwd, "../outside/b")}`], uncertain: false });
   assert.deepEqual(scan("bash", "rsync -a src/ ../outside/ --max-delete 100"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar -C out -xf a.tar"), { targets: [`write:${resolve(cwd, "out")}`], uncertain: false });
