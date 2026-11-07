@@ -66,6 +66,23 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
   return { root, outside, requests, dialogs, notes, statuses, choices, decide, owner, ctx };
 }
 
+test("auto review keeps the latest user instruction after tool history fills either budget", async t => {
+  const f = await fixture(t, "host-auto", []);
+  const manager = f.ctx.sessionManager;
+  for (const size of [8, 1800]) {
+    manager.appendMessage({ role: "user", content: "Inspect the project, then run npm test. Do not push.", timestamp: 1 });
+    for (let index = 0; index < 16; index++) manager.appendMessage({ role: "assistant", content: [
+      { type: "toolCall", id: `r${index}`, name: "read", arguments: { path: `src/${index}-${"x".repeat(size)}.ts` } },
+    ], api: "x", provider: "x", model: "x", usage: {} as any, stopReason: "toolUse", timestamp: index + 2 } as any);
+    assert.equal(await f.decide("bash", { command: "npm test" }), "allow");
+    assert.match(f.requests.at(-1)!, /\[user\] Inspect the project, then run npm test\. Do not push\./);
+    const transcript = autoReviewTranscript(manager);
+    assert.ok(transcript.length <= 12000);
+    assert.ok(transcript.split("\n\n").length <= 16);
+    assert.match(transcript, /src\/15-/);
+  }
+});
+
 test("host-auto reviews only what would ask; rule asks, outside deletes and a tripped breaker go back to the user", async t => {
   const f = await fixture(t, "host-auto", ["APPROVE: the user asked for tests", "DENY: pushes without being asked"],
     { rules: [{ tool: "bash", command: "git push --force", decision: "ask" }] });

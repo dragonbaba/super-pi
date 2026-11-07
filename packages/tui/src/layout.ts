@@ -16,8 +16,11 @@ const MAX_RENDER_CACHE_WIDTH_VARIANTS = 8;
 const RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE = -2;
 const MAX_RETAINED_ROW_CODE_UNITS = 64 * 1024;
 const MAX_RETAINED_ROW_CACHE_CODE_UNITS = 512 * 1024;
+const FULL_WIDTH_ROW = 1;
 /** Row mode: uncacheable row whose scrollbar thumb cell was already painted inline. */
 const INLINE_SCROLLBAR_ROW = 3;
+/** Cached full-screen row painted with one column reserved for a scrollbar. */
+const RESERVED_SCROLLBAR_ROW = 4;
 
 export interface LayoutRect {
 	x: number;
@@ -1057,7 +1060,7 @@ function markRowUncacheable(context: LayoutContext, row: number): void {
 	context.currentFullWidthLines[row] = undefined;
 }
 
-function cacheFullWidthRow(context: LayoutContext, row: number, source: string, painted: string): boolean {
+function cacheFullWidthRow(context: LayoutContext, row: number, source: string, painted: string, mode: number): boolean {
 	if (row < 0 || row >= context.currentFullWidthModes.length) return false;
 	const rowCodeUnits = source.length + painted.length;
 	const totalCodeUnits = context.previousCachedCodeUnits + context.currentCachedCodeUnits + rowCodeUnits;
@@ -1067,7 +1070,7 @@ function cacheFullWidthRow(context: LayoutContext, row: number, source: string, 
 		return false;
 	}
 	if (context.currentFullWidthModes[row] !== 0) markRowUncacheable(context, row);
-	context.currentFullWidthModes[row] = 1;
+	context.currentFullWidthModes[row] = mode;
 	context.currentFullWidthSources[row] = source;
 	context.currentFullWidthLines[row] = painted;
 	context.currentCachedSourceCodeUnits += source.length;
@@ -1113,6 +1116,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 		// Content of a full-width ScrollView that reserves its last column still paints whole rows.
 		const reservedRow = box.rect.x === 0 && box.rect.width === context.reservedContentWidth;
 		const fullRow = reservedRow || (box.rect.x === 0 && box.rect.width === totalWidth);
+		const rowMode = reservedRow ? RESERVED_SCROLLBAR_ROW : FULL_WIDTH_ROW;
 		const inlineCell = reservedRow ? context.inlineScrollbarCell : undefined;
 		for (let row = firstRow; row < lastRow; row++) {
 			const sourceLine = box.lines[offset + row - box.rect.y];
@@ -1152,14 +1156,14 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 				const sourceExceedsRowCache = line.length > MAX_RETAINED_ROW_CODE_UNITS;
 				const reusable =
 					context.rowCacheEnabled &&
-					context.previousFullWidthModes[row] === 1 &&
+					context.previousFullWidthModes[row] === rowMode &&
 					context.previousFullWidthSources[row] === line;
 				if (reusable) {
 					const cached = context.previousFullWidthLines[row];
 					if (cached !== undefined) {
 						screen[row] = cached;
 						context.fullWidthRowCacheHits++;
-						cacheFullWidthRow(context, row, line, cached);
+						cacheFullWidthRow(context, row, line, cached, rowMode);
 						continue;
 					}
 				}
@@ -1169,7 +1173,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 						FULL_WIDTH_LINE_RESET + line + repeatSpaces(context, totalWidth - lineWidth) + FULL_WIDTH_LINE_RESET;
 					screen[row] = painted;
 					if (sourceExceedsRowCache) rejectRowCacheBySize(context, row);
-					else cacheFullWidthRow(context, row, line, painted);
+					else cacheFullWidthRow(context, row, line, painted, rowMode);
 				} else {
 					if (sourceExceedsRowCache) rejectRowCacheBySize(context, row);
 					else markRowUncacheable(context, row);

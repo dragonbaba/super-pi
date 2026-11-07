@@ -17,7 +17,7 @@ export const AUTO_REVIEW_TIMEOUT_MS = 60000;
 const CONSECUTIVE_LIMIT = 3;
 const RECENT_WINDOW = 50;
 const RECENT_LIMIT = 10;
-/** The trimmed transcript: newest messages first until either cap, then shown oldest first. */
+/** The trimmed transcript keeps the latest user instruction within these existing caps. */
 const MAX_TRANSCRIPT_MESSAGES = 16;
 const MAX_TRANSCRIPT_CHARS = 12000;
 const MAX_MESSAGE_CHARS = 2000;
@@ -113,11 +113,30 @@ function entryText(entry: SessionEntry): string | undefined {
 export function autoReviewTranscript(manager: ReadonlySessionManager): string {
   const parts: string[] = [];
   let total = 0, entry = manager.getLeafEntry();
-  while (entry && parts.length < MAX_TRANSCRIPT_MESSAGES) {
-    const text = entryText(entry);
+  let hasUser = false, full = false;
+  while (entry) {
+    const user = entry.type === "message" && entry.message.role === "user";
+    // Once tools fill the budget, walk only to the latest user instruction. Do not
+    // serialize more tool arguments or replace the user's words with agent prose.
+    const text = !full || user ? entryText(entry) : undefined;
     if (text !== undefined) {
-      if (total + text.length > MAX_TRANSCRIPT_CHARS && parts.length) break;
-      parts.push(text); total += text.length;
+      if (parts.length === MAX_TRANSCRIPT_MESSAGES || total + text.length + (parts.length ? 2 : 0) > MAX_TRANSCRIPT_CHARS) {
+        if (hasUser) break;
+        full = true;
+        if (user) {
+          // Drop the oldest selected tool calls, keeping the newest calls and the
+          // user's authorization together. The message itself is already clipped.
+          while (parts.length && (parts.length === MAX_TRANSCRIPT_MESSAGES || total + text.length + 2 > MAX_TRANSCRIPT_CHARS)) {
+            total -= parts.pop()!.length + (parts.length ? 2 : 0);
+          }
+        }
+      }
+      if (!full || user) {
+        total += text.length + (parts.length ? 2 : 0);
+        parts.push(text);
+        if (user) hasUser = true;
+      }
+      if (full && hasUser) break;
     }
     entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
   }
