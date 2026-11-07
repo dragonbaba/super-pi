@@ -9,7 +9,9 @@ import { assessCanonicalMutationPath, canonicalizeProspectivePath, canonicalWork
 import { assessHostMutations } from "./files/host-mutation-policy.ts";
 import { inspectNativeShellMutations, type NativeShellMutations } from "./shell-policy/native-mutations.ts";
 import { classifyHostShellCommand, findNonReadOnlyShellSegment, HOST_SHELL_FILE_COMMANDS, HOST_SHELL_OTHER, HOST_SHELL_READ_ONLY,
-    type HostShellCommandClass } from "./shell-policy/readonly-command.ts";
+    HOST_SHELL_RULE_ALLOWED, type HostShellCommandClass, shellRuleVerdict, suggestShellRules } from "./shell-policy/readonly-command.ts";
+import { type ProjectPermissionRule, type ProjectPermissionStore, RULE_ALLOW, RULE_ASK, RULE_DENY,
+    RULE_NONE } from "./project-permissions.ts";
 import { ShellAnalysisOwner } from "./shell-policy/shell-analysis.ts";
 import { prepareShellCwd } from "./tools/shell-cwd.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
@@ -54,6 +56,8 @@ const MAX_REFUSAL_REASON = 1024;
 const APPROVAL_TIMEOUT_MS = 60000;
 const REFUSAL_KEY = /^[a-f0-9]{64}$/;
 const APPROVAL_CHOICES = ["允许一次", "拒绝", "拒绝并说明原因"];
+const REMEMBER_CHOICE = "允许，并在本项目不再询问";
+const REMEMBER_CHOICES = [APPROVAL_CHOICES[0]!, REMEMBER_CHOICE, APPROVAL_CHOICES[1]!, APPROVAL_CHOICES[2]!];
 const assertSignal = AbortSignal.prototype.throwIfAborted;
 function inside(root: string, target: string): boolean {
     const part = relative(root, target);
@@ -111,13 +115,22 @@ function isMutation(name: string, input: unknown): boolean {
  * all certain (and, by `outside`, inside); other shell commands and MCP tools ask.
  */
 function restrictedFallback(tool: string, outside: boolean, shell: NativeShellMutations | undefined, shellClass: HostShellCommandClass,
-    definition: McpRuleIdentity | undefined): PermissionDecision | undefined {
+    definition: McpRuleIdentity | undefined, projectAllowed: boolean): PermissionDecision | undefined {
     if (outside) return "ask";
     if (tool === "bash" || tool === "powershell") {
         if (shellClass === HOST_SHELL_READ_ONLY) return "allow";
+        // A listed file command always yields targets; a rule-allowed program may have none to check.
+        if (shellClass === HOST_SHELL_RULE_ALLOWED) return shell?.uncertain ? "ask" : "allow";
         return shellClass === HOST_SHELL_FILE_COMMANDS && shell !== undefined && !shell.uncertain ? "allow" : "ask";
     }
-    return definition?.mcpServer !== undefined ? "ask" : undefined;
+    // A project allow rule for the exact tool is the user's "不再询问".
+    return definition?.mcpServer !== undefined ? projectAllowed ? "allow" : "ask" : undefined;
+}
+
+function describeRules(rules: readonly ProjectPermissionRule[]): string {
+    let text = "";
+    for (const rule of rules) text += `  ${rule.tool}${rule.command === undefined ? "" : ": " + rule.command}\n`;
+    return text;
 }
 
 /** A recognized shell write whose canonical target is an existing directory; `paths` is index-aligned with the targets. */
@@ -180,9 +193,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     private epoch = 0;
     private closed = false;
     private readonly directories: readonly string[];
+    /** Project-shared rules (R4), read before every authorization when the file changed. */
+    private readonly project?: ProjectPermissionStore;
     constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode,
-        directories: readonly string[] = []) {
+        directories: readonly string[] = [], project?: ProjectPermissionStore) {
         this.directories = directories;
+        this.project = project;
         this.mode = mode;
         if (mode !== undefined) { assertPermissionMode(mode); if (isHostPermissionMode(mode) !== (environment === "trusted-host")) throw new Error("Permission mode and backend disagree"); }
         if (environment !== "sandbox" && environment !== "trusted-host") throw new Error("Invalid executionEnvironment");
@@ -314,6 +330,24 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         }
         return selected ?? fallback ?? (this.mode !== undefined || SAFE.has(tool) || tool === "read" || tool === "powershell" && this.environment === "sandbox" ? "allow" : "ask");
     }
+    /**
+     * The project allow rules that "不再询问" saves for this request, or undefined when saving
+     * them would not stop the ask (an explicit ask rule, or a command structure no rule covers).
+     */
+    private async rememberableRules(tool: string, command: unknown, paths: readonly string[], cwd: string,
+        definition: McpRuleIdentity | undefined): Promise<ProjectPermissionRule[] | undefined> {
+        if (!this.project || await this.decision(tool, command, paths, cwd, "allow", definition) !== "allow") return undefined;
+        if (tool !== "bash" && tool !== "powershell") return [{ tool, decision: "allow" }];
+        const suggestions = typeof command === "string" ? suggestShellRules(tool, command) : undefined;
+        if (!suggestions) return undefined;
+        const rules: ProjectPermissionRule[] = [];
+        for (const rule of suggestions) rules.push({ tool, decision: "allow", command: rule });
+        return rules;
+    }
+    /** Project rules for `/permissions rules`; undefined when this session has no project store. */
+    describeProjectRules(): ReturnType<ProjectPermissionStore["describe"]> | undefined {
+        return this.project?.describe();
+    }
     /** An allow rule that names this tool or its MCP server, not the catch-all `*`. */
     private namedAllow(tool: string, mcp: McpRuleIdentity | undefined): boolean {
         for (let index = 0; index < this.rules.length; index++) {
@@ -411,20 +445,27 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 this.runtime.executionBoundary.getReadOnlyShellSubcommands());
             if (blocked !== undefined) throw new Error(BLOCKED + "Plan mode runs only read-only commands; this one is not: " + blocked);
         }
+        const project = this.project ? await this.project.refresh() : undefined; check();
+        const projectWarning = this.project?.takeWarning();
+        if (projectWarning && ctx.hasUI) ctx.ui.notify(projectWarning, "warning");
         const restricted = this.mode === "host-restricted";
-        const hostShell = isHostPermissionMode(this.mode) && (event.toolName === "bash" || event.toolName === "powershell");
+        const shellTool = event.toolName === "bash" || event.toolName === "powershell";
+        const hostShell = isHostPermissionMode(this.mode) && shellTool;
         const shellBinding = hostShell ? await prepareShellCwd(input, ctx.cwd) : undefined; check();
         const shellCwd = hostShell ? shellBinding?.canonical ?? await realpath(ctx.cwd) : undefined; check();
         let shell: NativeShellMutations | undefined, shellClass: HostShellCommandClass = HOST_SHELL_OTHER;
+        const shellRules = shellTool && typeof input?.command === "string" && project?.hasShellRules(event.toolName === "powershell") ? project : undefined;
+        let projectVerdict = project ? project.toolDecision(event.toolName) : RULE_NONE;
         if (hostShell) {
             const tool = event.toolName as "bash" | "powershell";
-            // Host-restricted also classifies the command; both judgments read one token table.
-            const owner = restricted && typeof input.command === "string" ? new ShellAnalysisOwner(input.command, shellCwd!, this.epoch, tool) : undefined;
+            // Host-restricted classification and project rules read the mutation analysis's token table.
+            const owner = (restricted || shellRules) && typeof input.command === "string" ? new ShellAnalysisOwner(input.command, shellCwd!, this.epoch, tool) : undefined;
             try {
                 shell = inspectNativeShellMutations(tool, input, shellCwd!, this.epoch, owner);
-                if (owner) shellClass = classifyHostShellCommand(tool, input.command, owner);
+                if (restricted && owner) shellClass = classifyHostShellCommand(tool, input.command, owner, shellRules);
+                if (shellRules) projectVerdict = Math.max(projectVerdict, shellRuleVerdict(tool, input.command, shellRules, owner));
             } finally { owner?.release(); }
-        }
+        } else if (shellRules) projectVerdict = Math.max(projectVerdict, shellRuleVerdict(event.toolName as "bash" | "powershell", input.command, shellRules));
         if (shell) for (const target of shell.targets) targets.push(target.target);
         if (event.toolName === "file_batch") {
             if (!Array.isArray(input.operations) || !input.operations.length || input.operations.length > 16) throw new Error(BLOCKED + "Invalid file batch");
@@ -457,11 +498,16 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const host = shell ? await this.assessShellMutations(ctx, resolved!, shell)
             : mutation && isHostPermissionMode(this.mode) ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
+        const projectToolAllow = project?.toolDecision(event.toolName) === RULE_ALLOW;
         let fallback = explicitUserCommand ? "allow"
-            : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition) : undefined;
+            : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition, projectToolAllow) : undefined;
+        // Only an ask that a project allow rule could lift offers "不再询问": not outside paths, uncertain targets or writes into directories.
+        let liftable = restricted && fallback === "ask" && (resolved ?? delegated)?.outside !== true
+            && (shellTool ? shellClass === HOST_SHELL_OTHER : definition?.mcpServer !== undefined);
         // `cp a.txt dir/` writes `dir/a.txt`, which the recognized target `dir` does not show
-        // (it may be a link out of the workspace), so a write into an existing directory asks.
-        if (fallback === "allow" && restricted && shell && await writesIntoDirectory(shell, paths)) fallback = "ask";
+        // (it may be a link out of the workspace), so a write into an existing directory asks,
+        // with or without a saved rule.
+        if ((fallback === "allow" || liftable) && restricted && shell && await writesIntoDirectory(shell, paths)) { fallback = "ask"; liftable = false; }
         check();
         let decision = await this.decision(event.toolName, input.command, paths, ctx.cwd, fallback, definition); check();
         if (event.toolName === "file_batch") {
@@ -470,9 +516,15 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 const count = item.destination === undefined ? 1 : 2;
                 const itemDecision = await this.decision(item.operation, undefined, paths.slice(index, index + count), ctx.cwd, decision); check();
                 if (itemDecision === "deny" || decision !== "deny" && itemDecision === "ask") decision = itemDecision;
+                // Each operation also answers to the project rules for its own tool.
+                const itemVerdict = project ? project.toolDecision(item.operation) : RULE_NONE;
+                if (itemVerdict > projectVerdict) projectVerdict = itemVerdict;
                 index += count;
             }
         }
+        // Project rules rank like explicit ones (deny > ask > allow); their allow only lifts the fallbacks above.
+        if (projectVerdict === RULE_DENY) decision = "deny";
+        else if (projectVerdict === RULE_ASK && decision === "allow") decision = "ask";
         const keys: string[] = [];
         const session = ctx.sessionManager.getSessionId();
         if (mutation) {
@@ -494,7 +546,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (host?.ask) decision = "ask";
         // Like Codex, a declared destructive MCP tool asks even when its other hints look harmless.
         // A rule naming the tool or its server is the user's explicit standing approval.
-        const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition);
+        const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition)
+            && !projectToolAllow;
         if (destructiveMcp) decision = "ask";
         if (decision === "ask") {
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
@@ -502,13 +555,25 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 : mutation ? host?.details || paths.join("\n")
                 : (destructiveMcp ? "MCP 工具声明了 destructiveHint，可能产生破坏性副作用。\n" : "") + JSON.stringify(input, null, 2);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
-            const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
-            const selected = await ctx.ui.select("允许这次操作？", APPROVAL_CHOICES,
-                { signal, timeout: APPROVAL_TIMEOUT_MS, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}` });
+            const remembered = liftable && !host?.ask && projectVerdict === RULE_NONE
+                ? await this.rememberableRules(event.toolName, input.command, paths, ctx.cwd, definition) : undefined;
             check();
-            if (selected !== APPROVAL_CHOICES[0] && selected !== APPROVAL_CHOICES[1] && selected !== APPROVAL_CHOICES[2])
+            const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
+            const selected = await ctx.ui.select("允许这次操作？", remembered ? REMEMBER_CHOICES : APPROVAL_CHOICES,
+                { signal, timeout: APPROVAL_TIMEOUT_MS, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}`
+                    + (remembered ? `\n选择“${REMEMBER_CHOICE}”会在本项目保存：\n${describeRules(remembered)}` : "") });
+            check();
+            if (selected !== APPROVAL_CHOICES[0] && selected !== APPROVAL_CHOICES[1] && selected !== APPROVAL_CHOICES[2] && (!remembered || selected !== REMEMBER_CHOICE))
                 throw new Error("[APPROVAL_CANCELLED] Operation was not executed; this request may be asked again");
-            if (selected !== APPROVAL_CHOICES[0]) {
+            if (selected === REMEMBER_CHOICE) {
+                try {
+                    await this.project!.remember(remembered!);
+                    ctx.ui.notify("已保存到本项目权限规则，可用 /permissions rules 查看：\n" + describeRules(remembered!), "info");
+                } catch (error) {
+                    ctx.ui.notify("未能保存项目权限规则，本次仍按允许执行：" + (error instanceof Error ? error.message : String(error)), "warning");
+                }
+                check();
+            } else if (selected !== APPROVAL_CHOICES[0]) {
                 let reason: string | undefined;
                 if (selected === APPROVAL_CHOICES[2]) {
                     const value = await ctx.ui.input("拒绝原因（仅记录本次明确拒绝）", undefined, { signal, timeout: APPROVAL_TIMEOUT_MS });
@@ -558,7 +623,10 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const check = this.guard(ctx);
         const { paths } = await this.paths(ctx, targets, false); check();
         const decision = await this.decision("read", undefined, paths, ctx.cwd); check();
-        if (decision !== "allow") throw new Error(BLOCKED + "File observation requires an existing read grant");
+        // A project read rule binds observation as an explicit one does; deny and ask both block it.
+        const project = this.project ? await this.project.refresh() : undefined; check();
+        if (decision !== "allow" || (project?.toolDecision("read") ?? RULE_NONE) >= RULE_ASK)
+            throw new Error(BLOCKED + "File observation requires an existing read grant");
         const renew = async () => { check(); await this.paths(ctx, targets, false); check(); };
         return Object.assign(renew, { assertCurrent: check });
     }

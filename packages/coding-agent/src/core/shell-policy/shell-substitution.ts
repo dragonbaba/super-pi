@@ -343,7 +343,8 @@ export function prepareShellAnalysis(command: string): ShellAnalysisView {
     if (command.charCodeAt(second) !== 60) continue;
     let third = second + 1;
     while (command.charCodeAt(third) === 92 && command.charCodeAt(third + 1) === 10) third += 2;
-    if (command.charCodeAt(third) === 60) continue;
+    // `<<<` is a here-string: skip the whole operator so its `<<` suffix is not a heredoc.
+    if (command.charCodeAt(third) === 60) { index = third; continue; }
     if (second !== index + 1) { hasHeredoc = uncertain = true; break; }
     hasHeredoc = true;
     output ??= command.split("");

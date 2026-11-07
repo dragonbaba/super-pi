@@ -22,6 +22,7 @@ import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from 
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { compareCanonicalIdentifiers } from "./prefix-manifest.ts";
+import { ProjectPermissionStore } from "./project-permissions.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import type { Skill } from "./skills.ts";
 import { loadSkills } from "./skills.ts";
@@ -611,7 +612,8 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const settings = this.settingsManager.getGlobalSettings();
 		const environment = this.settingsManager.getExecutionEnvironment();
 		if (environment !== undefined) {
-			runtime.nativePermissions = new SessionExecutionPolicy(runtime, environment, settings.executionPermissions, this.settingsManager.getPermissionMode(), this.settingsManager.getSessionDirectories());
+			runtime.nativePermissions = new SessionExecutionPolicy(runtime, environment, settings.executionPermissions, this.settingsManager.getPermissionMode(), this.settingsManager.getSessionDirectories(),
+				new ProjectPermissionStore(this.agentDir, this.cwd));
 			runtime.nativeFiles.setCompatibilityBoundary(runtime.nativePermissions);
 		}
 		return runtime;

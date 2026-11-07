@@ -2937,6 +2937,19 @@ export class InteractiveMode {
 		}
 	}
 
+	private async showProjectPermissionRules(): Promise<void> {
+		try {
+			const described = await this.session.getProjectPermissionRules();
+			if (!described) { this.showExtensionNotify("当前会话没有原生权限策略，项目规则不生效。", "info"); return; }
+			const lines = [`本项目权限规则：${described.file}`, `项目：${described.project}`];
+			if (described.error) lines.push(`文件无法解析，继续使用上一版：${described.error}`);
+			if (!described.rules.length) lines.push("（暂无规则）");
+			for (const rule of described.rules) lines.push(`${rule.decision} · ${rule.tool}${rule.command === undefined ? "" : " · " + rule.command}`);
+			lines.push('可以直接编辑这个文件，保存后下一次授权生效。示例：{"version": 1, "rules": [{"tool": "bash", "decision": "allow", "command": "npm test *"}]}');
+			this.showExtensionNotify(lines.join("\n"), "info");
+		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
+	}
+
 	private async showPermissionRefusals(): Promise<void> {
 		const session = this.session, generation = this.tuiLifecycleGeneration;
 		try {
@@ -4029,9 +4042,14 @@ export class InteractiveMode {
 				await this.showPermissionRefusals();
 				return;
 			}
+			if (text === "/permissions rules" || text === "/permission rules") {
+				this.editor.setText("");
+				await this.showProjectPermissionRules();
+				return;
+			}
 			if (text.startsWith("/permissions ") || text.startsWith("/permission ")) {
 				this.editor.setText("");
-				this.showExtensionNotify("使用 /permissions 选择权限，/permissions refusals 查看和撤销历史拒绝，/dirs 查看工作目录。", "warning");
+				this.showExtensionNotify("使用 /permissions 选择权限，/permissions rules 查看本项目规则，/permissions refusals 查看和撤销历史拒绝，/dirs 查看工作目录。", "warning");
 				return;
 			}
 			if (text === "/dirs" || text === "/add-dir" || text.startsWith("/add-dir ") || text === "/remove-dir" || text.startsWith("/remove-dir ")) {
