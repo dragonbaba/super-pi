@@ -6,7 +6,7 @@ import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
-import { powerShellLocationTarget } from "./readonly-command.ts";
+import { isReadOnlyGitAt, powerShellLocationTarget, type ReadOnlyShellSubcommands } from "./readonly-command.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
@@ -30,6 +30,8 @@ const SIMPLE_MUTATIONS = new Set([...SIMPLE_DELETIONS, "mkdir", "md", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
+/** No user-configured read-only git subcommands: only the built-in judgment applies to mutation targets. */
+const NO_CONFIGURED_SUBCOMMANDS: ReadOnlyShellSubcommands = Object.freeze({});
 /** git's global options that take no value; `-C <dir>` and `-c <name=value>` are read separately. */
 const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-P", "--paginate", "-p", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects"]);
 /** rsync options whose value is the next word when written without `=`. */
@@ -249,7 +251,8 @@ function inspectRsync(tokens: PermissionTokens, start: number, cwd: string, buil
   if (dryRun) return true;
   if (operands < 2 || isRemoteRsyncOperand(tokens[destination]!)) return false;
   markMutation(builder, deletes ? "rsync_delete" : "rsync");
-  addTarget(builder, tokens[destination]!, cwd, true, tokens.expansions?.[destination], deletes);
+  // `--delete` removes extraneous files inside the destination, not the directory itself (like `find -delete`).
+  addTarget(builder, tokens[destination]!, cwd, true, tokens.expansions?.[destination], false, deletes ? "contents" : undefined);
   return true;
 }
 
@@ -263,22 +266,35 @@ function isRemoteRsyncOperand(value: string): boolean {
   return colon > 1 && (slash < 0 || colon < slash);
 }
 
-/** `tar -xf a.tar [-C dir]` / `tar xf a.tar`: extraction writes into `-C`'s directory, else the cwd. */
+/**
+ * `tar -xf a.tar [-C dir]` / `tar xf a.tar`: extraction writes into `-C`'s directory, else the cwd.
+ * Successive `-C` options chain (`-C /tmp/out -C nested`); `-O`/`--to-stdout` writes no files.
+ */
 function inspectTarExtract(tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
-  let extract = false, directory = -1, directoryValue: string | undefined;
+  let extract = false, stdout = false, directory = "", expansion = 0, missing = false;
   for (let index = start; index < tokens.length; index++) {
     const token = tokens[index]!;
+    let value: string | undefined, at = index;
     if (token === "--extract" || token === "--get") extract = true;
-    else if (token === "-C" || token === "--directory") { directory = ++index; directoryValue = tokens[index]; }
-    else if (token.startsWith("--directory=")) { directory = index; directoryValue = token.slice(12); }
-    else if (token.length > 2 && token.charCodeAt(0) === 45 && token.charCodeAt(1) === 67) { directory = index; directoryValue = token.slice(2); } // `-C../out`
-    else if (!token.startsWith("--") && (token.charCodeAt(0) === 45 || index === start) && token.includes("x")) extract = true;
+    else if (token === "--to-stdout") stdout = true;
+    else if (token === "-C" || token === "--directory") { at = ++index; value = tokens[index]; if (value === undefined) missing = true; }
+    else if (token.startsWith("--directory=")) value = token.slice(12);
+    else if (token.length > 2 && token.charCodeAt(0) === 45 && token.charCodeAt(1) === 67) value = token.slice(2); // `-C../out`
+    else if (!token.startsWith("--") && (token.charCodeAt(0) === 45 || index === start)) {
+      if (token.includes("x")) extract = true;
+      if (token.includes("O")) stdout = true;
+    }
+    if (value !== undefined) {
+      if (!value) missing = true;
+      directory = !directory || isAbsolute(value) ? value : directory + "/" + value;
+      expansion |= tokens.expansions?.[at] ?? 0;
+    }
   }
   if (!extract) return false;
+  if (stdout) return true;
   markMutation(builder, "tar_extract");
-  if (directory < 0) addTarget(builder, ".", cwd, true);
-  else if (directoryValue) addTarget(builder, directoryValue, cwd, true, tokens.expansions?.[directory]);
-  else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+  if (missing) { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+  else addTarget(builder, directory || ".", cwd, true, expansion);
   return true;
 }
 
@@ -806,6 +822,10 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       return cwd;
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
+    // `git --no-pager branch --show-current`: the shared read-only judgment, for literal words only.
+    let literal = true;
+    for (let word = at; word < tokens.length; word++) if (tokens.expansions?.[word]) { literal = false; break; }
+    if (literal && isReadOnlyGitAt(tokens, at, NO_CONFIGURED_SUBCOMMANDS)) return cwd;
     markMutation(builder, `git_${subcommand}`);
     // With `-C` the repository is that directory (its `.git` may be a linked worktree's pointer file, which is not written).
     addTarget(builder, directory || ".git", cwd, true, expansion);

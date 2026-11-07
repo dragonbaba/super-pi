@@ -40,7 +40,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   // One read-only judgment for Plan mode, the PowerShell scope and the host-restricted class, read from the same tables.
   targets.set("readonly-command.ts", new Set(["findNonReadOnlyShellSegment", "findUnsafePowerShellSegment", "classifySegment", "isReadOnlyRedirection",
     "isDescriptor", "isAssignment", "hasFileProviderArguments", "hasSafeArguments", "isOutputOption", "isReadOnlyStructuredCommand", "isPrintOnlySed",
-    "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
+    "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isReadOnlyGitAt", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
     "isReadOnlyGitRemote", "isReadOnlyGh", "classifyHostShellCommand", "commandTable", "isLiteralFileRedirection", "hasKnownFileCommandOptions", "hasPlainItemType",
     "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords", "assignmentOperatorLength", "castPrefixLength", "wrapperOptions", "hasBashHeredoc", "dispatchedRuleVerdict", "findActionVerdict", "hashtableKey", "endsCaseArm", "closesCasePattern", "opensEmptyParens", "isQuoteCode", "isStringStart", "unquotedEquals", "rawValueQuoted", "isInvokedWord", "hasQuote", "hasStructuralBrace", "unquotedText", "isSwitchKeyword", "isDeclarationKeyword", "scriptOperandVerdict", "nestedScriptVerdict", "isLauncherSuffix", "envSplitWords", "powerShellLocationTarget"]));
   // Project rules (R4): built once per file version, matched without closures or temporary containers.

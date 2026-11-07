@@ -24,12 +24,15 @@ test("git -C, worktree remove, rsync and tar extraction name the directory they 
   assert.deepEqual(scan("bash", "git -C sub clean -fdx"), { targets: [`write:${resolve(cwd, "sub")}`], uncertain: false });
   assert.deepEqual(scan("bash", "git worktree remove --force ../wt"),
     { targets: [`delete:${resolve(cwd, "../wt")}`, `write:${resolve(cwd, ".git")}`], uncertain: false });
-  assert.deepEqual(scan("bash", "rsync -a --delete src/ dest/"), { targets: [`delete:${resolve(cwd, "dest")}`], uncertain: false });
+  // `--delete` removes files inside the destination, not the directory: like `find -delete`, the host asks (never a root refusal).
+  for (const command of ["rsync -a --delete src/ dest/", "rsync -a --delete --exclude=.git ../build/ ."]) assert.deepEqual(scan("bash", command), { targets: [], uncertain: true }, command);
   assert.deepEqual(scan("bash", "rsync -a src/ ../outside/b"), { targets: [`write:${resolve(cwd, "../outside/b")}`], uncertain: false });
-  assert.deepEqual(scan("bash", "rsync -a --delete src/ ../outside/ --max-delete 100"), { targets: [`delete:${resolve(cwd, "../outside")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "rsync -a src/ ../outside/ --max-delete 100"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar -C out -xf a.tar"), { targets: [`write:${resolve(cwd, "out")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar xf a.tar"), { targets: [`write:${cwd}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar -xf a.tar -C../outside"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "tar -xf a.tar -C out -C nested"), { targets: [`write:${resolve(cwd, "out/nested")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "git branch -D old"), { targets: [`write:${resolve(cwd, ".git")}`], uncertain: false });
   // Reads, remote destinations and archive creation change nothing here.
-  for (const command of ["git -C sub status", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist", "rsync -an --delete ../build/ .", "rsync -a --dry-run --delete src/ dest/"]) assert.equal(scan("bash", command), undefined, command);
+  for (const command of ["git -C sub status", "git --no-pager branch --show-current", "git -C sub branch --show-current", "tar -xOf package.tgz package/package.json", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist", "rsync -an --delete ../build/ .", "rsync -a --dry-run --delete src/ dest/"]) assert.equal(scan("bash", command), undefined, command);
 });

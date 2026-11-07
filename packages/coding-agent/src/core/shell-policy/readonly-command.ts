@@ -1204,6 +1204,11 @@ function isNoEmitTsc(argv: readonly string[]): boolean {
 function isReadOnlyGit(argv: readonly string[], subcommands: ReadOnlyShellSubcommands): boolean {
   let index = 1;
   while (argv[index] === "--no-pager") index++;
+  return isReadOnlyGitAt(argv, index, subcommands);
+}
+
+/** The read-only git judgment for the subcommand at `argv[index]` (global options already read by the caller). */
+export function isReadOnlyGitAt(argv: readonly string[], index: number, subcommands: ReadOnlyShellSubcommands): boolean {
   const subcommand = argv[index]?.toLowerCase();
   if (!subcommand || subcommand.charCodeAt(0) === HYPHEN) return false;
   if (!BUILTIN_GIT.has(subcommand) && !(CONFIGURABLE_GIT.has(subcommand) && subcommands.git?.includes(subcommand) === true)) return false;
