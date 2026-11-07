@@ -455,7 +455,8 @@ test("TUI instrumentation records retained reuse, overlay, diff, bytes, and pend
 		tui.renderNow();
 		let metrics = instrumentation.snapshot();
 		assert.equal(metrics.rootRenders, 1);
-		// The scroll view measures the dirty active record, then renders it again while composing.
+		// The first frame is a width change: every record is measured without keeping
+		// lines, so the active record is composed once more (completed: cached).
 		assert.equal(metrics.transcriptItemRenders, 3);
 		assert.equal(metrics.overlayRenders, 1);
 		assert.equal(metrics.generatedLines, 2);
@@ -469,7 +470,8 @@ test("TUI instrumentation records retained reuse, overlay, diff, bytes, and pend
 		tui.renderNow();
 		metrics = instrumentation.snapshot();
 		assert.equal(metrics.completedItemRenders, 0);
-		assert.equal(metrics.activeItemRenders, 2);
+		// The layout frame scope hands the measured lines to composition.
+		assert.equal(metrics.activeItemRenders, 1);
 		assert.equal(metrics.retainedCacheHits, 1);
 		assert.equal(metrics.rootRenders, 1);
 		assert.equal(metrics.overlayRenders, 1);

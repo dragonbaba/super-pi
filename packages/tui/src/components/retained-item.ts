@@ -2,6 +2,11 @@ import {
 	GET_COMPONENT_RENDER_CACHE_CHILD,
 	RELEASE_COMPONENT_RENDER_CACHE,
 } from "../component-cache.ts";
+import {
+	isLayoutFrameScopeActive,
+	type LayoutFrameScopedOwner,
+	registerLayoutFrameScopedOwner,
+} from "../layout-frame-scope.ts";
 import { TuiRenderInstrumentation, utf8ByteLength } from "../render-instrumentation.ts";
 import { getKittyImageMetadata } from "../terminal-image.ts";
 import { type Component, Container } from "../tui.ts";
@@ -368,7 +373,7 @@ const VIEWPORT_MUTATION_APPEND = 2;
 const VIEWPORT_MUTATION_UNSAFE = 3;
 
 /** Container with session-local ownership and cleanup for retained children. */
-export class RetainedContainer extends Container implements LineViewportComponent {
+export class RetainedContainer extends Container implements LineViewportComponent, LayoutFrameScopedOwner {
 	readonly [LINE_VIEWPORT_COMPONENT] = true as const;
 	private readonly retainedById = new Map<string, RetainedItem>();
 	private readonly retainedByComponent = new Map<Component, RetainedItem>();
@@ -391,6 +396,7 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	private viewportMutationEventStart = 0;
 	private viewportMutationEventCount = 0;
 	private suppressRecordMutation = false;
+	private layoutFrameScopeRegistered = false;
 	private readonly retainedRenderStateChanged = (item: RetainedItem): void => {
 		const component = item.component;
 		if (!component) return;
@@ -509,12 +515,30 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	}
 
 	getContentHeight(width: number): number {
+		if (isLayoutFrameScopeActive()) {
+			// Inside a layout frame the same frame's renderViewport consumes the
+			// lines measured here, so an active item renders once per frame.
+			// Anything left over is released when the frame scope ends. Register
+			// before preparing so lines kept by a measurement that throws midway
+			// are released too.
+			if (!this.layoutFrameScopeRegistered) {
+				this.layoutFrameScopeRegistered = true;
+				registerLayoutFrameScopedOwner(this);
+			}
+			this.prepareViewportIndex(width, true);
+			return this.totalViewportHeight();
+		}
 		try {
 			this.prepareViewportIndex(width, false);
 			return this.totalViewportHeight();
 		} finally {
 			this.clearPreparedViewportLines();
 		}
+	}
+
+	releaseLayoutFrameScopedState(): void {
+		this.layoutFrameScopeRegistered = false;
+		this.clearPreparedViewportLines();
 	}
 
 	getViewportIndexStats(): Readonly<RetainedViewportIndexStats> {

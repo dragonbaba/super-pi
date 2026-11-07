@@ -50,6 +50,7 @@ renders twice per frame (`activeItemRenders` = 2; `Markdown` caches
 internally, so the second pass is cheap). Migrated tests pin 2 with a comment.
 Keeping the prepared lines until the frame's `renderViewport` is a candidate
 follow-up; it must satisfy the lifecycle/reference-release contract.
+Fixed in [alt-active-single-render-2026-11-07.md](alt-active-single-render-2026-11-07.md).
 
 ## Verification (Windows x64, Node 26.13.0)
 
