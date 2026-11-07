@@ -77,6 +77,15 @@ test("sandbox search patterns stay text while search files and redirections stay
     assert.deepEqual(f.invoked.at(-1), ["D:/patterns.txt", "D:/outside"]);
     await f.run("rg D:/outside -e needle");
     assert.deepEqual(f.invoked.at(-1), ["D:/outside"]);
+    // Search data is excluded without dropping real option paths or wrapper working directories.
+    for (const command of ["rg --pre=D:/tools/filter.exe -e D:/pattern .", "rg --pre D:/tools/filter.exe -e D:/pattern ."]) {
+      await f.run(command);
+      assert.deepEqual(f.invoked.at(-1), ["D:/tools/filter.exe"], command);
+    }
+    for (const command of ["env -C D:/outside rg -e D:/pattern .", "env --chdir=D:/outside rg -e D:/pattern ."]) {
+      await f.run(command);
+      assert.deepEqual(f.invoked.at(-1), ["D:/outside"], command);
+    }
     const facts: SandboxCommandFacts = { network: undefined, paths: [] };
     inspectSandboxCommand("powershell", "& 'D:\\tools\\rg.exe' -e 'D:\\pattern' D:\\outside", facts);
     assert.deepEqual(facts.paths, ["D:\\tools\\rg.exe", "D:\\outside"]);

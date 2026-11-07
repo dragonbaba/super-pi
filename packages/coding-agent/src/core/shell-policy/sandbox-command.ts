@@ -65,7 +65,7 @@ const TEXT_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf", "write", "
 const SEARCH_TEXT_OPTIONS: ReadonlySet<string> = new Set(["--glob", "--iglob", "--replace", "--type", "--type-not", "--type-add", "--type-clear",
   "--label", "--include", "--exclude", "--exclude-dir", "--color", "--colors", "--encoding", "--engine", "--sort", "--sortr",
   "--after-context", "--before-context", "--context", "--max-count", "--max-depth", "--max-filesize", "--path-separator"]);
-const SEARCH_FILE_OPTIONS: ReadonlySet<string> = new Set(["--ignore-file", "--exclude-from"]);
+const SEARCH_FILE_OPTIONS: ReadonlySet<string> = new Set(["--ignore-file", "--exclude-from", "--pre"]);
 const OPEN_BRACE = "{", CLOSE_BRACE = "}", DYNAMIC = "$", EQUALS = "=", ASSIGNMENT = "_=";
 
 const words: string[] = [];
@@ -137,7 +137,14 @@ function inspectSegment(table: ShellTokenTable, segment: number, powerShell: boo
   }
   if (program >= 0 && depth < MAX_SCRIPT_NESTING) script = scriptOperand(name, program);
   const search = name === "rg" || name === "grep";
-  if (search) { addSearchPath(words[program]!, facts); searchPaths(name, program + 1, facts); }
+  if (search) {
+    // Wrappers are not search data: preserve their existing static paths (env -C / --chdir=).
+    for (let index = 0; index <= program; index++) {
+      const word = words[index]!, equals = word.charCodeAt(0) === 45 ? word.indexOf("=") : -1;
+      addSearchPath(equals > 0 ? word.slice(equals + 1) : word, facts);
+    }
+    searchPaths(name, program + 1, facts);
+  }
   const text = search || TEXT_COMMANDS.has(name);
   for (let index = start; index < end && facts.paths.length < MAX_SANDBOX_COMMAND_PATHS; index++) {
     const flags = table.flags[index]!, target = (flags & WORD_REDIRECTION) !== 0;
