@@ -123,6 +123,13 @@ test("host-auto reviews only what would ask; rule asks, outside deletes and a tr
   assert.equal(w.owner.allowAutoRetry(w.ctx, w.owner.listAutoDenials(w.ctx)[0]!.key), true);
   assert.equal(await w.decide("write", { path: target, content: "b" }), "allow");
   assert.equal(w.requests.length, 2); assert.equal(w.requests[0], w.requests[1]);
+  // Batch-level arguments count too: a grant for a preview does not cover applying it.
+  const b = await fixture(t, "host-auto", ["DENY: not asked for"]);
+  const operations = [{ operation: "write", path: path.join(b.outside, "batch.txt"), content: "a" }];
+  assert.equal(await b.decide("file_batch", { operations, dryRun: true }), "denied");
+  assert.equal(b.owner.allowAutoRetry(b.ctx, b.owner.listAutoDenials(b.ctx)[0]!.key), true);
+  assert.equal(await b.decide("file_batch", { operations, dryRun: false }), "allow");
+  assert.equal(b.requests.length, 2); assert.doesNotMatch(b.requests[1]!, /<user-retry>/);
 
   // A grant is used up when the identical call is asked of the user (breaker tripped) instead of reviewed.
   const q = await fixture(t, "host-auto", ["DENY: no", "DENY: no", "DENY: no"]);

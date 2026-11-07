@@ -46,8 +46,8 @@ export interface PermissionRefusal {
     readonly reason?: string;
 }
 /**
- * host-auto: one Auto review denial. `key` binds the full invocation (the refusal fingerprints, which hash
- * every argument); `request` is the text the reviewer saw, which may leave out content such as a file body.
+ * host-auto: one Auto review denial. `key` binds the full invocation (a fingerprint of every argument,
+ * batch-level ones included); `request` is the text the reviewer saw, which may leave out content such as a file body.
  */
 export interface AutoReviewDenial {
     readonly key: string;
@@ -668,8 +668,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
         // A review without a verdict asks the user instead.
         let unreviewed: string | undefined;
-        // The retry grant identity: every refusal fingerprint of this invocation (one per batch operation).
-        const grant = decision === "ask" && this.autoReview ? keys.length === 1 ? keys[0]! : keys.join(" ") : undefined;
+        // The retry grant identity hashes the whole invocation, batch-level arguments such as `dryRun` included.
+        const grant = decision === "ask" && this.autoReview ? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
         if (grant !== undefined && !this.autoReview!.tripped && this.approval !== "never"
             && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
