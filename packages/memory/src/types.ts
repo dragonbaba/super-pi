@@ -18,9 +18,14 @@ export interface SessionSearchConfig {
 }
 
 export interface MemoryConfig {
-  /** Prompt memory mode. Default: policy-only */
-  memoryMode: "policy-only" | "legacy-inject";
-  /** Policy prompt style used when memoryMode is policy-only. Default: full */
+  /**
+   * Prompt memory mode. Default: digest.
+   * - digest: constant policy in the system prompt plus one hidden memory digest message per session context.
+   * - policy-only: constant policy only.
+   * - legacy-inject: full memory files in the system prompt.
+   */
+  memoryMode: "digest" | "policy-only" | "legacy-inject";
+  /** Policy prompt style used by digest and policy-only modes. Default: full */
   memoryPolicyStyle?: "full" | "compact" | "custom" | "none";
   /** Custom policy prompt text used when memoryPolicyStyle is custom */
   memoryPolicyCustomText?: string;
@@ -30,22 +35,10 @@ export interface MemoryConfig {
   userCharLimit: number;
   /** Max chars for project-level MEMORY.md. Default: 5000 */
   projectCharLimit: number;
-  /** Legacy inactive auto-review interval retained for config compatibility. */
-  nudgeInterval: number;
   /** Recent conversation messages included by explicit /memory-review. 0 = all. Default: 0 */
   reviewRecentMessages?: number;
-  /** Legacy inactive background-review switch. Default: false */
-  reviewEnabled: boolean;
   /** Legacy review transport setting retained for compatibility. */
   reviewTransport?: ReviewTransport;
-  /** Legacy inactive compaction-flush switch. Default: false */
-  flushOnCompact: boolean;
-  /** Legacy inactive shutdown-flush switch. Default: false */
-  flushOnShutdown: boolean;
-  /** Minimum user turns before flush triggers. Default: 6 */
-  flushMinTurns: number;
-  /** Recent conversation messages included in session flush. 0 = all. Default: 0 */
-  flushRecentMessages?: number;
   /** Override extension storage directory. Default: ~/.sp/agent/@super-pi/memory */
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.sp/agent). Default: "projects-memory" */
@@ -56,30 +49,16 @@ export interface MemoryConfig {
   llmModelOverride?: string;
   /** Override thinking level used for child superpi -p subprocess LLM calls. Default: unset */
   llmThinkingOverride?: ThinkingLevel;
-  /** Extra extension entry paths required by child Pi processes, such as provider auth adapters. */
-  childExtensionPaths?: string[];
   /** Strategy when memory is full. Default: reject; auto-consolidate is retained as a legacy value but no automatic consolidator is registered. */
   memoryOverflowStrategy?: MemoryOverflowStrategy;
   /** Legacy alias for memoryOverflowStrategy. Default: false */
   autoConsolidate: boolean;
-  /** Legacy inactive automatic correction-save switch. Default: false */
-  correctionDetection: boolean;
-  /** Override strong correction regex sources. Missing = defaults; [] = none. */
-  correctionStrongPatterns?: string[];
-  /** Override weak correction regex sources. Missing = defaults; [] = none. */
-  correctionWeakPatterns?: string[];
-  /** Override negative correction regex sources. Missing = defaults; [] = none. */
-  correctionNegativePatterns?: string[];
-  /** Override directive words used after weak correction patterns. Missing = defaults; [] = none. */
-  correctionDirectiveWords?: string[];
   /** Inject recent failure memories into the system prompt. Default: true */
   failureInjectionEnabled: boolean;
   /** Maximum age in days for injected failure memories. Default: 7 */
   failureInjectionMaxAgeDays: number;
   /** Maximum number of failure memories to inject. Default: 5 */
   failureInjectionMaxEntries: number;
-  /** Legacy inactive background-review tool-call interval. */
-  nudgeToolCalls: number;
   /** Maximum time for the explicit current-model /memory-review proposal. Legacy field name retained. Default: 180000 */
   consolidationTimeoutMs: number;
 }

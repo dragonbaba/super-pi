@@ -1,6 +1,27 @@
 import { MEMORY_POLICY_PROMPT, MEMORY_POLICY_PROMPT_COMPACT } from "./constants.js";
 import type { MemoryConfig } from "./types.js";
 import type { MemoryStore } from "./store/memory-store.js";
+import { buildMemoryDigest } from "./memory-digest.js";
+
+/** Session digest for `digest` mode: user, current-project and recent failure entries. */
+export function buildSessionMemoryDigest(
+  config: Pick<MemoryConfig, "memoryMode" | "failureInjectionEnabled" | "failureInjectionMaxAgeDays" | "failureInjectionMaxEntries">,
+  store: MemoryStore,
+  projectStore: MemoryStore | null,
+  projectName: string,
+): string {
+  if (config.memoryMode !== "digest") return "";
+  const maxFailures = config.failureInjectionMaxEntries;
+  const failures = config.failureInjectionEnabled && maxFailures > 0
+    ? (projectStore ?? store).getFailureEntries(config.failureInjectionMaxAgeDays).slice(-maxFailures)
+    : [];
+  return buildMemoryDigest({
+    user: store.getUserEntries(),
+    project: projectStore ? projectStore.getMemoryEntries() : [],
+    projectName,
+    failures,
+  });
+}
 
 type MemoryPolicyConfig = Pick<MemoryConfig, "memoryPolicyStyle" | "memoryPolicyCustomText">;
 
@@ -28,7 +49,9 @@ export function buildPromptContext(
   projectStore: MemoryStore | null,
   projectName: string,
 ): string {
-  if (config.memoryMode === "policy-only") {
+  // Digest mode keeps the system prompt to the constant policy; saved memory is
+  // sent once per session context as a message (see memory-digest.ts).
+  if (config.memoryMode !== "legacy-inject") {
     return resolveMemoryPolicyPrompt(config);
   }
 

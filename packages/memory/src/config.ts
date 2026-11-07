@@ -6,11 +6,7 @@ import {
   DEFAULT_USER_CHAR_LIMIT,
   DEFAULT_PROJECT_CHAR_LIMIT,
   DEFAULT_PROJECTS_MEMORY_DIR,
-  DEFAULT_NUDGE_INTERVAL,
-  DEFAULT_FLUSH_MIN_TURNS,
-  DEFAULT_NUDGE_TOOL_CALLS,
   DEFAULT_REVIEW_RECENT_MESSAGES,
-  DEFAULT_FLUSH_RECENT_MESSAGES,
   DEFAULT_CONSOLIDATION_TIMEOUT_MS,
   DEFAULT_FAILURE_INJECTION_MAX_AGE_DAYS,
   DEFAULT_FAILURE_INJECTION_MAX_ENTRIES,
@@ -39,27 +35,19 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 }
 
 const DEFAULT_CONFIG: MemoryConfig = {
-  memoryMode: "policy-only",
+  memoryMode: "digest",
   memoryPolicyStyle: "full",
   memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
   userCharLimit: DEFAULT_USER_CHAR_LIMIT,
   projectCharLimit: DEFAULT_PROJECT_CHAR_LIMIT,
-  nudgeInterval: DEFAULT_NUDGE_INTERVAL,
   reviewRecentMessages: DEFAULT_REVIEW_RECENT_MESSAGES,
-  reviewEnabled: false,
   reviewTransport: "direct",
-  flushOnCompact: false,
-  flushOnShutdown: false,
-  flushMinTurns: DEFAULT_FLUSH_MIN_TURNS,
-  flushRecentMessages: DEFAULT_FLUSH_RECENT_MESSAGES,
   memoryOverflowStrategy: "reject",
   autoConsolidate: false,
-  correctionDetection: false,
   failureInjectionEnabled: true,
   failureInjectionMaxAgeDays: DEFAULT_FAILURE_INJECTION_MAX_AGE_DAYS,
   failureInjectionMaxEntries: DEFAULT_FAILURE_INJECTION_MAX_ENTRIES,
   consolidationTimeoutMs: DEFAULT_CONSOLIDATION_TIMEOUT_MS,
-  nudgeToolCalls: DEFAULT_NUDGE_TOOL_CALLS,
   projectsMemoryDir: DEFAULT_PROJECTS_MEMORY_DIR,
   sessionSearch: { variant: "legacy" },
 };
@@ -80,12 +68,11 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       const isNonNegativeNumber = (value: unknown): value is number => (
         typeof value === "number" && Number.isFinite(value) && value >= 0
       );
-      const isStringArray = (value: unknown): value is string[] => (
-        Array.isArray(value) && value.every((item) => typeof item === "string")
-      );
       let hasLegacyAutoConsolidate = false;
       let hasMemoryOverflowStrategy = false;
-      if (parsed.memoryMode === "policy-only" || parsed.memoryMode === "legacy-inject") config.memoryMode = parsed.memoryMode;
+      if (parsed.memoryMode === "digest" || parsed.memoryMode === "policy-only" || parsed.memoryMode === "legacy-inject") {
+        config.memoryMode = parsed.memoryMode;
+      }
       if (
         parsed.memoryPolicyStyle === "full" ||
         parsed.memoryPolicyStyle === "compact" ||
@@ -95,14 +82,8 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.memoryPolicyCustomText === "string") config.memoryPolicyCustomText = parsed.memoryPolicyCustomText;
       if (typeof parsed.memoryCharLimit === "number") config.memoryCharLimit = parsed.memoryCharLimit;
       if (typeof parsed.userCharLimit === "number") config.userCharLimit = parsed.userCharLimit;
-      if (typeof parsed.nudgeInterval === "number") config.nudgeInterval = parsed.nudgeInterval;
       if (isNonNegativeNumber(parsed.reviewRecentMessages)) config.reviewRecentMessages = parsed.reviewRecentMessages;
-      if (typeof parsed.reviewEnabled === "boolean") config.reviewEnabled = parsed.reviewEnabled;
       if (isReviewTransport(parsed.reviewTransport)) config.reviewTransport = parsed.reviewTransport;
-      if (typeof parsed.flushOnCompact === "boolean") config.flushOnCompact = parsed.flushOnCompact;
-      if (typeof parsed.flushOnShutdown === "boolean") config.flushOnShutdown = parsed.flushOnShutdown;
-      if (typeof parsed.flushMinTurns === "number") config.flushMinTurns = parsed.flushMinTurns;
-      if (isNonNegativeNumber(parsed.flushRecentMessages)) config.flushRecentMessages = parsed.flushRecentMessages;
       if (typeof parsed.autoConsolidate === "boolean") {
         config.autoConsolidate = parsed.autoConsolidate;
         hasLegacyAutoConsolidate = true;
@@ -111,11 +92,6 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
         config.memoryOverflowStrategy = parsed.memoryOverflowStrategy;
         hasMemoryOverflowStrategy = true;
       }
-      if (typeof parsed.correctionDetection === "boolean") config.correctionDetection = parsed.correctionDetection;
-      if (isStringArray(parsed.correctionStrongPatterns)) config.correctionStrongPatterns = parsed.correctionStrongPatterns;
-      if (isStringArray(parsed.correctionWeakPatterns)) config.correctionWeakPatterns = parsed.correctionWeakPatterns;
-      if (isStringArray(parsed.correctionNegativePatterns)) config.correctionNegativePatterns = parsed.correctionNegativePatterns;
-      if (isStringArray(parsed.correctionDirectiveWords)) config.correctionDirectiveWords = parsed.correctionDirectiveWords;
       if (typeof parsed.consolidationTimeoutMs === "number") {
         config.consolidationTimeoutMs = parsed.consolidationTimeoutMs;
         if (parsed.consolidationTimeoutMs < DEFAULT_CONSOLIDATION_TIMEOUT_MS) {
@@ -128,7 +104,6 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.failureInjectionEnabled === "boolean") config.failureInjectionEnabled = parsed.failureInjectionEnabled;
       if (typeof parsed.failureInjectionMaxAgeDays === "number") config.failureInjectionMaxAgeDays = parsed.failureInjectionMaxAgeDays;
       if (typeof parsed.failureInjectionMaxEntries === "number") config.failureInjectionMaxEntries = parsed.failureInjectionMaxEntries;
-      if (typeof parsed.nudgeToolCalls === "number") config.nudgeToolCalls = parsed.nudgeToolCalls;
       if (typeof parsed.projectCharLimit === "number") config.projectCharLimit = parsed.projectCharLimit;
       if (typeof parsed.memoryDir === "string") {
         const normalizedMemoryDir = normalizeConfiguredMemoryDir(parsed.memoryDir);
@@ -150,12 +125,6 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
         if (trimmed.length > 0) config.llmModelOverride = trimmed;
       }
       if (isThinkingLevel(parsed.llmThinkingOverride)) config.llmThinkingOverride = parsed.llmThinkingOverride;
-      if (isStringArray(parsed.childExtensionPaths)) {
-        const childExtensionPaths = [...new Set<string>(
-          (parsed.childExtensionPaths as string[]).map((item) => item.trim()).filter(Boolean),
-        )];
-        if (childExtensionPaths.length > 0) config.childExtensionPaths = childExtensionPaths;
-      }
       if (hasMemoryOverflowStrategy) {
         config.autoConsolidate = config.memoryOverflowStrategy === "auto-consolidate";
       } else if (hasLegacyAutoConsolidate) {

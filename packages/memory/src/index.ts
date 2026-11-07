@@ -32,7 +32,8 @@ import { registerLazySkillsCommand } from "./handlers/skills-command-registratio
 import { migrateThenSyncMarkdownMemories, registerSyncMarkdownMemoriesCommand } from "./handlers/sync-markdown-memories.js";
 import { loadConfig } from "./config.js";
 import { detectProject, detectProjectSkills } from "./project.js";
-import { buildPromptContext, StablePromptAppender } from "./prompt-context.js";
+import { buildPromptContext, buildSessionMemoryDigest, StablePromptAppender } from "./prompt-context.js";
+import { contextHasMemoryDigest, MEMORY_DIGEST_CUSTOM_TYPE } from "./memory-digest.js";
 import { AGENT_ROOT, resolveProjectsRoot } from "./paths.js";
 import { isDatabaseMigrationPending } from "./extension-root-migration.js";
 
@@ -104,6 +105,19 @@ export default function (pi: ExtensionAPI) {
   }
   const projectsRoot = resolveProjectsRoot(config.projectsMemoryDir);
   const promptAppender = new StablePromptAppender();
+  // Digest mode: one hidden message per session context. The text is frozen at
+  // session start. Whether the current context holds it is rechecked on session
+  // start, compaction and tree navigation, and once on the prompt after a send
+  // (a failed prompt admission never persists the message) — never per turn.
+  let sessionDigest = "";
+  let sessionDigestInContext = false;
+  let sessionDigestUnconfirmed = false;
+  const refreshDigestPresence = (ctx: { sessionManager?: { buildContextEntries?: () => readonly unknown[] } }) => {
+    let entries: readonly unknown[] | undefined;
+    try { entries = ctx.sessionManager?.buildContextEntries?.(); } catch { entries = undefined; }
+    sessionDigestInContext = contextHasMemoryDigest(entries as Parameters<typeof contextHasMemoryDigest>[0]);
+    sessionDigestUnconfirmed = false;
+  };
 
   const refreshSkillProjectContext = (cwd?: string) => {
     const resource = resolveProjectSkillDiscovery(skillStore, config.projectsMemoryDir, cwd);
@@ -156,14 +170,29 @@ export default function (pi: ExtensionAPI) {
     await store.loadFromDisk();
     if (projectStore) await projectStore.loadFromDisk();
     promptAppender.setContext(buildPromptContext(config, store, projectStore, projectName));
+    sessionDigest = buildSessionMemoryDigest(config, store, projectStore, projectName);
+    refreshDigestPresence(ctx);
   });
+
+  // Compaction or tree navigation can drop the digest from the live context.
+  pi.on("session_compact", (_event, ctx) => { refreshDigestPresence(ctx); });
+  pi.on("session_tree", (_event, ctx) => { refreshDigestPresence(ctx); });
 
   registerProjectSkillDiscoveryHandler(pi, skillStore, config.projectsMemoryDir);
 
   // ── 2. Inject one session-frozen memory policy/snapshot. The combined string
   // is reused on ordinary turns and rebuilt only if Pi changes its base prompt.
-  pi.on("before_agent_start", (event, _ctx) => {
+  pi.on("before_agent_start", (event, ctx) => {
     const systemPrompt = promptAppender.append(event.systemPrompt);
+    if (sessionDigestUnconfirmed) refreshDigestPresence(ctx);
+    if (sessionDigest && !sessionDigestInContext) {
+      sessionDigestInContext = true;
+      sessionDigestUnconfirmed = true;
+      return {
+        ...(systemPrompt === undefined ? {} : { systemPrompt }),
+        message: { customType: MEMORY_DIGEST_CUSTOM_TYPE, content: sessionDigest, display: false },
+      };
+    }
     return systemPrompt === undefined ? undefined : { systemPrompt };
   });
 

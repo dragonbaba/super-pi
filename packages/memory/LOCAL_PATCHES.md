@@ -31,6 +31,16 @@ commit-by-commit history.
 - Recovery artifact cleanup and Markdown reconciliation are explicit through
   `/memory-cleanup` and `/memory-sync-markdown`.
 
+## Prompt memory
+
+- Default `digest` mode keeps the system prompt byte-stable: only the constant
+  trigger-based memory policy is appended. Saved memory is summarized into one
+  hidden `hermes-memory-digest` custom message (≤2,000 characters), frozen at
+  session start, sent once per session context, and re-sent only when
+  compaction or tree navigation removes it from the context.
+- No nudge, flush, or background extraction drives memory writes; the policy
+  names the moments the model should save.
+
 ## Skills and search
 
 - Project skill discovery is provided through `resources_discover` and the
