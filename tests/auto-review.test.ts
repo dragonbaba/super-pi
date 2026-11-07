@@ -109,12 +109,30 @@ test("host-auto reviews only what would ask; rule asks, outside deletes and a tr
   assert.equal(await r.decide("bash", { command: "git push" }), "denied");
   const denials = r.owner.listAutoDenials(r.ctx);
   assert.equal(denials.length, 1); assert.equal(denials[0]!.tool, "bash"); assert.equal(denials[0]!.reason, "pushes without being asked");
-  assert.equal(r.owner.allowAutoRetry(r.ctx, denials[0]!.request), true);
+  assert.equal(r.owner.allowAutoRetry(r.ctx, denials[0]!.key), true);
   assert.equal(r.owner.listAutoDenials(r.ctx).length, 0);
   assert.equal(await r.decide("bash", { command: "git push" }), "allow");
   assert.match(r.requests[1]!, /<user-retry>/); assert.doesNotMatch(r.requests[0]!, /<user-retry>/);
   assert.equal(await r.decide("bash", { command: "git push" }), "denied");
   assert.doesNotMatch(r.requests[2]!, /<user-retry>/);
+
+  // The grant binds the full invocation: a write with other content shows the reviewer the same text but is not covered.
+  const w = await fixture(t, "host-auto", ["DENY: not asked for"]);
+  const target = path.join(w.outside, "new.txt");
+  assert.equal(await w.decide("write", { path: target, content: "a" }), "denied");
+  assert.equal(w.owner.allowAutoRetry(w.ctx, w.owner.listAutoDenials(w.ctx)[0]!.key), true);
+  assert.equal(await w.decide("write", { path: target, content: "b" }), "allow");
+  assert.equal(w.requests.length, 2); assert.equal(w.requests[0], w.requests[1]);
+
+  // A grant is used up when the identical call is asked of the user (breaker tripped) instead of reviewed.
+  const q = await fixture(t, "host-auto", ["DENY: no", "DENY: no", "DENY: no"]);
+  for (let index = 0; index < 3; index++) assert.equal(await q.decide("bash", { command: "git push" }), "denied");
+  assert.equal(q.owner.allowAutoRetry(q.ctx, q.owner.listAutoDenials(q.ctx)[0]!.key), true);
+  q.choices.push("允许一次");
+  assert.equal(await q.decide("bash", { command: "git push" }), "allow");
+  assert.equal(q.requests.length, 3);
+  assert.equal(await q.decide("bash", { command: "git push" }), "allow");
+  assert.doesNotMatch(q.requests[3]!, /<user-retry>/);
 
   // host-restricted itself never calls the reviewer.
   const h = await fixture(t, "host-restricted", []);

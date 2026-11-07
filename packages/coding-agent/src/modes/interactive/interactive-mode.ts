@@ -2971,7 +2971,7 @@ export class InteractiveMode {
 			const action = await ui.select("允许重试这次操作？", ["返回", "允许重试一次"], { kind: "permission",
 				details: `${record.request}\nAuto 拒绝原因：${record.reason || "未说明"}` });
 			if (action !== "允许重试一次" || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
-			const allowed = session.allowAutoReviewRetry(record.request);
+			const allowed = session.allowAutoReviewRetry(record.key);
 			this.showExtensionNotify(allowed ? "已允许重试一次；可以让模型重新执行这次操作。" : "这条记录已不存在。", "info");
 		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
 	}

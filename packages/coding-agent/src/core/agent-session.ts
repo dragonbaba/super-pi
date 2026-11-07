@@ -2564,8 +2564,8 @@ export class AgentSession {
 	}
 
 	/** One more review of this exact request, with the reviewer told the user allowed it; not an approval by itself. */
-	allowAutoReviewRetry(request: string): boolean {
-		return this._resourceLoader.getExtensions().runtime.nativePermissions?.allowAutoRetry(this._extensionRunner.createContext(), request) ?? false;
+	allowAutoReviewRetry(key: string): boolean {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.allowAutoRetry(this._extensionRunner.createContext(), key) ?? false;
 	}
 
 	async withSupplementalSummary<T>(signal: AbortSignal, callback: (stream: StreamFn) => Promise<T>): Promise<T> {

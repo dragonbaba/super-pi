@@ -45,8 +45,12 @@ export interface PermissionRefusal {
     readonly summary: string;
     readonly reason?: string;
 }
-/** host-auto: one Auto review denial; `request` is the exact text the reviewer saw. */
+/**
+ * host-auto: one Auto review denial. `key` binds the full invocation (the refusal fingerprints, which hash
+ * every argument); `request` is the text the reviewer saw, which may leave out content such as a file body.
+ */
 export interface AutoReviewDenial {
+    readonly key: string;
     readonly tool: string;
     readonly request: string;
     readonly reason: string;
@@ -407,9 +411,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
      * One Auto review. A denial throws; a review without a verdict (`failed`) returns it so the
      * caller asks the user, and the breaker does not count it (Codex reports timeouts apart from denials).
      */
-    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, check: () => void): Promise<AutoReviewVerdict> {
+    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, key: string, check: () => void): Promise<AutoReviewVerdict> {
         if (request.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one review; configure an explicit scoped rule");
-        const retry = this.autoRetries.delete(request);
+        const retry = this.autoRetries.delete(key);
         const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal, retry);
         // A cancelled turn or a stale permission context is not the reviewer's rejection.
         check();
@@ -428,9 +432,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         }
         if (verdict.approved) return verdict;
         for (let index = 0; index < this.autoDenials.length; index++)
-            if (this.autoDenials[index]!.request === request) { this.autoDenials.splice(index, 1); break; }
+            if (this.autoDenials[index]!.key === key) { this.autoDenials.splice(index, 1); break; }
         if (this.autoDenials.length >= MAX_AUTO_DENIALS) this.autoDenials.shift();
-        this.autoDenials.push(Object.freeze({ tool, request, reason: verdict.reason }));
+        this.autoDenials.push(Object.freeze({ key, tool, request, reason: verdict.reason }));
         throw new Error("[AUTO_REVIEW_DENIED] Auto review rejected this operation; it was not executed"
             + (verdict.reason ? ": " + verdict.reason : "") + ". Do not retry it in another form; tell the user, who can allow one retry of this exact call"
             + " with /permissions auto, or take an approach that needs no approval.");
@@ -440,14 +444,17 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         this.guard(ctx)();
         return this.autoDenials.slice();
     }
-    /** The user allows one more review of this exact request; the reviewer is told so. Not an approval by itself. */
-    allowAutoRetry(ctx: ExtensionContext, request: string): boolean {
+    /**
+     * The user allows one more review of this exact invocation (`AutoReviewDenial.key`); the reviewer is told so.
+     * Not an approval by itself. The grant is used by the next identical call, whether reviewed or asked.
+     */
+    allowAutoRetry(ctx: ExtensionContext, key: string): boolean {
         this.guard(ctx)();
         for (let index = 0; index < this.autoDenials.length; index++) {
-            if (this.autoDenials[index]!.request !== request) continue;
+            if (this.autoDenials[index]!.key !== key) continue;
             this.autoDenials.splice(index, 1);
             if (this.autoRetries.size >= MAX_AUTO_DENIALS) this.autoRetries.delete(this.autoRetries.values().next().value!);
-            this.autoRetries.add(request);
+            this.autoRetries.add(key);
             return true;
         }
         return false;
@@ -661,16 +668,20 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
         // A review without a verdict asks the user instead.
         let unreviewed: string | undefined;
-        if (decision === "ask" && this.autoReview && !this.autoReview.tripped && this.approval !== "never"
+        // The retry grant identity: every refusal fingerprint of this invocation (one per batch operation).
+        const grant = decision === "ask" && this.autoReview ? keys.length === 1 ? keys[0]! : keys.join(" ") : undefined;
+        if (grant !== undefined && !this.autoReview!.tripped && this.approval !== "never"
             && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
             check();
             const verdict = await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`
-                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), check);
+                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), grant, check);
             if (verdict.failed) unreviewed = verdict.reason;
             else decision = "allow";
         }
         if (decision === "ask") {
+            // A retry grant covers one identical call; reaching the user uses it up as a review would.
+            if (grant !== undefined) this.autoRetries.delete(grant);
             if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] "
                 + (unreviewed === undefined ? "" : `Auto review did not finish (${unreviewed}); that is not a finding that the operation is unsafe. `)
                 + "Operation was not executed: " + event.toolName);
