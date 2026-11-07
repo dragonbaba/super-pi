@@ -11,6 +11,7 @@
 ## Active behavior
 
 - Tools: `memory`, `memory_search`, `session_search`, and `skill_manage`.
+- Prompt (`digest` mode, default): constant trigger-based policy in the system prompt; one hidden `hermes-memory-digest` message (≤2,000 chars) built at session start and sent once per session context. Never put saved memory, dates, or per-turn data in the system prompt, and never add per-turn nudges.
 - Reviewed extraction: `/memory-review [project|global]` uses the current model, previews fully, requires confirmation, and revalidates the source snapshot.
 - Explicit maintenance: `/memory-cleanup`, `/memory-index-sessions`, and `/memory-sync-markdown`.
 - Skills UI: `/memory-skills`; its TUI implementation must stay lazy-loaded.

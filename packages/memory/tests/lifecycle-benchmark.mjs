@@ -20,8 +20,10 @@ try {
   assert.deepEqual([...harness.handlers.keys()].sort(), [
     "before_agent_start",
     "resources_discover",
+    "session_compact",
     "session_shutdown",
     "session_start",
+    "session_tree",
   ]);
   assert.equal(harness.commands.has("memory-index-sessions"), false);
 

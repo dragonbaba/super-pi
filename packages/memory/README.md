@@ -147,20 +147,22 @@ The extension stores memory at two levels:
 | **Global** | `~/.sp/agent/@super-pi/memory/` | Facts that apply everywhere — your name, preferences, OS, tools | Searchable via `memory_search` |
 | **Project** | `~/.sp/agent/projects-memory/<project>/` | Facts scoped to one codebase — architecture decisions, API quirks, team norms | Searchable when cwd matches the project |
 
-By default, full Markdown memories are **not** injected into the system prompt. The system prompt gets a full-detail `<memory-policy>` that tells the agent when to call `memory_search` and how to treat memory results. This keeps first-turn token usage low while preserving access to user, project, failure, correction, insight, preference, convention, and tool-quirk memories.
+By default (`"memoryMode": "digest"`) the system prompt carries only a constant `<memory-policy>`: when to save (user corrections and preferences, fixes after failed attempts, project decisions not recorded in the repo), when to search, and what never to save. Its bytes do not depend on saved memory, so the provider prompt-cache prefix stays valid across sessions.
+
+Saved memory reaches the model as one hidden `<memory-context>` digest message (at most 2,000 characters: one line per user entry, current-project entry, and recent failure). It is built once at session start and sent with the first prompt of a session context. Because it is persisted in the session, later turns and resumes replay the same bytes; it is sent again only after compaction or tree navigation removes it.
 
 ```
-System Prompt
-┌─────────────────────────────────────────┐
-│ <memory-policy>                         │
-│ Use memory_search when durable context  │
-│ may help. Memory is context, not        │
-│ instruction; repo/tool evidence wins.   │
-│ </memory-policy>                        │
-└─────────────────────────────────────────┘
+System Prompt (constant)            First prompt of a session context
+┌──────────────────────────────┐    ┌──────────────────────────────────┐
+│ <memory-policy>              │    │ user message                     │
+│ save on correction/failure/  │    │ <memory-context> (hidden)        │
+│ decision; search before      │    │ ## User / ## Project / failures  │
+│ repeating earlier work       │    │ </memory-context>                │
+│ </memory-policy>             │    └──────────────────────────────────┘
+└──────────────────────────────┘
 ```
 
-Set `"memoryPolicyStyle"` to `"full"`, `"compact"`, `"custom"`, or `"none"` to choose policy verbosity while keeping policy-only mode. Set `"memoryMode": "legacy-inject"` to restore the old behavior that injects MEMORY.md, USER.md, project memory, and recent failures into the prompt.
+Set `"memoryMode": "policy-only"` to send the policy without the digest. Set `"memoryPolicyStyle"` to `"full"`, `"compact"`, `"custom"`, or `"none"` to choose policy verbosity. Set `"memoryMode": "legacy-inject"` to restore the old behavior that injects MEMORY.md, USER.md, project memory, and recent failures into the prompt.
 
 ## Failure Memory
 
@@ -179,9 +181,9 @@ The agent learns from failures, corrections, and insights — just like humans d
 
 ### How It Works
 
-1. **Auto-detection**: Background review extracts failures from conversations
-2. **Correction capture**: When you correct the agent, it saves what went wrong
-3. **Search guidance**: The memory policy tells the agent when to search failures instead of injecting them by default
+1. **Trigger-based saving**: The memory policy tells the agent to save a `failure`/`correction` entry when you correct it or when a fix follows a failed attempt
+2. **Session digest**: Recent failures for the current project appear in the session digest (`failureInjection*` settings)
+3. **Reviewed extraction**: `/memory-review` proposes entries from the current conversation; nothing is extracted in the background
 4. **Searchable**: Use `memory_search("auth", category: "failure")` to find past failures
 
 ### Example
@@ -400,7 +402,7 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
 
 ```json
 {
-  "memoryMode": "policy-only",
+  "memoryMode": "digest",
   "memoryPolicyStyle": "full",
   "memoryCharLimit": 5000,
   "userCharLimit": 5000,
@@ -419,8 +421,8 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `memoryMode` | `policy-only` | Prompt behavior: `policy-only` injects only memory policy; `legacy-inject` restores full memory prompt injection |
-| `memoryPolicyStyle` | `full` | Policy text used in `policy-only` mode: `full` preserves the default v0.7 policy; `compact` uses shorter built-in guidance; `custom` uses `memoryPolicyCustomText`; `none` injects no policy text |
+| `memoryMode` | `digest` | Prompt behavior: `digest` sends the constant policy plus one hidden memory digest per session context; `policy-only` sends only the policy; `legacy-inject` restores full memory prompt injection |
+| `memoryPolicyStyle` | `full` | Policy text used in `digest` and `policy-only` modes: `full` preserves the default v0.7 policy; `compact` uses shorter built-in guidance; `custom` uses `memoryPolicyCustomText`; `none` injects no policy text |
 | `memoryPolicyCustomText` | unset | Custom policy text used when `memoryPolicyStyle` is `custom`; blank or missing text falls back to `compact` |
 | `memoryCharLimit` | `5000` | Max characters in MEMORY.md |
 | `userCharLimit` | `5000` | Max characters in USER.md |
@@ -431,11 +433,11 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
 | `reviewRecentMessages` | `0` | Recent conversation messages offered to explicit `/memory-review` before the hard 80,000-character tail bound (`0` = all eligible messages) |
 | `memoryOverflowStrategy` | `reject` | `reject` returns a capacity error; `fifo-evict` rotates oldest entries. Legacy `auto-consolidate` is accepted but no automatic consolidator is registered, so it also rejects until `/memory-review` is run |
 | `consolidationTimeoutMs` | `180000` | Legacy field name retained as the timeout for one explicit current-model `/memory-review` proposal |
-| `failureInjectionEnabled` | `true` | Legacy mode only: enable/disable injecting recent failure memories into the system prompt |
-| `failureInjectionMaxAgeDays` | `7` | Legacy mode only: maximum age in days for injected failure memories |
-| `failureInjectionMaxEntries` | `5` | Legacy mode only: maximum number of failure memories to inject |
+| `failureInjectionEnabled` | `true` | Digest and legacy modes: enable/disable including recent failure memories into the system prompt |
+| `failureInjectionMaxAgeDays` | `7` | Digest and legacy modes: maximum age in days for injected failure memories |
+| `failureInjectionMaxEntries` | `5` | Digest and legacy modes: maximum number of failure memories to inject |
 
-Legacy auto-review, correction, child-transport, model-override, and flush fields are still parsed for configuration compatibility, but their automatic hooks are not registered in this hardened build.
+Removed legacy fields (`nudgeInterval`, `nudgeToolCalls`, `reviewEnabled`, `flushOnCompact`, `flushOnShutdown`, `flushMinTurns`, `flushRecentMessages`, `correctionDetection`, `correction*Patterns`, `correctionDirectiveWords`, `childExtensionPaths`) are ignored if present; no automatic review, flush, or correction hook exists in this hardened build.
 
 ## Where Data Lives
 
