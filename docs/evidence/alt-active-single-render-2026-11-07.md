@@ -75,6 +75,19 @@ counts.
 | before | 2, 2, 2 | 0.0708, 0.0671, 0.0739 |
 | after | 1, 1, 1 | 0.0706, 0.0622, 0.0627 |
 
+`tui-paced-real-leaf` (5,000 history items, 1,000 deliveries of 20 raw
+updates). This bench paints only since the #262 review fixes, so its base is
+`99470404a` (main after #262):
+
+| Fixture | `activeItemRenders` before → after | B / delivery before → after | p50 / p95 ms before → after |
+| --- | --- | --- | --- |
+| assistant-plain-text | 2,000 → 1,000 | 35,531 → 34,811 | 0.0425 / 0.0748 → 0.0433 / 0.0731 |
+| assistant-thinking | 2,000 → 1,000 | 32,982 → 33,026 | 0.0408 / 0.0587 → 0.0394 / 0.0559 |
+
+`doRenderCalls` stays 1,000 and `finalHash` is unchanged for both fixtures.
+`Markdown` caches internally, so the saved second render is cheap and CPU and
+allocation stay within noise.
+
 ## Tests
 
 - `tests/tui-layout-frame-scope.test.ts`:
@@ -89,6 +102,7 @@ counts.
   - with release disabled, the off-screen and throwing-frame tests fail.
 - `tests/tui-retained-transcript.test.ts` and `tests/tui-viewport.test.ts` now
   pin `activeItemRenders` to 1.
-- `tsgo --noEmit` exit 0. Hot suite: 22 units pass.
+- `tsgo --noEmit` exit 0. Hot suite: 22 units pass. Rerun after rebasing on
+  `99470404a`: `tsgo` exit 0; the four tests above pass 49/49; hot suite 22/22.
 - Full suite with `npm_execpath` set: 473 units, 472 pass. The one failure,
   `windows-sandbox-powershell7`, is caused by the local execution policy.
