@@ -146,6 +146,18 @@ function unquotedText(source: string, start: number, stop: number): string {
   return text;
 }
 
+/** The first `=` in `source[start, stop)` outside quotes, or -1: `'publish-result'=git` assigns at its `=`. */
+function unquotedEquals(source: string, start: number, stop: number): number {
+  let quote = 0;
+  for (let index = start; index < stop; index++) {
+    const code = source.charCodeAt(index);
+    if (quote !== 0) { if (code === quote) quote = 0; }
+    else if (isQuoteCode(code)) quote = code;
+    else if (code === 61) return index;
+  }
+  return -1;
+}
+
 /** Whether a PowerShell string opens at `at`: a quote, or a here-string's `@'`/`@"`. */
 function isStringStart(source: string, at: number): boolean {
   const code = source.charCodeAt(at);
@@ -369,13 +381,25 @@ function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], po
     return -1;
   }
   if (BASH_SHELLS.has(first)) {
+    // `bash -n -c '…'` / `-o noexec` only reads the script; `+n` turns that off again.
+    let noExec = false;
     for (let index = 1; index < argv.length; index++) {
-      const word = argv[index]!;
-      if (word.length < 2 || word.charCodeAt(0) !== 45 && word.charCodeAt(0) !== 43) return -1; // a script file
+      const word = argv[index]!, sign = word.charCodeAt(0);
+      if (word.length < 2 || sign !== 45 && sign !== 43) return -1; // a script file
       if (word === "--") return -1;
-      if (word.charCodeAt(1) === 45) continue; // `--login`, `--norc`
-      if (word.indexOf("c") > 0) return index + 1 < argv.length ? nestedScriptVerdict(rules, "bash", argv[index + 1]!) : -1;
-      if (word === "-o" || word === "+o" || word === "-O" || word === "+O") index++; // `-o pipefail`
+      if (word.charCodeAt(1) === 45) { // `--login`, `--norc`; `--rcfile FILE` and `--init-file FILE` take a value
+        if (word === "--rcfile" || word === "--init-file") index++;
+        continue;
+      }
+      if (word.indexOf("n") > 0) noExec = sign === 45;
+      if (word.indexOf("c") > 0) {
+        if (index + 1 >= argv.length) return -1;
+        return noExec ? RULE_NONE : nestedScriptVerdict(rules, "bash", argv[index + 1]!);
+      }
+      if (word === "-o" || word === "+o" || word === "-O" || word === "+O") { // `-o pipefail`
+        if (index + 1 < argv.length && argv[index + 1] === "noexec" && word.charCodeAt(1) === 111) noExec = sign === 45;
+        index++;
+      }
     }
     return -1;
   }
@@ -585,13 +609,16 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
         // A hashtable key names data; the value after `=` may be a command (`@{ sha = git rev-parse HEAD }`).
         if (valued || hashEntry === HASH_VALUE) hashEntry = HASH_NONE;
         else if (atKey && argv.length === 0 && (braceKinds & 1) !== 0 && !braced) {
-          const equals = (flags & WORD_QUOTED) === 0 ? text.indexOf("=") : -1;
-          if (equals < 0) { hashEntry = HASH_OPERATOR; continue; }
-          if (equals === text.length - 1) { hashEntry = HASH_VALUE; continue; }
-          text = text.slice(equals + 1); valued = true; rawLow = table.source.indexOf("=", rawLow) + 1;
+          // A quoted key may carry its value too (`'publish-result'=git push`): find `=` outside the quotes.
+          const stop = table.ends[index]!;
+          const equals = (flags & WORD_QUOTED) === 0 ? table.source.indexOf("=", rawLow) : unquotedEquals(table.source, rawLow, stop);
+          if (equals < 0 || equals >= stop) { hashEntry = HASH_OPERATOR; continue; }
+          if (equals === stop - 1) { hashEntry = HASH_VALUE; continue; }
+          text = (flags & WORD_QUOTED) === 0 ? text.slice(text.indexOf("=") + 1) : unquotedText(table.source, equals + 1, stop);
+          valued = true; rawLow = equals + 1;
         } else if (atKey && argv.length === 0 && (switchKinds & 1) !== 0 && !braced) continue; // a switch label
         const start = table.starts[index]!;
-        expression = argv.length === 0 && (valued ? rawValueQuoted(table.source, start, table.ends[index]!)
+        expression = argv.length === 0 && (valued ? rawLow < table.ends[index]! && isStringStart(table.source, rawLow)
           : (flags & WORD_QUOTED) !== 0 && isStringStart(table.source, start) && !isInvokedWord(table.source, start));
       }
       if (powerShell && (flags & WORD_QUOTED) !== 0) {
