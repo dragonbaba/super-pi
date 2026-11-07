@@ -33,6 +33,11 @@ test("git -C, worktree remove, rsync and tar extraction name the directory they 
   assert.deepEqual(scan("bash", "tar -xf a.tar -C../outside"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
   assert.deepEqual(scan("bash", "tar -xf a.tar -C out -C nested"), { targets: [`write:${resolve(cwd, "out/nested")}`], uncertain: false });
   assert.deepEqual(scan("bash", "git branch -D old"), { targets: [`write:${resolve(cwd, ".git")}`], uncertain: false });
+  // Short options are read as tar reads them: `C` takes the next word inside a cluster, old-style letters take words in order.
+  assert.deepEqual(scan("bash", "tar -xC ../outside -f a.tar"), { targets: [`write:${resolve(cwd, "../outside")}`], uncertain: false });
+  assert.deepEqual(scan("bash", "tar xfC a.tar out"), { targets: [`write:${resolve(cwd, "out")}`], uncertain: false });
+  // A bare worktree name may be a registered identifier elsewhere: the deleted directory is unknown, so the host asks.
+  assert.deepEqual(scan("bash", "git worktree remove wt"), { targets: [`write:${resolve(cwd, ".git")}`], uncertain: true });
   // Reads, remote destinations and archive creation change nothing here.
-  for (const command of ["git -C sub status", "git --no-pager branch --show-current", "git -C sub branch --show-current", "tar -xOf package.tgz package/package.json", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist", "rsync -an --delete ../build/ .", "rsync -a --dry-run --delete src/ dest/"]) assert.equal(scan("bash", command), undefined, command);
+  for (const command of ["tar -tfexample.tar", "git -C sub status", "git --no-pager branch --show-current", "git -C sub branch --show-current", "tar -xOf package.tgz package/package.json", "rsync -a dist/ user@host:/srv/www", "tar -czf out.tgz dist", "rsync -an --delete ../build/ .", "rsync -a --dry-run --delete src/ dest/"]) assert.equal(scan("bash", command), undefined, command);
 });
