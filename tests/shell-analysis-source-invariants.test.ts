@@ -46,7 +46,8 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   // Project rules (R4): built once per file version, matched without closures or temporary containers.
   targets.set("../project-permissions.ts", new Set(["foldCode", "foldWord", "wordMatches", "wordsMatch", "match", "hasShellRules", "hasRestrictiveShellRules", "toolDecision", "matchShellWords"]));
   // Sandbox command facts (R5): one tokenization, module tables and a reused word buffer.
-  targets.set("sandbox-command.ts", new Set(["inspectSandboxCommand", "wordText", "inspectSegment", "programStart", "programName", "networkCommand", "isDriveAbsolute"]));
+  targets.set("sandbox-command.ts", new Set(["inspectSandboxCommand", "wordText", "inspectSegment", "programStart", "programName", "networkCommand", "isDriveAbsolute",
+    "inspectScript", "fillWords", "scriptOperand", "assignmentEquals", "informational", "versionedPackage"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

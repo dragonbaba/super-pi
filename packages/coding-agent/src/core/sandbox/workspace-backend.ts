@@ -40,8 +40,10 @@ export class WorkspacePathStop extends WorkspaceOperationError {
 }
 /** Where a host path is inside the VM (R5 diagnostics). */
 export const HOST_PATH_WORKSPACE = 0, HOST_PATH_TOOL = 1, HOST_PATH_VM = 2, HOST_PATH_HOST_SYSTEM = 3, HOST_PATH_HOST_ONLY = 4, HOST_PATH_MISSING = 5;
-/** The VM's own Windows directories; Program Files and ProgramData exist there too, with other contents. */
-const VM_SYSTEM_ROOTS = Object.freeze(["c:\\windows"]);
+/** The VM's own Windows directories and profiles; Program Files and ProgramData exist there too, with other contents. */
+const VM_SYSTEM_ROOTS = Object.freeze(["c:\\windows", "c:\\users\\public", "c:\\users\\default"]);
+/** Exists in the VM, but its other children (host profiles) do not. */
+const VM_EXACT_DIRECTORIES = Object.freeze(["c:\\users"]);
 const VM_SHARED_ROOTS = Object.freeze(["c:\\program files", "c:\\program files (x86)", "c:\\programdata"]);
 function withinKey(key: string, root: string): boolean {
   return key === root || key.length > root.length && key.startsWith(root) && key.charCodeAt(root.length) === 92;
@@ -119,6 +121,7 @@ export class WorkspaceSandboxBackend {
     for (const root of this.workspaceKeys) if (withinKey(root, key)) return HOST_PATH_VM;
     for (const root of this.toolRoots) if (withinKey(root, key)) return HOST_PATH_VM;
     for (const root of VM_SYSTEM_ROOTS) if (withinKey(key, root)) return HOST_PATH_VM;
+    for (const directory of VM_EXACT_DIRECTORIES) if (key === directory) return HOST_PATH_VM;
     for (const root of VM_SHARED_ROOTS) if (withinKey(key, root)) return HOST_PATH_HOST_SYSTEM;
     return HOST_PATH_HOST_ONLY;
   }

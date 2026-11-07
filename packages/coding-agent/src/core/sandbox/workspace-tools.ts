@@ -35,6 +35,11 @@ const ACCESS_DENIED = /Access (?:to the path .{0,512} )?is denied|EACCES|EPERM|P
 const NETWORK_CHOICES = ["允许本会话联网", "拒绝"];
 const NETWORK_TIMEOUT_MS = 60000, MAX_DIALOG_COMMAND = 4000;
 const NETWORK_STATUS_KEY = "sandbox-network";
+/** Output names `key` with either separator (`c:\\program files\\x`, `c:/program files/x`). */
+function mentionsPath(output: string, key: string): boolean {
+  if (output.indexOf(key) >= 0) return true;
+  return key.indexOf("\\") >= 0 && output.indexOf(key.replaceAll("\\", "/")) >= 0;
+}
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WRITEBACK] " + reason); }
 function needImage(value: unknown, reason: string): asserts value { if (!value) throw new Error(reason); }
 function shellFacts(reply: WorkspaceReply, cwd: string, failure?: string): ShellExecutionFacts | undefined {
@@ -170,15 +175,21 @@ export class WorkspaceSandboxTools {
     const execution = reply.execution;
     if (!execution || execution.timedOut) return "";
     const output = execution.stdout + execution.stderr;
+    let lower: string | undefined;
     if (!this.backend.networkEnabled && NETWORK_FAILURE.test(output))
       return "\n[SANDBOX_NETWORK_DISABLED] 沙箱当前禁止联网，这次失败来自网络请求（DNS 解析失败或网络不可达），换写法、换镜像源重试同样会失败。请告知用户需要联网"
         + (ctx.hasUI && this.networkSession ? "；常见联网命令（如 npm install、git clone）执行前会询问用户是否允许本会话联网。" : "；可在全局设置中开启 sandboxNetwork。");
     for (const candidate of this.commandFacts.paths) {
       const kind = await this.backend.hostPathKind(candidate);
+      if (kind !== HOST_PATH_HOST_SYSTEM && kind !== HOST_PATH_TOOL) continue;
+      // Only a failure that names this path is about it (`& 'C:\Program Files\nodejs\npm.cmd' test` may fail for its own reasons).
+      const resolved = path.resolve(candidate);
+      lower ??= output.toLowerCase();
+      if (!mentionsPath(lower, resolved.toLowerCase())) continue;
       if (kind === HOST_PATH_HOST_SYSTEM && PATH_NOT_FOUND.test(output))
-        this.stopForPath("[SANDBOX_PATH_UNMAPPED] 命令引用的宿主路径没有映射到沙箱：" + path.resolve(candidate) + "。命令在沙箱中失败。");
+        this.stopForPath("[SANDBOX_PATH_UNMAPPED] 命令引用的宿主路径没有映射到沙箱：" + resolved + "。命令在沙箱中失败。");
       if (kind === HOST_PATH_TOOL && ACCESS_DENIED.test(output))
-        this.stopForPath("[SANDBOX_PATH_READ_ONLY] " + path.resolve(candidate) + " 是工具链目录，在沙箱中只读挂载，命令在写入时失败。");
+        this.stopForPath("[SANDBOX_PATH_READ_ONLY] " + resolved + " 是工具链目录，在沙箱中只读挂载，命令在写入时失败。");
     }
     return "";
   }

@@ -15,6 +15,11 @@ test("sandbox command facts: common network commands and static absolute paths, 
     ["bash", "cd pkg && npm ci", "npm ci"], ["bash", "CI=1 pnpm install --frozen-lockfile", "pnpm install"], ["bash", "python -m pip install requests", "pip install"],
     ["bash", "git -C repo pull", "git pull"], ["bash", "curl -fsSL https://example.test", "curl"], ["bash", "yarn", "yarn"],
     ["powershell", "& npm.cmd install", "npm install"], ["powershell", "$r = Invoke-WebRequest https://example.test", "invoke-webrequest"],
+    ["powershell", "$r=Invoke-WebRequest https://example.test", "invoke-webrequest"], ["powershell", "1..3 | ForEach-Object { Invoke-WebRequest https://example.test }", "invoke-webrequest"],
+    ["bash", "bash -euo pipefail -c 'npm install'", "npm install"], ["powershell", "pwsh -NoProfile -Command \"git clone https://example.test/r\"", "git clone"],
+    ["powershell", "cmd /c npm ci", "npm ci"], ["bash", "npx create-vite@latest app", "npx"], ["bash", "npm create vite@latest app", "npm create"],
+    ["bash", "npx tsc --noEmit", undefined], ["bash", "curl --version", undefined],
+    ["bash", "cat > fetch.sh <<'EOF'\ncurl https://example.test\nEOF\nchmod +x fetch.sh", undefined],
     // Ordinary offline commands never ask.
     ["bash", "npm test", undefined], ["bash", "npm run build", undefined], ["bash", "git commit -m 'pull request'", undefined],
     ["bash", "echo npm install", undefined], ["powershell", "Get-ChildItem", undefined],
@@ -100,7 +105,8 @@ test("an unmapped host path stops the command and pauses the turn; offline failu
   await offline.close();
 });
 
-test("host path kinds: workspace, its parents, tool mounts, host-only and missing paths", async () => {
+// Sandbox paths are Windows paths; the VM exists only on Windows.
+test("host path kinds: workspace, its parents, tool mounts, host-only and missing paths", { skip: process.platform !== "win32" }, async () => {
   const root = await fs.mkdtemp(path.join(process.env.TMP ?? process.cwd(), "r5-paths-"));
   try {
     const workspace = path.join(root, "workspace"), other = path.join(root, "other"), tools = path.join(root, "tools");
