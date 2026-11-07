@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { staticMutationTarget, uninspectableBashStateStart, heredocScriptLanguages, literalAliasSource, literalEvalScript, literalProcessSources, literalStoredScripts, unsafeBashLoopHeaderReason } from "./core.ts";
 import { analyzeShellSource, type ShellAnalysisOwner } from "./shell-analysis.ts";
 import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { findPredicateHasOperand, isReadOnlySortTail } from "./readonly-find.ts";
+import { powerShellLocationTarget } from "./readonly-command.ts";
 import { sortHasTerminalOption, sortLongOption, sortOptionRequiresValue } from "./sort-options.ts";
 import { NODE_COMMAND_PATTERN, PYTHON_COMMAND_PATTERN } from "./regex.ts";
 import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
@@ -29,6 +30,15 @@ const SIMPLE_MUTATIONS = new Set([...SIMPLE_DELETIONS, "mkdir", "md", "touch"]);
 const COPY_COMMANDS = new Set(["cp", "copy"]);
 const MOVE_COMMANDS = new Set(["mv", "move", "rename", "ren"]);
 const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "ls-files", "rev-parse"]);
+/** git's global options that take no value; `-C <dir>` and `-c <name=value>` are read separately. */
+const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-P", "--paginate", "-p", "--no-optional-locks", "--literal-pathspecs", "--no-replace-objects"]);
+/** rsync options whose value is the next word when written without `=`. */
+const RSYNC_VALUE_OPTIONS = new Set(["--exclude", "--include", "--filter", "--exclude-from", "--include-from", "--files-from", "--rsh",
+  "--rsync-path", "--log-file", "--temp-dir", "--backup-dir", "--partial-dir", "--compare-dest", "--copy-dest", "--link-dest", "--chmod",
+  "--chown", "--password-file", "--suffix", "--timeout", "--bwlimit", "--max-size", "--min-size", "--port", "--out-format", "--usermap",
+  "--groupmap", "--modify-window", "--contimeout", "--iconv", "--remote-option"]);
+/** Short rsync options that take the next word when they end their cluster (`-e ssh`, `-avf 'merge x'`). */
+const RSYNC_SHORT_VALUE_OPTIONS = "efTBM";
 // Native authorization only: PowerShell file cmdlets, after Claude Code's PowerShell
 // scope checks. Kind codes keep the table allocation-free; ALIAS entries apply only to
 // the PowerShell tool because Bash may have an unrelated program of that name.
@@ -206,6 +216,61 @@ function addPositionalTargets(
   return count;
 }
 
+/**
+ * `rsync [options] source… destination`: a local destination is written, and with `--delete*`
+ * files there are deleted. A remote destination (`host:path`, `host::module`, `rsync://`) or a
+ * single operand (a listing) is left to the unknown-command handling.
+ */
+function inspectRsync(tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
+  let destination = -1, operands = 0, deletes = false;
+  for (let index = start; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token === "--") { operands += tokens.length - index - 1; if (index + 1 < tokens.length) destination = tokens.length - 1; break; }
+    if (token.startsWith("--")) {
+      if (token.startsWith("--delete") || token === "--del") deletes = true;
+      else if (RSYNC_VALUE_OPTIONS.has(token)) index++;
+      continue;
+    }
+    if (token.length > 1 && token.charCodeAt(0) === 45) {
+      if (RSYNC_SHORT_VALUE_OPTIONS.includes(token[token.length - 1]!)) index++;
+      continue;
+    }
+    operands++; destination = index;
+  }
+  if (operands < 2 || isRemoteRsyncOperand(tokens[destination]!)) return false;
+  markMutation(builder, deletes ? "rsync_delete" : "rsync");
+  addTarget(builder, tokens[destination]!, cwd, true, tokens.expansions?.[destination], deletes);
+  return true;
+}
+
+function isRemoteRsyncOperand(value: string): boolean {
+  if (value.startsWith("rsync://")) return true;
+  const colon = value.indexOf(":");
+  let slash = value.indexOf("/");
+  const backslash = value.indexOf("\\");
+  if (backslash >= 0 && (slash < 0 || backslash < slash)) slash = backslash;
+  // `C:\dist` and `C:/dist` are local drive paths; `host:dist` and `user@host:/srv` are remote.
+  return colon > 1 && (slash < 0 || colon < slash);
+}
+
+/** `tar -xf a.tar [-C dir]` / `tar xf a.tar`: extraction writes into `-C`'s directory, else the cwd. */
+function inspectTarExtract(tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
+  let extract = false, directory = -1, directoryValue: string | undefined;
+  for (let index = start; index < tokens.length; index++) {
+    const token = tokens[index]!;
+    if (token === "--extract" || token === "--get") extract = true;
+    else if (token === "-C" || token === "--directory") { directory = ++index; directoryValue = tokens[index]; }
+    else if (token.startsWith("--directory=")) { directory = index; directoryValue = token.slice(12); }
+    else if (!token.startsWith("--") && (token.charCodeAt(0) === 45 || index === start) && token.includes("x")) extract = true;
+  }
+  if (!extract) return false;
+  markMutation(builder, "tar_extract");
+  if (directory < 0) addTarget(builder, ".", cwd, true);
+  else if (directoryValue) addTarget(builder, directoryValue, cwd, true, tokens.expansions?.[directory]);
+  else { builder.dynamicScope = true; builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+  return true;
+}
+
 function inspectKnownMutation(command: string, tokens: PermissionTokens, start: number, cwd: string, builder: ScopeBuilder): boolean {
   if (command === "find") {
     const root = findSearchRootIndex(tokens, start);
@@ -271,6 +336,8 @@ function inspectKnownMutation(command: string, tokens: PermissionTokens, start: 
     }
     return output || inertLongOption;
   }
+  if (command === "rsync") return inspectRsync(tokens, start, cwd, builder);
+  if (command === "tar" || command === "bsdtar") return inspectTarExtract(tokens, start, cwd, builder);
   if (SIMPLE_MUTATIONS.has(command)) {
     markMutation(builder, command);
     addPositionalTargets(tokens, start, builder, cwd, 0, false, SIMPLE_DELETIONS.has(command));
@@ -599,6 +666,12 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       inspectPowerShellFileCmdlet(command, cmdlet & ~CMDLET_ALIAS, tokens, index + 1, cwd, builder);
       return cwd;
     }
+    // Set-Location/sl/chdir/Push-Location move later segments, as `cd` does.
+    const location = powerShell && index === start ? powerShellLocationTarget(command, tokens, index) : undefined;
+    if (location !== undefined) {
+      if (!location || hasDynamicSyntax(location)) { markOpaque(builder, "dynamic_cd"); return cwd; }
+      return resolve(cwd, location);
+    }
   }
   if (tokens[index] !== command && command !== "command" && command !== "exec") {
     markOpaque(builder, "explicit_or_cased_executable");
@@ -701,7 +774,20 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     return cwd;
   }
   if (command === "git") {
-    const subcommand = tokens[index + 1]?.toLowerCase();
+    // `git -C sub reset --hard` works in `sub`: its paths are written relative to the -C chain.
+    let at = index + 1, directory = "", expansion = 0;
+    for (;;) {
+      const word = tokens[at];
+      if (word === "-C" && at + 1 < tokens.length) {
+        const value = tokens[at + 1]!;
+        directory = !directory || isAbsolute(value) ? value : directory + "/" + value;
+        expansion |= tokens.expansions?.[at + 1] ?? 0;
+        at += 2;
+      } else if (word === "-c" && at + 1 < tokens.length) at += 2;
+      else if (word !== undefined && GIT_GLOBAL_FLAGS.has(word)) at++;
+      else break;
+    }
+    const subcommand = tokens[at]?.toLowerCase();
     addClass(builder, `git:${safeClassToken(subcommand ?? "unknown")}`);
     if (!subcommand || subcommand.startsWith("-")) {
       markOpaque(builder, "opaque_git_global_options");
@@ -710,7 +796,16 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
     }
     if (GIT_READ_ONLY.has(subcommand)) return cwd;
     markMutation(builder, `git_${subcommand}`);
-    addTarget(builder, ".git", cwd, true);
+    addTarget(builder, directory ? directory + "/.git" : ".git", cwd, true, expansion);
+    // `git worktree remove [--force] <path>` deletes that worktree's directory.
+    if (subcommand === "worktree" && tokens[at + 1] === "remove") {
+      let path = at + 2;
+      while (path < tokens.length && tokens[path]!.charCodeAt(0) === 45) path++;
+      const value = tokens[path];
+      if (value === undefined) { builder.unverifiableMutation = true; markOpaque(builder, "missing_output_target"); }
+      else addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
+        expansion | (tokens.expansions?.[path] ?? 0), true);
+    }
     return cwd;
   }
   if (READ_ONLY_COMMANDS.has(command) || command === "sort" && isReadOnlySortTail(tokens, index)) {

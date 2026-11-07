@@ -39,6 +39,7 @@ import { parseTimeoutInvocation } from "./timeout-wrapper.ts";
 import { findPredicateHasOperand, isReadOnlyFindTail, isReadOnlySortTail } from "./readonly-find.ts";
 import { isReadOnlyFindLoop } from "./readonly-find-loop.ts";
 import { isLiteralReadLoop } from "./readonly-loop.ts";
+import { powerShellLocationTarget } from "./readonly-command.ts";
 import { bashArithmeticForHeader, bashLoopVariableIndex, bashPipelinePrefixEnd, bashScriptOperandIndex, unsafeBashForHeaderReason, hasStatefulBashPrintf, shellExpansionRisk, hasUnsafeBashTestOperand, hasUnsafeBashLoopListOperand, hasUnsafeCommandQueryOperand, isBashArithmeticCommandHead, isBashNetworkRedirectionTarget, isLookupSensitiveBashVariable, isShellDynamicDescriptor, isShellOutputFileRedirection, isStaticDescriptorCopy, stripShellRedirections } from "./shell-redirection.ts";
 import { FD_DUPLICATION_PATTERN } from "./regex.ts";
 import { DIALECT_CMD, DIALECT_POWERSHELL, fillWindowsSegment, lexWindowsScript } from "./syntax/windows.ts";
@@ -561,15 +562,20 @@ function inspectWindowsShellScript(script: string, initialCwd: string, depth: nu
 		if (commandIndex < 0 || commandIndex >= tokens.length) continue;
 		const executableIndex = tokens[commandIndex] === "{" ? commandIndex + 1 : commandIndex;
 		if (executableIndex >= tokens.length) continue;
-		if (tokens[executableIndex] === "cd" && commandIndex === 0) {
-			const target = tokens[executableIndex + 1];
-			if (!target || hasDynamicSyntax(target)) {
+		const name = commandName(tokens[executableIndex]!);
+		// `Set-Location sub; Remove-Item x` removes `sub\x`: every PowerShell location command moves
+		// the cwd (and, like Bash `cd`, leaves later targets to be confirmed), not only `cd`.
+		const location = commandIndex !== 0 ? undefined
+			: dialect === DIALECT_POWERSHELL ? tokens[executableIndex]!.length === name.length ? powerShellLocationTarget(name, tokens, executableIndex) : undefined
+			: tokens[executableIndex] === "cd" ? tokens[executableIndex + 1] ?? "" : undefined;
+		if (location !== undefined) {
+			if (!location || hasDynamicSyntax(location)) {
 				builder.dynamicScope = true;
 				builder.unverifiableScope = true;
-			} else workingDirectory = resolve(workingDirectory, target);
+			} else workingDirectory = resolve(workingDirectory, location);
 			continue;
 		}
-		inspectCommand(tokens, executableIndex, commandName(tokens[executableIndex]!), workingDirectory, depth, builder, "powershell");
+		inspectCommand(tokens, executableIndex, name, workingDirectory, depth, builder, "powershell");
 	}
 }
 

@@ -25,6 +25,9 @@ test("sandbox command facts: common network commands and static absolute paths, 
     // Ordinary offline commands never ask.
     ["bash", "npm test", undefined], ["bash", "npm run build", undefined], ["bash", "git commit -m 'pull request'", undefined],
     ["bash", "echo npm install", undefined], ["powershell", "Get-ChildItem", undefined],
+    // An explicit offline flag never reaches the network; `--prefer-offline` still may.
+    ["bash", "npm ci --offline", undefined], ["bash", "cargo build --offline", undefined], ["bash", "pip install --no-index -f wheels x", undefined],
+    ["bash", "npm install --prefer-offline", "npm install"],
   ];
   for (const [tool, command, expected] of network) {
     inspectSandboxCommand(tool, command, facts);
