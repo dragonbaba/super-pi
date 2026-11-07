@@ -167,3 +167,13 @@ Windows，Node `v26.13.0`。测试子进程的 `TMP`、`TEMP`、`TMPDIR` 均设�
 验证：沙箱停止/网络与 shell 源码约束两个文件 **17/17 通过**；`tsgo --noEmit` 通过；离线构建 **12/12 包通过，7,247 ms**，打包沙箱运行时 41 个文件。改动位于每次 shell 执行入口的同步事实提取；仅复用已有数组和模块常量，无新增闭包、Promise、临时容器或长期引用，源码分配约束通过。渲染、进度、终端帧等热路径未再改动，前述分配和生命周期证据仍适用，未重复运行无关性能测试。
 
 本轮临时数据位于 `.task-tmp/review-gate-20261107-e29a`，测试和构建子进程通过 preload 核对临时目录。以上首轮 CI 不能代替修复提交的审核与 CI；推送后必须再次 `@codex`，等待新提交的结果。
+
+## PR #267 第二轮 reviewer 反馈
+
+对 `1bc53ad566d6e0a3b05c220e2692d6f751d49e49` 再次手动请求审核。Reviewer 确认 `--pre` 和 `env -C` 已修复，提出两个新的 P2：[grep 可选颜色值吞掉模式](https://github.com/dragonbaba/super-pi/pull/267#discussion_r4501722625)、[rg hostname 程序路径遗漏](https://github.com/dragonbaba/super-pi/pull/267#discussion_r4501739947)。
+
+修改前生产分析器实测：`grep --color needle D:/outside` 返回空路径，而 `grep --color=auto needle D:/outside` 正确返回文件路径；`rg --hostname-bin=D:/tools/hostname.exe needle .` 及分离值形式均漏掉程序路径。本机 GNU grep 帮助确认 `--color[=WHEN]` 的值可省略且只附着于等号后，rg 的 `--color` 则要求值；rg 帮助明确 `--hostname-bin` 指向可执行程序。
+
+沿同一原因核对已支持的 rg/grep 参数分类，还复现了 `--pre-glob`、`--context-separator`、`rg -E utf-8` 和 `grep -d recurse` 后的文本模式被误列为路径。扩展原有回归用例后先观察失败，再修改生产代码：区分 grep 的可选颜色值；补入 hostname 文件选项；按本机帮助补齐现有命令的文本/数字值选项及各自短选项。只修正已支持搜索命令的参数位置和数据含义，没有增加通用命令识别范围、拒绝规则或兜底筛选。
+
+验收规划补充“可选值/必填值、文本值/文件值、同名命令选项差异”的对照，仍复用一项既有搜索回归测试，未增加测试文件。两个相关测试文件 **17/17 通过**；源码分配约束、`tsgo --noEmit` 通过；离线构建 **12/12 包通过，7,006 ms**。新增内容是模块常量和同步循环中的原始值分支，没有新增容器、闭包或引用生命周期。此修复提交仍需再次 `@codex` 及对应 CI 验收。

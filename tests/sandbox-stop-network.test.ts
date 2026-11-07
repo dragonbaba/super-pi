@@ -67,7 +67,8 @@ test("sandbox search patterns stay text while search files and redirections stay
   const f = fixture({ hasUI: false });
   try {
     for (const command of ["rg -F -e 'D:/outside' .", "rg --regexp=D:/outside .", "rg -F 'D:/outside' .", "grep -F -e 'D:/outside' .",
-      "rg -FeD:/outside .", "rg -g D:/glob -e D:/pattern ."]) {
+      "rg -FeD:/outside .", "rg -g D:/glob -e D:/pattern .", "rg --pre-glob D:/pattern -e needle .",
+      "rg --context-separator D:/separator -e needle .", "rg -E utf-8 D:/pattern .", "grep -d recurse D:/pattern ."]) {
       await f.run(command);
       assert.deepEqual(f.invoked.at(-1), undefined, command);
     }
@@ -83,6 +84,15 @@ test("sandbox search patterns stay text while search files and redirections stay
       assert.deepEqual(f.invoked.at(-1), ["D:/tools/filter.exe"], command);
     }
     for (const command of ["env -C D:/outside rg -e D:/pattern .", "env --chdir=D:/outside rg -e D:/pattern ."]) {
+      await f.run(command);
+      assert.deepEqual(f.invoked.at(-1), ["D:/outside"], command);
+    }
+    for (const command of ["rg --hostname-bin=D:/tools/hostname.exe needle .", "rg --hostname-bin D:/tools/hostname.exe needle ."]) {
+      await f.run(command);
+      assert.deepEqual(f.invoked.at(-1), ["D:/tools/hostname.exe"], command);
+    }
+    // grep's color value is optional and attached; rg's color value is required.
+    for (const command of ["grep --color needle D:/outside", "grep --color=auto needle D:/outside", "rg --color always needle D:/outside"]) {
       await f.run(command);
       assert.deepEqual(f.invoked.at(-1), ["D:/outside"], command);
     }

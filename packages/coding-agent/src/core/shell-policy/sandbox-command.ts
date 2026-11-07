@@ -62,10 +62,12 @@ const POWERSHELL_SHELLS: ReadonlySet<string> = new Set(["pwsh", "powershell"]);
 const TEXT_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf", "write", "write-output", "write-host", "write-information",
   "write-warning", "write-error", "write-verbose", "write-debug"]);
 /** Search option values that are text/numbers, never files. This only narrows path diagnostics. */
-const SEARCH_TEXT_OPTIONS: ReadonlySet<string> = new Set(["--glob", "--iglob", "--replace", "--type", "--type-not", "--type-add", "--type-clear",
+const SEARCH_TEXT_OPTIONS: ReadonlySet<string> = new Set(["--glob", "--iglob", "--pre-glob", "--replace", "--type", "--type-not", "--type-add", "--type-clear",
   "--label", "--include", "--exclude", "--exclude-dir", "--color", "--colors", "--encoding", "--engine", "--sort", "--sortr",
-  "--after-context", "--before-context", "--context", "--max-count", "--max-depth", "--max-filesize", "--path-separator"]);
-const SEARCH_FILE_OPTIONS: ReadonlySet<string> = new Set(["--ignore-file", "--exclude-from", "--pre"]);
+  "--after-context", "--before-context", "--context", "--max-count", "--max-depth", "--max-filesize", "--path-separator",
+  "--context-separator", "--field-context-separator", "--field-match-separator", "--hyperlink-format", "--generate",
+  "--dfa-size-limit", "--regex-size-limit", "--threads", "--max-columns", "--binary-files", "--directories", "--devices"]);
+const SEARCH_FILE_OPTIONS: ReadonlySet<string> = new Set(["--ignore-file", "--exclude-from", "--pre", "--hostname-bin"]);
 const OPEN_BRACE = "{", CLOSE_BRACE = "}", DYNAMIC = "$", EQUALS = "=", ASSIGNMENT = "_=";
 
 const words: string[] = [];
@@ -177,12 +179,16 @@ function searchPaths(name: string, start: number, facts: SandboxCommandFacts): v
         const equals = word.indexOf("="), option = equals < 0 ? word : word.slice(0, equals);
         pattern = option === "--regexp" || option === "--file" || name === "rg" && option === "--files";
         file = option === "--file" || SEARCH_FILE_OPTIONS.has(option);
-        if (option !== "--files" && (pattern || file || SEARCH_TEXT_OPTIONS.has(option))) value = equals < 0 ? words[++index] : word.slice(equals + 1);
+        // GNU grep --color[=WHEN] never consumes the next word; rg --color requires WHEN.
+        const optionalValue = name === "grep" && option === "--color";
+        if (option !== "--files" && (pattern || file || SEARCH_TEXT_OPTIONS.has(option)) && (equals >= 0 || !optionalValue)) {
+          value = equals < 0 ? words[++index] : word.slice(equals + 1);
+        }
       } else {
         // A short option taking a value ends its cluster: -Fe PATTERN, -fFILE, -gGLOB.
         for (let at = 1; at < word.length; at++) {
           const flag = word.charAt(at);
-          if (flag !== "e" && flag !== "f" && !"ABCm".includes(flag) && !(name === "rg" && "grtT".includes(flag))) continue;
+          if (flag !== "e" && flag !== "f" && !"ABCm".includes(flag) && !(name === "rg" ? "EdgjMrtT" : "dD").includes(flag)) continue;
           pattern = flag === "e" || flag === "f";
           file = flag === "f";
           value = at + 1 < word.length ? word.slice(at + 1) : words[++index];
