@@ -90,17 +90,34 @@ export function buildMemoryDigest(
   return lines.join("\n");
 }
 
-interface ContextEntryLike {
-  type?: string;
+interface ContextMessageLike {
+  role?: string;
   customType?: string;
 }
 
-/** True when the current session context already holds a digest message. */
+interface ContextEntryLike {
+  type?: string;
+  customType?: string;
+  /** Messages a compaction kept verbatim; they stay in the model context. */
+  retainedTail?: readonly ContextMessageLike[];
+}
+
+/**
+ * True when the current session context already holds a digest message, either
+ * as a custom-message entry or inside a compaction's retained tail.
+ */
 export function contextHasMemoryDigest(entries: readonly ContextEntryLike[] | undefined): boolean {
   if (!entries) return false;
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
-    if (entry?.type === "custom_message" && entry.customType === MEMORY_DIGEST_CUSTOM_TYPE) return true;
+    if (!entry) continue;
+    if (entry.type === "custom_message" && entry.customType === MEMORY_DIGEST_CUSTOM_TYPE) return true;
+    const tail = entry.type === "compaction" ? entry.retainedTail : undefined;
+    if (!tail) continue;
+    for (let tailIndex = tail.length - 1; tailIndex >= 0; tailIndex--) {
+      const message = tail[tailIndex];
+      if (message?.role === "custom" && message.customType === MEMORY_DIGEST_CUSTOM_TYPE) return true;
+    }
   }
   return false;
 }

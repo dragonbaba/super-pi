@@ -34,7 +34,7 @@ async function startSession(contextEntries = []) {
 	extension(harness.api);
 	await emitAll(harness, "session_start", { type: "session_start", reason: "startup" }, sessionContext(contextEntries));
 	const beforeAgentStart = harness.handlers.get("before_agent_start")[0];
-	const turn = () => beforeAgentStart({ type: "before_agent_start", prompt: "hi", systemPrompt: BASE_PROMPT }, sessionContext());
+	const turn = (entries = []) => beforeAgentStart({ type: "before_agent_start", prompt: "hi", systemPrompt: BASE_PROMPT }, sessionContext(entries));
 	return { harness, turn };
 }
 
@@ -90,17 +90,23 @@ test("digest mode keeps the system prompt constant and sends saved memory once a
 	assert.doesNotMatch(first.message.content, /Plain build fetches/);
 	assert.match(first.message.content, /## Recent failures and corrections\n- \[tool-quirk\] python - hangs/);
 
-	const second = await session.turn();
+	const persisted = [{ type: "message" }, { type: "custom_message", customType: MEMORY_DIGEST_CUSTOM_TYPE }];
+	const second = await session.turn(persisted);
 	assert.equal(second.message, undefined, "the digest is injected once per session context");
 	assert.equal(second.systemPrompt, first.systemPrompt);
+	assert.equal((await session.turn([])).message, undefined, "confirmed once; later turns do not rescan");
 
 	await emitAll(session.harness, "session_compact", { type: "session_compact" }, sessionContext([]));
 	const afterCompaction = await session.turn();
 	assert.equal(afterCompaction.message.content, first.message.content, "re-sent with identical bytes after compaction drops it");
-	await emitAll(session.harness, "session_tree", { type: "session_tree" }, sessionContext([
-		{ type: "custom_message", customType: MEMORY_DIGEST_CUSTOM_TYPE },
-	]));
-	assert.equal((await session.turn()).message, undefined, "still in context after tree navigation");
+	const retryAfterFailedAdmission = await session.turn([]);
+	assert.equal(retryAfterFailedAdmission.message?.content, first.message.content, "re-sent when the previous prompt never persisted it");
+
+	const retainedTail = [{ type: "compaction", retainedTail: [{ role: "user" }, { role: "custom", customType: MEMORY_DIGEST_CUSTOM_TYPE }] }];
+	await emitAll(session.harness, "session_compact", { type: "session_compact" }, sessionContext(retainedTail));
+	assert.equal((await session.turn(retainedTail)).message, undefined, "a compaction retained tail still holds the digest");
+	await emitAll(session.harness, "session_tree", { type: "session_tree" }, sessionContext(persisted));
+	assert.equal((await session.turn(persisted)).message, undefined, "still in context after tree navigation");
 	await shutdown(session.harness);
 
 	const resumed = await startSession([{ type: "message" }, { type: "custom_message", customType: MEMORY_DIGEST_CUSTOM_TYPE }]);
