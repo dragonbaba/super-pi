@@ -518,12 +518,14 @@ export class RetainedContainer extends Container implements LineViewportComponen
 		if (isLayoutFrameScopeActive()) {
 			// Inside a layout frame the same frame's renderViewport consumes the
 			// lines measured here, so an active item renders once per frame.
-			// Anything left over is released when the frame scope ends.
-			this.prepareViewportIndex(width, true);
-			if (this.preparedViewportRecords.size > 0 && !this.layoutFrameScopeRegistered) {
+			// Anything left over is released when the frame scope ends. Register
+			// before preparing so lines kept by a measurement that throws midway
+			// are released too.
+			if (!this.layoutFrameScopeRegistered) {
 				this.layoutFrameScopeRegistered = true;
 				registerLayoutFrameScopedOwner(this);
 			}
+			this.prepareViewportIndex(width, true);
 			return this.totalViewportHeight();
 		}
 		try {

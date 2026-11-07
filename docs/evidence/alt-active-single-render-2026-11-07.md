@@ -20,7 +20,9 @@ rendered twice per frame.
   and its registry slot is set to `undefined`.
 - `RetainedContainer.getContentHeight()` inside a frame keeps the lines it
   measured (`prepareViewportIndex(width, true)`, ≤256 dirty records as before)
-  and registers once per frame (`layoutFrameScopeRegistered`). The same
+  and registers once per frame (`layoutFrameScopeRegistered`) before
+  preparing, so lines kept by a measurement that throws midway are released
+  too (Codex finding on #263). The same
   frame's `renderViewport` uses those lines and clears them in its existing
   `finally`. Lines measured only for height, such as an off-screen child above
   the tail, are released at frame end. Outside a frame, `getContentHeight()`
@@ -96,13 +98,18 @@ allocation stay within noise.
     frame;
   - an off-screen child measured only for height releases its lines;
   - a frame that throws after measuring releases its lines and the scope;
+  - a measurement that throws inside the same container, after an earlier
+    dirty child's lines were kept, releases them;
   - height queries outside a frame keep the release-immediately behaviour.
 - Negative checks:
   - with the old source, the single-render test fails;
-  - with release disabled, the off-screen and throwing-frame tests fail.
+  - with release disabled, the off-screen and throwing-frame tests fail;
+  - with registration after preparation (the first #263 revision), the
+    same-container measurement failure test fails.
 - `tests/tui-retained-transcript.test.ts` and `tests/tui-viewport.test.ts` now
   pin `activeItemRenders` to 1.
 - `tsgo --noEmit` exit 0. Hot suite: 22 units pass. Rerun after rebasing on
   `99470404a`: `tsgo` exit 0; the four tests above pass 49/49; hot suite 22/22.
+  After the registration-order fix: `tsgo` exit 0; 50/50; hot suite 22/22.
 - Full suite with `npm_execpath` set: 473 units, 472 pass. The one failure,
   `windows-sandbox-powershell7`, is caused by the local execution policy.

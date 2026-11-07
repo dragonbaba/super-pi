@@ -23,6 +23,17 @@ class ThrowingLine implements Component {
 	invalidate(): void {}
 }
 
+class SwitchableLine implements Component {
+	fail = false;
+	value: string;
+	constructor(value: string) { this.value = value; }
+	render(width: number): string[] {
+		if (this.fail) throw new Error("measurement failure");
+		return [`${this.value}:${width}`];
+	}
+	invalidate(): void {}
+}
+
 function noop(): void {}
 
 function assertScopeReleased(): void {
@@ -102,6 +113,25 @@ test("a frame that throws after measuring still releases prepared lines and the 
 	active.updateVersion(1);
 	document.addChild(new ThrowingLine());
 	assert.throws(() => renderLayoutFrame(root, 60, 10, noop), /frame render failure/);
+	assertNoPreparedLines(transcript);
+	assertScopeReleased();
+});
+
+test("a measurement that throws inside the same container still releases lines it already kept", () => {
+	const transcript = new RetainedContainer();
+	const activeLine = new CountingLine("active-0");
+	const active = transcript.addRetainedChild(activeLine, { id: "active", version: 0 });
+	const failing = new SwitchableLine("tail-0");
+	const tail = transcript.addRetainedChild(failing, { id: "tail", version: 0 });
+	const document = new ViewportContainer();
+	document.addChild(transcript);
+	const root = new ScrollView(document, { follow: "end", primary: true });
+	renderLayoutFrame(root, 60, 10, noop);
+	activeLine.value = "active-1";
+	active.updateVersion(1);
+	failing.fail = true;
+	tail.updateVersion(1);
+	assert.throws(() => renderLayoutFrame(root, 60, 10, noop), /measurement failure/);
 	assertNoPreparedLines(transcript);
 	assertScopeReleased();
 });

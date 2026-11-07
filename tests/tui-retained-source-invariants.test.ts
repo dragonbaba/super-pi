@@ -168,7 +168,7 @@ test("layout frame scope hands measured lines to composition without per-frame a
 	const getContentHeight = findMethod(retainedSource, "RetainedContainer", "getContentHeight").getText(retainedSource);
 	assert.match(
 		getContentHeight,
-		/if \(isLayoutFrameScopeActive\(\)\) \{[\s\S]*?this\.prepareViewportIndex\(width, true\);[\s\S]*?!this\.layoutFrameScopeRegistered/,
+		/if \(isLayoutFrameScopeActive\(\)\) \{[\s\S]*?!this\.layoutFrameScopeRegistered[\s\S]*?registerLayoutFrameScopedOwner\(this\);[\s\S]*?this\.prepareViewportIndex\(width, true\);/,
 	);
 	const release = findMethod(retainedSource, "RetainedContainer", "releaseLayoutFrameScopedState").getText(retainedSource);
 	assert.match(release, /this\.layoutFrameScopeRegistered = false;\s*this\.clearPreparedViewportLines\(\);/);
