@@ -19,6 +19,8 @@ test("sandbox command facts: common network commands and static absolute paths, 
     ["bash", "bash -euo pipefail -c 'npm install'", "npm install"], ["powershell", "pwsh -NoProfile -Command \"git clone https://example.test/r\"", "git clone"],
     ["powershell", "cmd /c npm ci", "npm ci"], ["bash", "npx create-vite@latest app", "npx"], ["bash", "npm create vite@latest app", "npm create"],
     ["bash", "npx tsc --noEmit", undefined], ["bash", "curl --version", undefined],
+    ["bash", "CI=$CI npm install", "npm install"], ["powershell", "$r = @(Invoke-WebRequest https://example.test)", "invoke-webrequest"],
+    ["bash", "curl -fsS http://127.0.0.1:3000/health", undefined], ["powershell", "Invoke-WebRequest http://localhost:5173", undefined],
     ["bash", "cat > fetch.sh <<'EOF'\ncurl https://example.test\nEOF\nchmod +x fetch.sh", undefined],
     // Ordinary offline commands never ask.
     ["bash", "npm test", undefined], ["bash", "npm run build", undefined], ["bash", "git commit -m 'pull request'", undefined],

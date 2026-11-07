@@ -59,7 +59,7 @@ const POWERSHELL_SHELLS: ReadonlySet<string> = new Set(["pwsh", "powershell"]);
 /** Commands whose arguments are text, not paths; their redirection targets still count. */
 const TEXT_COMMANDS: ReadonlySet<string> = new Set(["echo", "printf", "write", "write-output", "write-host", "write-information",
   "write-warning", "write-error", "write-verbose", "write-debug"]);
-const OPEN_BRACE = "{", CLOSE_BRACE = "}", DYNAMIC = "$", EQUALS = "=";
+const OPEN_BRACE = "{", CLOSE_BRACE = "}", DYNAMIC = "$", EQUALS = "=", ASSIGNMENT = "_=";
 
 const words: string[] = [];
 
@@ -78,6 +78,11 @@ function inspectScript(powerShell: boolean, source: string, facts: SandboxComman
     const script = inspectSegment(table, segment, powerShell, facts, depth);
     if (script !== undefined) inspectScript(script.charCodeAt(0) === 1, script.slice(1), facts, depth + 1);
   }
+  // `$out = @(Invoke-WebRequest …)` collects a command's output; `$(...)` bodies stay a boundary, as in R4.
+  if (powerShell && depth < MAX_SCRIPT_NESTING) for (let nested = 0; nested < table.nestedCount; nested++) {
+    const start = table.nestedStarts[nested]!;
+    if (table.source.charCodeAt(start - 2) === 64) inspectScript(true, table.source.slice(start, table.nestedEnds[nested]!), facts, depth + 1);
+  }
 }
 
 function wordText(table: ShellTokenTable, index: number): string {
@@ -92,7 +97,8 @@ function fillWords(table: ShellTokenTable, start: number, end: number, powerShel
     if (flags & WORD_REDIRECTION) { index++; continue; }
     // A dynamic word keeps its position and never names a command or a path.
     if (flags & DYNAMIC_WORD) {
-      if (!powerShell) { words.push(""); continue; }
+      // `CI=$CI npm install`: the assignment prefix stays recognizable; only its value is dynamic.
+      if (!powerShell) { words.push(isAssignment(wordText(table, index)) ? ASSIGNMENT : ""); continue; }
       const text = wordText(table, index), equals = assignmentEquals(text);
       words.push(DYNAMIC);
       if (equals > 0) { words.push(EQUALS); if (equals + 1 < text.length) words.push(text.slice(equals + 1)); }
@@ -223,7 +229,7 @@ function networkCommand(name: string, program: number, powerShell: boolean): str
   if (PACKAGE_RUNNERS.has(name)) return versionedPackage(program) ? name : undefined;
   const subcommands = NETWORK_COMMANDS.get(name);
   if (!subcommands) return undefined;
-  if (subcommands === ANY_SUBCOMMAND) return informational(program) ? undefined : name;
+  if (subcommands === ANY_SUBCOMMAND) return informational(program) || loopbackOnly(program) ? undefined : name;
   let index = program + 1;
   while (index < words.length) {
     const word = words[index]!;
@@ -243,6 +249,25 @@ function informational(program: number): boolean {
     seen = true;
   }
   return seen;
+}
+
+/** Every URL names this machine (`curl http://127.0.0.1:3000/health`): the VM's own server, no network needed. */
+function loopbackOnly(program: number): boolean {
+  let seen = false;
+  for (let index = program + 1; index < words.length && words[index] !== CLOSE_BRACE; index++) {
+    const word = words[index]!, scheme = word.indexOf("://");
+    if (scheme < 0 && !isLoopbackHost(word, 0)) continue;
+    if (!isLoopbackHost(word, scheme < 0 ? 0 : scheme + 3)) return false;
+    seen = true;
+  }
+  return seen;
+}
+
+function isLoopbackHost(word: string, at: number): boolean {
+  const length = word.startsWith("localhost", at) ? 9 : word.startsWith("127.0.0.1", at) ? 9 : word.startsWith("[::1]", at) ? 5 : 0;
+  if (length === 0) return false;
+  const next = word.charCodeAt(at + length);
+  return Number.isNaN(next) || next === 58 || next === 47;
 }
 
 /** The first package word carries a version (`create-vite@latest`, `@scope/cli@1`). */
