@@ -20,6 +20,18 @@ export function findPredicateHasOperand(word: string): boolean {
 	return FIND_OPERAND_PREDICATES.has(word) || FIND_NEWER_PREDICATE.test(word);
 }
 
+/** A search root after the first one: find takes every word up to the first option or expression operator. */
+export function isFindSearchRoot(value: string): boolean {
+	const head = value.charCodeAt(0);
+	return value.length !== 0 && head !== 45 /* - */ && value !== "(" && value !== "!" && value !== ",";
+}
+
+/** `-L` or `-follow`: deletion follows symbolic links, so the search roots do not bound it. */
+export function findFollowsLinks(tokens: readonly string[], start: number): boolean {
+	for (let index = start; index < tokens.length; index++) if (tokens[index] === "-L" || tokens[index] === "-follow") return true;
+	return false;
+}
+
 /** One literal relative root; no options, devices, drives, expansion or UNC paths. */
 export function isReadOnlyFindRoot(value: string | undefined): boolean {
 	return value !== undefined && RELATIVE_ROOT.test(value);

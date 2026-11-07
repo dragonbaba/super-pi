@@ -222,8 +222,13 @@ test("deleting files inside a workspace directory runs like other workspace dele
   for(const command of ["rsync -a --delete src/ dist/","find dist -name '*.map' -delete"]) {
     const before=f.dialogs.length;await f.authorize("bash",command);assert.equal(f.dialogs.length,before,command);
   }
-  for(const command of ["rsync -a --delete ../build/ .","find .git -name '*.lock' -delete","rsync -a --delete src/ "+quote("bash",f.outside)]) {
+  for(const command of ["rsync -a --delete ../build/ .","find .git -name '*.lock' -delete","rsync -a --delete src/ "+quote("bash",f.outside),
+    "find dist "+quote("bash",f.outside)+" -type f -delete"]) {
     const before=f.dialogs.length;await f.authorize("bash",command);
     assert.equal(f.dialogs.length,before+1,command);assert.match(f.dialogs.at(-1)!,/会删除目录中的文件/,command);
+  }
+  // Following links leaves the search roots, so the scope is uncertain and asks.
+  for(const command of ["find -L dist -type f -delete","find dist -follow -type f -delete"]) {
+    const before=f.dialogs.length;await f.authorize("bash",command);assert.equal(f.dialogs.length,before+1,command);
   }
 });
