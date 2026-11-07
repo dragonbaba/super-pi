@@ -5,7 +5,7 @@ import { AssistantMessageEventStream } from '../packages/ai/src/utils/event-stre
 import { alphaMessage, finalStream } from './helpers/alpha-stream.ts';
 import { alphaModelRuntime, alphaSession } from './helpers/alpha-session.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [false, true]) for (const active of ['stream', 'tool'] as const) {
+for (const mode of ['fullscreen'] as const) for (const signal of [false, true]) for (const active of ['stream', 'tool'] as const) {
   test(`quit drains cooperative active ${active}: ${mode}, signal=${signal}`, async (t) => {
     let started!: () => void;
     const ready = new Promise<void>(resolve => { started = resolve; });

@@ -734,7 +734,7 @@ async function createModeFixture(
 			throw new Error("session replacement is not expected in the UI corrective benchmark");
 		},
 	);
-	const mode = new InteractiveMode(runtime, { tuiMode: "regular" });
+	const mode = new InteractiveMode(runtime, {});
 	const internals = mode as unknown as InteractiveModeInternals;
 	await internals.renderer.dispose({ preserveScreen: true });
 	await yieldToEventLoop();
@@ -747,7 +747,7 @@ async function createModeFixture(
 		internals,
 		session,
 		async dispose(): Promise<void> {
-			await mode.stop("transcript");
+			await mode.stop();
 			session.dispose();
 			rmSync(root, { recursive: true, force: true });
 		},
@@ -1571,7 +1571,7 @@ async function measureTeardown128(): Promise<{
 			refreshImageTree();
 		};
 	}
-	await fixture.mode.stop("transcript");
+	await fixture.mode.stop();
 	const afterStop = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	await fixture.dispose();
 	return {
@@ -2008,7 +2008,7 @@ async function capturePendingLifecycleRefs(): Promise<{
 		registration: new WeakRef<object>(registration),
 		source: new WeakRef<object>(message.content),
 	};
-	await fixture.mode.stop("transcript");
+	await fixture.mode.stop();
 	fixture.internals.chatContainer.clear();
 	const afterStop = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	message = undefined;

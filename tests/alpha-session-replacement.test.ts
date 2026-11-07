@@ -9,7 +9,7 @@ import { g2_raw_result_probe } from './fixtures/g2-raw-result-probe.ts';
 import { createJiti } from 'jiti';
 const { default: planMode } = await createJiti(import.meta.url).import<typeof import('../packages/plan-mode/src/plan-mode.ts')>('../packages/plan-mode/src/plan-mode.ts');
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`real new/fork/resume preserves UI reset and source boundaries: ${mode}`, { timeout: 5000 }, async (t) => {
+for (const mode of ['fullscreen'] as const) test(`real new/fork/resume preserves UI reset and source boundaries: ${mode}`, { timeout: 5000 }, async (t) => {
   let starts = 0; let shutdowns = 0; let resets = 0;
   const contexts: any[] = [];
   let initializedAtStart = false;

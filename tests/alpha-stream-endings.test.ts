@@ -5,7 +5,7 @@ import { AssistantMessageEventStream } from '../packages/ai/src/utils/event-stre
 import { alphaMessage, finalStream } from './helpers/alpha-stream.ts';
 import { alphaModelRuntime, alphaSession } from './helpers/alpha-session.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) {
+for (const mode of ['fullscreen'] as const) {
   for (const ending of ['first-final', 'aborted', 'error', 'tools'] as const) {
     test(`real provider final/abort/error/tool transition ${mode}/${ending}`, async () => {
       let requests = 0; let executions = 0; let visibleFinal = false; let timer: ReturnType<typeof setImmediate> | undefined;

@@ -23,7 +23,7 @@ For a single prompt and a single text response, a direct model API call may be s
 | The application assembles tool calls and context | Built-in read, search, edit, write, and Shell tools with tool-result history |
 | Requests are usually independent | Sessions, resume, branches, import/export, and context compaction |
 | The application implements approval | Tool policy, project trust, preflight checks, and final authorization |
-| The application owns the UI and streaming state | Regular and fullscreen TUI, selectors, progress, and result presentation |
+| The application owns the UI and streaming state | Fullscreen TUI, selectors, progress, and result presentation |
 | Provider integrations are separate | Multiple provider catalogs, stored authentication, extensions, Skills, MCP, and RPC |
 
 These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. The selected execution mode determines whether supported tools use Windows Sandbox; application permissions do not guarantee model output or external-service behavior.
@@ -188,9 +188,9 @@ A long `node -e` script is not rejected merely because of its length. A one-off 
 
 Images first enter an input draft and become part of the model request only after submission. If the active model accepts images, Super Pi can send them according to provider capability. For a text-only model, optional Auxiliary Vision can ask a configured vision-capable model for a description. Auxiliary Vision needs its own model and credentials and may create an additional service call.
 
-Regular mode is suited to preserving terminal history; fullscreen mode provides a more focused workspace. Both share session, tool, and permission boundaries. `--mode json` supports non-interactive output and `--mode rpc` targets embedded hosts; the RPC protocol, client, and server packages are experimental, and the server package does not provide a standalone coding-agent service. Ordinary path paste, internal text selection, and image drafts are separate inputs; the project does not promise native Explorer file-drop handling.
+The interactive TUI always runs fullscreen on the terminal's alternate screen, so each frame only lays out the visible viewport. The former `tuiMode` and `fullscreenExitOutput` settings are ignored and `--tui-mode` only prints a warning. `--mode json` supports non-interactive output and `--mode rpc` targets embedded hosts; the RPC protocol, client, and server packages are experimental, and the server package does not provide a standalone coding-agent service. Ordinary path paste, internal text selection, and image drafts are separate inputs; the project does not promise native Explorer file-drop handling.
 
-Scrolling up in fullscreen mode shows `↓ Back to bottom · Esc`. Click it or press Escape to follow new output again while preserving the input draft. Exiting restores the pre-session terminal and leaves only a resume hint by default; select `fullscreenExitOutput: "transcript"` in `/settings` to explicitly reprint the session.
+Scrolling up shows `↓ Back to bottom · Esc`. Click it or press Escape to follow new output again while preserving the input draft. The transcript scrollbar owns the rightmost column: with the default `fullscreenScrollbar: "auto"` it appears while scrolling or while the pointer hovers that column; pressing the thumb drags it, and pressing elsewhere in the column jumps there and keeps dragging. `"always"` keeps it visible and `"hidden"` gives the column back to text. Exiting restores the pre-session terminal and leaves only a resume hint.
 
 ## Configuration and data
 
@@ -234,7 +234,7 @@ The footer's `CH%` uses the latest assistant response's reported cache reads div
 
 Footer usage totals cover the whole session and update from newly appended entries. Optional overlap estimates follow the active branch and rebuild after explicit context changes. Full summaries and transcript rebuilds still scan their required history; see the [incremental statistics validation](docs/performance/pf05-incremental-stats-validation.md) for scope and measurements.
 
-Prefix diagnostics reuse identical work within one manifest build while observing every actual provider dispatch. Mutable schemas and context are rebuilt rather than cached across requests without a reliable version. Terminal shutdown preserves input drain, final output and resource cleanup; repeated Sandbox close calls share their completion. The [performance validation plan](docs/super-pi-performance-followup-plan.md) links the measurements and remaining limits, including regular-mode history replay on resize and native-terminal/provider checks that cannot be inferred from local microbenchmarks.
+Prefix diagnostics reuse identical work within one manifest build while observing every actual provider dispatch. Mutable schemas and context are rebuilt rather than cached across requests without a reliable version. Terminal shutdown preserves input drain, final output and resource cleanup; repeated Sandbox close calls share their completion. The [performance validation plan](docs/super-pi-performance-followup-plan.md) links the measurements and remaining limits, including native-terminal/provider checks that cannot be inferred from local microbenchmarks.
 
 ## Security, privacy, and known boundaries
 

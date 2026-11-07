@@ -138,7 +138,7 @@ async function measure(modeName: "absent" | "disabled"): Promise<any> {
 		{ cwd, agentDir },
 		async () => { throw new Error("session replacement is not expected in the default-off benchmark"); },
 	);
-	const interactive = new InteractiveMode(runtime, { tuiMode: "regular" });
+	const interactive = new InteractiveMode(runtime, {});
 	const internals = interactive as any;
 	await internals.renderer.dispose({ preserveScreen: true });
 	await yieldToEventLoop();
@@ -170,7 +170,7 @@ async function measure(modeName: "absent" | "disabled"): Promise<any> {
 		return { ...summarize(durations), lifecycle: internals.getToolResultDiscoveryLifecycleCounts() };
 	} finally {
 		unsubscribe();
-		await interactive.stop("transcript");
+		await interactive.stop();
 		session.dispose();
 		rmSync(root, { recursive: true, force: true });
 	}

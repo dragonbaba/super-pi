@@ -46,7 +46,7 @@ for (const paused of [false, true]) {
   });
 }
 
-for (const mode of ['regular', 'fullscreen'] as const) {
+for (const mode of ['fullscreen'] as const) {
   for (const failure of ['none', 'component', 'runtime', 'both', 'disconnect'] as const) {
     test(`terminal restoration precedes held shutdown: ${mode} ${failure}`, async t => {
       let release!: () => void; let entered!: () => void;

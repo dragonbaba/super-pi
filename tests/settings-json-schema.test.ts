@@ -16,10 +16,15 @@ ajv.addSchema(projectSchema, projectUrl.href);
 const validateGlobal = ajv.getSchema(globalUrl.href)!;
 const validateProject = ajv.getSchema(projectUrl.href)!;
 
-test("fullscreen restores the original terminal by default and transcript output remains explicit", () => {
-	assert.equal(SettingsManager.inMemory().getFullscreenExitOutput(), "resume-hint");
-	assert.equal(SettingsManager.inMemory({ fullscreenExitOutput: "transcript" }).getFullscreenExitOutput(), "transcript");
-	assert.equal(globalSchema.properties.fullscreenExitOutput.default, "resume-hint");
+test("removed screen-mode settings stay valid in old files but are marked deprecated", () => {
+	for (const key of ["tuiMode", "fullscreenExitOutput"]) {
+		assert.equal(globalSchema.properties[key].deprecated, true);
+		assert.equal(globalSchema.properties[key].default, undefined);
+	}
+	assert.equal(validateGlobal({ tuiMode: "regular", fullscreenExitOutput: "transcript" }), true);
+	const manager = SettingsManager.inMemory({ tuiMode: "regular" }) as unknown as Record<string, unknown>;
+	assert.equal(manager.getTuiMode, undefined);
+	assert.equal(manager.getFullscreenExitOutput, undefined);
 });
 
 function storage(global: Record<string, unknown>, project: Record<string, unknown> = {}): SettingsStorage {

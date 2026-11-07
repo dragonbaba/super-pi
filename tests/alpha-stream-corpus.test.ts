@@ -50,7 +50,7 @@ function streamFixture(source: string, deltaSize: number, thinking: boolean) {
 }
 
 for (const layer of [0, 1, 2, 3]) for (const deltaSize of [1, 4, 16, 64]) {
-  for (const mode of (layer < 2 ? ['regular'] : ['regular', 'fullscreen']) as ('regular' | 'fullscreen')[]) {
+  for (const mode of ['fullscreen'] as const) {
     test(`stream corpus L${layer}, ${deltaSize} code-unit deltas, ${mode}`, async (t) => {
       let active: ReturnType<typeof streamFixture>;
       let providerCalls = 0; let physicalWrites = 0;
@@ -63,7 +63,7 @@ for (const layer of [0, 1, 2, 3]) for (const deltaSize of [1, 4, 16, 64]) {
           if (layer === 2) {
             await f.internal.renderer.dispose({ preserveScreen: true });
             const memory = new FakeTerminal(120, 40); memory.write = () => { physicalWrites++; };
-            f.internal.renderer = createInteractiveTui({ tuiMode: mode, terminal: memory, showHardwareCursor: false, logDirectory: f.root });
+            f.internal.renderer = createInteractiveTui({ terminal: memory, showHardwareCursor: false, logDirectory: f.root });
             f.internal.renderer.setRenderInstrumentation(f.internal.renderInstrumentation);
           } else f.sink.physicalMarker = () => { physicalWrites++; };
           assert.equal(await f.mode.init(), true);

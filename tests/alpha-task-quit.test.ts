@@ -4,7 +4,7 @@ import { alphaSession } from "./helpers/alpha-session.ts";
 import { registerManagedTasks } from "../packages/extensions/managed-tasks.ts";
 import { SubagentTasks } from "../packages/extensions/subagent/tasks.ts";
 
-for (const mode of ["regular", "fullscreen"] as const) {
+for (const mode of ["fullscreen"] as const) {
 	test(`manual quit asks once for both providers, cancel preserves tasks, confirm awaits cleanup: ${mode}`, async t => {
 		const child = new SubagentTasks(2);
 		const childTask = child.create("scout"); child.start(childTask);

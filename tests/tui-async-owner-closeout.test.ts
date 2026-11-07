@@ -106,7 +106,6 @@ function createInitializationFixture(options: InitializationFixtureOptions = {})
 	const settingsManager = {
 		getQuietStartup: () => true,
 		getFullscreenScrollbar: () => false,
-		getFullscreenExitOutput: () => "transcript",
 		getShowTerminalProgress: () => false,
 	};
 	mode.runtimeHost = {
@@ -406,7 +405,6 @@ test("interactive stop cancels the active provider login and settles a manual pr
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -454,7 +452,6 @@ test("provider completion and notifications are inert after final login cancella
 				},
 			},
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -612,19 +609,19 @@ test("async owner closeout remains lifecycle-only in source", () => {
 		"packages/coding-agent/src/modes/interactive/interactive-mode.ts",
 		"utf8",
 	);
-	const stopCoordinatorSource = interactiveSource.match(/async stop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
-	const stopSource = interactiveSource.match(/private async performStop\(fullscreenExitOutput[\s\S]*?\n\t\}/)?.[0] ?? "";
+	const stopCoordinatorSource = interactiveSource.match(/async stop\(\)[\s\S]*?\n\t\}/)?.[0] ?? "";
+	const stopSource = interactiveSource.match(/private async performStop\(\)[\s\S]*?\n\t\}/)?.[0] ?? "";
 	assert.ok(
 		stopCoordinatorSource.indexOf("const activeOperation = this.stopOperation") <
 			stopCoordinatorSource.indexOf("this.invalidateInitialization()"),
 	);
 	assert.ok(
 		stopCoordinatorSource.indexOf("this.invalidateInitialization()") <
-			stopCoordinatorSource.indexOf("this.performStop(fullscreenExitOutput)"),
+			stopCoordinatorSource.indexOf("this.performStop()"),
 	);
 	assert.match(
 		stopCoordinatorSource,
-		/const operation = Promise\.resolve\(\)\.then\(\(\) => this\.performStop\(fullscreenExitOutput\)\);\s*this\.stopOperation = operation/,
+		/const operation = Promise\.resolve\(\)\.then\(\(\) => this\.performStop\(\)\);\s*this\.stopOperation = operation/,
 	);
 	assert.ok(stopSource.indexOf("release(this, this.cancelActiveLoginDialog)") < stopSource.indexOf("this.stopInteractiveTui"));
 	const initStart = interactiveSource.indexOf("async init(): Promise<boolean>");
@@ -779,21 +776,6 @@ test("async owner closeout remains lifecycle-only in source", () => {
 	assert.equal(copySource.match(/this\.tuiLifecycleGeneration !== lifecycleGeneration/g)?.length, 2);
 	assert.ok(copySource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.indexOf("this.renderer.flash"));
 	assert.ok(copySource.lastIndexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") < copySource.lastIndexOf("this.showError"));
-	const modeSettingStart = interactiveSource.indexOf("private async applyTuiModeSetting");
-	const modeSettingEnd = interactiveSource.indexOf("\n\tasync init", modeSettingStart);
-	const modeSettingSource = interactiveSource.slice(modeSettingStart, modeSettingEnd);
-	assert.ok(
-		modeSettingSource.indexOf("const lifecycleGeneration = this.tuiLifecycleGeneration") <
-			modeSettingSource.indexOf("await this.switchTuiMode(mode)"),
-	);
-	assert.ok(
-		modeSettingSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") >
-			modeSettingSource.indexOf("await this.switchTuiMode(mode)"),
-	);
-	assert.ok(
-		modeSettingSource.indexOf("this.tuiLifecycleGeneration !== lifecycleGeneration") <
-			modeSettingSource.indexOf("selector?.getSettingsList().updateValue"),
-	);
 	const startupRefreshStart = interactiveSource.indexOf("private startStartupModelRefresh");
 	const startupRefreshEnd = interactiveSource.indexOf("\n\tprivate cancelActiveModelLookup", startupRefreshStart);
 	const startupRefreshSource = interactiveSource.slice(startupRefreshStart, startupRefreshEnd);
@@ -1009,7 +991,6 @@ test("interactive stop disposes extension widgets header and footer exactly once
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -1061,26 +1042,24 @@ test("interactive stop publishes one operation before extension disposal can re-
 	assert.equal(mode.stopCompleted, true);
 });
 
-test("concurrent stop joins without invalidating fullscreen transcript transfer", async () => {
+test("concurrent stop joins the active terminal release", async () => {
 	const { mode, counters } = createInitializationFixture();
 	const terminalStop = deferred<void>();
-	const exitOutputs: string[] = [];
 	mode.isInitialized = true;
-	mode.stopInteractiveTui = async (exitOutput: string): Promise<void> => {
+	mode.stopInteractiveTui = async (): Promise<void> => {
 		counters.stopInteractiveTui++;
-		exitOutputs.push(exitOutput);
 		await terminalStop.promise;
 	};
 
-	const firstStop = mode.stop("transcript");
+	const firstStop = mode.stop();
 	await waitFor(() => counters.stopInteractiveTui === 1);
 	const stopGeneration = mode.tuiLifecycleGeneration;
-	const secondStop = mode.stop("transcript");
+	const secondStop = mode.stop();
 	assert.equal(mode.tuiLifecycleGeneration, stopGeneration);
 	terminalStop.resolve();
 	await Promise.all([firstStop, secondStop]);
 
-	assert.deepEqual(exitOutputs, ["transcript"]);
+	assert.equal(counters.stopInteractiveTui, 1);
 	assert.equal(mode.tuiLifecycleGeneration, 1);
 });
 
@@ -1093,7 +1072,6 @@ test("interactive stop isolates extension disposal errors and releases later own
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -1158,7 +1136,6 @@ test("interactive stop aborts model lookup and rejects its late catalog result",
 				setModelCalls++;
 			},
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -1361,34 +1338,6 @@ test("clipboard completion is inert after the interactive lifecycle closes", asy
 	}
 });
 
-test("a stale settings mode switch is not reported as an overlay rejection", async () => {
-	let settleSwitch: ((result: boolean) => void) | undefined;
-	let selectorUpdates = 0;
-	let statusCalls = 0;
-	let persistedModes = 0;
-	const mode = createTestInteractiveMode() as any;
-	mode.tuiLifecycleGeneration = 0;
-	mode.ui = { mode: "regular" };
-	mode.switchTuiMode = (): Promise<boolean> => new Promise((resolve) => { settleSwitch = resolve; });
-	mode.runtimeHost = { session: { settingsManager: { setTuiMode(): void { persistedModes++; } } } };
-	mode.activeStatusIndicator = {};
-	mode.statusContainer = { clear(): void {} };
-	mode.showStatus = (): void => { statusCalls++; };
-	const selector = {
-		getSettingsList: () => ({ updateValue(): void { selectorUpdates++; } }),
-	};
-
-	const operation = mode.applyTuiModeSetting("fullscreen", selector) as Promise<void>;
-	await Promise.resolve();
-	mode.tuiLifecycleGeneration++;
-	settleSwitch?.(false);
-	await operation;
-
-	assert.equal(selectorUpdates, 0);
-	assert.equal(statusCalls, 0);
-	assert.equal(persistedModes, 0);
-});
-
 test("retired Anthropic subscription warning has no interactive auth path", () => {
 	const mode = createTestInteractiveMode() as any;
 	assert.equal(mode.maybeWarnAboutAnthropicSubscriptionAuth, undefined);
@@ -1498,7 +1447,6 @@ test("final stop disables extension UI and error callbacks before shutdown hooks
 		extensionRunner,
 		settingsManager: {
 			getPermissionMode: () => undefined,
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 	};
@@ -1556,7 +1504,6 @@ test("final stop unregisters only its own global theme callback", async () => {
 			session: {
 				extensionRunner: { setUIContext(): void {} },
 				settingsManager: {
-					getFullscreenExitOutput: () => "transcript",
 					getShowTerminalProgress: () => false,
 				},
 			},
@@ -1622,7 +1569,6 @@ test("interactive stop cancels the startup model catalog refresh and owned deadl
 			},
 		},
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 	} };
@@ -2236,7 +2182,6 @@ test("interactive stop settles a pending extension custom factory and disposes i
 	mode.runtimeHost = {
 		session: {
 			settingsManager: {
-				getFullscreenExitOutput: () => "transcript",
 				getShowTerminalProgress: () => false,
 			},
 		},
@@ -2649,7 +2594,6 @@ test("final shutdown rejects post-login model selection before catalog refresh",
 		scopedModels: [],
 		setModel: () => new Promise<void>((resolve) => { settleModel = resolve; }),
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 	} };
@@ -2718,7 +2662,6 @@ test("final shutdown aborts the post-login catalog refresh and rejects its late 
 		},
 		scopedModels: [],
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 	} };
@@ -2790,7 +2733,6 @@ test("final shutdown rejects late extension bash setup before constructing its l
 		},
 		recordBashResult(): void {},
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
@@ -2846,7 +2788,6 @@ test("final shutdown rejects late active bash chunks and completion after displa
 		},
 		recordBashResult(): void {},
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
@@ -2897,7 +2838,6 @@ test("final shutdown rejects a late active bash error continuation", async () =>
 		executeBash: () => new Promise((_resolve, reject) => { rejectBash = reject; }),
 		recordBashResult(): void {},
 		settingsManager: {
-			getFullscreenExitOutput: () => "transcript",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
@@ -3021,7 +2961,6 @@ test("mode stop preserves its first error while finishing TUI and signal cleanup
 	mode.tuiLifecycleGeneration = 0;
 	mode.providerAuthenticationGeneration = 0;
 	mode.runtimeHost = { session: { settingsManager: {
-		getFullscreenExitOutput: () => "transcript",
 		getShowTerminalProgress: () => false,
 	} } };
 	mode.ui = createCountingTui();

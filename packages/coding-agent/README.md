@@ -38,9 +38,13 @@ lifecycle rules and an example.
 
 ## Fullscreen behavior
 
-When scrolling up in fullscreen mode, a `↓ Back to bottom · Esc` button appears above the input area. Click it or press Escape to resume following new output without changing the input draft. Autocomplete and dialogs retain their Escape handling; at the bottom, Escape keeps its usual interrupt behavior.
+The interactive TUI always uses the fullscreen (alternate-screen) renderer; the deprecated `tuiMode` setting and `--tui-mode` flag are ignored.
 
-Fullscreen exit now restores the terminal as it was before Super Pi started and leaves only the session resume hint. The global `fullscreenExitOutput` setting defaults to `"resume-hint"`; explicitly selecting `"transcript"` in `/settings` reprints the session after exit.
+When scrolling up, a `↓ Back to bottom · Esc` button appears above the input area. Click it or press Escape to resume following new output without changing the input draft. Autocomplete and dialogs retain their Escape handling; at the bottom, Escape keeps its usual interrupt behavior.
+
+The transcript scrollbar reserves the rightmost column, so showing or hiding it never reflows text. With the default `fullscreenScrollbar: "auto"` it appears while scrolling or while the pointer hovers that column; pressing the thumb drags it, and pressing the rest of the column jumps there and continues the drag. `"always"` keeps it visible; `"hidden"` removes it and gives the column back to text.
+
+Exit restores the terminal as it was before Super Pi started and leaves only the session resume hint. The deprecated `fullscreenExitOutput` setting is ignored.
 
 ## PowerShell on Windows
 

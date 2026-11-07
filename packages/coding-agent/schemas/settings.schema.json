@@ -218,9 +218,9 @@
 		"httpProxy": { "type": "string", "description": "Global-only proxy URL used by startup when HTTP_PROXY/HTTPS_PROXY are not already set." },
 		"httpIdleTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "default": 300000, "description": "HTTP header/body idle timeout in milliseconds; 0 disables it." },
 		"websocketConnectTimeoutMs": { "allOf": [{ "$ref": "#/definitions/timeout" }], "description": "WebSocket connection handshake timeout in milliseconds; 0 disables it. Otherwise provider defaults apply." },
-		"tuiMode": { "enum": ["regular", "fullscreen"], "default": "regular", "description": "Terminal renderer mode." },
-		"fullscreenExitOutput": { "enum": ["transcript", "resume-hint"], "default": "resume-hint", "description": "Restore the original terminal and show only a resume hint by default; transcript explicitly reprints the session." },
-		"fullscreenScrollbar": { "enum": ["hidden", "auto", "always"], "default": "auto", "description": "Scrollbar visibility in fullscreen mode." },
+		"tuiMode": { "enum": ["regular", "fullscreen"], "deprecated": true, "description": "Deprecated and ignored: the interactive TUI always uses fullscreen mode." },
+		"fullscreenExitOutput": { "enum": ["transcript", "resume-hint"], "deprecated": true, "description": "Deprecated and ignored: exiting restores the original terminal and shows only the resume hint." },
+		"fullscreenScrollbar": { "enum": ["hidden", "auto", "always"], "default": "auto", "description": "Transcript scrollbar: auto shows it while scrolling or hovering its column, always keeps it visible, hidden removes it and its reserved column." },
 		"queueMode": { "enum": ["all", "one-at-a-time"], "description": "Legacy alias migrated to steeringMode when steeringMode is absent." },
 		"websockets": { "type": "boolean", "description": "Legacy transport selector: true becomes websocket, false becomes sse when transport is absent." }
 	},

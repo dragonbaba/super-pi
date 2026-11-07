@@ -17,7 +17,7 @@ const count = Number(option('count', '40'));
 const history = Number(option('history', '0'));
 const delay = Number(option('delay', '0'));
 const batch = Number(option('batch', '1'));
-const mode = option('mode', 'regular') as 'regular' | 'fullscreen';
+const mode = 'fullscreen' as const;
 const columns = Number(option('columns', '120')); const rows = Number(option('rows', '40'));
 const corpus = option('corpus', 'plain');
 const profile = option('profile', 'off') === 'on';
@@ -66,7 +66,7 @@ try {
         await f.internal.renderer.dispose({ preserveScreen: true });
         memory = new FakeTerminal(columns, rows);
         memory.write = (text: string) => { mark(text, visibleTimes); };
-        f.internal.renderer = createInteractiveTui({ tuiMode: mode, terminal: memory, showHardwareCursor: false, logDirectory: f.root });
+        f.internal.renderer = createInteractiveTui({ terminal: memory, showHardwareCursor: false, logDirectory: f.root });
         f.internal.renderer.setRenderInstrumentation(f.internal.renderInstrumentation);
       } else f.sink.physicalMarker = text => mark(text, visibleTimes);
       await f.mode.init();
