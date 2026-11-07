@@ -23,7 +23,7 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 | 应用自己组织工具调用和上下文 | 内置读、搜索、编辑、写入和 Shell 工具，并记录工具结果 |
 | 每次请求通常独立 | 会话、恢复、分支、导入/导出和上下文压缩 |
 | 应用自己实现审批 | 工具策略、项目可信度、预检查和最终授权 |
-| 应用自己维护 UI 和流式状态 | 常规和全屏 TUI、选择器、进度与结果展示 |
+| 应用自己维护 UI 和流式状态 | 全屏 TUI、选择器、进度与结果展示 |
 | Provider 集成各自实现 | 多 provider 目录、认证存储、扩展、Skills、MCP 和 RPC |
 
 这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows Sandbox；应用权限不保证模型输出或外部服务行为。
@@ -184,9 +184,9 @@ MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置
 
 图片先进入输入草稿，用户提交后才成为模型请求的一部分。当前模型支持图片时，Super Pi 按 provider 能力发送；文本模型需要图像理解时，可以显式配置 Auxiliary Vision，让另一个有视觉能力的模型生成描述。辅助视觉需要自己的模型和认证，可能产生额外服务调用。
 
-常规模式适合保留终端历史，全屏模式提供更集中的工作区；两者共享会话、工具和权限边界。`--mode json` 用于非交互输出，`--mode rpc` 面向嵌入式 host；RPC 协议、client 和 server 包仍是实验接口，server 包本身不提供独立 coding-agent 服务。普通路径粘贴、内部文字选择和图片草稿是不同输入来源，项目没有承诺外部 Explorer 文件拖入终端的原生接收。
+交互界面固定使用终端备用屏幕的全屏模式，每帧只布局可见视口。旧的 `tuiMode` 和 `fullscreenExitOutput` 设置会被忽略，`--tui-mode` 只输出警告。`--mode json` 用于非交互输出，`--mode rpc` 面向嵌入式 host；RPC 协议、client 和 server 包仍是实验接口，server 包本身不提供独立 coding-agent 服务。普通路径粘贴、内部文字选择和图片草稿是不同输入来源，项目没有承诺外部 Explorer 文件拖入终端的原生接收。
 
-全屏模式向上翻阅时显示 `↓ Back to bottom · Esc`，点击或按 Esc 回到底部并继续跟随新输出，输入草稿保留。退出默认恢复进入前的终端，只留下会话恢复提示，不再重印内部界面；如需保留完整会话，可在 `/settings` 显式选择 `fullscreenExitOutput: "transcript"`。
+向上翻阅时显示 `↓ Back to bottom · Esc`，点击或按 Esc 回到底部并继续跟随新输出，输入草稿保留。会话滚动条固定占用最右一列：默认 `fullscreenScrollbar: "auto"` 在滚动时或鼠标悬停该列时显示；按住滑块可拖拽，点击该列其他位置会直接跳到对应位置并继续拖拽。`"always"` 常显，`"hidden"` 把这一列还给正文。退出时恢复进入前的终端，只留下会话恢复提示。
 
 ## 配置和数据位置
 
@@ -230,7 +230,7 @@ Super Pi 的性能工作围绕明确边界：
 
 页脚累计用量涵盖全部会话，普通追加只处理新增记录。可选的长度重叠估计跟随活动分支，在显式上下文变更后重建。完整汇总和 transcript 重建仍扫描所需历史；范围与测量见[增量统计验证](docs/performance/pf05-incremental-stats-validation.md)。
 
-前缀诊断会复用同次 manifest 构建中的相同计算，并继续观察每次实际 provider 派发。可变 schema 和上下文缺少可靠版本时仍重新计算，不跨请求猜测复用。终端关闭保留输入 drain、最终输出和资源清理，重复 Sandbox close 共享完成点。[性能验证方案](docs/super-pi-performance-followup-plan.md)汇总了测量和剩余限制，包括 regular 模式缩放时的历史重放，以及不能从本地微基准推断的原生终端/provider 验收。
+前缀诊断会复用同次 manifest 构建中的相同计算，并继续观察每次实际 provider 派发。可变 schema 和上下文缺少可靠版本时仍重新计算，不跨请求猜测复用。终端关闭保留输入 drain、最终输出和资源清理，重复 Sandbox close 共享完成点。[性能验证方案](docs/super-pi-performance-followup-plan.md)汇总了测量和剩余限制，包括不能从本地微基准推断的原生终端/provider 验收。
 
 ## 安全、隐私和已知边界
 

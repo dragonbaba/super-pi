@@ -59,7 +59,7 @@ export async function alphaHeadless(runtime: ModelRuntime, messages: any[] = [])
 }
 
 export async function alphaSession(options: {
-  mode?: 'regular' | 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
+  mode?: 'fullscreen'; sinkDelay?: number; columns?: number; rows?: number;
   runtime?: ModelRuntime; extensions?: any[]; messages?: any[]; customTools?: any[];
   g2?: boolean; budgetTokens?: number; settings?: Record<string, unknown>; allowReplacements?: boolean;
   /** Native-result/rendering fixtures use direct model-only probes; opt into the real Codemode transport for lifecycle coverage. */
@@ -91,14 +91,14 @@ export async function alphaSession(options: {
     return { ...created, services: { cwd: target.cwd, agentDir: target.agentDir } as never, diagnostics: [] };
   });
   initTheme('dark');
-  const mode = new InteractiveMode(runtime, { tuiMode: options.mode ?? 'regular' });
+  const mode = new InteractiveMode(runtime, {});
   const internal = mode as any;
   await internal.renderer.dispose({ preserveScreen: true });
   const input = new AlphaInput();
   const resizeSource = Object.assign(new EventEmitter(), { columns: options.columns ?? 120, rows: options.rows ?? 40 });
   const sink = new AlphaSink({ highWaterMark: 1024 }); sink.delay = options.sinkDelay ?? 0;
   const terminal = new ProcessTerminal(sink as unknown as NodeJS.WriteStream, { input: input as unknown as NodeJS.ReadStream, resizeSource: resizeSource as unknown as NodeJS.WriteStream });
-  internal.renderer = createInteractiveTui({ tuiMode: options.mode ?? 'regular', terminal, showHardwareCursor: false, logDirectory: root });
+  internal.renderer = createInteractiveTui({ terminal, showHardwareCursor: false, logDirectory: root });
   internal.renderer.setRenderInstrumentation(internal.renderInstrumentation);
   return { root, session, runtime, mode, internal, terminal, sink, input, resizeSource, sessionManager,
     async release() {

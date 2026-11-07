@@ -7,11 +7,10 @@ import { writeHeapSnapshot } from 'node:v8';
 import { stress } from '../../tests/helpers/alpha-stress-workload.ts';
 
 function option(name: string, fallback: string) { const index = process.argv.indexOf(`--${name}`); return index < 0 ? fallback : process.argv[index + 1]!; }
-const mode = option('mode', 'regular') as 'regular' | 'fullscreen';
+const mode = 'fullscreen' as const;
 const cycles = Number(option('cycles', '100'));
 const snapshot = option('snapshot', '');
 const regexpControl = option('regexp-control', 'off') === 'on';
-assert.ok(mode === 'regular' || mode === 'fullscreen');
 assert.ok(Number.isInteger(cycles) && cycles >= 5 && cycles <= 100);
 assert.ok(global.gc, 'requires controlled GC');
 assert.equal(process.env.ALPHA_SANITIZED_HEAP_FIXTURE, '1', 'launch through alpha-bench for an isolated, sanitized environment');

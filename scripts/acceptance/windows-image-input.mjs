@@ -39,7 +39,7 @@ if (process.argv.includes("--check")) {
 		console.log(JSON.stringify({ check: "SDK transport only", counts: f.counts }));
 	} finally { await f.close(); }
 } else {
-	const mode = new InteractiveMode(f.host, { tuiMode: "regular" });
+	const mode = new InteractiveMode(f.host, {});
 	if (process.argv.includes("--startup-check")) { try { await mode.init(); } finally { await mode.stop(); await f.close(); } console.log("Startup check only; native gestures not executed"); }
 	else await mode.run();
 }

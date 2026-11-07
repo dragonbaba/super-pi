@@ -951,10 +951,6 @@ test("cancelled physical write settles before a reused generation can start", as
 	}
 
 	const interactiveSource = readFileSync("packages/coding-agent/src/modes/interactive/interactive-mode.ts", "utf8");
-	assert.match(
-		interactiveSource,
-		/await previousUi\.stop\(\{ preserveScreen: true \}\)[\s\S]{0,240}this\.renderer !== previousUi[\s\S]{0,240}const terminal = previousUi\.terminal/,
-	);
 	const suspendSource = interactiveSource.match(/private async handleCtrlZ[\s\S]*?\n\tprivate async handleFollowUp/)?.[0] ?? "";
 	assert.match(suspendSource, /await this\.ui\.stop\(\)/);
 	assert.match(suspendSource, /process\.once\("SIGCONT", this\.handleSuspendContinue\)/);
@@ -1504,7 +1500,6 @@ function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Re
 	const mode = Object.create(InteractiveMode.prototype) as Record<string, any>;
 	const settingsManager = {
 		getShowTerminalProgress(): boolean { return false; },
-		getFullscreenExitOutput(): "resume-hint" { return "resume-hint"; },
 	};
 	const session = { isStreaming: false, isCompacting: false, settingsManager,
 		extensionRunner: { hasHandlers: () => false },
@@ -1514,10 +1509,9 @@ function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Re
 		renderer: previousUi,
 		ui: previousUi,
 		tuiLifecycleGeneration: 0,
-		mainScreenRenderState: undefined,
 		fullscreenLayoutRoot: new InputProbe(),
 		transcriptRenderContext: { rendererVersion: 0 },
-		options: { tuiMode: "regular" },
+		options: {},
 		onRightClickPaste: undefined,
 		renderInstrumentation: undefined,
 		themeController: { rebindTui(): void {}, disableAutoSync(): void {} },
@@ -1532,217 +1526,6 @@ function createModeSwitchHarness(previousUi: FrameTui | InstrumentedMainTui): Re
 	});
 	return mode;
 }
-
-test("concurrent mode switches create one replacement after sharing the previous stop", async () => {
-	const terminal = new GatedTerminal();
-	const previousUi = new InstrumentedMainTui(terminal);
-	const countedChildren = new CountingComponentArray();
-	countedChildren.push(new InputProbe());
-	previousUi.children = countedChildren;
-	const mode = createModeSwitchHarness(previousUi);
-	previousUi.start();
-	previousUi.renderNow();
-	const listenerInstallationsBefore = terminal.frameListenerInstallations;
-	const childrenIterationsBefore = countedChildren.iterationCount;
-	const switchTuiMode = mode.switchTuiMode as (
-		mode: "regular" | "fullscreen",
-		restoreProgress?: boolean,
-		startRenderer?: boolean,
-	) => Promise<boolean>;
-
-	const first = switchTuiMode.call(mode, "fullscreen", false, false);
-	const second = switchTuiMode.call(mode, "fullscreen", false, false);
-	terminal.writer.gates[0]!.resolve();
-	const results = await Promise.all([first, second]);
-	assert.deepEqual(results, [true, false]);
-	assert.equal(mode.renderer.mode, "fullscreen");
-	assert.equal(countedChildren.iterationCount - childrenIterationsBefore, 1);
-	assert.equal(previousUi.captureRenderStateCalls, 1);
-	assert.equal(terminal.frameListenerInstallations, listenerInstallationsBefore + 1);
-	assert.equal(terminal.inputHandler, undefined);
-	await mode.renderer.dispose();
-});
-
-test("Main to Alt mode switch preserves a Loader reused by the explicit layout root", async () => {
-	const terminal = new ImmediateInputTerminal();
-	const previousUi = new InstrumentedMainTui(terminal);
-	const mode = createModeSwitchHarness(previousUi);
-	const stableTui = createInteractiveTuiReference(() => mode.renderer);
-	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching");
-	previousUi.addChild(loader);
-	mode.fullscreenLayoutRoot = loader;
-	previousUi.start();
-	previousUi.renderNow();
-
-	const switched = await mode.switchTuiMode.call(mode, "fullscreen", false, false);
-	assert.equal(switched, true);
-	assert.equal(mode.renderer.mode, "fullscreen");
-	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
-	assert.ok(raw.intervalId);
-	assert.equal(raw.ui, stableTui);
-	await mode.renderer.dispose({ preserveScreen: true });
-	assert.equal(raw.intervalId, null);
-	assert.equal(raw.ui, null);
-});
-
-test("Alt to Main mode switch preserves animation owners reused by the regular roots", async () => {
-	const terminal = new ImmediateInputTerminal();
-	const previousUi = new InstrumentedMainTui(terminal);
-	const mode = createModeSwitchHarness(previousUi);
-	const stableTui = createInteractiveTuiReference(() => mode.renderer);
-	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "switching-back");
-	previousUi.addChild(loader);
-	mode.fullscreenLayoutRoot = loader;
-	previousUi.start();
-	previousUi.renderNow();
-
-	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
-	const raw = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
-	assert.ok(raw.intervalId);
-	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
-	assert.equal(mode.renderer.mode, "regular");
-	assert.ok(raw.intervalId);
-	assert.equal(raw.ui, stableTui);
-	await mode.renderer.dispose({ preserveScreen: true });
-	assert.equal(raw.intervalId, null);
-	assert.equal(raw.ui, null);
-});
-
-test("Alt to Main releases only the fullscreen ScrollView owner in the production root shape", async () => {
-	const terminal = new ImmediateInputTerminal();
-	terminal.backpressure = false;
-	const previousUi = new InstrumentedMainTui(terminal);
-	const mode = createModeSwitchHarness(previousUi);
-	const stableTui = createInteractiveTuiReference(() => mode.renderer);
-	mode.ui = stableTui;
-	const documentContainer = new InteractiveContainer();
-	let documentText = "document-0";
-	for (let index = 1; index < 200; index++) documentText += `\ndocument-${index}`;
-	const sharedDocumentText = new InteractiveText(documentText, 0, 0);
-	documentContainer.addChild(sharedDocumentText);
-	const transcriptScrollView = new InteractiveScrollView(documentContainer, {
-		follow: "end",
-		primary: true,
-		overscroll: "chain",
-		scrollbar: "auto",
-		scrollbarHideDelayMs: 60_000,
-	});
-	const loader = new Loader(stableTui, preserveLoaderText, preserveLoaderText, "shared-dock-loader", {
-		frames: ["*", "*"],
-		intervalMs: 60_000,
-	});
-	const dock = new InteractiveVStack([{ component: loader, shrink: 1, minSize: 1 }]);
-	const fullscreenLayoutRoot = new InteractiveVStack([
-		{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-	]);
-	mode.transcriptScrollView = transcriptScrollView;
-	mode.fullscreenLayoutRoot = fullscreenLayoutRoot;
-	previousUi.addChild(documentContainer);
-	previousUi.addChild(loader);
-	previousUi.start();
-	previousUi.renderNow();
-
-	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
-	const firstAlt = mode.renderer as TuiAltScreen;
-	firstAlt.start();
-	firstAlt.renderNow(true);
-	transcriptScrollView.scrollBy(-1);
-	firstAlt.renderNow(true);
-	const scrollState = transcriptScrollView as unknown as TransferScrollViewState;
-	const firstCallback = scrollState.requestRenderCallback;
-	const firstTimer = scrollState.scrollbarHideTimer;
-	const firstTimerCallback = firstTimer?._onTimeout;
-	const firstScrollTop = transcriptScrollView.scrollTop;
-	const loaderState = loader as unknown as { intervalId: NodeJS.Timeout | null; ui: unknown };
-	assert.equal(typeof firstCallback, "function");
-	assert.ok(firstTimer);
-	assert.equal(scrollState.transientScrollbarVisible, true);
-	assert.ok(loaderState.intervalId);
-	assert.equal(loaderState.ui, stableTui);
-
-	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
-	mode.renderer.start();
-	assert.equal(scrollState.requestRenderCallback, undefined);
-	assert.equal(scrollState.scrollbarHideTimer, undefined);
-	assert.equal(scrollState.transientScrollbarVisible, false);
-	assert.equal(scrollState.scrollbarActive, false);
-	assert.ok(loaderState.intervalId);
-	assert.equal(loaderState.ui, stableTui);
-	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
-	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
-
-	const oldAltQueue = firstAlt.getTerminalFrameQueueSnapshot();
-	firstTimerCallback?.call(firstTimer);
-	assert.deepEqual(firstAlt.getTerminalFrameQueueSnapshot(), oldAltQueue);
-
-	assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
-	const secondAlt = mode.renderer as TuiAltScreen;
-	secondAlt.start();
-	secondAlt.renderNow(true);
-	assert.equal(mode.transcriptScrollView, transcriptScrollView);
-	assert.equal(typeof scrollState.requestRenderCallback, "function");
-	assert.notEqual(scrollState.requestRenderCallback, firstCallback);
-	assert.equal(transcriptScrollView.scrollTop, firstScrollTop);
-	assert.ok(terminal.writer.writes.some((frame) => frame.includes("document-199")));
-	const freshDocumentContainer = new InteractiveContainer();
-	freshDocumentContainer.addChild(new InteractiveText(documentText, 0, 0));
-	const freshScrollView = new InteractiveScrollView(freshDocumentContainer, {
-		follow: "end",
-		primary: true,
-		overscroll: "chain",
-		scrollbar: "auto",
-		scrollbarHideDelayMs: 60_000,
-	});
-	const freshLoader = new Loader({ requestRender(): void {} } as never, preserveLoaderText, preserveLoaderText,
-		"shared-dock-loader", { frames: ["*", "*"], intervalMs: 60_000 });
-	const freshRoot = new InteractiveVStack([
-		{ component: freshScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-		{ component: new InteractiveVStack([{ component: freshLoader, shrink: 1, minSize: 1 }]),
-			basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-	]);
-	assert.deepEqual(fullscreenLayoutRoot.render(120), freshRoot.render(120));
-	freshLoader.dispose();
-
-	assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
-	mode.renderer.start();
-	assert.equal(scrollState.requestRenderCallback, undefined);
-	assert.equal(scrollState.scrollbarHideTimer, undefined);
-	assert.ok(loaderState.intervalId);
-	let completedRoundTrips = 0;
-	let mainBoundaryOwnerReferences = 0;
-	for (let cycle = 0; cycle < 100; cycle++) {
-		assert.equal(await mode.switchTuiMode.call(mode, "fullscreen", false, false), true);
-		const cycleAlt = mode.renderer as TuiAltScreen;
-		cycleAlt.start();
-		cycleAlt.renderNow(true);
-		assert.equal(mode.transcriptScrollView, transcriptScrollView);
-		assert.equal(typeof scrollState.requestRenderCallback, "function");
-		transcriptScrollView.scrollToEnd();
-		transcriptScrollView.scrollBy(-1);
-		cycleAlt.renderNow(true);
-		assert.equal(await mode.switchTuiMode.call(mode, "regular", false, false), true);
-		mode.renderer.start();
-		assert.equal(scrollState.requestRenderCallback, undefined);
-		assert.equal(scrollState.scrollbarHideTimer, undefined);
-		assert.equal(scrollState.transientScrollbarVisible, false);
-		assert.equal(scrollState.scrollbarActive, false);
-		assert.equal(loaderState.ui, stableTui);
-		if (scrollState.requestRenderCallback !== undefined) mainBoundaryOwnerReferences++;
-		if (scrollState.scrollbarHideTimer !== undefined) mainBoundaryOwnerReferences++;
-		if (scrollState.transientScrollbarVisible) mainBoundaryOwnerReferences++;
-		if (scrollState.scrollbarActive) mainBoundaryOwnerReferences++;
-		completedRoundTrips++;
-	}
-	assert.equal(completedRoundTrips, 100);
-	assert.equal(mainBoundaryOwnerReferences, 0);
-	assert.equal(mode.fullscreenLayoutRoot, fullscreenLayoutRoot);
-	await mode.stop.call(mode, "resume-hint");
-	assert.equal(scrollState.requestRenderCallback, undefined);
-	assert.equal(scrollState.scrollbarHideTimer, undefined);
-	assert.equal(loaderState.intervalId, null);
-	assert.equal(loaderState.ui, null);
-});
 
 test("InteractiveMode stop cancels and settles timed extension dialogs", async () => {
 	for (const kind of ["selector", "input"] as const) {
@@ -1950,99 +1733,6 @@ test("extension editor late external completion cannot restart a stopped owner",
 	assert.equal(observedErrors, 1);
 	assert.equal(rejectionTerminal.started, true);
 	await rejectionTui.dispose({ preserveScreen: true });
-});
-
-test("mode switch snapshots the final root focus and Main render state after stop", async () => {
-	const terminal = new GatedTerminal();
-	const previousUi = new InstrumentedMainTui(terminal);
-	const countedChildren = new CountingComponentArray();
-	const initialChild = new InputProbe();
-	const latestChild = new InputProbe();
-	countedChildren.push(initialChild);
-	previousUi.children = countedChildren;
-	previousUi.setFocus(initialChild);
-	const latestRenderState = previousUi.captureRenderState();
-	latestRenderState.previousWidth = 77;
-	latestRenderState.viewportWindowStart = 23;
-	previousUi.captureRenderStateCalls = 0;
-	const mode = createModeSwitchHarness(previousUi);
-	previousUi.start();
-	previousUi.renderNow();
-	const childrenIterationsBefore = countedChildren.iterationCount;
-	const switchTuiMode = mode.switchTuiMode as (
-		mode: "regular" | "fullscreen",
-		restoreProgress?: boolean,
-		startRenderer?: boolean,
-	) => Promise<boolean>;
-
-	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
-	previousUi.addChild(latestChild);
-	previousUi.setFocus(latestChild);
-	previousUi.restoreRenderState(latestRenderState);
-	terminal.writer.gates[0]!.resolve();
-
-	assert.equal(await switching, true);
-	assert.deepEqual(mode.renderer.children, [initialChild, latestChild]);
-	assert.equal(mode.renderer.getFocusedComponent(), latestChild);
-	assert.equal(mode.mainScreenRenderState.previousWidth, 77);
-	assert.equal(mode.mainScreenRenderState.viewportWindowStart, 23);
-	assert.equal(countedChildren.iterationCount - childrenIterationsBefore, 1);
-	assert.equal(previousUi.captureRenderStateCalls, 1);
-	await mode.renderer.dispose();
-});
-
-test("programmatic stop invalidates a mode switch waiting on the same renderer", async () => {
-	const terminal = new GatedTerminal();
-	const previousUi = new FrameTui(terminal);
-	const mode = createModeSwitchHarness(previousUi);
-	previousUi.start();
-	previousUi.renderNow();
-	const listenerInstallationsBefore = terminal.frameListenerInstallations;
-	const switchTuiMode = mode.switchTuiMode as (
-		mode: "regular" | "fullscreen",
-		restoreProgress?: boolean,
-		startRenderer?: boolean,
-	) => Promise<boolean>;
-
-	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
-	const stopping = mode.stop("resume-hint");
-	terminal.writer.gates[0]!.resolve();
-	assert.equal(await switching, false);
-	await stopping;
-	assert.equal(mode.renderer, previousUi);
-	assert.equal(terminal.frameListenerInstallations, listenerInstallationsBefore);
-	assert.equal(mode.isInitialized, false);
-});
-
-test("shutdown admission invalidates a mode switch while terminal input is draining", async () => {
-	const terminal = new GatedTerminal();
-	const previousUi = new FrameTui(terminal);
-	const mode = createModeSwitchHarness(previousUi);
-	let runtimeDisposals = 0;
-	mode.runtimeHost.dispose = async () => { runtimeDisposals++; };
-	previousUi.start();
-	previousUi.renderNow();
-	const drainFailure = new Error("controlled drain boundary");
-	let rejectDrain: ((error: Error) => void) | undefined;
-	terminal.drainInputPromise = new Promise<void>((_resolve, reject) => {
-		rejectDrain = reject;
-	});
-	const switchTuiMode = mode.switchTuiMode as (
-		mode: "regular" | "fullscreen",
-		restoreProgress?: boolean,
-		startRenderer?: boolean,
-	) => Promise<boolean>;
-	const shutdown = mode.shutdown as () => Promise<void>;
-
-	const switching = switchTuiMode.call(mode, "fullscreen", false, false);
-	const shuttingDown = shutdown.call(mode);
-	terminal.writer.gates[0]!.resolve();
-	assert.equal(await switching, false);
-	rejectDrain?.(drainFailure);
-	await assert.rejects(shuttingDown, drainFailure);
-	assert.equal(runtimeDisposals, 1);
-	assert.equal(mode.renderer, previousUi);
-	await previousUi.dispose();
 });
 
 test("stop bounds a never-settling frame, clears pending work, and still restores terminal state", async () => {
@@ -3122,29 +2812,6 @@ test("frame queue source retains one string without Promise tails or pooling", (
 			mountInteractiveTui.indexOf("for (const component of components)"),
 	);
 	assert.doesNotMatch(mountInteractiveTui, /new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/);
-	const switchTuiMode = interactiveSource.match(/private async switchTuiMode[\s\S]*?\n\t}\n/)?.[0] ?? "";
-	assert.notEqual(switchTuiMode, "");
-	assert.match(
-		switchTuiMode,
-		/previousUi instanceof TuiAltScreen\) \{\s*this\.releaseFullscreenTransferOwners\(\);\s*previousUi\.detachLayoutRootForTransfer\(\)/,
-	);
-	assert.ok(
-		switchTuiMode.indexOf("this.releaseFullscreenTransferOwners()") <
-			switchTuiMode.indexOf("previousUi.detachLayoutRootForTransfer()"),
-	);
-	assert.doesNotMatch(switchTuiMode, /new (?:Map|Set|AbortController)|\.map\(|\.filter\(|\.flatMap\(/);
-	const releaseFullscreenTransferOwners = interactiveSource.match(
-		/private releaseFullscreenTransferOwners\(\): void \{[\s\S]*?\n\t}/,
-	)?.[0] ?? "";
-	assert.notEqual(releaseFullscreenTransferOwners, "");
-	assert.match(
-		releaseFullscreenTransferOwners,
-		/this\.transcriptScrollView\?\.\[RELEASE_COMPONENT_RENDER_CACHE\]\?\.\(\)/,
-	);
-	assert.doesNotMatch(
-		releaseFullscreenTransferOwners,
-		/fullscreenLayoutRoot|releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\{\s*(?:data|component|owner)\s*:/,
-	);
 	const cancelExtensionDialogs = interactiveSource.match(
 		/private cancelExtensionDialogs[\s\S]*?\n\t}/,
 	)?.[0] ?? "";
@@ -3157,7 +2824,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 		/new (?:Map|Set|Promise|AbortController)|=>|function\s*\(|\.map\(|\.filter\(|\.flatMap\(/,
 	);
 	const interactiveStopCleanup = interactiveSource.match(
-		/private async performStop\(fullscreenExitOutput[\s\S]*?\n\t}/,
+		/private async performStop\(\)[\s\S]*?\n\t}/,
 	)?.[0] ?? "";
 	assert.notEqual(interactiveStopCleanup, "");
 	assert.ok(
@@ -3185,8 +2852,7 @@ test("frame queue source retains one string without Promise tails or pooling", (
 		detachLayoutRootForTransfer,
 		/releaseComponentRenderCaches|\.invalidate\(|\.render\(|new (?:Map|Set|Promise|AbortController)|=>|function\s*\(/,
 	);
-	assert.match(interactiveSource, /await previousUi\.stop\(\{ preserveScreen: true \}\)/);
-	assert.match(interactiveSource, /await this\.stopInteractiveTui\(fullscreenExitOutput\)/);
+	assert.match(interactiveSource, /await this\.stopInteractiveTui\(\)/);
 	assert.match(interactiveSource, /criticalAgentEnd: true/);
 	assert.match(interactiveSource, /case "agent_end":[\s\S]{0,1200}return this\.flushAgentEndFrames\(\)/);
 

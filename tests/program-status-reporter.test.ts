@@ -120,7 +120,7 @@ test("100,000 message/tool updates create no reports, Promises or payload reads"
 	r.dispose();
 });
 
-for (const mode of ["regular", "fullscreen"] as const) test(`real ${mode} interactive session reports outcomes and dialog cancellation`, async () => {
+for (const mode of ["fullscreen"] as const) test(`real ${mode} interactive session reports outcomes and dialog cancellation`, async () => {
 	const prior = process.env.SP_PROGRAM_STATUS; process.env.SP_PROGRAM_STATUS = "1";
 	const f = await alphaSession({ mode, runtime: alphaModelRuntime(() => finalStream(alphaMessage([{ type: "text", text: "secret output" }]))),
 		settings: { compaction: { enabled: false }, retry: { enabled: false }, showTerminalProgress: false } });
@@ -137,10 +137,6 @@ for (const mode of ["regular", "fullscreen"] as const) test(`real ${mode} intera
 		controller.abort(); assert.equal(await confirmation, false);
 		await new Promise<void>(resolve => setImmediate(resolve));
 		assert.ok(statuses().at(-1)?.includes("state=done"));
-		const beforeSwitch = statuses().length;
-		assert.equal(await f.internal.switchTuiMode(mode === "regular" ? "fullscreen" : "regular"), true);
-		await f.internal.ui.flushTerminalFrames();
-		assert.ok(statuses().length > beforeSwitch && statuses().at(-1)?.includes("state=done"));
 		const unsubscribe = f.session.subscribe(event => { if (event.type === "agent_end") f.session.agent.abort(); });
 		await f.session.prompt("cancel"); unsubscribe(); await f.internal.ui.flushTerminalFrames();
 		assert.ok(statuses().at(-1)?.includes("state=idle"));

@@ -45,7 +45,7 @@ async function runOne(resources, mode, probe, round) {
     if (probe) args.push('--import', new URL('./cli-lifecycle-probe.mjs', import.meta.url).href);
     args.push(path.join(repository, 'scripts/superpi.mjs'), '--offline', '--no-session');
     if (resources === 'minimal') args.push('--no-extensions', '--no-tools', '--no-context-files', '--no-skills', '--no-prompt-templates', '--no-themes');
-    args.push('--tui-mode', mode, '--extension', fileURLToPath(new URL('./cli-lifecycle-extension.mjs', import.meta.url)));
+    args.push('--extension', fileURLToPath(new URL('./cli-lifecycle-extension.mjs', import.meta.url)));
     const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
         COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT, TMP: taskRoot, TEMP: taskRoot, TMPDIR: taskRoot,
         HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home, SP_CODING_AGENT_DIR: agent,
@@ -102,17 +102,17 @@ async function runOne(resources, mode, probe, round) {
     assert.ok(resourceCounts.commands > 0);
     if (resources === 'minimal') assert.equal(resourceCounts.activeTools, 0);
     else assert.ok(resourceCounts.activeTools > 0, 'Bundled arm must retain active tools');
-    if (mode === 'fullscreen') assert.ok(stdout.includes('\x1b[?1049l'), 'Alternate screen restored');
+    assert.ok(stdout.includes('\x1b[?1049l'), 'Alternate screen restored');
     if (probe) {
         assert.equal(phases.filter(row => row.phase === 'init-complete').length, 1);
         assert.equal(phases.filter(row => row.phase === 'init-cancelled').length, 0);
     }
     return { resources, mode, probe, round, warmup: round < warmup, titleMs: titleAt - started,
         inputAckMs: ackAt - started, quitToCloseMs: closedAt - quitAt, phases, resourceCounts,
-        rawRestored: true, bracketedPasteRestored: true, alternateRestored: mode === 'fullscreen', shutdownEmissions: 1 };
+        rawRestored: true, bracketedPasteRestored: true, alternateRestored: true, shutdownEmissions: 1 };
 }
 const cases = [];
-for (const resources of ['minimal', 'bundled']) for (const mode of ['regular', 'fullscreen']) for (const probe of [false, true]) cases.push({ resources, mode, probe });
+for (const resources of ['minimal', 'bundled']) for (const mode of ['fullscreen']) for (const probe of [false, true]) cases.push({ resources, mode, probe });
 for (let round = 0; round < warmup + samples; round++) {
     // Reverse on alternate rounds to expose ordering drift without concurrency.
     const ordered = round % 2 === 0 ? cases : cases.slice().reverse();

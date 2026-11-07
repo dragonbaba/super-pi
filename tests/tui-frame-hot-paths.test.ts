@@ -347,32 +347,9 @@ test("stop-pending terminal input admission is an ordered primitive-only branch"
 	);
 });
 
-test("mode switch validates renderer identity and lifecycle generation after stop", () => {
+test("stop and shutdown invalidate the lifecycle generation before releasing owners", () => {
 	const source = parse("packages/coding-agent/src/modes/interactive/interactive-mode.ts");
-	const switchMethod = methodNamed(source, "InteractiveMode", "switchTuiMode");
-	const switchBody = switchMethod.getText(source);
-	const stopBoundary = switchBody.indexOf("await previousUi.stop({ preserveScreen: true });");
-	const identityGuard = switchBody.indexOf(
-		"if (this.renderer !== previousUi || this.tuiLifecycleGeneration !== lifecycleGeneration)",
-	);
-	const firstCleanup = switchBody.indexOf("previousUi.setFocus(null);");
-	const childrenSnapshot = switchBody.indexOf("const components = [...previousUi.children];");
-	const focusSnapshot = switchBody.indexOf("const focus = previousUi.getFocusedComponent();");
-	const terminalSnapshot = switchBody.indexOf("const terminal = previousUi.terminal;");
-	const renderStateSnapshot = switchBody.indexOf("previousUi.captureRenderState();");
-	assert.ok(stopBoundary >= 0);
-	assert.ok(identityGuard > stopBoundary);
-	assert.ok(childrenSnapshot > identityGuard);
-	assert.ok(focusSnapshot > identityGuard);
-	assert.ok(terminalSnapshot > identityGuard);
-	assert.ok(renderStateSnapshot > identityGuard);
-	assert.ok(firstCleanup > identityGuard);
-	assert.match(switchBody, /const lifecycleGeneration = this\.tuiLifecycleGeneration;/);
-	assert.doesNotMatch(
-		switchBody.slice(0, identityGuard),
-		/\.\.\.previousUi\.children|getFocusedComponent|getShowHardwareCursor|getClearOnShrink|captureRenderState/,
-	);
-
+	assert.equal(source.getText().includes("switchTuiMode"), false, "the interactive TUI has a single renderer");
 	const stopMethod = methodNamed(source, "InteractiveMode", "stop");
 	const stopBody = stopMethod.getText(source);
 	const activeJoin = stopBody.indexOf("const activeOperation = this.stopOperation;");
@@ -410,8 +387,8 @@ test("terminal lifecycle entry points have primitive admission or post-stop owne
 	assert.equal(sourceText.match(/this\.handleOpenExternalEditor\(\)/g)?.length, 1);
 	assert.match(sourceText, /defaultEditor\.onAction\("app\.suspend", this\.handleSuspendAction\)/);
 	assert.match(sourceText, /defaultEditor\.onAction\("app\.editor\.external", this\.handleExternalEditorAction\)/);
-	assert.match(stopInteractive, /await this\.switchTuiMode\("regular", false, false\)/);
-	assert.match(stop, /this\.invalidateInitialization\(\);\s*this\.tuiLifecycleGeneration\+\+;[\s\S]*this\.performStop\(fullscreenExitOutput\)/);
+	assert.match(stopInteractive, /await this\.ui\.dispose\(\{ preserveScreen: true \}\)/);
+	assert.match(stop, /this\.invalidateInitialization\(\);\s*this\.tuiLifecycleGeneration\+\+;[\s\S]*this\.performStop\(\)/);
 	assert.match(performStop, /await this\.stopInteractiveTui/);
 	assert.match(shutdown, /this\.tuiLifecycleGeneration\+\+;[\s\S]*await this\.ui\.terminal\.drainInput/);
 });

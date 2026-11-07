@@ -149,6 +149,14 @@ interface ScrollbarTarget {
 	geometry: ScrollbarGeometry;
 }
 
+/** Maps a pointer row, holding the thumb at `grabOffset`, to the matching scroll position. */
+function getScrollTopForThumbPointer(geometry: ScrollbarGeometry, pointerY: number, grabOffset: number): number {
+	const maxThumbOffset = geometry.trackHeight - geometry.thumbHeight;
+	if (maxThumbOffset <= 0) return 0;
+	const thumbOffset = Math.max(0, Math.min(maxThumbOffset, pointerY - geometry.trackTop - grabOffset));
+	return Math.round((thumbOffset / maxThumbOffset) * geometry.maxScrollTop);
+}
+
 export interface TuiAltScreenOptions {
 	/** Show a clickable return-to-bottom hint while the primary transcript is scrolled up. */
 	scrollToBottomHint?: boolean;
@@ -995,16 +1003,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		return true;
 	}
 
+	/**
+	 * The whole reserved scrollbar column of an overflowing ScrollView is the pointer target, even
+	 * while an auto scrollbar is hidden: hovering reveals it and pressing grabs or jumps the thumb.
+	 */
 	private getScrollbarTargetAt(x: number, y: number): ScrollbarTarget | undefined {
 		if (this.hasOverlay() || !this.currentLayout) return undefined;
 		for (const scrollView of getScrollViewsAt(this.currentLayout, x, y)) {
 			const box = getScrollViewBox(this.currentLayout, scrollView);
-			const geometry = box ? getScrollbarGeometry(box) : undefined;
+			const geometry = box ? getScrollbarGeometry(box, true) : undefined;
 			if (
 				geometry &&
+				geometry.maxScrollTop > 0 &&
 				x === geometry.column &&
-				y >= geometry.thumbTop &&
-				y < geometry.thumbTop + geometry.thumbHeight
+				y >= geometry.trackTop &&
+				y < geometry.trackTop + geometry.trackHeight
 			) {
 				return { scrollView, geometry };
 			}
@@ -1036,16 +1049,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			const box = this.currentLayout
 				? getScrollViewBox(this.currentLayout, this.scrollbarDrag.scrollView)
 				: undefined;
-			const geometry = box ? getScrollbarGeometry(box) : undefined;
+			const geometry = box ? getScrollbarGeometry(box, true) : undefined;
 			if (geometry) {
-				const maxThumbOffset = geometry.trackHeight - geometry.thumbHeight;
-				const thumbOffset = Math.max(
-					0,
-					Math.min(maxThumbOffset, event.y - geometry.trackTop - this.scrollbarDrag.grabOffset),
-				);
-				const scrollTop =
-					maxThumbOffset === 0 ? 0 : Math.round((thumbOffset / maxThumbOffset) * geometry.maxScrollTop);
-				this.queueScrollbarDragScroll(scrollTop);
+				this.queueScrollbarDragScroll(getScrollTopForThumbPointer(geometry, event.y, this.scrollbarDrag.grabOffset));
 			}
 			return true;
 		}
@@ -1053,6 +1059,10 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (event.release || (event.button & 32) !== 0 || (event.button & 3) !== 0) return false;
 		const target = this.getScrollbarTargetAt(event.x, event.y);
 		if (!target) return false;
+		const geometry = target.geometry;
+		const onThumb = event.y >= geometry.thumbTop && event.y < geometry.thumbTop + geometry.thumbHeight;
+		// Pressing the track centres the thumb on the pointer; the press then continues as a drag.
+		const grabOffset = onThumb ? event.y - geometry.thumbTop : Math.floor(geometry.thumbHeight / 2);
 		this.stopSelectionAutoScroll();
 		this.selectionPressActive = false;
 		this.selectionAnchor = undefined;
@@ -1063,10 +1073,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.pressedUrl = undefined;
 		this.selectionDragged = false;
 		this.setScrollbarHover(target.scrollView);
-		this.scrollbarDrag = {
-			scrollView: target.scrollView,
-			grabOffset: event.y - target.geometry.thumbTop,
-		};
+		this.scrollbarDrag = { scrollView: target.scrollView, grabOffset };
+		if (!onThumb) this.queueScrollbarDragScroll(getScrollTopForThumbPointer(geometry, event.y, grabOffset));
 		return true;
 	}
 

@@ -89,8 +89,12 @@ export class ScrollView extends Container {
 		this.requestRenderCallback?.();
 	}
 
+	/**
+	 * Visible scrollbars ("auto" and "always") reserve the last column, so showing or hiding the bar
+	 * never reflows content and full-width rows stay on the cached layout fast path.
+	 */
 	getContentWidth(width: number): number {
-		return this.scrollbar === "always" && width > 1 ? width - 1 : width;
+		return this.scrollbar !== "hidden" && width > 1 ? width - 1 : width;
 	}
 
 	private markScrollbarActivity(): void {
@@ -112,10 +116,13 @@ export class ScrollView extends Container {
 		this.scrollbarHideTimer = undefined;
 	}
 
+	/** Pointer hover/drag keeps an auto scrollbar visible; hovering its hidden column reveals it. */
 	setScrollbarActive(active: boolean): void {
 		if (active === this.scrollbarActive) return;
+		const wasVisible = this.isScrollbarVisible;
 		this.scrollbarActive = active;
 		this.markScrollbarActivity();
+		if (this.isScrollbarVisible !== wasVisible) this.requestRenderCallback?.();
 	}
 
 	scrollTo(scrollTop: number): void {

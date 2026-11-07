@@ -20,11 +20,11 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { readClipboardImage } from "../packages/coding-agent/src/utils/clipboard-image.ts";
 import { prepareFormsImageClipboardFixture, readFormsClipboardFixture } from "./helpers/windows-clipboard-data.ts";
 
-async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "regular", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
+async function mounted(auxiliary = false, _screen: "fullscreen" = "fullscreen", controls: Parameters<typeof offlineImageRuntime>[5] = {}) {
 	const root = mkdtempSync(join(tmpdir(), "sp-placeholder-"));
 	const f = await offlineImageRuntime(root, auxiliary, undefined, undefined, undefined, controls);
 	initTheme("dark");
-	const mode = new InteractiveMode(f.host, { tuiMode: screen }); const internal = mode as any;
+	const mode = new InteractiveMode(f.host, {}); const internal = mode as any;
 	await internal.renderer.dispose({ preserveScreen: true });
 	const input = new AlphaInput(), sink = new AlphaSink({ highWaterMark: 1024 });
 	const painted = { unsent: false, selection: false };
@@ -33,7 +33,7 @@ async function mounted(auxiliary = false, screen: "regular" | "fullscreen" = "re
 	const terminal = new ProcessTerminal(sink as unknown as NodeJS.WriteStream, {
 		input: input as unknown as NodeJS.ReadStream, resizeSource: resize as unknown as NodeJS.WriteStream,
 	});
-	internal.renderer = createInteractiveTui({ tuiMode: screen, terminal, showHardwareCursor: true, logDirectory: root, onRightClickPaste: internal.onRightClickPaste });
+	internal.renderer = createInteractiveTui({ terminal, showHardwareCursor: true, logDirectory: root, onRightClickPaste: internal.onRightClickPaste });
 	await mode.init();
 	return { ...f, internal, input, sink, painted, resize, async release() {
 		await mode.stop(); await f.close(); input.destroy(); sink.destroy(); rmSync(root, { recursive: true });
@@ -91,7 +91,7 @@ for (const auxiliary of [false, true]) test(`Windows copied image files: Alt+V t
 	} finally { cp.execFile = original; syncBuiltinESMExports(); await f.release(); }
 });
 
-for (const auxiliary of [false, true]) for (const screen of ["regular", "fullscreen"] as const) {
+for (const auxiliary of [false, true]) for (const screen of ["fullscreen"] as const) {
 	test(`placeholder deletion preserves text, IDs and submit projection (${screen}, auxiliary=${auxiliary})`, async () => {
 		const f = await mounted(auxiliary, screen), png = pngFixture(8, 8);
 		try {
@@ -161,7 +161,7 @@ test("removing a preparing clipboard placeholder rejects late completion and doe
 
 for (const auxiliary of [false, true]) for (const gesture of ["alt", "ctrl", "empty-paste", "right-click"] as const) {
 	test(`Windows ${gesture}, auxiliary=${auxiliary}: real input/helper/owner, simulated clipboard transport`, { skip: process.platform !== "win32" }, async () => {
-		const f = await mounted(auxiliary, gesture === "right-click" ? "fullscreen" : "regular");
+		const f = await mounted(auxiliary);
 		const cp = createRequire(import.meta.url)("node:child_process"), original = cp.execFile;
 		let reads = 0;
 		try {
@@ -449,7 +449,7 @@ test("legacy image-remove aborts the same clipboard operation as placeholder del
 
 for (const compacting of [false, true]) test(`Alt+Enter extension command retains image draft (compacting=${compacting})`, async () => {
 	const entered = deferred<void>(), resume = deferred<void>(); let commands = 0;
-	const f = await mounted(false, "regular", { beforeWireResponse: async () => { entered.resolve(); await resume.promise; }, extensions: [(pi: any) => {
+	const f = await mounted(false, "fullscreen", { beforeWireResponse: async () => { entered.resolve(); await resume.promise; }, extensions: [(pi: any) => {
 		pi.registerCommand("draft-command", { handler: async () => { commands++; } });
 	}] });
 	let running: Promise<void> | undefined;
@@ -512,7 +512,7 @@ for (const change of ["focus", "editor", "clear"] as const) test(`clipboard path
 
 test("real auxiliary description preserves safe line breaks live and from saved entries", async () => {
 	const bidiControls = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
-	const f = await mounted(true, "regular", { visionText: `OCR row one\r\nOCR row two\n\x1b[2J\x9b31m${bidiControls}unsafe\nالعربية 中文` });
+	const f = await mounted(true, "fullscreen", { visionText: `OCR row one\r\nOCR row two\n\x1b[2J\x9b31m${bidiControls}unsafe\nالعربية 中文` });
 	try {
 		const path = join(f.root, "fixture.png"); writeFileSync(path, pngFixture(8, 8));
 		f.input.write(`\x1b[200~"${path}"\x1b[201~`); await settled(f);

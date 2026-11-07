@@ -3,7 +3,7 @@ import { allocateStackSizesInto } from "./components/stack.ts";
 import { getLayoutNode, type LayoutViewport, type StackLayoutEntry } from "./layout-node.ts";
 import { cropKittyImageLine, getKittyImageMetadata, isImageLine } from "./terminal-image.ts";
 import { type Component, CURSOR_MARKER, compositeTuiLine } from "./tui.ts";
-import { extractAnsiCode, getGraphemeCellRange, sliceByColumn, visibleWidth } from "./utils.ts";
+import { visibleWidth } from "./utils.ts";
 import { isLineViewportComponent } from "./components/viewport-container.ts";
 
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
@@ -15,6 +15,8 @@ const MAX_RENDER_CACHE_WIDTH_VARIANTS = 8;
 const RENDER_CACHE_WIDTH_VARIANTS_UNCACHEABLE = -2;
 const MAX_RETAINED_ROW_CODE_UNITS = 64 * 1024;
 const MAX_RETAINED_ROW_CACHE_CODE_UNITS = 512 * 1024;
+/** Row mode: uncacheable row whose scrollbar thumb cell was already painted inline. */
+const INLINE_SCROLLBAR_ROW = 3;
 
 export interface LayoutRect {
 	x: number;
@@ -69,6 +71,10 @@ export interface LayoutFrame {
 	cachedPaintedCodeUnits?: number;
 	maximumCachedRowCodeUnits?: number;
 	rowCacheRejectedBySize?: number;
+	/** Scrollbar thumb rows painted inline on the full-width row fast path. */
+	scrollbarInlineRows?: number;
+	/** Scrollbar thumb rows that needed the slower line composite (tabs, images, overlays, narrow boxes). */
+	scrollbarCompositeRows?: number;
 }
 
 export interface ScrollbarGeometry {
@@ -129,6 +135,14 @@ export interface LayoutContext {
 	renderCacheWidthVariantBypasses: number;
 	maximumCachedRowCodeUnits: number;
 	rowCacheRejectedBySize: number;
+	/** Content width of the enclosing full-width ScrollView that reserves the last column, or 0. */
+	reservedContentWidth: number;
+	/** Thumb cell painted inline by rows inside the reserving ScrollView, when its bar is visible. */
+	inlineScrollbarCell: string | undefined;
+	inlineScrollbarTop: number;
+	inlineScrollbarEnd: number;
+	scrollbarInlineRows: number;
+	scrollbarCompositeRows: number;
 }
 
 /**
@@ -185,6 +199,12 @@ export class LayoutFrameScratch {
 		renderCacheWidthVariantBypasses: 0,
 		maximumCachedRowCodeUnits: 0,
 		rowCacheRejectedBySize: 0,
+		reservedContentWidth: 0,
+		inlineScrollbarCell: undefined,
+		inlineScrollbarTop: 0,
+		inlineScrollbarEnd: 0,
+		scrollbarInlineRows: 0,
+		scrollbarCompositeRows: 0,
 	};
 	private screenA: string[] = [];
 	private screenB: string[] = [];
@@ -236,6 +256,12 @@ export class LayoutFrameScratch {
 		context.renderCacheWidthVariantBypasses = 0;
 		context.maximumCachedRowCodeUnits = 0;
 		context.rowCacheRejectedBySize = 0;
+		context.reservedContentWidth = 0;
+		context.inlineScrollbarCell = undefined;
+		context.inlineScrollbarTop = 0;
+		context.inlineScrollbarEnd = 0;
+		context.scrollbarInlineRows = 0;
+		context.scrollbarCompositeRows = 0;
 
 		if (height > MAX_RETAINED_LAYOUT_ROWS) {
 			context.screen = new Array<string>(height);
@@ -959,59 +985,57 @@ function repeatSpaces(context: LayoutContext, count: number): string {
 	return " ".repeat(count);
 }
 
-function styleScrollbarCell(
-	context: LayoutContext,
-	line: string,
-	column: number,
-	totalWidth: number,
-	style: (text: string) => string,
-): string {
-	if (isImageLine(line)) return line;
-
-	const graphemeRange = getGraphemeCellRange(line, column);
-	const start = graphemeRange?.start ?? column;
-	const end = graphemeRange?.end ?? column + 1;
-	const before = sliceByColumn(line, 0, start, true);
-	const target = sliceByColumn(line, start, end - start, true);
-	const after = sliceByColumn(line, end, Math.max(0, totalWidth - end), true);
-
-	let targetPrefix = "";
-	let targetIndex = 0;
-	while (targetIndex < target.length) {
-		const ansi = extractAnsiCode(target, targetIndex);
-		if (!ansi) break;
-		targetPrefix += ansi.code;
-		targetIndex += ansi.length;
-	}
-	const targetText = target.slice(targetIndex) || repeatSpaces(context, end - start);
-	const beforePadding = repeatSpaces(context, Math.max(0, start - visibleWidth(before)));
-	return `${before}${beforePadding}${targetPrefix}${style(targetText)}${after}`;
+function getScrollContentHeight(box: LayoutBox): number {
+	return box.children[0]?.rect.height ?? box.scrollContentLines?.length ?? 0;
 }
 
-export function getScrollbarGeometry(box: LayoutBox): ScrollbarGeometry | undefined {
-	if (!box.scrollView?.isScrollbarVisible || box.rect.width <= 0 || box.rect.height <= 0) return undefined;
-
-	const contentHeight = box.children[0]?.rect.height ?? box.scrollContentLines?.length ?? 0;
-	const trackHeight = box.rect.height;
-
-	const minThumbHeight = Math.min(2, trackHeight);
-	const thumbHeight = Math.max(
-		minThumbHeight,
+function getScrollbarThumbHeight(trackHeight: number, contentHeight: number): number {
+	return Math.max(
+		Math.min(2, trackHeight),
 		Math.min(trackHeight, Math.round((trackHeight * trackHeight) / contentHeight)),
 	);
-	const maxScrollTop = Math.max(0, contentHeight - trackHeight);
-	const maxThumbTop = trackHeight - thumbHeight;
-	const thumbOffset = maxScrollTop === 0 ? 0 : Math.round((box.scrollView.scrollTop / maxScrollTop) * maxThumbTop);
-	const column = box.rect.x + box.rect.width - 1;
-	if (column < box.clip.x || column >= box.clip.x + box.clip.width) return undefined;
+}
 
+function getScrollbarThumbOffset(
+	scrollTop: number,
+	trackHeight: number,
+	thumbHeight: number,
+	contentHeight: number,
+): number {
+	const maxScrollTop = Math.max(0, contentHeight - trackHeight);
+	return maxScrollTop === 0 ? 0 : Math.round((scrollTop / maxScrollTop) * (trackHeight - thumbHeight));
+}
+
+function isScrollbarColumnClipped(box: LayoutBox): boolean {
+	const column = box.rect.x + box.rect.width - 1;
+	return column < box.clip.x || column >= box.clip.x + box.clip.width;
+}
+
+/**
+ * Scrollbar geometry of a ScrollView box. With `includeHidden`, an overflowing auto scrollbar that is
+ * currently hidden still reports its reserved column so pointer input can reveal and grab it.
+ */
+export function getScrollbarGeometry(box: LayoutBox, includeHidden = false): ScrollbarGeometry | undefined {
+	const scrollView = box.scrollView;
+	if (!scrollView || box.rect.width <= 0 || box.rect.height <= 0) return undefined;
+	const contentHeight = getScrollContentHeight(box);
+	const trackHeight = box.rect.height;
+	if (
+		!scrollView.isScrollbarVisible &&
+		!(includeHidden && scrollView.scrollbar !== "hidden" && contentHeight > trackHeight)
+	) {
+		return undefined;
+	}
+	if (isScrollbarColumnClipped(box)) return undefined;
+
+	const thumbHeight = getScrollbarThumbHeight(trackHeight, contentHeight);
 	return {
-		column,
+		column: box.rect.x + box.rect.width - 1,
 		trackTop: box.rect.y,
 		trackHeight,
-		thumbTop: box.rect.y + thumbOffset,
+		thumbTop: box.rect.y + getScrollbarThumbOffset(scrollView.scrollTop, trackHeight, thumbHeight, contentHeight),
 		thumbHeight,
-		maxScrollTop,
+		maxScrollTop: Math.max(0, contentHeight - trackHeight),
 	};
 }
 
@@ -1057,23 +1081,23 @@ function rejectRowCacheBySize(context: LayoutContext, row: number): void {
 	markRowUncacheable(context, row);
 }
 
-function paintScrollbar(context: LayoutContext, box: LayoutBox): void {
-	const geometry = getScrollbarGeometry(box);
-	if (!geometry || !box.scrollView) return;
+/** Composites thumb cells onto rows the inline fast path did not paint. */
+function paintScrollbarRows(
+	context: LayoutContext,
+	box: LayoutBox,
+	cell: string,
+	thumbTop: number,
+	thumbEnd: number,
+): void {
 	const screen = context.screen;
-	const totalWidth = context.viewportWidth;
-
-	for (let offset = 0; offset < geometry.thumbHeight; offset++) {
-		const row = geometry.thumbTop + offset;
-		if (row < box.clip.y || row >= box.clip.y + box.clip.height || row < 0 || row >= screen.length) continue;
+	const column = box.rect.x + box.rect.width - 1;
+	const firstRow = Math.max(thumbTop, box.clip.y, 0);
+	const lastRow = Math.min(thumbEnd, box.clip.y + box.clip.height, screen.length);
+	for (let row = firstRow; row < lastRow; row++) {
+		if (context.currentFullWidthModes[row] === INLINE_SCROLLBAR_ROW) continue;
 		markRowUncacheable(context, row);
-		screen[row] = styleScrollbarCell(
-			context,
-			screen[row] ?? "",
-			geometry.column,
-			totalWidth,
-			box.scrollView.scrollbarStyle,
-		);
+		context.scrollbarCompositeRows++;
+		screen[row] = compositeTuiLine(screen[row] ?? "", cell, column, 1, context.viewportWidth);
 	}
 }
 
@@ -1085,6 +1109,10 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 		const offset = box.lineOffset ?? 0;
 		const firstRow = Math.max(box.rect.y, box.clip.y, 0);
 		const lastRow = Math.min(box.rect.y + box.rect.height, box.clip.y + box.clip.height, screen.length);
+		// Content of a full-width ScrollView that reserves its last column still paints whole rows.
+		const reservedRow = box.rect.x === 0 && box.rect.width === context.reservedContentWidth;
+		const fullRow = reservedRow || (box.rect.x === 0 && box.rect.width === totalWidth);
+		const inlineCell = reservedRow ? context.inlineScrollbarCell : undefined;
 		for (let row = firstRow; row < lastRow; row++) {
 			const sourceLine = box.lines[offset + row - box.rect.y];
 			if (sourceLine === undefined) continue;
@@ -1095,10 +1123,31 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 				const visibleRows = Math.min(imageMetadata.rows, clipBottom - row);
 				if (visibleRows < imageMetadata.rows) line = cropKittyImageLine(line, 0, visibleRows);
 			}
-			if (isImageLine(line) && box.rect.x === 0 && box.rect.width >= totalWidth) {
+			if (isImageLine(line) && box.rect.x === 0 && (reservedRow || box.rect.width >= totalWidth)) {
 				markRowUncacheable(context, row);
 				screen[row] = line;
-			} else if (screen[row] === "" && box.rect.x === 0 && box.rect.width === totalWidth && !line.includes("\t")) {
+			} else if (screen[row] === "" && fullRow && !line.includes("\t")) {
+				if (
+					inlineCell !== undefined &&
+					row >= context.inlineScrollbarTop &&
+					row < context.inlineScrollbarEnd &&
+					row < context.currentFullWidthModes.length
+				) {
+					const lineWidth = visibleWidth(line);
+					if (lineWidth <= box.rect.width) {
+						markRowUncacheable(context, row);
+						context.currentFullWidthModes[row] = INLINE_SCROLLBAR_ROW;
+						context.scrollbarInlineRows++;
+						screen[row] =
+							FULL_WIDTH_LINE_RESET +
+							line +
+							repeatSpaces(context, box.rect.width - lineWidth) +
+							FULL_WIDTH_LINE_RESET +
+							inlineCell +
+							FULL_WIDTH_LINE_RESET;
+						continue;
+					}
+				}
 				const sourceExceedsRowCache = line.length > MAX_RETAINED_ROW_CODE_UNITS;
 				const reusable =
 					context.rowCacheEnabled &&
@@ -1114,7 +1163,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 					}
 				}
 				const lineWidth = visibleWidth(line);
-				if (lineWidth <= totalWidth) {
+				if (lineWidth <= box.rect.width) {
 					const painted =
 						FULL_WIDTH_LINE_RESET + line + repeatSpaces(context, totalWidth - lineWidth) + FULL_WIDTH_LINE_RESET;
 					screen[row] = painted;
@@ -1123,7 +1172,7 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 				} else {
 					if (sourceExceedsRowCache) rejectRowCacheBySize(context, row);
 					else markRowUncacheable(context, row);
-					screen[row] = compositeTuiLine("", line, 0, totalWidth, totalWidth);
+					screen[row] = compositeTuiLine("", line, 0, box.rect.width, totalWidth);
 				}
 			} else {
 				markRowUncacheable(context, row);
@@ -1131,46 +1180,100 @@ function paintBox(context: LayoutContext, box: LayoutBox): void {
 			}
 		}
 	}
-	for (let index = 0; index < box.children.length; index++) paintBox(context, box.children[index]!);
-
-	if (box.scrollView && box.scrollContentLines && box.scrollView.scrollTop > 0 && box.rect.height > 0) {
-		const leadingKittyImage = box.scrollLeadingKittyImage;
-		if (leadingKittyImage && leadingKittyImage.absoluteRow < box.scrollView.scrollTop) {
-			const metadata = getKittyImageMetadata(leadingKittyImage.line);
-			const hiddenRows = box.scrollView.scrollTop - leadingKittyImage.absoluteRow;
-			if (metadata && hiddenRows < metadata.rows) {
-				const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
-				const cropped = cropKittyImageLine(leadingKittyImage.line, hiddenRows, visibleRows);
-				if (box.rect.x === 0 && box.rect.width >= totalWidth) {
-					markRowUncacheable(context, box.rect.y);
-					screen[box.rect.y] = cropped;
-				}
-			}
-			paintScrollbar(context, box);
-			return;
-		}
-		for (let imageRow = box.scrollView.scrollTop - 1; imageRow >= 0; imageRow--) {
-			const relativeImageRow = imageRow - (box.scrollContentStart ?? 0);
-			if (relativeImageRow < 0) break;
-			const imageLine = box.scrollContentLines[relativeImageRow] ?? "";
-			const metadata = getKittyImageMetadata(imageLine);
-			if (metadata) {
-				const hiddenRows = box.scrollView.scrollTop - imageRow;
-				if (hiddenRows < metadata.rows) {
-					const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
-					const cropped = cropKittyImageLine(imageLine, hiddenRows, visibleRows);
-					if (box.rect.x === 0 && box.rect.width >= totalWidth) {
-						markRowUncacheable(context, box.rect.y);
-						screen[box.rect.y] = cropped;
-					}
-				}
-				break;
-			}
-			if (imageLine !== "") break;
-		}
+	const scrollView = box.scrollView;
+	if (!scrollView) {
+		for (let index = 0; index < box.children.length; index++) paintBox(context, box.children[index]!);
+		return;
 	}
 
-	paintScrollbar(context, box);
+	// Rows inside a full-width ScrollView that reserves its last column paint the thumb inline, so a
+	// visible scrollbar keeps those rows on the fast path instead of re-slicing every painted row.
+	const savedReservedContentWidth = context.reservedContentWidth;
+	const savedInlineScrollbarCell = context.inlineScrollbarCell;
+	const savedInlineScrollbarTop = context.inlineScrollbarTop;
+	const savedInlineScrollbarEnd = context.inlineScrollbarEnd;
+	const contentBox = box.children[0];
+	const reservesColumn =
+		scrollView.scrollbar !== "hidden" &&
+		box.rect.x === 0 &&
+		box.rect.width === totalWidth &&
+		totalWidth > 1 &&
+		contentBox !== undefined &&
+		contentBox.rect.width === totalWidth - 1;
+	if (reservesColumn) context.reservedContentWidth = totalWidth - 1;
+	context.inlineScrollbarCell = undefined;
+	let thumbCell: string | undefined;
+	let thumbTop = 0;
+	let thumbEnd = 0;
+	if (
+		scrollView.isScrollbarVisible &&
+		box.rect.width > 0 &&
+		box.rect.height > 0 &&
+		!isScrollbarColumnClipped(box)
+	) {
+		const contentHeight = getScrollContentHeight(box);
+		const thumbHeight = getScrollbarThumbHeight(box.rect.height, contentHeight);
+		thumbTop =
+			box.rect.y + getScrollbarThumbOffset(scrollView.scrollTop, box.rect.height, thumbHeight, contentHeight);
+		thumbEnd = thumbTop + thumbHeight;
+		thumbCell = scrollView.scrollbarStyle(" ");
+		if (reservesColumn) {
+			context.inlineScrollbarCell = thumbCell;
+			context.inlineScrollbarTop = thumbTop;
+			context.inlineScrollbarEnd = thumbEnd;
+		}
+	}
+	try {
+		for (let index = 0; index < box.children.length; index++) paintBox(context, box.children[index]!);
+	} finally {
+		context.reservedContentWidth = savedReservedContentWidth;
+		context.inlineScrollbarCell = savedInlineScrollbarCell;
+		context.inlineScrollbarTop = savedInlineScrollbarTop;
+		context.inlineScrollbarEnd = savedInlineScrollbarEnd;
+	}
+
+	if (box.scrollContentLines && scrollView.scrollTop > 0 && box.rect.height > 0) {
+		paintLeadingScrollImage(context, box, scrollView, box.scrollContentLines);
+	}
+	if (thumbCell !== undefined) paintScrollbarRows(context, box, thumbCell, thumbTop, thumbEnd);
+}
+
+/** Re-anchors a Kitty image that starts above the scrolled viewport onto its first visible row. */
+function paintLeadingScrollImage(
+	context: LayoutContext,
+	box: LayoutBox,
+	scrollView: ScrollView,
+	contentLines: readonly string[],
+): void {
+	const screen = context.screen;
+	const fullWidth = box.rect.x === 0 && box.rect.width >= context.viewportWidth;
+	const leadingKittyImage = box.scrollLeadingKittyImage;
+	if (leadingKittyImage && leadingKittyImage.absoluteRow < scrollView.scrollTop) {
+		const metadata = getKittyImageMetadata(leadingKittyImage.line);
+		const hiddenRows = scrollView.scrollTop - leadingKittyImage.absoluteRow;
+		if (metadata && hiddenRows < metadata.rows && fullWidth) {
+			const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
+			markRowUncacheable(context, box.rect.y);
+			screen[box.rect.y] = cropKittyImageLine(leadingKittyImage.line, hiddenRows, visibleRows);
+		}
+		return;
+	}
+	for (let imageRow = scrollView.scrollTop - 1; imageRow >= 0; imageRow--) {
+		const relativeImageRow = imageRow - (box.scrollContentStart ?? 0);
+		if (relativeImageRow < 0) break;
+		const imageLine = contentLines[relativeImageRow] ?? "";
+		const metadata = getKittyImageMetadata(imageLine);
+		if (metadata) {
+			const hiddenRows = scrollView.scrollTop - imageRow;
+			if (hiddenRows < metadata.rows && fullWidth) {
+				const visibleRows = Math.min(box.rect.height, metadata.rows - hiddenRows);
+				markRowUncacheable(context, box.rect.y);
+				screen[box.rect.y] = cropKittyImageLine(imageLine, hiddenRows, visibleRows);
+			}
+			return;
+		}
+		if (imageLine !== "") return;
+	}
 }
 
 export function renderLayoutFrame(
@@ -1220,6 +1323,8 @@ export function renderLayoutFrame(
 				context.previousCachedPaintedCodeUnits + context.currentCachedPaintedCodeUnits,
 			maximumCachedRowCodeUnits: context.maximumCachedRowCodeUnits,
 			rowCacheRejectedBySize: context.rowCacheRejectedBySize,
+			scrollbarInlineRows: context.scrollbarInlineRows,
+			scrollbarCompositeRows: context.scrollbarCompositeRows,
 		};
 		if (context.primaryScrollView !== undefined) frame.primaryScrollView = context.primaryScrollView;
 		activeScratch!.complete(safeWidth, safeHeight);

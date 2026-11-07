@@ -10,7 +10,7 @@ function phaseTarget(f: Awaited<ReturnType<typeof alphaSession>>, phase: typeof 
   return [f.internal, { 'ensure-tools': 'ensureInitializationTools', rebind: 'rebindCurrentSession', history: 'renderInitialMessages', 'provider-count': 'updateAvailableProviderCount' }[phase]];
 }
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const phase of phases) {
+for (const mode of ['fullscreen'] as const) for (const phase of phases) {
   test(`real partial startup cleanup mode=${mode} phase=${phase}`, async (t) => {
     const f = await alphaSession({ mode });
     const cause = Object.assign(new Error('private fixture cause is preserved'), { code: 'EALPHA' });
@@ -36,7 +36,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const phase of phase
   });
 }
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['ensure-tools', 'theme', 'rebind', 'provider-count'] as const) {
+for (const mode of ['fullscreen'] as const) for (const phase of ['ensure-tools', 'theme', 'rebind', 'provider-count'] as const) {
   test(`quit while startup awaits mode=${mode} phase=${phase}`, async (t) => {
     const f = await alphaSession({ mode });
     let entered!: () => void; let release!: (value?: unknown) => void;
@@ -61,7 +61,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['ens
   });
 }
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`25 actual startup/quit cycles: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) test(`25 actual startup/quit cycles: ${mode}`, async (t) => {
   let exits = 0;
   t.mock.method(process, 'exit', (code: number) => { assert.equal(code, 0); exits++; });
   const signalBaseline = process.listenerCount('SIGTERM');
@@ -78,7 +78,7 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`25 actual startup/q
   assert.equal(exits, 25);
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const history of [0, 5000, 50000]) for (const g2 of [false, true]) for (const extension of ['none', 'noop', 'ui']) {
+for (const mode of ['fullscreen'] as const) for (const history of [0, 5000, 50000]) for (const g2 of [false, true]) for (const extension of ['none', 'noop', 'ui']) {
   test(`startup ownership matrix mode=${mode} history=${history} G2=${g2} extension=${extension}`, async (t) => {
     const messages = Array.from({ length: history }, () => alphaMessage([{ type: 'text', text: 'completed startup fixture' }]));
     let starts = 0; let shutdowns = 0; let staleUi: any;

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { alphaMessage } from './helpers/alpha-stream.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [false, true]) {
+for (const mode of ['fullscreen'] as const) for (const signal of [false, true]) {
   for (const activity of ['compaction', 'tree', 'bash'] as const) test(`quit joins real ${activity} cleanup: ${mode}, signal=${signal}`, async (t) => {
     let enter!: () => void; const entered = new Promise<void>(resolve => { enter = resolve; });
     let release: (() => void) | undefined; let released = false; let completed = false;

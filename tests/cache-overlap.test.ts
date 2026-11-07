@@ -124,7 +124,7 @@ test("optional notice and session command explicitly label bounds and preserve t
 		const liveNotice = plain(chat);
 		manager.appendMessage(message(90_000));
 		Object.assign(mode, { pendingTools: new Map(), clearToolResultDiscoveries() {}, finalizeReadToolGroup() {},
-			clearDeferredReadArtifacts() {}, addMessageToChat() {} });
+			clearDeferredReadArtifacts() {}, addMessageToChat() {}, renderer: { resetTextSelection() {} } });
 		chat.clear();
 		mode.renderSessionEntries(manager.getEntries());
 		assert.equal(plain(chat), liveNotice, "actual rebuild uses the same response-bound estimate and text");

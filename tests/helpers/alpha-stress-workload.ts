@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { alphaSession } from './alpha-session.ts';
 import { alphaMessage } from './alpha-stream.ts';
 
-export async function stress(mode: 'regular' | 'fullscreen', fixtureRoot?: string, updateCount = 100000) {
+export async function stress(mode: 'fullscreen', fixtureRoot?: string, updateCount = 100000) {
   assert.ok(Number.isInteger(updateCount) && updateCount > 8192, 'cross two 4096-update flush boundaries and retain a final partial batch');
   const f = await alphaSession({ mode, sinkDelay: 5, fixtureRoot });
   const message = alphaMessage([{ type: 'text', text: 'start ' }]);

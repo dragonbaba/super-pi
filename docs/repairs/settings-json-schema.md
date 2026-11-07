@@ -28,7 +28,6 @@ For a project file:
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/dragonbaba/super-pi/main/packages/coding-agent/schemas/project-settings.schema.json",
-  "tuiMode": "fullscreen",
   "fullscreenScrollbar": "auto"
 }
 ```
@@ -77,6 +76,8 @@ for editor association details.
   schema. `models.json`, `keybindings.json`, MCP and extension-specific files are
   not covered by these settings schemas.
   Keybindings have a [separate editor schema](keybindings-json-schema.md).
+- `tuiMode` and `fullscreenExitOutput` remain valid but are marked deprecated:
+  the interactive TUI is always fullscreen and exit prints only the resume hint.
 - Numeric ranges describe supported editor settings. They do not promise to model
   every permissive runtime fallback or coercion. Provider capabilities, model
   availability, file existence and cross-file values are checked elsewhere.

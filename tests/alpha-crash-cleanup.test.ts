@@ -3,7 +3,7 @@ import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 import { RELEASE_COMPONENT_RENDER_CACHE } from '@super-pi/tui';
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const deadOutput of [false, true]) test(`component release EIO survives composite disposal: ${mode} dead=${deadOutput}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const deadOutput of [false, true]) test(`component release EIO survives composite disposal: ${mode} dead=${deadOutput}`, async (t) => {
   const f = await alphaSession({ mode });
   const cause = Object.assign(new Error('mounted component release failed'), { code: 'EIO' });
   let releases = 0; let disposals = 0; let exit: number | undefined;
@@ -21,7 +21,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const deadOutput of 
   } finally { await f.release(); }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const owner of ['runtime', 'footer'] as const) test(`${owner} EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const owner of ['runtime', 'footer'] as const) test(`${owner} EIO is a cleanup failure even when terminal is disconnected: ${mode}`, async (t) => {
   const f = await alphaSession({ mode });
   const cause = Object.assign(new Error('session storage cleanup failed'), { code: 'EIO' });
   let exit: number | undefined;
@@ -46,7 +46,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const owner of ['run
   }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['progress', 'drain'] as const) test(`dead ${phase} does not hide non-output cleanup failure: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const phase of ['progress', 'drain'] as const) test(`dead ${phase} does not hide non-output cleanup failure: ${mode}`, async (t) => {
   const f = await alphaSession({ mode, settings: { terminal: { showTerminalProgress: true } } });
   const dead = Object.assign(new Error('disconnected output'), { code: 'EIO' });
   const cleanup = new Error('footer cleanup failed');
@@ -74,7 +74,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const phase of ['pro
   } finally { await f.release(); }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const action of ['stop', 'shutdown'] as const) test(`late rejection cannot reacquire UI after ${action}: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const action of ['stop', 'shutdown'] as const) test(`late rejection cannot reacquire UI after ${action}: ${mode}`, async (t) => {
   const f = await alphaSession({ mode });
   const previousExitCode = process.exitCode;
   t.mock.method(process, 'exit', () => {});
@@ -94,7 +94,7 @@ for (const mode of ['regular', 'fullscreen'] as const) for (const action of ['st
   } finally { process.exitCode = previousExitCode; await f.release(); }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`fatal recovery releases runtime as well as terminal: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) test(`fatal recovery releases runtime as well as terminal: ${mode}`, async (t) => {
   let shutdowns = 0;
   const f = await alphaSession({ mode, extensions: [(pi: any) => { pi.on('session_shutdown', () => { shutdowns++; }); }] });
   let sessionDisposals = 0; let terminalDisposals = 0; let exit: number | undefined;
@@ -119,7 +119,7 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`fatal recovery rele
   } finally { await f.release(); }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`dead-output shutdown clears enabled progress and releases all owners: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) test(`dead-output shutdown clears enabled progress and releases all owners: ${mode}`, async (t) => {
   let shutdowns = 0;
   const f = await alphaSession({ mode, settings: { terminal: { showTerminalProgress: true } }, extensions: [(pi: any) => pi.on('session_shutdown', () => { shutdowns++; })] });
   let exit: number | undefined; let disposals = 0;
@@ -150,19 +150,17 @@ for (const mode of ['regular', 'fullscreen'] as const) test(`dead-output shutdow
   }
 });
 
-test('fullscreen transcript-transfer failure still disposes the real terminal', async (t) => {
+test('stop with an open overlay leaves the alternate screen and disposes the real terminal once', async (t) => {
   const f = await alphaSession({ mode: 'fullscreen' });
-  const cause = new Error('transcript overlay release failure');
   let disposals = 0;
   const dispose = f.terminal.dispose.bind(f.terminal);
   t.mock.method(f.terminal, 'dispose', () => { disposals++; return dispose(); });
   try {
     assert.equal(await f.mode.init(), true);
     f.internal.renderer.showOverlay({ render: () => ['overlay'], invalidate() {} });
-    const hide = f.internal.renderer.hideOverlay.bind(f.internal.renderer);
-    t.mock.method(f.internal.renderer, 'hideOverlay', (...args: any[]) => { hide(...args); throw cause; });
-    await assert.rejects(f.mode.stop('transcript'), error => error === cause);
+    await f.mode.stop();
     assert.equal(disposals, 1);
+    assert.ok(f.sink.controls.some(control => control.includes('[?1049l')), 'alternate screen restored');
     assert.equal(f.input.isRaw, false);
     assert.equal(f.input.listenerCount('data'), 0); assert.equal(f.resizeSource.listenerCount('resize'), 0);
   } finally {
@@ -171,7 +169,7 @@ test('fullscreen transcript-transfer failure still disposes the real terminal', 
   }
 });
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const fault of ['progress', 'selector', 'status', 'footer', 'subscription'] as const) test(`stop releases real terminal after ${fault} failure: ${mode}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const fault of ['progress', 'selector', 'status', 'footer', 'subscription'] as const) test(`stop releases real terminal after ${fault} failure: ${mode}`, async (t) => {
   const f = await alphaSession({ mode, settings: { terminal: { showTerminalProgress: true } } });
   const cause = Object.assign(new Error(`injected ${fault} cleanup failure`), { code: fault === 'progress' ? 'EIO' : 'ALPHA_CLEANUP' });
   let terminalDisposals = 0;

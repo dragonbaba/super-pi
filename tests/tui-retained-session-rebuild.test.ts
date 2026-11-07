@@ -9,7 +9,7 @@ import {
 	Image,
 	setCapabilities,
 	Text,
-	TuiMainScreen,
+	TuiAltScreen,
 	type TuiRenderInstrumentation,
 } from "@super-pi/tui";
 import type { AssistantMessage, Model, ToolResultMessage } from "../packages/ai/src/types.ts";
@@ -104,7 +104,7 @@ function result(toolCallId: string, toolName: string, text = "done"): AgentMessa
 
 interface InteractiveModeInternals {
 	isInitialized: boolean;
-	renderer: TuiMainScreen;
+	renderer: TuiAltScreen;
 	chatContainer: RetainedContainer;
 	renderInstrumentation: TuiRenderInstrumentation;
 	pendingTools: Map<string, ToolExecutionComponent | ReadToolGroupComponent>;
@@ -257,11 +257,11 @@ async function createModeFixture(
 			throw new Error("session replacement is not expected in retained rebuild tests");
 		},
 	);
-	const mode = new InteractiveMode(runtime, { tuiMode: "regular" });
+	const mode = new InteractiveMode(runtime, {});
 	const internals = mode as unknown as InteractiveModeInternals;
 	await internals.renderer.dispose({ preserveScreen: true });
 	await new Promise<void>((resolve) => setImmediate(resolve));
-	const renderer = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const renderer = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	renderer.setRenderInstrumentation(internals.renderInstrumentation);
 	internals.renderer = renderer;
 	return {
@@ -651,7 +651,7 @@ test("pending discovery ownership is released at turn, agent, and stop boundarie
 	t.after(stopFixture.dispose);
 	stopFixture.internals.isInitialized = true;
 	await createPending(stopFixture, "pending-stop");
-	await stopFixture.mode.stop("transcript");
+	await stopFixture.mode.stop();
 	counts = stopFixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(counts.pending, 0);
 	assert.equal(counts.attached, 0);
@@ -2057,7 +2057,7 @@ test("wholesale rebuild detaches 128 discoveries without updating discarded comp
 			original();
 		};
 	}
-	await fixture.mode.stop("transcript");
+	await fixture.mode.stop();
 	assert.equal(stopUpdateDisplayCalls, 0);
 	const stopped = fixture.internals.getToolResultDiscoveryLifecycleCounts();
 	assert.equal(stopped.entries, 0);

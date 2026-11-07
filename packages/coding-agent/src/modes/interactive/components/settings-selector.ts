@@ -14,9 +14,7 @@ import {
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import type {
 	DefaultProjectTrust,
-	FullscreenExitOutput,
 	MermaidRenderingMode,
-	TuiMode,
 	WarningSettings,
 } from "../../../core/settings-manager.ts";
 import { getSettingsListTheme, parseAutoThemeSetting, type TerminalTheme, theme } from "../theme/theme.ts";
@@ -105,10 +103,7 @@ export interface SettingsConfig {
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
-	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
-	tuiMode: TuiMode;
-	fullscreenExitOutput: FullscreenExitOutput;
 	fullscreenScrollbar: ScrollViewScrollbar;
 	warnings: WarningSettings;
 }
@@ -142,10 +137,7 @@ export interface SettingsCallbacks {
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
-	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
-	onTuiModeChange: (mode: TuiMode) => void;
-	onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
 	onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
@@ -684,25 +676,11 @@ export class SettingsSelectorComponent extends Container {
 				},
 			},
 			{
-				id: "tui-mode",
-				label: "TUI mode",
-				description: "Interface layout; fullscreen mode is experimental",
-				currentValue: config.tuiMode,
-				values: ["regular", "fullscreen"],
-			},
-			{
 				id: "fullscreen-scrollbar",
-				label: "Fullscreen scrollbar",
-				description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+				label: "Scrollbar",
+				description: "Transcript scrollbar: shown while scrolling or hovering (auto), always, or hidden",
 				currentValue: config.fullscreenScrollbar,
 				values: ["auto", "always", "hidden"],
-			},
-			{
-				id: "fullscreen-exit-output",
-				label: "Fullscreen exit output",
-				description: "Restore the terminal with a resume hint (default), or explicitly reprint the transcript",
-				currentValue: config.fullscreenExitOutput,
-				values: ["resume-hint", "transcript"],
 			},
 			{
 				id: "theme",
@@ -809,19 +787,9 @@ export class SettingsSelectorComponent extends Container {
 			values: ["3", "5", "7", "10", "15", "20"],
 		});
 
-		// Clear on shrink toggle (insert after autocomplete-max-visible)
+		// Terminal progress toggle (insert after autocomplete-max-visible)
 		const autocompleteIndex = items.findIndex((item) => item.id === "autocomplete-max-visible");
 		items.splice(autocompleteIndex + 1, 0, {
-			id: "clear-on-shrink",
-			label: "Clear on shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
-			currentValue: config.clearOnShrink ? "true" : "false",
-			values: ["true", "false"],
-		});
-
-		// Terminal progress toggle (insert after clear-on-shrink)
-		const clearOnShrinkIndex = items.findIndex((item) => item.id === "clear-on-shrink");
-		items.splice(clearOnShrinkIndex + 1, 0, {
 			id: "terminal-progress",
 			label: "Terminal progress",
 			description: "Show OSC 9;4 progress indicators in the terminal tab bar",
@@ -920,20 +888,11 @@ export class SettingsSelectorComponent extends Container {
 					case "autocomplete-max-visible":
 						callbacks.onAutocompleteMaxVisibleChange(parseInt(newValue, 10));
 						break;
-					case "clear-on-shrink":
-						callbacks.onClearOnShrinkChange(newValue === "true");
-						break;
 					case "terminal-progress":
 						callbacks.onShowTerminalProgressChange(newValue === "true");
 						break;
-					case "tui-mode":
-						callbacks.onTuiModeChange(newValue as TuiMode);
-						break;
 					case "fullscreen-scrollbar":
 						callbacks.onFullscreenScrollbarChange(newValue as ScrollViewScrollbar);
-						break;
-					case "fullscreen-exit-output":
-						callbacks.onFullscreenExitOutputChange(newValue as FullscreenExitOutput);
 						break;
 					case "theme":
 						callbacks.onThemeChange(newValue);

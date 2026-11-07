@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { alphaSession } from './helpers/alpha-session.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) for (const signal of [false, true]) test(`real init/quit mode=${mode} signal=${signal}`, async (t) => {
+for (const mode of ['fullscreen'] as const) for (const signal of [false, true]) test(`real init/quit mode=${mode} signal=${signal}`, async (t) => {
   let shutdowns = 0;
   let footerFactories = 0; let footerDisposals = 0;
   let footerWeak: WeakRef<object> | undefined;

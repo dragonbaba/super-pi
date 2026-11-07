@@ -23,7 +23,7 @@ class StrictSink extends Writable {
   }
 }
 
-async function fixture(modeName: 'regular' | 'fullscreen') {
+async function fixture(_modeName: 'fullscreen') {
   const root = mkdtempSync(join(tmpdir(), 'g2s-lifecycle-'));
   const agentDir = join(root, 'agent');
   mkdirSync(agentDir);
@@ -36,18 +36,18 @@ async function fixture(modeName: 'regular' | 'fullscreen') {
     model: { id: 'g2s', name: 'g2s', api: 'openai-responses', provider: 'fixture', baseUrl: 'https://fixture.invalid', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32768, maxTokens: 4096 },
     modelRuntime: { hasConfiguredAuth: () => true, isUsingOAuth: () => false, isUsingSubscription: () => false } as unknown as ModelRuntime });
   const runtime = new AgentSessionRuntime(session, { cwd: root, agentDir } as AgentSessionServices, async () => { throw new Error('unexpected replacement'); });
-  const mode = new InteractiveMode(runtime, { tuiMode: modeName });
+  const mode = new InteractiveMode(runtime, {});
   const internals = mode as unknown as { renderer: ReturnType<typeof createInteractiveTui>; shutdown(): Promise<void> };
   await internals.renderer.dispose({ preserveScreen: true });
   const sink = new StrictSink();
   const terminal = new ProcessTerminal(sink as unknown as NodeJS.WriteStream);
   // Existing internal drain seam: keep node:test's IPC stdin out of terminal ownership.
   (terminal as unknown as { drainInputSource: EventEmitter }).drainInputSource = new EventEmitter();
-  internals.renderer = createInteractiveTui({ tuiMode: modeName, showHardwareCursor: false, logDirectory: root, terminal });
+  internals.renderer = createInteractiveTui({ showHardwareCursor: false, logDirectory: root, terminal });
   return { root, session, runtime, mode, internals, terminal, sink };
 }
 
-for (const modeName of ['regular', 'fullscreen'] as const) test(`real shutdown before init rejects no disposed write: ${modeName}`, async (t) => {
+for (const modeName of ['fullscreen'] as const) test(`real shutdown before init rejects no disposed write: ${modeName}`, async (t) => {
   const f = await fixture(modeName);
   const events: string[] = [];
   let illegal = 0;
@@ -79,7 +79,7 @@ for (const modeName of ['regular', 'fullscreen'] as const) test(`real shutdown b
 });
 
 test('real runtime concurrent dispose owns one session disposal', async (t) => {
-  const f = await fixture('regular');
+  const f = await fixture('fullscreen');
   const disposeSession = f.session.dispose.bind(f.session);
   let count = 0;
   t.mock.method(f.session, 'dispose', () => { count++; disposeSession(); });

@@ -8,7 +8,7 @@ import { parallelRawResults } from './fixtures/g2-raw-result-probe.ts';
 import { ToolResultContinuationError } from '../packages/coding-agent/src/core/tool-result-presentation.ts';
 import { estimateMessageTokens, estimateContextTokensFromParts } from '@super-pi/ai';
 
-async function runParallel(mode: 'regular' | 'fullscreen', enabled: boolean, count: 8 | 129, budgetTokens: number) {
+async function runParallel(mode: 'fullscreen', enabled: boolean, count: 8 | 129, budgetTokens: number) {
     const boundary = enabled && count === 129 && budgetTokens === 1024;
     const results = parallelRawResults(count);
     const weak = results.map(result => new WeakRef(result.content));
@@ -171,7 +171,7 @@ const parallelCases = [
   { enabled: true, count: 129, budget: 1024 },
   { enabled: true, count: 129, budget: 16384 },
 ] as const;
-for (const mode of ['regular', 'fullscreen'] as const) {
+for (const mode of ['fullscreen'] as const) {
   for (const { enabled, count, budget } of parallelCases) test(`actual parallel raw results mode=${mode} G2=${enabled} count=${count} budget=${budget}`, async (t) => {
     const { weak, report } = await runParallel(mode, enabled, count, budget);
     const heap: number[] = [];

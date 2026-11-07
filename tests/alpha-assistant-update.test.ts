@@ -5,7 +5,7 @@ import { initTheme } from '../packages/coding-agent/src/modes/interactive/theme/
 import { alphaMessage } from './helpers/alpha-stream.ts';
 import { stress } from './helpers/alpha-stress-workload.ts';
 
-for (const mode of ['regular', 'fullscreen'] as const) test(`session-to-component boundaries and owner release: ${mode}`, async () => {
+for (const mode of ['fullscreen'] as const) test(`session-to-component boundaries and owner release: ${mode}`, async () => {
   assert.ok(global.gc, 'run through npm test (or node --expose-gc) to verify collection');
   // Two full render batches plus a partial final batch; full-size repeated heap
   // measurements belong to scripts/bench/alpha-stress-gc.ts.

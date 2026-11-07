@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { RetainedContainer, ScrollView, Text, TuiAltScreen, TuiMainScreen } from "@super-pi/tui";
+import { RetainedContainer, ScrollView, Text, TuiAltScreen } from "@super-pi/tui";
 import ts from "typescript";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -135,8 +135,8 @@ test("ordinary assistant updates and append-only compaction keep the current sel
 	} finally { await f.ui.dispose({ preserveScreen: true }); }
 });
 
-test("entry rebuilding remains compatible with the regular renderer and compaction entries", async () => {
-	const ui = new TuiMainScreen(new FakeTerminal(), false);
+test("entry rebuilding forwards compaction entries through the fullscreen renderer", async () => {
+	const ui = new TuiAltScreen(new FakeTerminal(), false, undefined, { mouse: false });
 	let calls = 0;
 	const options = { updateFooter: true };
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
