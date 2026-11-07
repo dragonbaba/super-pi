@@ -181,6 +181,11 @@ function isInvokedWord(source: string, start: number): boolean {
 }
 
 /** Whether the separator at `at` (after any blank lines) ends a Bash `case` arm: `;;`, `;&` or `;;&`. */
+/** Whether a Bash case pattern segment ends at its `)`; a line break after it is recorded as the separator instead. */
+function closesCasePattern(table: ShellTokenTable, segment: number): boolean {
+  return table.segmentSeparators[segment] === SEGMENT_CLOSE || table.source.charCodeAt(table.segmentSourceEnds[segment]!) === 41;
+}
+
 function endsCaseArm(source: string, at: number): boolean {
   let index = at;
   for (; index < source.length; index++) {
@@ -381,25 +386,32 @@ function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], po
     return -1;
   }
   if (BASH_SHELLS.has(first)) {
+    // `-c` makes the first word after the options the script (`bash -c -e '…'`, `bash -euo pipefail -c '…'`).
     // `bash -n -c '…'` / `-o noexec` only reads the script; `+n` turns that off again.
-    let noExec = false;
+    let command = false, noExec = false;
     for (let index = 1; index < argv.length; index++) {
       const word = argv[index]!, sign = word.charCodeAt(0);
-      if (word.length < 2 || sign !== 45 && sign !== 43) return -1; // a script file
-      if (word === "--") return -1;
-      if (word.charCodeAt(1) === 45) { // `--login`, `--norc`; `--rcfile FILE` and `--init-file FILE` take a value
-        if (word === "--rcfile" || word === "--init-file") index++;
+      if (word === "--") index++;
+      else if (word.length >= 2 && (sign === 45 || sign === 43)) {
+        if (word.charCodeAt(1) === 45) { // `--login`, `--norc`; `--rcfile FILE` and `--init-file FILE` take a value
+          if (word === "--rcfile" || word === "--init-file") index++;
+          continue;
+        }
+        // Each `o`/`O` in a cluster takes the next word (`-euo pipefail`, `-O extglob`).
+        for (let at = 1; at < word.length; at++) {
+          const letter = word.charCodeAt(at);
+          if (letter === 99) command ||= sign === 45;
+          else if (letter === 110) noExec = sign === 45;
+          else if (letter === 111 || letter === 79) {
+            index++;
+            if (letter === 111 && argv[index] === "noexec") noExec = sign === 45;
+          }
+        }
         continue;
       }
-      if (word.indexOf("n") > 0) noExec = sign === 45;
-      if (word.indexOf("c") > 0) {
-        if (index + 1 >= argv.length) return -1;
-        return noExec ? RULE_NONE : nestedScriptVerdict(rules, "bash", argv[index + 1]!);
-      }
-      if (word === "-o" || word === "+o" || word === "-O" || word === "+O") { // `-o pipefail`
-        if (index + 1 < argv.length && argv[index + 1] === "noexec" && word.charCodeAt(1) === 111) noExec = sign === 45;
-        index++;
-      }
+      // The first operand: the `-c` script, or a script file.
+      if (!command || index >= argv.length) return -1;
+      return noExec ? RULE_NONE : nestedScriptVerdict(rules, "bash", argv[index]!);
     }
     return -1;
   }
@@ -579,14 +591,14 @@ export function shellRuleVerdict(tool: "bash" | "powershell", command: string, r
       while (first < end - 1 && (table.flags[first]! & WORD_QUOTED) === 0 && isCommandPrefix(table.texts![first]!, false)) first++;
       const head = first < end && (table.flags[first]! & WORD_QUOTED) === 0 ? table.texts![first]! : "";
       // `case WORD in PATTERN)`: patterns run until a `)` ends their segment.
-      if (head === "case") { caseDepth++; casePattern = table.segmentSeparators[segment] !== SEGMENT_CLOSE; continue; }
+      if (head === "case") { caseDepth++; casePattern = !closesCasePattern(table, segment); continue; }
       // A nested `esac;;` also ends the enclosing arm, so the outer patterns follow.
       if (caseDepth > 0 && head === "esac") {
         caseDepth--;
         casePattern = caseDepth > 0 && endsCaseArm(table.source, table.segmentSourceEnds[segment]!);
         continue;
       }
-      if (casePattern) { if (table.segmentSeparators[segment] === SEGMENT_CLOSE) casePattern = false; continue; }
+      if (casePattern) { if (closesCasePattern(table, segment)) casePattern = false; continue; }
     }
     for (let index = table.segmentStart(segment); index < end; index++) {
       const flags = table.flags[index]!;

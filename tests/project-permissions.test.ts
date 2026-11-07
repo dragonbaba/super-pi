@@ -90,7 +90,7 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     // A shell's literal script operand is matched as a command of its own.
-    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
+    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'", "bash -euo pipefail -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // `-n` reads the script without running it.
     for (const command of ["bash -c 'git status'", "bash -n -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_NONE, command);
     // `find -exec` runs its command; `case` arm patterns are not commands, their bodies are.
@@ -103,6 +103,8 @@ test("host-restricted classification lifts only literal segments, and suggestion
     assert.equal(shellRuleVerdict("bash", "declare -a packages=(git curl jq)", lookup), RULE_NONE);
     assert.equal(shellRuleVerdict("bash", "packages=(\n  git\n  jq\n)\ngit push", lookup), RULE_DENY);
     assert.equal(shellRuleVerdict("bash", "case $x in\n  a|b) echo a ;;\n  *) git push ;;\nesac", lookup), RULE_DENY);
+    // An arm body may start on the line after its pattern.
+    assert.equal(shellRuleVerdict("bash", "case $x in\n  publish)\n    git push\n    ;;\nesac", lookup), RULE_DENY);
     const exact = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "git push origin main" }]);
     // PowerShell keeps script blocks in one segment: each block's commands are matched on their own.
     for (const command of ["if ($true) { git push origin main }", "try { git push origin main } catch { Write-Output $_ }",
