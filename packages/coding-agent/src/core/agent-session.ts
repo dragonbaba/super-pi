@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
 import { SessionSandbox } from "./sandbox/session-sandbox.ts";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
+import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
 import { createSessionLease, type SessionLease } from "./session-lease.ts";
 import { NATIVE_FILE_REVISION } from "./files/file-host.ts";
@@ -920,6 +921,8 @@ export class AgentSession {
 	private readonly _codemode: CodemodeController;
 	private readonly _sandboxCommands?: SessionSandbox;
 	private _workspaceSandbox?: WorkspaceSandboxTools;
+	/** Sandbox network consent for this session (R5); survives reload rebuilds, never persisted. */
+	private readonly _sandboxNetwork = new SandboxNetworkSession();
 	private _createWorkspaceSandbox?: () => WorkspaceSandboxTools;
 	private readonly _emitCodemodeRead = async (event: CodemodeReadEvent): Promise<void> => { await this._extensionRunner.emit(event); };
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
@@ -1048,7 +1051,7 @@ export class AgentSession {
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), directories: this.settingsManager.getSessionDirectories(), privateDirectories: this.settingsManager.getSandboxPrivateDirectories() });
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), networkSession: this._sandboxNetwork, directories: this.settingsManager.getSessionDirectories(), privateDirectories: this.settingsManager.getSandboxPrivateDirectories() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (!parentExecution && this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");

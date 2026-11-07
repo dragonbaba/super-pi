@@ -45,6 +45,8 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
     "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords", "assignmentOperatorLength", "castPrefixLength", "wrapperOptions", "hasBashHeredoc", "dispatchedRuleVerdict", "findActionVerdict", "hashtableKey", "endsCaseArm", "closesCasePattern", "opensEmptyParens", "isQuoteCode", "isStringStart", "unquotedEquals", "rawValueQuoted", "isInvokedWord", "hasQuote", "hasStructuralBrace", "unquotedText", "isSwitchKeyword", "isDeclarationKeyword", "scriptOperandVerdict", "nestedScriptVerdict", "isLauncherSuffix"]));
   // Project rules (R4): built once per file version, matched without closures or temporary containers.
   targets.set("../project-permissions.ts", new Set(["foldCode", "foldWord", "wordMatches", "wordsMatch", "match", "hasShellRules", "hasRestrictiveShellRules", "toolDecision", "matchShellWords"]));
+  // Sandbox command facts (R5): one tokenization, module tables and a reused word buffer.
+  targets.set("sandbox-command.ts", new Set(["inspectSandboxCommand", "wordText", "inspectSegment", "programStart", "programName", "networkCommand", "isDriveAbsolute"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

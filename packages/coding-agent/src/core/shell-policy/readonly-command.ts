@@ -238,7 +238,7 @@ function assignmentOperatorLength(word: string): number {
 }
 
 /** Whether `text` opens a command without being its program (PowerShell keywords in any case). */
-function isCommandPrefix(text: string, powerShell: boolean): boolean {
+export function isCommandPrefix(text: string, powerShell: boolean): boolean {
   if (!powerShell) return BASH_COMMAND_PREFIXES.has(text);
   if (POWERSHELL_COMMAND_PREFIXES.has(text)) return true;
   const first = text.charCodeAt(0);
@@ -271,11 +271,11 @@ const BASH_DISPATCH_WRAPPERS: ReadonlyMap<string, WrapperOptions> = new Map([
 ]);
 const MAX_DISPATCH_WRAPPERS = 4;
 
-/** Where the command run by the leading wrapper starts, or 0 (no wrapper, or a `command -v` / `sudo -l` query). */
-function dispatchedCommandStart(argv: readonly string[]): number {
-  const name = argv[0]!, options = BASH_DISPATCH_WRAPPERS.get(name);
+/** Where the command run by the wrapper at `from` starts, or 0 (no wrapper, or a `command -v` / `sudo -l` query). */
+export function dispatchedCommandStart(argv: readonly string[], from = 0): number {
+  const name = argv[from]!, options = BASH_DISPATCH_WRAPPERS.get(name);
   if (!options) return 0;
-  let index = 1;
+  let index = from + 1;
   while (index < argv.length) {
     const word = argv[index]!;
     if (word === "--") {
@@ -311,7 +311,7 @@ function dispatchedCommandStart(argv: readonly string[]): number {
 }
 
 /** Whether `text` has `exe`, `cmd`, `bat`, `com` or `ps1` (any case) at `at`: a Windows launcher suffix. */
-function isLauncherSuffix(text: string, at: number): boolean {
+export function isLauncherSuffix(text: string, at: number): boolean {
   const a = text.charCodeAt(at) | 32, b = text.charCodeAt(at + 1) | 32, c = text.charCodeAt(at + 2) | 32;
   return a === 101 && b === 120 && c === 101 || a === 99 && b === 109 && c === 100 || a === 98 && b === 97 && c === 116
     || a === 99 && b === 111 && c === 109 || a === 112 && b === 115 && c === 49;
@@ -1003,7 +1003,7 @@ function isDescriptor(text: string): boolean {
 }
 
 /** `NAME=value` before the command changes its environment (`PAGER`, `GIT_*`). */
-function isAssignment(text: string): boolean {
+export function isAssignment(text: string): boolean {
   const equals = text.indexOf("=");
   // `CI+=x` appends; the name ends before the `+`.
   const name = equals > 1 && text.charCodeAt(equals - 1) === 43 ? equals - 1 : equals;
