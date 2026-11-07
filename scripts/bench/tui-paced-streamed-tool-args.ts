@@ -17,7 +17,7 @@ import { Text } from "../../packages/tui/src/components/text.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
@@ -120,7 +120,7 @@ class NoopTerminal implements Terminal {
 	setProgress(): void {}
 }
 
-class InstrumentedMainScreen extends TuiMainScreen {
+class InstrumentedAltScreen extends TuiAltScreen {
 	requestRenderCalls = 0;
 	doRenderCalls = 0;
 	override requestRender(force = false): void { this.requestRenderCalls++; super.requestRender(force); }
@@ -258,7 +258,7 @@ async function profileScenario(scenario: Scenario): Promise<Record<string, unkno
 	const warmup = readIntegerOption("--warmup", 2_000);
 	const samplingInterval = readIntegerOption("--sampling-interval", 8_192);
 	const terminal = new NoopTerminal();
-	const renderer = new InstrumentedMainScreen(terminal, false);
+	const renderer = new InstrumentedAltScreen(terminal, false, undefined, { mouse: false });
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	for (let index = 0; index < historyItems; index++) {

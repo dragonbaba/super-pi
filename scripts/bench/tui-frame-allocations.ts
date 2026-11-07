@@ -7,12 +7,11 @@ import { VStack } from "../../packages/tui/src/components/v-stack.ts";
 import { ViewportContainer } from "../../packages/tui/src/components/viewport-container.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { type Component, Container, CURSOR_MARKER, type TUI } from "../../packages/tui/src/tui.ts";
+import { type Component, Container, CURSOR_MARKER } from "../../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
-type Fixture = "direct-main" | "production-main" | "production-alt";
+type Fixture = "production-alt";
 type AltControl =
 	| "stable"
 	| "scroll-up"
@@ -125,7 +124,7 @@ class ActiveLines implements Component {
 }
 
 interface FixtureRuntime {
-	tui: TUI;
+	tui: TuiAltScreen;
 	instrumentation: TuiRenderInstrumentation;
 	active: ActiveLines;
 	advanceActive(): void;
@@ -194,82 +193,69 @@ function createFixture(
 	const terminal = new NoopTerminal(width, height);
 	const { transcript, active, advanceActive } = createTranscript(itemCount, instrumentation, altControl);
 	const plainChildren: StaticLines[] = [];
-	let tui: TUI;
+	const documentContainer = new ViewportContainer();
+	documentContainer.addChild(addPlainContainer(plainChildren, "header"));
+	documentContainer.addChild(addPlainContainer(plainChildren, "loaded-resources"));
+	documentContainer.addChild(transcript);
+	const pendingMessagesContainer = addPlainContainer(plainChildren, "pending");
+	const statusContainer = addPlainContainer(plainChildren, "status");
+	const widgetContainerAbove = addPlainContainer(plainChildren, "widget-above");
+	const editorContainer = addPlainContainer(plainChildren, "editor", 3);
+	const widgetContainerBelow = addPlainContainer(plainChildren, "widget-below");
+	const footerContainer = addPlainContainer(plainChildren, "footer");
+	const roots = [
+		documentContainer,
+		pendingMessagesContainer,
+		statusContainer,
+		widgetContainerAbove,
+		editorContainer,
+		widgetContainerBelow,
+		footerContainer,
+	];
 
-	if (fixture === "direct-main") {
-		tui = new TuiMainScreen(terminal, false);
-		tui.addChild(transcript);
-	} else {
-		const documentContainer = new ViewportContainer();
-		documentContainer.addChild(addPlainContainer(plainChildren, "header"));
-		documentContainer.addChild(addPlainContainer(plainChildren, "loaded-resources"));
-		documentContainer.addChild(transcript);
-		const pendingMessagesContainer = addPlainContainer(plainChildren, "pending");
-		const statusContainer = addPlainContainer(plainChildren, "status");
-		const widgetContainerAbove = addPlainContainer(plainChildren, "widget-above");
-		const editorContainer = addPlainContainer(plainChildren, "editor", 3);
-		const widgetContainerBelow = addPlainContainer(plainChildren, "widget-below");
-		const footerContainer = addPlainContainer(plainChildren, "footer");
-		const roots = [
-			documentContainer,
-			pendingMessagesContainer,
-			statusContainer,
-			widgetContainerAbove,
-			editorContainer,
-			widgetContainerBelow,
-			footerContainer,
-		];
-
-		if (fixture === "production-main") {
-			tui = new TuiMainScreen(terminal, false);
-			for (const root of roots) tui.addChild(root);
-		} else {
-			const transcriptScrollView = new ScrollView(documentContainer, { follow: "end", primary: true });
-			const dock = new VStack([
-				{ component: pendingMessagesContainer, shrink: 1, minSize: 0 },
-				{ component: statusContainer, shrink: 1, minSize: 0 },
-				{ component: widgetContainerAbove, shrink: 1, minSize: 0 },
-				{ component: editorContainer, shrink: 1, minSize: 3 },
-				{ component: widgetContainerBelow, shrink: 1, minSize: 0 },
-				{ component: footerContainer, shrink: 1, minSize: 1 },
-			]);
-			const layout = new VStack([
-				{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-				{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-			]);
-			const alt = new TuiAltScreen(terminal, false, undefined, { mouse: false, scrollToBottomHint: altControl === "bottom-hint" });
-			for (const root of roots) alt.addChild(root);
-			alt.setLayoutRoot(layout);
-			if (altControl === "overlay" || altControl === "overlay-multiple" || altControl === "mixed") {
-				alt.showOverlay(new StaticLines("overlay-中😀e\u0301"), { width: 24, row: 4, col: 7 });
-				if (altControl === "overlay-multiple" || altControl === "mixed") {
-					alt.showOverlay(new StaticLines("overlay-ansi-\x1b[31msecond\x1b[0m"), {
-						width: 30,
-						row: 8,
-						col: 13,
-					});
-				}
-			}
-			alt.start();
-			if (altControl === "bottom-hint" || altControl === "scroll-up") {
-				alt.renderNow(); alt.scrollToTop(); alt.renderNow();
-			}
-			if (altControl === "selection" || altControl === "selection-multi" || altControl === "mixed") {
-				const row = Math.max(0, itemCount - (altControl === "selection" ? 2 : 12));
-				const internals = alt as unknown as {
-					selectionAnchor?: { row: number; col: number; scrollView: ScrollView };
-					selectionFocus?: { row: number; col: number; boundary?: boolean; scrollView: ScrollView };
-				};
-				internals.selectionAnchor = { row, col: 0, scrollView: transcriptScrollView };
-				internals.selectionFocus = {
-					row: altControl === "selection" ? row : Math.min(itemCount, row + 10),
-					col: 8,
-					boundary: true,
-					scrollView: transcriptScrollView,
-				};
-			}
-			tui = alt;
+	const transcriptScrollView = new ScrollView(documentContainer, { follow: "end", primary: true });
+	const dock = new VStack([
+		{ component: pendingMessagesContainer, shrink: 1, minSize: 0 },
+		{ component: statusContainer, shrink: 1, minSize: 0 },
+		{ component: widgetContainerAbove, shrink: 1, minSize: 0 },
+		{ component: editorContainer, shrink: 1, minSize: 3 },
+		{ component: widgetContainerBelow, shrink: 1, minSize: 0 },
+		{ component: footerContainer, shrink: 1, minSize: 1 },
+	]);
+	const layout = new VStack([
+		{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+		{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+	]);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false, scrollToBottomHint: altControl === "bottom-hint" });
+	for (const root of roots) tui.addChild(root);
+	tui.setLayoutRoot(layout);
+	if (altControl === "overlay" || altControl === "overlay-multiple" || altControl === "mixed") {
+		tui.showOverlay(new StaticLines("overlay-中😀e\u0301"), { width: 24, row: 4, col: 7 });
+		if (altControl === "overlay-multiple" || altControl === "mixed") {
+			tui.showOverlay(new StaticLines("overlay-ansi-\x1b[31msecond\x1b[0m"), {
+				width: 30,
+				row: 8,
+				col: 13,
+			});
 		}
+	}
+	tui.start();
+	if (altControl === "bottom-hint" || altControl === "scroll-up") {
+		tui.renderNow(); tui.scrollToTop(); tui.renderNow();
+	}
+	if (altControl === "selection" || altControl === "selection-multi" || altControl === "mixed") {
+		const row = Math.max(0, itemCount - (altControl === "selection" ? 2 : 12));
+		const internals = tui as unknown as {
+			selectionAnchor?: { row: number; col: number; scrollView: ScrollView };
+			selectionFocus?: { row: number; col: number; boundary?: boolean; scrollView: ScrollView };
+		};
+		internals.selectionAnchor = { row, col: 0, scrollView: transcriptScrollView };
+		internals.selectionFocus = {
+			row: altControl === "selection" ? row : Math.min(itemCount, row + 10),
+			col: 8,
+			boundary: true,
+			scrollView: transcriptScrollView,
+		};
 	}
 
 	tui.setRenderInstrumentation(instrumentation);
@@ -283,26 +269,9 @@ function createFixture(
 		active,
 		advanceActive,
 		plainChildren,
-		getBottomHintDiagnostics: () => tui instanceof TuiAltScreen ? tui.getBottomHintDiagnostics() : undefined,
-		getAltLayoutRetainedReferenceCounts: () =>
-			tui instanceof TuiAltScreen
-				? tui.getAltLayoutRetainedReferenceCounts()
-				: {
-					components: 0,
-					lines: 0,
-					sources: 0,
-					cachedRows: 0,
-					sourceCodeUnits: 0,
-					paintedCodeUnits: 0,
-					maximumRowCodeUnits: 0,
-					indexedComponents: 0,
-					screenRows: 0,
-					screenCodeUnits: 0,
-				},
-		getAltCompositionRetainedReferenceCounts: () =>
-			tui instanceof TuiAltScreen
-				? tui.getAltCompositionRetainedReferenceCounts()
-				: { overlayLineReferences: 0, selectionPointReferences: 0 },
+		getBottomHintDiagnostics: () => tui.getBottomHintDiagnostics(),
+		getAltLayoutRetainedReferenceCounts: () => tui.getAltLayoutRetainedReferenceCounts(),
+		getAltCompositionRetainedReferenceCounts: () => tui.getAltCompositionRetainedReferenceCounts(),
 		dispose: async () => {
 			await tui.stop({ preserveScreen: true });
 		},
@@ -365,10 +334,9 @@ function allocationSites(head: SamplingNode): { sampledBytes: number; top: Alloc
 	return { sampledBytes, top: [...sites.values()].sort((left, right) => right.bytes - left.bytes).slice(0, 20) };
 }
 
-const fixtureArgument = process.argv[process.argv.indexOf("--fixture") + 1] as Fixture | undefined;
-if (!fixtureArgument || !new Set<Fixture>(["direct-main", "production-main", "production-alt"]).has(fixtureArgument)) {
-	throw new Error("--fixture must be direct-main, production-main, or production-alt");
-}
+const fixtureIndex = process.argv.indexOf("--fixture");
+const fixtureArgument = (fixtureIndex === -1 ? "production-alt" : process.argv[fixtureIndex + 1]) as Fixture;
+if (fixtureArgument !== "production-alt") throw new Error("--fixture must be production-alt");
 const itemCount = readIntegerOption("--items", 5_000);
 const measuredFrames = readIntegerOption("--frames", 20_000);
 const warmupFrames = readIntegerOption("--warmup", 1_000);

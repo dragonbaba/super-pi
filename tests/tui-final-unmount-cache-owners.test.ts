@@ -11,7 +11,6 @@ import {
 	RetainedItem as ProductionRetainedItem,
 	Text as ProductionText,
 	TuiAltScreen as ProductionTuiAltScreen,
-	TuiMainScreen as ProductionTuiMainScreen,
 	ViewportContainer as ProductionViewportContainer,
 } from "@super-pi/tui";
 import ts from "typescript";
@@ -52,7 +51,6 @@ import { ViewportContainer } from "../packages/tui/src/components/viewport-conta
 import { getCapabilities, setCapabilities } from "../packages/tui/src/terminal-image.ts";
 import { Container, type Component } from "../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { VStack } from "../packages/tui/src/components/v-stack.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
@@ -207,17 +205,6 @@ interface AltRawDocument {
 	lastDocument: string[];
 }
 
-interface MainRawScratch {
-	previousLines: string[];
-	viewportMutationTokens: unknown[];
-	frameRootHeights: number[];
-	frameRootLines: unknown[];
-	frameRootLineStarts: number[];
-	frameRootLeadingKittyImages: unknown[];
-	boundedFrameLinesA: string[];
-	boundedFrameLinesB: string[];
-}
-
 interface BoxRawCache {
 	cache?: unknown;
 }
@@ -265,13 +252,13 @@ interface EditorAutocompleteRawState {
 
 interface AnimatedOwnerRawState {
 	interval: (NodeJS.Timeout & { _onTimeout: (() => void) | null }) | null;
-	ui: ProductionTuiMainScreen | null;
+	ui: ProductionTuiAltScreen | null;
 	cachedLines: string[];
 }
 
 interface CountdownRawState {
 	intervalId?: NodeJS.Timeout & { _onTimeout: (() => void) | null };
-	tui?: ProductionTuiMainScreen;
+	tui?: ProductionTuiAltScreen;
 }
 
 interface RetryRawState extends LoaderRawState {
@@ -292,7 +279,7 @@ class CountingAltScreen extends TuiAltScreen {
 	}
 }
 
-class CountingProductionMainScreen extends ProductionTuiMainScreen {
+class CountingProductionAltScreen extends ProductionTuiAltScreen {
 	requestRenderCalls = 0;
 
 	override requestRender(force = false): void {
@@ -425,7 +412,7 @@ class ThrowingRestorationDocument implements Component {
 
 test("final disposal releases Markdown Text and Image derived caches while preserving logical sources", async () => {
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new TuiMainScreen(terminal, false);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	const root = new Container();
 	const metrics = createMarkdownMetrics();
 	const markdown = new Markdown("stream 中文 😀 e\u0301", 0, 0, MARKDOWN_THEME, undefined, {
@@ -588,7 +575,7 @@ test("Editor final release cancels debounced and active autocomplete work", asyn
 			return { lines, cursorLine, cursorCol };
 		},
 	};
-	const debounceTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const debounceTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const debounceEditor = new Editor(debounceTui, EDITOR_THEME);
 	debounceEditor.setAutocompleteProvider(debounceProvider);
 	debounceTui.addChild(debounceEditor);
@@ -618,7 +605,7 @@ test("Editor final release cancels debounced and active autocomplete work", asyn
 		},
 		shouldTriggerFileCompletion() { return true; },
 	};
-	const activeTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const activeTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const activeEditor = new Editor(activeTui, EDITOR_THEME);
 	activeEditor.setAutocompleteProvider(activeProvider);
 	activeTui.addChild(activeEditor);
@@ -639,7 +626,7 @@ test("Editor final release cancels debounced and active autocomplete work", asyn
 });
 
 test("extension countdown natural expiry invokes its callback before releasing owners", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	let cancelCalls = 0;
 	const selector = new ExtensionSelectorComponent("Timed selector", ["one"], noOperation, () => {
 		cancelCalls++;
@@ -659,7 +646,7 @@ test("extension countdown natural expiry invokes its callback before releasing o
 });
 
 test("final disposal releases timed extension dialog countdown owners", async () => {
-	const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new CountingProductionAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const selector = new ExtensionSelectorComponent("Timed selector", ["one"], noOperation, noOperation, {
 		tui,
 		timeout: 60_000,
@@ -692,7 +679,7 @@ test("final disposal releases timed extension dialog countdown owners", async ()
 });
 
 test("final release stops coding-agent animation owners and retry countdown", async () => {
-	const tui = new CountingProductionMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new CountingProductionAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const armin = new ArminComponent(tui);
 	const daxnuts = new DaxnutsComponent(tui);
 	const retry = new RetryStatusIndicator(tui, 1, 3, 60_000);
@@ -737,7 +724,7 @@ test("final release stops coding-agent animation owners and retry countdown", as
 	staleRetryCountdownCallback?.call(staleRetryCountdownTimer);
 	assert.equal(tui.requestRenderCalls, renderCallsAfterDispose);
 
-	const replacementTui = new CountingProductionMainScreen(new FakeTerminal(120, 40), false);
+	const replacementTui = new CountingProductionAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	armin.setTui(replacementTui);
 	daxnuts.setTui(replacementTui);
 	replacementTui.addChild(armin);
@@ -761,7 +748,7 @@ test("final release stops coding-agent animation owners and retry countdown", as
 
 test("final disposal preserves the first release error and continues terminal cleanup", async () => {
 	const terminal = new ThrowingFinalCleanupTerminal(80, 20);
-	const tui = new TuiMainScreen(terminal, false);
+	const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 	const release = new ThrowingCacheRelease(terminal);
 	const cachedText = new Text("cached-after-error", 0, 0);
 	tui.addChild(release);
@@ -807,7 +794,7 @@ test("final disposal releases built-in Bash result sidecar caches", async () => 
 			isError: false,
 		},
 	);
-	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new ProductionTuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	tui.addChild(component);
 	tui.start();
 	tui.renderNow();
@@ -898,7 +885,7 @@ test("final disposal releases write-call highlight sidecars", async () => {
 	assert.equal(raw.cache?.rawContent, source);
 	assert.equal(raw.cache?.normalizedLines.length, sourceLines.length);
 	assert.equal(raw.cache?.highlightedLines.length, sourceLines.length);
-	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new ProductionTuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	tui.addChild(component);
 	tui.start();
 	tui.renderNow();
@@ -931,7 +918,7 @@ test("final disposal releases write-call highlight sidecars", async () => {
 
 test("permanently removed overlays release animation owners", async () => {
 	for (const useHandle of [true, false]) {
-		const tui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+		const tui = new CountingProductionAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 		const loader = new ProductionLoader(tui, identity, identity, useHandle ? "handle" : "stack");
 		const raw = loader as unknown as LoaderRawState;
 		const handle = tui.showOverlay(loader);
@@ -951,7 +938,7 @@ test("permanently removed overlays release animation owners", async () => {
 		}
 	}
 
-	const mountedTui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const mountedTui = new CountingProductionAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const mountedLoader = new ProductionLoader(mountedTui, identity, identity, "mounted-overlay");
 	const mountedRaw = mountedLoader as unknown as LoaderRawState;
 	mountedTui.addChild(mountedLoader);
@@ -964,7 +951,7 @@ test("permanently removed overlays release animation owners", async () => {
 	assert.equal(mountedRaw.intervalId, null);
 	assert.equal(mountedRaw.ui, null);
 
-	const wrappedTui = new CountingProductionMainScreen(new FakeTerminal(80, 20), false);
+	const wrappedTui = new CountingProductionAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const wrappedLoader = new ProductionLoader(wrappedTui, identity, identity, "wrapped-overlay");
 	const wrappedRaw = wrappedLoader as unknown as LoaderRawState;
 	const retainedLoader = new ProductionRetainedItem(wrappedLoader, {
@@ -984,7 +971,7 @@ test("permanently removed overlays release animation owners", async () => {
 });
 
 test("overlay removal preserves descendants still owned through nested and partially shared overlays", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const loader = new Loader(tui, identity, identity, "shared-overlay", {
 		frames: ["a", "b"],
 		intervalMs: 60_000,
@@ -1012,7 +999,7 @@ test("overlay removal preserves descendants still owned through nested and parti
 		await tui.dispose({ preserveScreen: true });
 	}
 
-	const partialTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const partialTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const partialLoader = new Loader(partialTui, identity, identity, "partial-shared", {
 		frames: ["a", "b"],
 		intervalMs: 60_000,
@@ -1040,7 +1027,7 @@ test("overlay removal preserves descendants still owned through nested and parti
 		await partialTui.dispose({ preserveScreen: true });
 	}
 
-	const sameRootTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const sameRootTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const sameRootLoader = new Loader(sameRootTui, identity, identity, "same-root", {
 		frames: ["a", "b"],
 		intervalMs: 60_000,
@@ -1061,7 +1048,7 @@ test("overlay removal preserves descendants still owned through nested and parti
 		await sameRootTui.dispose({ preserveScreen: true });
 	}
 
-	const hiddenTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const hiddenTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const hiddenLoader = new Loader(hiddenTui, identity, identity, "hidden-owner", {
 		frames: ["a", "b"],
 		intervalMs: 60_000,
@@ -1087,7 +1074,7 @@ test("overlay removal preserves descendants still owned through nested and parti
 		await hiddenTui.dispose({ preserveScreen: true });
 	}
 
-	const mountedTui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const mountedTui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const mountedLoader = new Loader(mountedTui, identity, identity, "mounted-shared", {
 		frames: ["a", "b"],
 		intervalMs: 60_000,
@@ -1113,7 +1100,7 @@ test("overlay removal preserves descendants still owned through nested and parti
 });
 
 test("production Assistant and User message trees release nested Markdown and Text caches", async () => {
-	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new ProductionTuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const assistant = new AssistantMessageComponent(undefined, true, MARKDOWN_THEME, "Thinking...", 1, []);
 	assistant.updateContent(
 		assistantMessage([
@@ -1182,7 +1169,7 @@ test("final disposal traverses an active SettingsList submenu without closing it
 	const raw = submenuText as unknown as TextRawCache;
 	assert.ok((raw.cachedLines?.length ?? 0) > 0);
 
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	tui.addChild(settings);
 	tui.start();
 	tui.renderNow();
@@ -1212,7 +1199,7 @@ test("final disposal traverses the active production SteppedSubmenu component", 
 	const raw = nestedText as unknown as TextRawCache;
 	assert.ok((raw.cachedLines?.length ?? 0) > 0);
 
-	const tui = new ProductionTuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new ProductionTuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	tui.addChild(stepped);
 	tui.start();
 	tui.renderNow();
@@ -1324,7 +1311,7 @@ test("ViewportContainer final release discards 5k and 50k child scratch backing 
 });
 
 test("Editor final release replaces the 4096-line source backing without clearing text", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+	const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 	const editor = new Editor(tui, EDITOR_THEME);
 	const text = new Array<string>(4_096).fill("x").join("\n");
 	editor.setText(text);
@@ -1345,40 +1332,8 @@ test("Editor final release replaces the 4096-line source backing without clearin
 	assert.equal(editor.getText(), text);
 });
 
-test("Main final disposal drops frame scratch backing while preserving mounted children", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
-	const viewport = new ViewportContainer();
-	for (let index = 0; index < 100; index++) viewport.addChild(new StaticLine(`main-${index}`));
-	const childrenIdentity = tui.children;
-	tui.addChild(viewport);
-	tui.start();
-	tui.renderNow();
-	tui.renderNow();
-	const raw = tui as unknown as MainRawScratch;
-	const previousLines = raw.previousLines;
-	const viewportMutationTokens = raw.viewportMutationTokens;
-	const frameRootHeights = raw.frameRootHeights;
-	assert.ok(previousLines.length > 0);
-	assert.ok(frameRootHeights.length > 0);
-
-	await tui.dispose({ preserveScreen: true });
-	assert.equal(tui.children, childrenIdentity);
-	assert.equal(tui.children[0], viewport);
-	assert.notEqual(raw.previousLines, previousLines);
-	assert.notEqual(raw.viewportMutationTokens, viewportMutationTokens);
-	assert.notEqual(raw.frameRootHeights, frameRootHeights);
-	assert.deepEqual(tui.getMainFinalUnmountRetainedReferenceCounts(), {
-		previousLines: 0,
-		previousKittyImageIds: 0,
-		viewportMutationTokens: 0,
-		frameRootRecords: 0,
-		boundedFrameLines: 0,
-		rootFrameLines: 0,
-	});
-});
-
 test("ordinary stop retains leaf caches and restart remains golden", async () => {
-	const tui = new TuiMainScreen(new FakeTerminal(80, 20), false);
+	const tui = new TuiAltScreen(new FakeTerminal(80, 20), false, undefined, { mouse: false });
 	const text = new Text("restart 中文 😀 e\u0301", 0, 0);
 	tui.addChild(text);
 	tui.start();
@@ -1467,7 +1422,7 @@ test("Alt final disposal restores global image capabilities after restoration re
 
 test("production-shaped final unmount releases all built-in derived owners and preserves reusable state", async () => {
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new ProductionTuiMainScreen(terminal, false);
+	const tui = new ProductionTuiAltScreen(terminal, false, undefined, { mouse: false });
 	const transcript = new ProductionRetainedContainer();
 	for (let index = 0; index < 5_000; index++) {
 		transcript.addRetainedChild(new ProductionText(`history-${index}`, 0, 0), {

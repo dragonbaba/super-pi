@@ -47,7 +47,8 @@ export type FullscreenExitOutput = "transcript" | "resume-hint";
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
-	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
+	/** @deprecated Ignored: the fullscreen renderer repaints the whole viewport. */
+	clearOnShrink?: boolean;
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 }
 
@@ -1355,23 +1356,6 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.imageWidthCells = Math.max(1, Math.floor(width));
 		this.markModified("terminal", "imageWidthCells");
-		this.save();
-	}
-
-	getClearOnShrink(): boolean {
-		// Settings takes precedence, then env var, then default false
-		if (this.settings.terminal?.clearOnShrink !== undefined) {
-			return this.settings.terminal.clearOnShrink;
-		}
-		return process.env.SP_CLEAR_ON_SHRINK === "1";
-	}
-
-	setClearOnShrink(enabled: boolean): void {
-		if (!this.globalSettings.terminal) {
-			this.globalSettings.terminal = {};
-		}
-		this.globalSettings.terminal.clearOnShrink = enabled;
-		this.markModified("terminal", "clearOnShrink");
 		this.save();
 	}
 

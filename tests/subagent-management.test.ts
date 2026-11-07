@@ -24,7 +24,7 @@ import { stripVTControlCharacters } from "node:util";
 import { releaseComponentRenderCaches } from "@super-pi/tui";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 // Set before loading the extension's config-path constants; never inspect user configuration.
@@ -391,7 +391,7 @@ test("responsibilities are required for every item before any child starts and r
 
 test("capacity handoff reaches foreground/background results and stops dependent chain launches", async t => {
 	const h = harness(t, { persistent: true });
-	initTheme("dark"); const ui = new TuiMainScreen(new FakeTerminal(140, 24));
+	initTheme("dark"); const ui = new TuiAltScreen(new FakeTerminal(140, 24), false, undefined, { mouse: false });
 	const args = { checkpoint: true, chain: [
 		{ agent: "scout", task: "capacity-handoff", readOnly: true },
 		{ agent: "scout", task: "must-not-run", readOnly: true },
@@ -671,7 +671,7 @@ test("foreground publishes only isolated lifecycle snapshots and preserves final
 });
 
 for (const outcome of ["success", "fail", "cancel"] as const) test(`real child native TUI progress advances without protocol updates and releases on ${outcome}`, { timeout: 15000 }, async t => {
-  initTheme("dark"); const h = harness(t), terminal = new FakeTerminal(140, 24), ui = new TuiMainScreen(terminal);
+  initTheme("dark"); const h = harness(t), terminal = new FakeTerminal(140, 24), ui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
   const args = { agent: "worker", task: "native-progress-" + outcome, readOnly: true };
   const component = new ToolExecutionComponent("subagent", "call-1", args, {}, h.tools.get("subagent"), ui, h.ctx.cwd);
   ui.addChild(component); ui.start();
@@ -680,7 +680,7 @@ for (const outcome of ["success", "fail", "cancel"] as const) test(`real child n
   const operation = h.run(args, update => { updates++; component.updateResult(update, true, false); }, controller.signal);
   const observed = operation.then((value: any) => ({ value }), (error: unknown) => ({ error }));
   const pid = await startedChild(h.ctx.cwd, args.task);
-  const screen = () => stripVTControlCharacters(ui.captureRenderState().previousLines.join("\n"));
+  const screen = () => stripVTControlCharacters((ui as unknown as { previousScreen: string[] }).previousScreen.join("\n"));
   for (let i = 0; !screen().includes("1 turn ↑1 ↓2") && i < 120; i++) await delay(25);
   assert.match(screen(), /1 turn ↑1 ↓2.*\$0\.0100.*read/); assert.equal(updates, 1);
   const firstScreen = screen(), writes = terminal.writes.length;

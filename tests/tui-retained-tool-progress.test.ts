@@ -12,7 +12,7 @@ import { RetainedContainer } from "../packages/tui/src/components/retained-item.
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { isImageLine } from "../packages/tui/src/terminal-image.ts";
 import { type Component, Container } from "../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 
 class CountingHistoryItem implements Component {
@@ -33,7 +33,7 @@ function createTool(
 	toolDefinition?: ToolDefinition<any, any>,
 	onVisualInvalidate?: (component: ToolExecutionComponent) => void,
 ): ToolExecutionComponent {
-	const ui = new TuiMainScreen(new FakeTerminal(100, 30), false);
+	const ui = new TuiAltScreen(new FakeTerminal(100, 30), false, undefined, { mouse: false });
 	return new ToolExecutionComponent(
 		"phase4a-progress",
 		id,

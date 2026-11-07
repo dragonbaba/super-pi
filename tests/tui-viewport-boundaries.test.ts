@@ -4,7 +4,7 @@ import { RetainedContainer } from "../packages/tui/src/components/retained-item.
 import { Text } from "../packages/tui/src/components/text.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { type Component, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { renderComponentsViewport } from "../packages/tui/src/components/viewport-container.ts";
 import { stripTerminalSequences } from "../packages/tui/src/utils.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
@@ -288,7 +288,7 @@ test("production Bash progress refreshes only its dynamic height and stays botto
 	initTheme("dark");
 	const transcript = new RetainedContainer();
 	for (let index = 0; index < 5_000; index++) addCompleted(transcript, new MutableLines(`history-${index}`), `history-${index}`);
-	const ui = new TuiMainScreen(new FakeTerminal(100, 30), false);
+	const ui = new TuiAltScreen(new FakeTerminal(100, 30), false, undefined, { mouse: false });
 	const bash = new BashExecutionComponent("for i in 1 2 3; do echo $i; done", ui);
 	transcript.addChild(bash);
 	assertIndexedTailMatchesReference(transcript, 100, 30);
@@ -317,53 +317,58 @@ test("cursor and two overlays scan and compose only the visible 50k tail", () =>
 	const activeComponent = new MutableLines("输入-中文😀e\u0301", 1, CURSOR_MARKER);
 	const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
 	const terminal = new FakeTerminal(120, 40);
-	const tui = new TuiMainScreen(terminal, true);
+	const tui = new TuiAltScreen(terminal, true, undefined, { mouse: false });
 	tui.setRenderInstrumentation(instrumentation);
 	tui.addChild(transcript);
-	tui.renderNow();
+	tui.start();
+	try {
+		tui.renderNow();
 
-	instrumentation.reset();
-	active.advanceVersion();
-	tui.renderNow();
-	let metrics = instrumentation.snapshot();
-	assert.equal(metrics.cursorScannedLines, 1);
-	assert.equal(metrics.completedItemRenders, 0);
-	assert.ok(metrics.viewportItemVisits <= 40);
-	const golden = transcript.render(120).slice(-40).map(stripTerminalSequences);
-	assert.deepEqual(tui.captureRenderState().previousLines.map(stripTerminalSequences), golden);
+		instrumentation.reset();
+		active.advanceVersion();
+		tui.renderNow();
+		let metrics = instrumentation.snapshot();
+		assert.equal(metrics.cursorScannedLines, 1);
+		assert.equal(metrics.completedItemRenders, 0);
+		assert.ok(metrics.viewportItemVisits <= 40);
+		const golden = transcript.render(120).slice(-40).map(stripTerminalSequences);
+		assert.deepEqual((tui as unknown as { previousScreen: string[] }).previousScreen.map(line => stripTerminalSequences(line).trimEnd()), golden.map(line => line.trimEnd()));
 
-	activeComponent.setLines(1, "");
-	active.advanceVersion();
-	instrumentation.reset();
-	tui.renderNow();
-	metrics = instrumentation.snapshot();
-	assert.equal(metrics.cursorScannedLines, 40);
-	assert.equal(metrics.completedItemRenders, 0);
+		activeComponent.setLines(1, "");
+		active.advanceVersion();
+		instrumentation.reset();
+		tui.renderNow();
+		metrics = instrumentation.snapshot();
+		assert.equal(metrics.cursorScannedLines, 40);
+		assert.equal(metrics.completedItemRenders, 0);
 
-	const firstOptions = { width: 18, row: 2, col: 3 };
-	const first = tui.showOverlay(new Text("overlay-one"), firstOptions);
-	const second = tui.showOverlay(new Text("overlay-two"), { width: 18, row: 2, col: 3 });
-	instrumentation.reset();
-	tui.renderNow();
-	metrics = instrumentation.snapshot();
-	assert.equal(metrics.overlayRenders, 2);
-	assert.equal(metrics.completedItemRenders, 0);
-	const transcriptVisits = metrics.viewportItemVisits;
+		const firstOptions = { width: 18, row: 2, col: 3 };
+		const first = tui.showOverlay(new Text("overlay-one"), firstOptions);
+		const second = tui.showOverlay(new Text("overlay-two"), { width: 18, row: 2, col: 3 });
+		instrumentation.reset();
+		tui.renderNow();
+		metrics = instrumentation.snapshot();
+		assert.equal(metrics.overlayRenders, 2);
+		assert.equal(metrics.completedItemRenders, 0);
+		const transcriptVisits = metrics.viewportItemVisits;
 
-	firstOptions.row = 4;
-	first.focus();
-	instrumentation.reset();
-	tui.renderNow();
-	metrics = instrumentation.snapshot();
-	assert.equal(metrics.overlayRenders, 2);
-	assert.equal(metrics.viewportItemVisits, transcriptVisits);
-	assert.equal(metrics.completedItemRenders, 0);
+		firstOptions.row = 4;
+		first.focus();
+		instrumentation.reset();
+		tui.renderNow();
+		metrics = instrumentation.snapshot();
+		assert.equal(metrics.overlayRenders, 2);
+		assert.equal(metrics.viewportItemVisits, transcriptVisits);
+		assert.equal(metrics.completedItemRenders, 0);
 
-	second.setHidden(true);
-	first.hide();
-	instrumentation.reset();
-	tui.renderNow();
-	metrics = instrumentation.snapshot();
-	assert.equal(metrics.overlayRenders, 0);
-	assert.equal(metrics.completedItemRenders, 0);
+		second.setHidden(true);
+		first.hide();
+		instrumentation.reset();
+		tui.renderNow();
+		metrics = instrumentation.snapshot();
+		assert.equal(metrics.overlayRenders, 0);
+		assert.equal(metrics.completedItemRenders, 0);
+	} finally {
+		tui.stop();
+	}
 });

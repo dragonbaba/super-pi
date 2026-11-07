@@ -12,7 +12,7 @@ The following paths are hot by default:
 - observer and agent-event delivery;
 - `InteractiveMode` update handling;
 - `requestRender()` and `scheduleRender()`;
-- Main and Alt `doRender()`;
+- `TuiAltScreen.doRender()`;
 - viewport and layout composition;
 - terminal-frame generation;
 - `TerminalFrameQueue.submit()`, `start()`, `finish()`, and `flush()`;

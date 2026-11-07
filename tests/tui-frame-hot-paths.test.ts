@@ -22,10 +22,8 @@ const HOT_METHODS: readonly MethodTarget[] = [
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "requestRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "scheduleRender" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "compositeOverlays" },
-	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursors" },
 	{ path: "packages/tui/src/tui.ts", className: "TuiBase", methodName: "resolveFakeCursorLine" },
 	{ path: "packages/tui/src/components/viewport-container.ts", className: "ViewportContainer", methodName: "renderViewportTail" },
-	{ path: "packages/tui/src/tui-main-screen.ts", className: "TuiMainScreen", methodName: "renderRootViewportTail" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgress" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "startProgressWrite" },
 	{ path: "packages/tui/src/terminal.ts", className: "ProcessTerminal", methodName: "setProgramStatus" },
@@ -41,7 +39,6 @@ const HOT_METHODS: readonly MethodTarget[] = [
 const LOW_FREQUENCY_ALLOCATION_EXEMPTIONS = [
 	"TuiBase.awaitTerminalBoundary",
 	"TuiBase.finishStopAfterFrames",
-	"TuiMainScreen.writeRenderDebugLog",
 	"AgentSession._emitAgentEnd",
 	"AgentSession._drainPendingCustomMessages", // One shared Promise owner per nonempty drain; never per progress event.
 	"AgentSession._publishIdleIfReady", // One terminal event after run/drain lifecycle owners release.
@@ -50,9 +47,6 @@ const LOW_FREQUENCY_ALLOCATION_EXEMPTIONS = [
 ] as const;
 
 const RENDER_SUBMIT_METHODS: readonly MethodTarget[] = [
-	{ path: "packages/tui/src/tui-main-screen.ts", className: "TuiMainScreen", methodName: "doRender" },
-	{ path: "packages/tui/src/tui-main-screen.ts", className: "TuiMainScreen", methodName: "renderVisibleDocument" },
-	{ path: "packages/tui/src/tui-main-screen.ts", className: "TuiMainScreen", methodName: "renderFullFrame" },
 	{ path: "packages/tui/src/tui-alt-screen.ts", className: "TuiAltScreen", methodName: "doRender" },
 ] as const;
 
@@ -279,7 +273,6 @@ test("terminal frame hot methods contain no per-frame closures, Promise executor
 	assert.deepEqual(LOW_FREQUENCY_ALLOCATION_EXEMPTIONS, [
 		"TuiBase.awaitTerminalBoundary",
 		"TuiBase.finishStopAfterFrames",
-		"TuiMainScreen.writeRenderDebugLog",
 		"AgentSession._emitAgentEnd",
 		"AgentSession._drainPendingCustomMessages",
 		"AgentSession._publishIdleIfReady",
@@ -395,7 +388,6 @@ test("terminal lifecycle entry points have primitive admission or post-stop owne
 
 test("frame submit calls use primitive arguments and do not copy full frame strings", () => {
 	const paths = [
-		"packages/tui/src/tui-main-screen.ts",
 		"packages/tui/src/tui-alt-screen.ts",
 		"packages/tui/src/tui.ts",
 	];
@@ -429,7 +421,7 @@ test("frame submit calls use primitive arguments and do not copy full frame stri
 	assert.doesNotMatch(productionFrameSources, /new String\(|Buffer\.from\(frame|JSON\.stringify\(frame|String\(frame/);
 });
 
-test("Main and Alt render-submit methods satisfy the complete frame hot-path contract", () => {
+test("fullscreen render-submit methods satisfy the complete frame hot-path contract", () => {
 	for (const target of RENDER_SUBMIT_METHODS) {
 		const source = parse(target.path);
 		const method = methodNamed(source, target.className, target.methodName);

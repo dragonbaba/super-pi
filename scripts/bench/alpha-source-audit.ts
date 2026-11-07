@@ -17,7 +17,6 @@ const files = [
   'packages/tui/src/components/markdown.ts',
   'packages/tui/src/components/retained-item.ts',
   'packages/tui/src/tui.ts',
-  'packages/tui/src/tui-main-screen.ts',
   'packages/tui/src/tui-alt-screen.ts',
   'packages/tui/src/render-instrumentation.ts',
   'packages/tui/src/terminal-frame-queue.ts',

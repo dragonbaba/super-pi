@@ -7,7 +7,6 @@ import { getCellDimensions, setCellDimensions } from "../packages/tui/src/termin
 const RETAINED_PATH = "packages/tui/src/components/retained-item.ts";
 const INSTRUMENTATION_PATH = "packages/tui/src/render-instrumentation.ts";
 const INTERACTIVE_MODE_PATH = "packages/coding-agent/src/modes/interactive/interactive-mode.ts";
-const MAIN_SCREEN_PATH = "packages/tui/src/tui-main-screen.ts";
 const ALT_SCREEN_PATH = "packages/tui/src/tui-alt-screen.ts";
 const TUI_PATH = "packages/tui/src/tui.ts";
 const TERMINAL_IMAGE_PATH = "packages/tui/src/terminal-image.ts";
@@ -134,19 +133,6 @@ test("viewport hot paths avoid full-history wrapper copies and global ownership"
 	assert.doesNotMatch(`${retainedText}\n${viewportText}`, /ObjectPool|Proxy\s*\(/);
 });
 
-test("Main bounded frames use explicit mutation attribution and the singleton tail query", () => {
-	const text = readFileSync(MAIN_SCREEN_PATH, "utf8");
-	const source = ts.createSourceFile(MAIN_SCREEN_PATH, text, ts.ScriptTarget.Latest, true);
-	const visibleRender = findMethod(source, "TuiMainScreen", "renderVisibleDocument").getText(source);
-	assert.match(visibleRender, /this\.children\.length === 1[\s\S]*renderViewportTail\(width, height\)/);
-	assert.match(visibleRender, /observeViewportMutations\(width\)/);
-	assert.match(visibleRender, /mutation\.kind === "unsafe"/);
-	assert.match(visibleRender, /mutation\.earliestChangedLine < previousStart/);
-	assert.doesNotMatch(visibleRender, /previousKittyImageIds\s*=\s*new Set/);
-	assert.match(visibleRender, /sourceOffset === 0[\s\S]*?\? rendered\.lines[\s\S]*?: rendered\.lines\.slice/);
-	assert.doesNotMatch(visibleRender, /expectedLines|previousWindow\.slice\(shiftedRows/);
-});
-
 test("allocation hot paths keep cache hits and mutation writes allocation-free", () => {
 	const retainedText = readFileSync(RETAINED_PATH, "utf8");
 	const retainedSource = ts.createSourceFile(RETAINED_PATH, retainedText, ts.ScriptTarget.Latest, true);
@@ -166,12 +152,7 @@ test("allocation hot paths keep cache hits and mutation writes allocation-free",
 	assert.doesNotMatch(retainedText, /viewportMutationEventRecords = new Array/);
 });
 
-test("Main reuses mutation tokens and Alt avoids duplicate no-op frame copies", () => {
-	const mainText = readFileSync(MAIN_SCREEN_PATH, "utf8");
-	assert.match(mainText, /private viewportMutationTokens: unknown\[\] = \[\]/);
-	assert.match(mainText, /releaseMountedComponentsAfterDispose[\s\S]*this\.viewportMutationTokens = \[\]/);
-	assert.doesNotMatch(mainText, /childTokens\s*:/);
-
+test("Alt avoids duplicate no-op frame copies", () => {
 	const altText = readFileSync(ALT_SCREEN_PATH, "utf8");
 	assert.match(altText, /let screen = nextLayout\.lines;/);
 	assert.doesNotMatch(altText, /nextLayout\.lines\.slice\(\)/);

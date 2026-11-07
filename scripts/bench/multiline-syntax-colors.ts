@@ -6,7 +6,6 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { getMarkdownTheme, initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { renderHighlightedHtml } from "../../packages/coding-agent/src/utils/syntax-highlight.ts";
 import { Markdown } from "../../packages/tui/src/components/markdown.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
 import { FakeTerminal } from "../../tests/helpers/runtime-instrumentation.ts";
@@ -75,14 +74,14 @@ try {
 	}
 	const text = '```python\n"""\nline one\n\nline two\n"""\n';
 	const variants = [text + "even\n```", text + "odd\n```"];
-	async function productionCase(mode: "main" | "alt") {
+	async function productionCase() {
 		const terminal = new Terminal(80, 24);
-		const ui = mode === "main" ? new TuiMainScreen(terminal, false) : new TuiAltScreen(terminal, false, undefined, { mouse: false });
+		const ui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 		const metrics = new TuiRenderInstrumentation();
 		ui.setRenderInstrumentation(metrics);
 		let markdown: Markdown | undefined = new Markdown(variants[0]!, 0, 0, markdownTheme);
 		const weak = new WeakRef(markdown);
-		if (ui instanceof TuiAltScreen) ui.setLayoutRoot(markdown); else ui.addChild(markdown);
+		ui.setLayoutRoot(markdown);
 		let tick = 0;
 		function run(): void { markdown!.setText(variants[++tick % 2]!); ui.renderNow(); }
 		try {
@@ -104,14 +103,14 @@ try {
 			assert.equal(queue.activeFrameUtf8Bytes + queue.pendingFrameUtf8Bytes, 0);
 			await ui.dispose({ preserveScreen: true });
 			assert.equal((markdown as unknown as { cachedLines?: string[] }).cachedLines, undefined);
-			const retained = ui instanceof TuiAltScreen ? ui.getAltFinalUnmountRetainedReferenceCounts() : ui.getMainFinalUnmountRetainedReferenceCounts();
+			const retained = ui.getAltFinalUnmountRetainedReferenceCounts();
 			for (const count of Object.values(retained)) assert.equal(count, 0);
 			markdown = undefined;
-			return { kind: `production-${mode}`, ...profile, highlightCalls, measured, queue, retained, weak };
+			return { kind: "production-alt", ...profile, highlightCalls, measured, queue, retained, weak };
 		} finally { await ui.dispose({ preserveScreen: true }); }
 	}
-	for (const mode of ["main", "alt"] as const) {
-		const { weak, ...result } = await productionCase(mode);
+	{
+		const { weak, ...result } = await productionCase();
 		for (let index = 0; index < 8; index++) { await nextTurn(); globalThis.gc!(); }
 		const markdownCollected = weak.deref() === undefined;
 		assert.ok(markdownCollected);

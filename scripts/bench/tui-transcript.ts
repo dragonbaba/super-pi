@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import type { AssistantMessage } from "../../packages/ai/src/types.ts";
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { TuiRenderInstrumentation } from "../../packages/tui/src/render-instrumentation.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { AssistantMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
 import { UserMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/user-message.ts";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -93,7 +93,7 @@ const active = new AssistantMessageComponent(assistantMessage("active"));
 const activeItem = transcript.addRetainedChild(active, { id: "active", version: 0 });
 
 const terminal = new SlowTerminal(width, height);
-const tui = new TuiMainScreen(terminal, false);
+const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false });
 tui.setRenderInstrumentation(instrumentation);
 tui.addChild(
 	fullHistoryMode
@@ -107,6 +107,7 @@ let generation = 0;
 const transcriptSha256 = createHash("sha256").update(items.join("\n")).digest("hex");
 // Prime the production renderer without an artificial multi-minute first-frame
 // delay. Measured transcript updates then flow through the slow sink.
+tui.start();
 tui.renderNow();
 const retainedStats = transcript.getRetainedStats();
 terminal.enableBackpressure();
@@ -120,7 +121,7 @@ await runBenchmarkMain({
 		active.updateContent(assistantMessage(`active update ${generation++}`), true);
 		activeItem.updateVersion(generation);
 		tui.renderNow();
-		const state = tui.captureRenderState();
+		const screen = (tui as unknown as { previousScreen: readonly string[] }).previousScreen;
 		const metrics = instrumentation.snapshot();
 		return {
 			transcriptItems: itemCount,
@@ -136,7 +137,7 @@ await runBenchmarkMain({
 			estimatedCachedBytes: retainedStats.estimatedCachedBytes,
 			rootRenders: metrics.rootRenders,
 			generatedLines: metrics.generatedLines,
-			visibleLines: Math.min(state.previousLines.length, height),
+			visibleLines: Math.min(screen.length, height),
 			viewportItemVisits: metrics.viewportItemVisits,
 			viewportComposedLines: metrics.viewportComposedLines,
 			viewportCopiedLines: metrics.viewportCopiedLines,
@@ -160,8 +161,8 @@ await runBenchmarkMain({
 	observations: () => ({
 		transcriptSha256,
 		transcriptRenderer: fullHistoryMode
-			? "TuiMainScreen+RetainedFullHistory+UserMessageComponent+AssistantMessageComponent"
-			: "TuiMainScreen+RetainedViewportHeightIndex+UserMessageComponent+AssistantMessageComponent",
+			? "TuiAltScreen+RetainedFullHistory+UserMessageComponent+AssistantMessageComponent"
+			: "TuiAltScreen+RetainedViewportHeightIndex+UserMessageComponent+AssistantMessageComponent",
 		deliveryMode: fullHistoryMode ? "session-local-sidecar+full-history" : "session-local-sidecar+visible-line-window",
 			slowTerminal: !cpuOnly,
 			cpuOnly,

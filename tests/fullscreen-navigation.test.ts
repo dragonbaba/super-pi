@@ -3,7 +3,6 @@ import test from "node:test";
 import { Input } from "../packages/tui/src/components/input.ts";
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, type KeybindingsConfig } from "../packages/tui/src/keybindings.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { FakeTerminal } from "./helpers/runtime-instrumentation.ts";
 import { alphaSession } from "./helpers/alpha-session.ts";
 
@@ -20,15 +19,14 @@ class InputTerminal extends FakeTerminal {
 }
 
 async function withInput(
-	fullscreen: boolean,
 	bindings: KeybindingsConfig,
-	run: (tui: TuiAltScreen | TuiMainScreen, terminal: InputTerminal, input: Input) => void,
+	run: (tui: TuiAltScreen, terminal: InputTerminal, input: Input) => void,
 	hint = false,
 ): Promise<void> {
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, bindings));
 	const terminal = new InputTerminal(60, 10);
-	const tui = fullscreen ? new TuiAltScreen(terminal, false, undefined, { scrollToBottomHint: hint }) : new TuiMainScreen(terminal);
+	const tui = new TuiAltScreen(terminal, false, undefined, { scrollToBottomHint: hint });
 	try {
 		const input = new Input();
 		input.handleInput("abcd");
@@ -48,7 +46,7 @@ async function withInput(
 
 test("bottom hint appears only above the tail, accepts clicks, adapts to width and releases its row", async () => {
 	let owner: TuiAltScreen;
-	await withInput(true, {}, (tui, terminal, input) => {
+	await withInput({}, (tui, terminal, input) => {
 		assert.ok(tui instanceof TuiAltScreen); owner = tui;
 		assert.equal(tui.getBottomHintDiagnostics().row, -1);
 		tui.scrollToTop(); tui.renderNow();
@@ -111,21 +109,19 @@ for (const operation of ["compaction", "retry"] as const) test(`Escape returns t
 	}
 });
 
-for (const fullscreen of [false, true]) {
-	test(`${fullscreen ? "fullscreen" : "main"} Home/End edit the focused input`, async () => {
-		await withInput(fullscreen, {}, (_tui, terminal, input) => {
-			terminal.onInput!("\x1b[H");
-			terminal.onInput!("x");
-			assert.equal(input.getValue(), "xabcd");
-			terminal.onInput!("\x1b[F");
-			terminal.onInput!("y");
-			assert.equal(input.getValue(), "xabcdy");
-		});
+test("Home/End edit the focused input", async () => {
+	await withInput({}, (_tui, terminal, input) => {
+		terminal.onInput!("\x1b[H");
+		terminal.onInput!("x");
+		assert.equal(input.getValue(), "xabcd");
+		terminal.onInput!("\x1b[F");
+		terminal.onInput!("y");
+		assert.equal(input.getValue(), "xabcdy");
 	});
-}
+});
 
 test("fullscreen Ctrl+Home/End move the transcript without moving the editor", async () => {
-	await withInput(true, {}, (tui, terminal, input) => {
+	await withInput({}, (tui, terminal, input) => {
 		assert.ok(tui instanceof TuiAltScreen);
 		const bottom = tui.viewportTop;
 		assert.ok(bottom > 0);
@@ -139,7 +135,7 @@ test("fullscreen Ctrl+Home/End move the transcript without moving the editor", a
 });
 
 test("fullscreen navigation honors explicit legacy key overrides", async () => {
-	await withInput(true, {
+	await withInput({
 		"tui.altScreen.top": "home", "tui.altScreen.bottom": "end",
 		"tui.editor.cursorLineStart": "ctrl+home", "tui.editor.cursorLineEnd": "ctrl+end",
 	}, (tui, terminal, input) => {
@@ -162,7 +158,7 @@ test("explicit editor overrides win without also rebinding viewport defaults", a
 	for (const bindings of [{
 		"tui.editor.cursorLineStart": "ctrl+home", "tui.editor.cursorLineEnd": "ctrl+end",
 	}, JSON.parse('{"tui.editor.cursorLineStart":"CTRL+HOME","tui.editor.cursorLineEnd":"CTRL+END"}')]) {
-		await withInput(true, bindings, (tui, terminal, input) => {
+		await withInput(bindings, (tui, terminal, input) => {
 			assert.ok(tui instanceof TuiAltScreen);
 			const bottom = tui.viewportTop;
 			terminal.onInput!("\x1b[1;5H");
@@ -177,7 +173,7 @@ test("explicit editor overrides win without also rebinding viewport defaults", a
 });
 
 test("Windows Console Ctrl+Up/Down sequences keep transcript boundaries reachable", async () => {
-	await withInput(true, {}, (tui, terminal, input) => {
+	await withInput({}, (tui, terminal, input) => {
 		assert.ok(tui instanceof TuiAltScreen);
 		const bottom = tui.viewportTop;
 		assert.ok(bottom > 0);

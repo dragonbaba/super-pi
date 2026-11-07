@@ -1,4 +1,4 @@
-import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@super-pi/tui";
+import { ProcessTerminal, setKeybindings, type TUI, TuiAltScreen } from "@super-pi/tui";
 import { existsSync } from "fs";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";
@@ -88,9 +88,7 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
 	const terminalTheme = detectTerminalBackgroundFromEnv().theme;
 	initTheme(resolveThemeSetting(settingsManager.getThemeSetting(), terminalTheme) ?? terminalTheme);
 	setKeybindings(KeybindingsManager.create());
-	const ui: TUI = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
-	ui.setClearOnShrink(settingsManager.getClearOnShrink());
-	return ui;
+	return new TuiAltScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 }
 
 export function startStartupTui(ui: TUI, settingsManager: SettingsManager): void {
@@ -108,10 +106,9 @@ async function applyDetectedStartupTheme(ui: TUI, settingsManager: SettingsManag
 	ui.requestRender();
 }
 
-async function clearStartupTui(ui: TUI): Promise<void> {
-	ui.clear();
-	ui.requestRender();
-	await new Promise((resolve) => setTimeout(resolve, 25));
+/** Leaving the alternate screen restores the terminal exactly as it was before the prompt. */
+function closeStartupTui(ui: TUI): Promise<void> {
+	return ui.dispose({ preserveScreen: true });
 }
 
 /**
@@ -153,8 +150,7 @@ export async function showStartupSelector<T>(
 				return;
 			}
 			settled = true;
-			await clearStartupTui(ui);
-			await ui.dispose();
+			await closeStartupTui(ui);
 			resolve(result);
 		};
 
@@ -186,8 +182,7 @@ export async function showFirstTimeSetup(settingsManager: SettingsManager): Prom
 				settingsManager.setEnableAnalytics(result.shareAnalytics);
 				await settingsManager.flush();
 			}
-			await clearStartupTui(ui);
-			await ui.dispose();
+			await closeStartupTui(ui);
 			resolve();
 		};
 
@@ -227,8 +222,7 @@ export async function showStartupInput(
 			}
 			settled = true;
 			input.dispose();
-			await clearStartupTui(ui);
-			await ui.dispose();
+			await closeStartupTui(ui);
 			resolve(result);
 		};
 

@@ -5,7 +5,6 @@ import { ScrollView } from "../packages/tui/src/components/scroll-view.ts";
 import { ViewportContainer } from "../packages/tui/src/components/viewport-container.ts";
 import { renderLayoutFrame } from "../packages/tui/src/layout.ts";
 import { type Component, Container, CURSOR_MARKER } from "../packages/tui/src/tui.ts";
-import { TuiMainScreen } from "../packages/tui/src/tui-main-screen.ts";
 import { TuiAltScreen } from "../packages/tui/src/tui-alt-screen.ts";
 import { TuiRenderInstrumentation } from "../packages/tui/src/render-instrumentation.ts";
 import { isImageLine, registerKittyImageMetadata } from "../packages/tui/src/terminal-image.ts";
@@ -385,7 +384,7 @@ test("active-only fullscreen frames do not visit completed offscreen history", (
 	}
 });
 
-test("main screen active and overlay frames stay bounded by the visible transcript", () => {
+test("fullscreen active and overlay frames stay bounded by the visible transcript", () => {
 	for (const itemCount of [5_000, 50_000]) {
 		const instrumentation = new TuiRenderInstrumentation();
 		const transcript = new RetainedContainer({ instrumentation });
@@ -398,35 +397,42 @@ test("main screen active and overlay frames stay bounded by the visible transcri
 		}
 		const activeComponent = new LinesComponent("active");
 		const active = transcript.addRetainedChild(activeComponent, { id: "active", version: 0 });
-		const tui = new TuiMainScreen(new FakeTerminal(120, 40), false);
+		const tui = new TuiAltScreen(new FakeTerminal(120, 40), false, undefined, { mouse: false });
 		tui.setRenderInstrumentation(instrumentation);
 		tui.addChild(transcript);
-		tui.renderNow();
+		tui.start();
+		try {
+			tui.renderNow();
 
-		instrumentation.reset();
-		activeComponent.setLineCount(2);
-		active.advanceVersion();
-		tui.renderNow();
-		let metrics = instrumentation.snapshot();
-		assert.equal(metrics.completedItemRenders, 0);
-		assert.equal(metrics.activeItemRenders, 1);
-		assert.ok(metrics.retainedCacheHits < 100);
-		assert.ok(metrics.viewportItemVisits < 100);
-		assert.ok(metrics.viewportComposedLines <= 40);
-		assert.equal(metrics.generatedLines, itemCount + 2);
-		assert.ok(tui.captureRenderState().previousLines.length <= 40);
-		assert.deepEqual(
-			tui.captureRenderState().previousLines.map(stripTerminalSequences),
-			transcript.render(120).slice(-40).map(stripTerminalSequences),
-		);
+			instrumentation.reset();
+			activeComponent.setLineCount(2);
+			active.advanceVersion();
+			tui.renderNow();
+			let metrics = instrumentation.snapshot();
+			assert.equal(metrics.completedItemRenders, 0);
+			// Measure plus compose: the active record is rendered twice, completed records never.
+			assert.equal(metrics.activeItemRenders, 2);
+			assert.ok(metrics.retainedCacheHits < 100);
+			assert.ok(metrics.viewportItemVisits < 100);
+			assert.ok(metrics.viewportComposedLines <= 40);
+			assert.equal(metrics.generatedLines, itemCount + 2);
+			const visible = (tui as unknown as { previousScreen: string[] }).previousScreen;
+			assert.equal(visible.length, 40);
+			assert.deepEqual(
+				visible.map(line => stripTerminalSequences(line).trimEnd()),
+				transcript.render(120).slice(-40).map(line => stripTerminalSequences(line).trimEnd()),
+			);
 
-		instrumentation.reset();
-		const overlay = tui.showOverlay(new LinesComponent("overlay"), { width: 20 });
-		tui.renderNow();
-		metrics = instrumentation.snapshot();
-		assert.equal(metrics.completedItemRenders, 0);
-		assert.ok(metrics.retainedCacheHits < 100);
-		assert.ok(metrics.viewportItemVisits < 100);
-		overlay.hide();
+			instrumentation.reset();
+			const overlay = tui.showOverlay(new LinesComponent("overlay"), { width: 20 });
+			tui.renderNow();
+			metrics = instrumentation.snapshot();
+			assert.equal(metrics.completedItemRenders, 0);
+			assert.ok(metrics.retainedCacheHits < 100);
+			assert.ok(metrics.viewportItemVisits < 100);
+			overlay.hide();
+		} finally {
+			tui.stop();
+		}
 	}
 });

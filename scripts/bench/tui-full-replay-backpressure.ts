@@ -5,7 +5,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { RetainedContainer } from "../../packages/tui/src/components/retained-item.ts";
 import { TuiRenderInstrumentation, utf8ByteLength } from "../../packages/tui/src/render-instrumentation.ts";
 import type { Terminal } from "../../packages/tui/src/terminal.ts";
-import { TuiMainScreen } from "../../packages/tui/src/tui-main-screen.ts";
+import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
 import { readIntegerOption, runBenchmarkMain } from "./benchmark.ts";
 import { BENCHMARK_FIXTURE_VERSION, createTranscriptItems } from "./fixtures.ts";
 
@@ -120,9 +120,10 @@ await runBenchmarkMain({
 		}
 		const terminal = new GatedReplayTerminal();
 		const instrumentation = new TuiRenderInstrumentation();
-		const tui = new TuiMainScreen(terminal, false, undefined, lifecycleTimeoutMs);
+		const tui = new TuiAltScreen(terminal, false, undefined, { mouse: false, terminalBoundaryTimeoutMs: lifecycleTimeoutMs });
 		tui.setRenderInstrumentation(instrumentation);
 		tui.addChild(transcript);
+		tui.start();
 		tui.renderNow();
 		await tui.flushTerminalFrames();
 		const heapAfterPrimeBytes = collectGarbage();
