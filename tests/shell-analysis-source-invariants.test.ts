@@ -25,7 +25,7 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   targets.get("core.ts")!.add("pythonPathArgumentOpen");
   targets.get("core.ts")!.add("coprocBodyIndex");
   for (const name of ["nodeIndirectCall", "nodeLiteralMethodKeyEnd", "isCodeWhitespace", "hasUninspectableEnvLauncher", "commandTokenIndex"]) targets.get("core.ts")!.add(name);
-  for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer"]) targets.get("permission-bash.ts")!.add(name);
+  for (const name of ["addPositionalTargets", "findSearchRootIndex", "inspectTokenBuffer", "inspectRsync", "isRemoteRsyncOperand", "inspectTarExtract"]) targets.get("permission-bash.ts")!.add(name);
   // Native PowerShell and cmd scripts: one cached token table per source, one word buffer per script.
   targets.get("permission-bash.ts")!.add("inspectWindowsScript");
   targets.get("core.ts")!.add("inspectWindowsShellScript");
@@ -40,14 +40,14 @@ test("authorization scanners and cache methods add no callbacks, promises or Buf
   // One read-only judgment for Plan mode, the PowerShell scope and the host-restricted class, read from the same tables.
   targets.set("readonly-command.ts", new Set(["findNonReadOnlyShellSegment", "findUnsafePowerShellSegment", "classifySegment", "isReadOnlyRedirection",
     "isDescriptor", "isAssignment", "hasFileProviderArguments", "hasSafeArguments", "isOutputOption", "isReadOnlyStructuredCommand", "isPrintOnlySed",
-    "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
+    "isLineRangePrint", "isNoEmitTsc", "isReadOnlyGit", "isReadOnlyGitAt", "isUnsafeGitArgument", "matchesLongOption", "isReadOnlyGitBranch", "hasBranchWriteFlag",
     "isReadOnlyGitRemote", "isReadOnlyGh", "classifyHostShellCommand", "commandTable", "isLiteralFileRedirection", "hasKnownFileCommandOptions", "hasPlainItemType",
-    "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords", "assignmentOperatorLength", "castPrefixLength", "wrapperOptions", "hasBashHeredoc", "dispatchedRuleVerdict", "findActionVerdict", "hashtableKey", "endsCaseArm", "closesCasePattern", "opensEmptyParens", "isQuoteCode", "isStringStart", "unquotedEquals", "rawValueQuoted", "isInvokedWord", "hasQuote", "hasStructuralBrace", "unquotedText", "isSwitchKeyword", "isDeclarationKeyword", "scriptOperandVerdict", "nestedScriptVerdict", "isLauncherSuffix"]));
+    "shellRuleVerdict", "suggestShellRules", "prefixRule", "ruleWords", "isCommandPrefix", "strongerRuleVerdict", "dispatchedCommandStart", "matchCommandWords", "assignmentOperatorLength", "castPrefixLength", "wrapperOptions", "hasBashHeredoc", "dispatchedRuleVerdict", "findActionVerdict", "hashtableKey", "endsCaseArm", "closesCasePattern", "opensEmptyParens", "isQuoteCode", "isStringStart", "unquotedEquals", "rawValueQuoted", "isInvokedWord", "hasQuote", "hasStructuralBrace", "unquotedText", "isSwitchKeyword", "isDeclarationKeyword", "scriptOperandVerdict", "nestedScriptVerdict", "isLauncherSuffix", "envSplitWords", "powerShellLocationTarget"]));
   // Project rules (R4): built once per file version, matched without closures or temporary containers.
   targets.set("../project-permissions.ts", new Set(["foldCode", "foldWord", "wordMatches", "wordsMatch", "match", "hasShellRules", "hasRestrictiveShellRules", "toolDecision", "matchShellWords"]));
   // Sandbox command facts (R5): one tokenization, module tables and a reused word buffer.
   targets.set("sandbox-command.ts", new Set(["inspectSandboxCommand", "wordText", "inspectSegment", "programStart", "programName", "networkCommand", "isDriveAbsolute",
-    "inspectScript", "fillWords", "scriptOperand", "assignmentEquals", "informational", "versionedPackage", "loopbackOnly", "isLoopbackHost"]));
+    "inspectScript", "fillWords", "scriptOperand", "assignmentEquals", "informational", "versionedPackage", "loopbackOnly", "isLoopbackHost", "explicitlyOffline"]));
   for (const [file, names] of targets) {
     const source = ts.createSourceFile(file, readFileSync(`packages/coding-agent/src/core/shell-policy/${file}`, "utf8"), ts.ScriptTarget.Latest, true);
     const seen = new Set<string>();

@@ -84,6 +84,39 @@ const POWERSHELL_RELOCATING_COMMANDS: ReadonlySet<string> = new Set([
 const MAX_HOST_SEGMENTS = 64;
 /** Readers that change the PowerShell location for the segments after them. */
 const POWERSHELL_LOCATION_COMMANDS: ReadonlySet<string> = new Set(["cd", "chdir", "set-location", "sl"]);
+/** Every PowerShell command that moves the location, for the mutation scanners' cwd tracking. */
+const POWERSHELL_LOCATION_CHANGES: ReadonlySet<string> = new Set([
+  "cd", "chdir", "set-location", "sl", "pushd", "push-location", "popd", "pop-location",
+]);
+const POWERSHELL_LOCATION_PATH_OPTIONS: ReadonlySet<string> = new Set(["-path", "-literalpath", "-lp", "-pspath"]);
+
+/**
+ * Where a PowerShell location command (`name` lowercased, at `index`) moves: its one literal
+ * path, "" when that is not knowable here (`Pop-Location`, `cd -`, `cd ~`, `cd D:`, other
+ * options, more than one operand), or undefined when the command does not move the location.
+ * The caller still checks the path for dynamic syntax.
+ */
+export function powerShellLocationTarget(name: string, tokens: readonly string[], index: number): string | undefined {
+  if (!POWERSHELL_LOCATION_CHANGES.has(name)) return undefined;
+  if (name === "popd" || name === "pop-location") return "";
+  let target: string | undefined;
+  for (let at = index + 1; at < tokens.length; at++) {
+    const word = tokens[at]!;
+    if (word.length > 1 && word.charCodeAt(0) === 45) {
+      const option = word.toLowerCase();
+      if (option === "-passthru") continue;
+      if (target !== undefined || !POWERSHELL_LOCATION_PATH_OPTIONS.has(option)) return "";
+      target = tokens[++at];
+      if (target === undefined) return "";
+      continue;
+    }
+    if (target !== undefined) return "";
+    target = word;
+  }
+  if (target === undefined || target === "-" || target === "+" || target.charCodeAt(0) === 126
+    || target.length === 2 && target.charCodeAt(1) === 58) return "";
+  return target;
+}
 /** Segment classes; a file command or a reader's file redirection is a FILE segment. */
 const SEGMENT_REJECTED = 0, SEGMENT_READER = 1, SEGMENT_FILE = 2;
 /**
@@ -381,6 +414,40 @@ let scriptNesting = 0;
 let rulesPowerShell = false;
 
 /**
+ * GNU `env -S` splitting: blanks separate words, `'…'` is literal, `"…"` and bare words take
+ * backslash escapes (`\_` is a space), and `#` at a word start ends the string. Undefined for
+ * `${VAR}` expansion, `\c` and unterminated quotes, which this does not model.
+ */
+function envSplitWords(source: string): string[] | undefined {
+  const split: string[] = [];
+  let word = "", inWord = false, quote = 0;
+  for (let index = 0; index < source.length; index++) {
+    const code = source.charCodeAt(index);
+    if (quote === 39) { if (code === 39) quote = 0; else word += source[index]; continue; }
+    if (code === 36) return undefined;
+    if (code === 92) {
+      const next = source[++index];
+      if (next === undefined || next === "c") return undefined;
+      word += next === "_" ? " " : next === "t" ? "\t" : next === "n" ? "\n" : next;
+      inWord = true;
+      continue;
+    }
+    if (quote === 34) { if (code === 34) quote = 0; else word += source[index]; continue; }
+    if (code === 32 || code === 9 || code === 10) {
+      if (inWord) { split.push(word); word = ""; inWord = false; }
+      continue;
+    }
+    if (code === 35 && !inWord) break;
+    inWord = true;
+    if (code === 39 || code === 34) quote = code;
+    else word += source[index];
+  }
+  if (quote !== 0) return undefined;
+  if (inWord) split.push(word);
+  return split;
+}
+
+/**
  * The rule verdict for the literal script a shell runs (`bash -lc 'git push'`,
  * `pwsh -Command git push`, `cmd /c git push`, `env -S 'git push'`), or -1 when `argv` runs no script operand. The program name
  * has already been reduced to its basename by `matchCommandWords`.
@@ -403,7 +470,13 @@ function scriptOperandVerdict(rules: ProjectRuleSet, argv: readonly string[], po
         if (word === "-u" || word === "-C" || word === "--unset" || word === "--chdir") index++;
         continue;
       }
-      for (let rest = index + 1; rest < argv.length; rest++) script += " " + argv[rest]!;
+      // env splits the string into words itself; `;`, `|` and `&` in it are arguments, not shell syntax.
+      // The words stay env's own (`-S 'A=1 -i git push'`), so they are matched as `env '…' …`.
+      const split = envSplitWords(script);
+      if (split === undefined) return -1;
+      for (let rest = index + 1; rest < argv.length; rest++) split.push(argv[rest]!);
+      script = "env";
+      for (const part of split) script += " '" + part.replaceAll("'", "'\\''") + "'";
       return nestedScriptVerdict(rules, "bash", script);
     }
     return -1;
@@ -1131,6 +1204,11 @@ function isNoEmitTsc(argv: readonly string[]): boolean {
 function isReadOnlyGit(argv: readonly string[], subcommands: ReadOnlyShellSubcommands): boolean {
   let index = 1;
   while (argv[index] === "--no-pager") index++;
+  return isReadOnlyGitAt(argv, index, subcommands);
+}
+
+/** The read-only git judgment for the subcommand at `argv[index]` (global options already read by the caller). */
+export function isReadOnlyGitAt(argv: readonly string[], index: number, subcommands: ReadOnlyShellSubcommands): boolean {
   const subcommand = argv[index]?.toLowerCase();
   if (!subcommand || subcommand.charCodeAt(0) === HYPHEN) return false;
   if (!BUILTIN_GIT.has(subcommand) && !(CONFIGURABLE_GIT.has(subcommand) && subcommands.git?.includes(subcommand) === true)) return false;

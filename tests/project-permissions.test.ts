@@ -91,9 +91,10 @@ test("host-restricted classification lifts only literal segments, and suggestion
     for (const command of ["command -v git", "command -p -v git", "command -pv git", "sudo -l git push", "git() { printf x; }"])
         assert.equal(shellRuleVerdict("bash", command, lookup), RULE_NONE, command);
     // A shell's literal script operand is matched as a command of its own.
-    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'", "bash -euo pipefail -c 'git push'", "env -S 'git push origin main'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
+    for (const command of ["bash -c 'git push origin main'", "sudo sh -lc 'cd app && git push'", "pwsh -Command \"git push origin main\"", "bash --rcfile /dev/null -c 'git push'", "bash -euo pipefail -c 'git push'", "env -S 'git push origin main'", "env -S '-i A=1 git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_DENY, command);
     // `-n` reads the script without running it.
-    for (const command of ["bash -c 'git status'", "bash -n -c 'git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_NONE, command);
+    // `env -S` splits words without shell syntax: `;` is an argument of printf.
+    for (const command of ["bash -c 'git status'", "bash -n -c 'git push'", "env -S 'printf x; git push'"]) assert.equal(shellRuleVerdict("bash", command, rules), RULE_NONE, command);
     // `find -exec` runs its command; `case` arm patterns are not commands, their bodies are.
     const remove = new ProjectRuleSet([{ tool: "bash", decision: "deny", command: "rm *" }]);
     assert.equal(shellRuleVerdict("bash", 'find . -name "*.tmp" -exec rm -f {} +', remove), RULE_DENY);

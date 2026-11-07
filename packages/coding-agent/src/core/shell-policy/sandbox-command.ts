@@ -50,6 +50,8 @@ const BARE_NETWORK_COMMANDS: ReadonlySet<string> = new Set(["yarn"]);
 const PACKAGE_RUNNERS: ReadonlySet<string> = new Set(["npx", "pnpx", "bunx"]);
 /** `curl --version` only prints. */
 const INFO_FLAGS: ReadonlySet<string> = new Set(["--version", "-V", "--help", "-h", "-?", "-help"]);
+/** npm/pnpm/yarn/uv/cargo `--offline` and pip `--no-index` never reach the network; `--prefer-offline` may. */
+const OFFLINE_FLAGS: ReadonlySet<string> = new Set(["--offline", "--no-index"]);
 /** `python -m pip install x`. */
 const PYTHON_LAUNCHERS: ReadonlySet<string> = new Set(["python", "python3", "py"]);
 /** Global options whose value precedes the subcommand (`git -C repo pull`). */
@@ -238,7 +240,21 @@ function networkCommand(name: string, program: number, powerShell: boolean): str
   }
   if (index >= words.length || words[index] === CLOSE_BRACE) return BARE_NETWORK_COMMANDS.has(name) ? name : undefined;
   const subcommand = powerShell ? words[index]!.toLowerCase() : words[index]!;
-  return subcommands.has(subcommand) ? name + " " + subcommand : undefined;
+  return subcommands.has(subcommand) && !explicitlyOffline(index) ? name + " " + subcommand : undefined;
+}
+
+/**
+ * `npm ci --offline`, `cargo fetch --offline`, `pip install --no-index -f wheels x`: the user asked
+ * for no network. A URL argument (`--no-index --find-links https://…`) still fetches.
+ */
+function explicitlyOffline(subcommand: number): boolean {
+  let offline = false;
+  for (let index = subcommand + 1; index < words.length && words[index] !== CLOSE_BRACE; index++) {
+    const word = words[index]!;
+    if (OFFLINE_FLAGS.has(word)) offline = true;
+    else if (word.includes("://")) return false;
+  }
+  return offline;
 }
 
 /** Only `--version` / `--help` style words follow the command. */
