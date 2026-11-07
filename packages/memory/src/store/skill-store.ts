@@ -176,15 +176,6 @@ export class SkillStore {
     return this.globalSkillsDir;
   }
 
-  /**
-   * Pi's own global skills root. Read-only from here: we never create, patch,
-   * or delete inside it. It is consulted solely to refuse writes that Pi would
-   * silently shadow (see `findShadowingPiGlobalSkill`).
-   */
-  getPiGlobalSkillsDir(): string {
-    return this.piGlobalSkillsDir;
-  }
-
   getProjectSkillsDir(): string | null {
     return this.projectSkillsDir;
   }

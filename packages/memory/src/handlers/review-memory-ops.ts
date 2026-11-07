@@ -1,13 +1,11 @@
 /**
- * Parse and apply structured memory operations from direct background review.
+ * Parse structured memory operations proposed by an explicit /memory-review run.
  */
 
 import type { Api, Model, ProviderHeaders } from "@super-pi/ai";
 import { completeSimple, type Message, type SimpleStreamOptions } from "@super-pi/ai/compat";
 import type { ExtensionContext } from "@super-pi/coding-agent";
-import { MemoryStore } from "../store/memory-store.js";
-import type { DatabaseManager } from "../store/db.js";
-import type { MemoryCategory, MemoryConfig, MemoryResult, ThinkingLevel } from "../types.js";
+import type { MemoryCategory, MemoryConfig, ThinkingLevel } from "../types.js";
 
 export interface ReviewMemoryOperation {
   action: "add" | "replace" | "remove";
@@ -18,19 +16,7 @@ export interface ReviewMemoryOperation {
   failure_reason?: string;
 }
 
-export interface ApplyReviewOperationsResult {
-  appliedCount: number;
-  skippedCount: number;
-}
-
 export type DirectMemoryFallbackReason = "no_model" | "no_auth" | "aborted" | "parse_error" | "provider_error" | "empty";
-
-export interface DirectReviewResult {
-  ok: boolean;
-  appliedCount: number;
-  fallbackReason?: DirectMemoryFallbackReason;
-  error?: string;
-}
 
 export interface DirectMemoryProposalResult {
   ok: boolean;
@@ -45,13 +31,6 @@ export interface RunDirectMemoryCompletionOptions {
   config: Pick<MemoryConfig, "llmModelOverride" | "llmThinkingOverride">;
   timeoutMs?: number;
   signal?: AbortSignal;
-}
-
-/** Shared transport gate: review/flush/consolidation/correction all default to
- * the in-process direct completion path and fall back to a `superpi -p` subprocess
- * only on failure, unless the user forces `reviewTransport: "subprocess"`. */
-export function usesDirectTransport(config: Pick<MemoryConfig, "reviewTransport">): boolean {
-  return (config.reviewTransport ?? "direct") === "direct";
 }
 
 type ReviewLlmConfig = Pick<MemoryConfig, "llmModelOverride" | "llmThinkingOverride">;
@@ -219,93 +198,6 @@ export function parseReviewOperations(text: string): ReviewMemoryOperation[] | n
   return parsed;
 }
 
-export async function applyReviewOperations(
-  store: MemoryStore,
-  projectStore: MemoryStore | null,
-  operations: ReviewMemoryOperation[],
-  _dbManager: DatabaseManager | null = null,
-  projectName?: string | null,
-): Promise<ApplyReviewOperationsResult> {
-  let appliedCount = 0;
-  let skippedCount = 0;
-
-  for (const op of operations) {
-    if (op.target === "project" && !projectStore) {
-      skippedCount++;
-      continue;
-    }
-
-    const rawTarget = op.target;
-    const memoryTarget = rawTarget === "project" ? "memory" : rawTarget === "failure" ? "failure" : rawTarget;
-    const activeStore = rawTarget === "project" || (rawTarget === "failure" && projectStore)
-      ? projectStore!
-      : store;
-
-    let result: MemoryResult;
-    switch (op.action) {
-      case "add": {
-        if (!op.content?.trim()) {
-          skippedCount++;
-          continue;
-        }
-        if (rawTarget === "failure") {
-          const category = op.category ?? "failure";
-          result = await activeStore.addFailure(op.content, {
-            category,
-            failureReason: op.failure_reason,
-            project: projectStore ? projectName?.trim() || undefined : undefined,
-          });
-          if (result.success) {
-            appliedCount++;
-          } else {
-            skippedCount++;
-          }
-        } else {
-          result = await activeStore.add(memoryTarget, op.content);
-          if (result.success) {
-            appliedCount++;
-          } else {
-            skippedCount++;
-          }
-        }
-        break;
-      }
-      case "replace": {
-        if (!op.old_text || !op.content?.trim()) {
-          skippedCount++;
-          continue;
-        }
-        result = await activeStore.replace(memoryTarget, op.old_text, op.content);
-        if (result.success) {
-          appliedCount++;
-        } else {
-          skippedCount++;
-        }
-        break;
-      }
-      case "remove": {
-        if (!op.old_text) {
-          skippedCount++;
-          continue;
-        }
-        result = await activeStore.remove(memoryTarget, op.old_text);
-        if (result.success) {
-          appliedCount++;
-        } else {
-          skippedCount++;
-        }
-        break;
-      }
-      default:
-        skippedCount++;
-        continue;
-    }
-
-  }
-
-  return { appliedCount, skippedCount };
-}
-
 function responseText(content: unknown): string {
   if (!Array.isArray(content)) return "";
   return content
@@ -398,30 +290,3 @@ export async function runDirectMemoryProposal(
   }
 }
 
-export async function runDirectMemoryCompletion(
-  ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
-  store: MemoryStore,
-  projectStore: MemoryStore | null,
-  options: RunDirectMemoryCompletionOptions,
-  dbManager: DatabaseManager | null = null,
-  projectName?: string | null,
-): Promise<DirectReviewResult> {
-  const proposal = await runDirectMemoryProposal(ctx, options);
-  if (!proposal.ok || proposal.operations.length === 0) {
-    return {
-      ok: proposal.ok,
-      appliedCount: 0,
-      fallbackReason: proposal.fallbackReason,
-      error: proposal.error,
-    };
-  }
-
-  const { appliedCount } = await applyReviewOperations(
-    store,
-    projectStore,
-    proposal.operations,
-    dbManager,
-    projectName,
-  );
-  return { ok: true, appliedCount };
-}

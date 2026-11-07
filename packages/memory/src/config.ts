@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { MemoryConfig, MemoryOverflowStrategy, ReviewTransport, SessionSearchVariant, ThinkingLevel } from "./types.js";
+import type { MemoryConfig, MemoryOverflowStrategy, SessionSearchVariant, ThinkingLevel } from "./types.js";
 import {
   DEFAULT_MEMORY_CHAR_LIMIT,
   DEFAULT_USER_CHAR_LIMIT,
@@ -15,12 +15,7 @@ import { AGENT_ROOT, normalizeConfiguredMemoryDir, normalizeProjectsMemoryDir } 
 
 const MEMORY_OVERFLOW_STRATEGIES: readonly MemoryOverflowStrategy[] = ["auto-consolidate", "reject", "fifo-evict"];
 const SESSION_SEARCH_VARIANTS: readonly SessionSearchVariant[] = ["legacy", "anchors"];
-const REVIEW_TRANSPORTS: readonly ReviewTransport[] = ["direct", "subprocess"];
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
-
-function isReviewTransport(value: unknown): value is ReviewTransport {
-  return typeof value === "string" && REVIEW_TRANSPORTS.includes(value as ReviewTransport);
-}
 
 function isMemoryOverflowStrategy(value: unknown): value is MemoryOverflowStrategy {
   return typeof value === "string" && MEMORY_OVERFLOW_STRATEGIES.includes(value as MemoryOverflowStrategy);
@@ -41,7 +36,6 @@ const DEFAULT_CONFIG: MemoryConfig = {
   userCharLimit: DEFAULT_USER_CHAR_LIMIT,
   projectCharLimit: DEFAULT_PROJECT_CHAR_LIMIT,
   reviewRecentMessages: DEFAULT_REVIEW_RECENT_MESSAGES,
-  reviewTransport: "direct",
   memoryOverflowStrategy: "reject",
   autoConsolidate: false,
   failureInjectionEnabled: true,
@@ -83,7 +77,6 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.memoryCharLimit === "number") config.memoryCharLimit = parsed.memoryCharLimit;
       if (typeof parsed.userCharLimit === "number") config.userCharLimit = parsed.userCharLimit;
       if (isNonNegativeNumber(parsed.reviewRecentMessages)) config.reviewRecentMessages = parsed.reviewRecentMessages;
-      if (isReviewTransport(parsed.reviewTransport)) config.reviewTransport = parsed.reviewTransport;
       if (typeof parsed.autoConsolidate === "boolean") {
         config.autoConsolidate = parsed.autoConsolidate;
         hasLegacyAutoConsolidate = true;

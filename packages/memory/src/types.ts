@@ -10,7 +10,6 @@ export type SessionSearchVariant = "legacy" | "anchors";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-export type ReviewTransport = "direct" | "subprocess";
 
 export interface SessionSearchConfig {
   /** Session search implementation variant. Default: legacy */
@@ -37,8 +36,6 @@ export interface MemoryConfig {
   projectCharLimit: number;
   /** Recent conversation messages included by explicit /memory-review. 0 = all. Default: 0 */
   reviewRecentMessages?: number;
-  /** Legacy review transport setting retained for compatibility. */
-  reviewTransport?: ReviewTransport;
   /** Override extension storage directory. Default: ~/.sp/agent/@super-pi/memory */
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.sp/agent). Default: "projects-memory" */
@@ -89,13 +86,6 @@ export interface MemoryResult {
 export interface MemorySnapshot {
   memory: string;
   user: string;
-}
-
-export interface ConsolidationResult {
-  /** Whether consolidation succeeded */
-  consolidated: boolean;
-  /** Error message if consolidation failed */
-  error?: string;
 }
 
 export type SkillScope = "global" | "project";

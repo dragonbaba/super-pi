@@ -698,9 +698,6 @@ export function searchMemories(
   const { project, target, category } = options;
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(Math.floor(options.limit!), 20)) : 10;
 
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-
   // FTS5 match via subquery with escaped query
   const normalizedQuery = normalizeFts5Query(query);
   if (normalizedQuery.length === 0) {
@@ -800,125 +797,6 @@ export function searchMemories(
   }
 
   return runSearch(fallbackQuery);
-}
-
-/**
- * Get all memories, optionally filtered.
- */
-export function getMemories(
-  dbManager: DatabaseManager,
-  options: { project?: string | null; target?: string; category?: MemoryCategory } = {}
-): SqliteMemoryEntry[] {
-  const db = dbManager.getDb();
-  const { project, target, category } = options;
-
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-
-  if (project !== undefined) {
-    if (project === null) {
-      conditions.push('project IS NULL');
-    } else {
-      conditions.push('project = ?');
-      params.push(project);
-    }
-  }
-
-  if (target) {
-    conditions.push('target = ?');
-    params.push(target);
-  }
-
-  if (category) {
-    conditions.push('category = ?');
-    params.push(category);
-  }
-
-  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  const rows = db.prepare(`
-    SELECT ${MEMORY_SELECT_COLUMNS}
-    FROM memories
-    ${whereClause}
-    ORDER BY last_referenced DESC
-  `).all(...params) as Array<{
-    id: number;
-    project: string | null;
-    target: string;
-    category: string | null;
-    content: string;
-    failure_reason: string | null;
-    tool_state: string | null;
-    corrected_to: string | null;
-    created: string;
-    last_referenced: string;
-  }>;
-
-  return rows.map(mapRow);
-}
-
-/**
- * Remove a memory by ID.
- */
-export function removeMemory(dbManager: DatabaseManager, id: number): boolean {
-  const db = dbManager.getDb();
-  const result = db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-  return result.changes > 0;
-}
-
-/**
- * Get recent failure memories (last N days).
- */
-export function getRecentFailures(
-  dbManager: DatabaseManager,
-  maxAgeDays = 7,
-  project?: string | null
-): SqliteMemoryEntry[] {
-  const db = dbManager.getDb();
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - maxAgeDays);
-  const cutoffStr = cutoff.toISOString().split('T')[0];
-
-  const conditions: string[] = ['target = ?', 'created >= ?'];
-  const params: unknown[] = ['failure', cutoffStr];
-
-  if (project !== undefined) {
-    if (project === null) {
-      conditions.push('project IS NULL');
-    } else {
-      conditions.push('(project = ? OR project IS NULL)');
-      params.push(project);
-    }
-  }
-
-  const rows = db.prepare(`
-    SELECT ${MEMORY_SELECT_COLUMNS}
-    FROM memories
-    WHERE ${conditions.join(' AND ')}
-    ORDER BY created DESC
-    LIMIT 5
-  `).all(...params) as Array<{
-    id: number;
-    project: string | null;
-    target: string;
-    category: string | null;
-    content: string;
-    failure_reason: string | null;
-    tool_state: string | null;
-    corrected_to: string | null;
-    created: string;
-    last_referenced: string;
-  }>;
-
-  return rows.map(mapRow);
-}
-
-/**
- * Update a memory's last_referenced date.
- */
-export function touchMemory(dbManager: DatabaseManager, id: number): void {
-  const db = dbManager.getDb();
-  db.prepare('UPDATE memories SET last_referenced = ? WHERE id = ?').run(today(), id);
 }
 
 /**

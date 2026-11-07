@@ -46,8 +46,11 @@ commit-by-commit history.
 - Project skill discovery is provided through `resources_discover` and the
   `/memory-skills` TUI remains lazy-loaded.
 - No background hook extracts skills from turns or tool calls.
-- Legacy session search queries only an existing SQLite index. It does not
-  register background indexing.
+- Legacy session search queries only an existing SQLite index. The session
+  indexer and parser were removed; nothing in this package writes the index.
+- The automatic consolidator hook, direct review application, and review
+  transport switch were removed. `memoryOverflowStrategy: "auto-consolidate"`
+  rejects like `reject`; `/memory-review` is the only consolidation path.
 - The opt-in `anchors` variant streams session JSONL files and returns source
   line ranges. Discovery entries, files, lines, line length, event traversal,
   query size, and retained results are bounded.
