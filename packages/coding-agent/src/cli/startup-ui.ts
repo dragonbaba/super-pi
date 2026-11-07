@@ -1,4 +1,4 @@
-import { ProcessTerminal, setKeybindings, type TUI, TuiAltScreen } from "@super-pi/tui";
+import { ProcessTerminal, setKeybindings, type TUI, TuiAltScreen, type TuiAltScreenOptions } from "@super-pi/tui";
 import { existsSync } from "fs";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";
@@ -28,6 +28,16 @@ const OFFICIAL_APP_NAME = "superpi";
 const OFFICIAL_CONFIG_DIR_NAME = ".sp";
 
 const ignoreStartupLifecycleRejection = (): void => {};
+
+/**
+ * Startup and config dialogs keep their own paging keys (selector Page Up/Down)
+ * and leave the mouse to the terminal, so native right-click paste and text
+ * selection keep working.
+ */
+export const STARTUP_DIALOG_SCREEN_OPTIONS: Readonly<TuiAltScreenOptions> = Object.freeze({
+	mouse: false,
+	viewportKeys: false,
+});
 
 export function observeStartupLifecycle(
 	promise: Promise<void>,
@@ -88,7 +98,12 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
 	const terminalTheme = detectTerminalBackgroundFromEnv().theme;
 	initTheme(resolveThemeSetting(settingsManager.getThemeSetting(), terminalTheme) ?? terminalTheme);
 	setKeybindings(KeybindingsManager.create());
-	return new TuiAltScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+	return new TuiAltScreen(
+		new ProcessTerminal(),
+		settingsManager.getShowHardwareCursor(),
+		getAgentDir(),
+		STARTUP_DIALOG_SCREEN_OPTIONS,
+	);
 }
 
 export function startStartupTui(ui: TUI, settingsManager: SettingsManager): void {

@@ -9,7 +9,11 @@ Follow-up to [fullscreen-only-scrollbar-2026-11-07.md](fullscreen-only-scrollbar
 - Startup prompts (`startup-ui.ts`) and the config selector now use
   `TuiAltScreen` and close with `dispose({ preserveScreen: true })`. Visible
   change: these dialogs open on the alternate screen, and closing them restores
-  the terminal exactly as it was before the prompt.
+  the terminal exactly as it was before the prompt. Both pass
+  `STARTUP_DIALOG_SCREEN_OPTIONS` (`mouse: false` and the new
+  `viewportKeys: false`), so selector Page Up/Down and native right-click
+  paste keep working (Codex findings on #262;
+  `tests/tui-dialog-screen-options.test.ts`).
 - `clearOnShrink`: the setting is marked deprecated in the schema and
   `SettingsManager` no longer reads or writes it. `TUI.getClearOnShrink()` /
   `setClearOnShrink()` remain as deprecated no-ops for extensions.
@@ -22,6 +26,10 @@ Follow-up to [fullscreen-only-scrollbar-2026-11-07.md](fullscreen-only-scrollbar
   Alt exit-to-scrollback check. Bench fixtures `production-main`,
   `--editor-screen main` and the Main half of the session-clean fixture are
   removed; `tui-frame-allocations --fixture` accepts only `production-alt`.
+  The four migrated leaf benches (`tui-paced-real-leaf`,
+  `tui-paced-streamed-tool-args`, `tui-real-leaf-allocations`,
+  `tui-tool-leaf-allocations`) call `start()` before measuring and throw if no
+  frame was painted (Codex finding on #262).
 - The renderer-handoff orphan-barrier tests in `tui-frame-queue` now cover
   Alt → Alt, the path the startup dialog → interactive mode uses.
 

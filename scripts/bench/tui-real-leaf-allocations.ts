@@ -87,6 +87,8 @@ class NoopTerminal implements Terminal {
 }
 
 class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	override requestRender(force = false): void {
 		this.requestRenderCalls++;
@@ -259,6 +261,7 @@ function createSpacerLifecycleMessage(count: number, stopReason: AssistantMessag
 
 function createRenderer(): { renderer: InstrumentedAltScreen; reference: TUI; transcript: RetainedContainer } {
 	const renderer = new InstrumentedAltScreen(new NoopTerminal(), false, undefined, { mouse: false });
+	renderer.start();
 	const transcript = new RetainedContainer();
 	renderer.addChild(transcript);
 	const reference = createInteractiveTuiReference(() => renderer);
@@ -361,6 +364,7 @@ async function measureAssistantFixture(
 	await observerAgent.delivery.flushLatest("message");
 	const observerStatsAfter = observerAgent.delivery.stats;
 	observerAgent.unsubscribe();
+	if (renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await renderer.dispose({ preserveScreen: true });
 	return {
 		...(result as Record<string, unknown>),

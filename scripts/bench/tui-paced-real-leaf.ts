@@ -153,6 +153,8 @@ class NoopTerminal implements Terminal {
 }
 
 class InstrumentedAltScreen extends TuiAltScreen {
+	/** Rows in the last painted frame; 0 means the renderer never painted. */
+	paintedRows(): number { return (this as unknown as { previousScreen: string[] }).previousScreen.length; }
 	requestRenderCalls = 0;
 	doRenderCalls = 0;
 	override requestRender(force = false): void {
@@ -191,6 +193,7 @@ function createRenderer(historyItems: number): {
 } {
 	const terminal = new NoopTerminal();
 	const renderer = new InstrumentedAltScreen(terminal, false, undefined, { mouse: false });
+	renderer.start();
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });
 	for (let index = 0; index < historyItems; index++) {
@@ -433,6 +436,7 @@ async function measureAssistant(
 	if (scheduler.pendingTasks !== 0) throw new Error(`${name}: scheduler retained a pending task after flush`);
 	await renderer.flushTerminalFrames();
 	await delivery.dispose();
+	if (renderer.paintedRows() === 0) throw new Error("benchmark renderer never painted a frame");
 	await renderer.dispose({ preserveScreen: true });
 	return result;
 }

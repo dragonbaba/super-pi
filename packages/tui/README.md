@@ -83,7 +83,7 @@ tui.start();
 
 ### TUI interface and renderers
 
-`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. `TuiAltScreen` is the only concrete renderer: it renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document. Short-lived prompts can call `dispose({ preserveScreen: true })` to leave the main buffer exactly as it was before the prompt.
+`TUI` is the shared interface for component management, focus, overlays, input, lifecycle, terminal queries, and rendering. `TuiAltScreen` is the only concrete renderer: it renders a fixed-height viewport in the alternate terminal buffer with application-owned scrolling. When stopped, it restores the main buffer and prints the complete final document. Short-lived prompts can call `dispose({ preserveScreen: true })` to leave the main buffer exactly as it was before the prompt. Dialogs whose focused component owns Page Up/Down (selectors) should pass `{ mouse: false, viewportKeys: false }`: the renderer then leaves keyboard paging to the focused component and leaves the mouse to the terminal, so native right-click paste and text selection keep working.
 
 The former main-buffer renderer (`TuiMainScreen`) has been removed. `TUI.clearOnShrink` and `setClearOnShrink()` remain as deprecated no-ops for extension compatibility; the alternate screen always repaints its own viewport.
 
