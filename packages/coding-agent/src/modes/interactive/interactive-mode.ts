@@ -2951,6 +2951,31 @@ export class InteractiveMode {
 		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
 	}
 
+	/** `/permissions auto`: like Codex `/approve`, one reviewed retry of a recent Auto denial. */
+	private async showAutoReviewDenials(): Promise<void> {
+		const session = this.session, generation = this.tuiLifecycleGeneration;
+		try {
+			const records = session.getAutoReviewDenials();
+			if (!records.length) { this.showExtensionNotify("当前没有被 Auto 审查拒绝的操作。", "info"); return; }
+			const choices: string[] = [];
+			for (let index = records.length - 1; index >= 0; index--) {
+				const record = records[index]!, detail = record.request.split("\n", 3)[2] ?? "";
+				choices.push(`${choices.length + 1} · ${record.tool} · ${detail.slice(0, 100)} · ${record.reason.slice(0, 60)}`);
+			}
+			const ui = this.createExtensionUIContext();
+			const selected = await ui.select("允许重试最近被 Auto 拒绝的操作", choices, { kind: "permission",
+				details: "选中的操作下次以完全相同的形式发起时，会再审查一次，并告知审查模型你已允许重试；只生效一次。模型需要重新发起这次调用。" });
+			if (!selected || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+			const record = records[records.length - 1 - choices.indexOf(selected)];
+			if (!record) return;
+			const action = await ui.select("允许重试这次操作？", ["返回", "允许重试一次"], { kind: "permission",
+				details: `${record.request}\nAuto 拒绝原因：${record.reason || "未说明"}` });
+			if (action !== "允许重试一次" || this.session !== session || this.tuiLifecycleGeneration !== generation) return;
+			const allowed = session.allowAutoReviewRetry(record.key);
+			this.showExtensionNotify(allowed ? "已允许重试一次；可以让模型重新执行这次操作。" : "这条记录已不存在。", "info");
+		} catch (error) { this.showExtensionNotify(error instanceof Error ? error.message : String(error), "error"); }
+	}
+
 	private async showPermissionRefusals(): Promise<void> {
 		const session = this.session, generation = this.tuiLifecycleGeneration;
 		try {
@@ -4048,9 +4073,14 @@ export class InteractiveMode {
 				await this.showProjectPermissionRules();
 				return;
 			}
+			if (text === "/permissions auto" || text === "/permission auto") {
+				this.editor.setText("");
+				await this.showAutoReviewDenials();
+				return;
+			}
 			if (text.startsWith("/permissions ") || text.startsWith("/permission ")) {
 				this.editor.setText("");
-				this.showExtensionNotify("使用 /permissions 选择权限，/permissions rules 查看本项目规则，/permissions refusals 查看和撤销历史拒绝，/dirs 查看工作目录。", "warning");
+				this.showExtensionNotify("使用 /permissions 选择权限，/permissions rules 查看本项目规则，/permissions refusals 查看和撤销历史拒绝，/permissions auto 允许重试最近被 Auto 拒绝的操作，/dirs 查看工作目录。", "warning");
 				return;
 			}
 			if (text === "/dirs" || text === "/add-dir" || text.startsWith("/add-dir ") || text === "/remove-dir" || text.startsWith("/remove-dir ")) {

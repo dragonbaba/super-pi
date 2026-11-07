@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { assertPermissionMode, isHostPermissionMode, isRestrictedHostMode, type SessionPermissionMode } from "./permission-mode.ts";
-import { AutoReviewBreaker, runAutoReview } from "./auto-review.ts";
+import { assertPermissionMode, isHostPermissionMode, isRestrictedHostMode, PERMISSION_MODE_LABELS, type SessionPermissionMode } from "./permission-mode.ts";
+import { AutoReviewBreaker, runAutoReview, type AutoReviewVerdict } from "./auto-review.ts";
 import { WORKSPACE_TOOL_NAMES } from "./session-execution-profile.ts";
 import type { ExtensionContext, ExtensionRuntime, ToolCallEvent, ToolDefinition } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry, SessionEntryVisitor } from "./session-manager.ts";
@@ -45,6 +45,18 @@ export interface PermissionRefusal {
     readonly summary: string;
     readonly reason?: string;
 }
+/**
+ * host-auto: one Auto review denial. `key` binds the full invocation (a fingerprint of every argument,
+ * batch-level ones included); `request` is the text the reviewer saw, which may leave out content such as a file body.
+ */
+export interface AutoReviewDenial {
+    readonly key: string;
+    readonly tool: string;
+    readonly request: string;
+    readonly reason: string;
+}
+/** Recent Auto denials kept for `/permissions auto`, like Codex `/approve`. */
+const MAX_AUTO_DENIALS = 10;
 const MUTATIONS = new Set(["edit", "write", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
 const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command"]);
@@ -218,8 +230,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     private readonly directories: readonly string[];
     /** Project-shared rules (R4), read before every authorization when the file changed. */
     private readonly project?: ProjectPermissionStore;
-    /** host-auto only: rejections that hand the asks back to the user for this runtime. */
+    /** host-auto only: rejections that hand the asks back to the user until the user allows one. */
     private readonly autoReview?: AutoReviewBreaker;
+    /** host-auto only: the latest Auto denials, oldest first, and the requests the user allowed one reviewed retry of. */
+    private readonly autoDenials: AutoReviewDenial[] = [];
+    private readonly autoRetries = new Set<string>();
     constructor(runtime: ExtensionRuntime, environment: ExecutionEnvironment, config: ExecutionPermissions = {}, mode?: SessionPermissionMode,
         directories: readonly string[] = [], project?: ProjectPermissionStore) {
         this.directories = directories;
@@ -392,22 +407,57 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         }
         return false;
     }
-    /** One Auto review; a rejection or any review failure leaves the operation unexecuted. */
-    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, check: () => void): Promise<void> {
+    /**
+     * One Auto review. A denial throws; a review without a verdict (`failed`) returns it so the
+     * caller asks the user, and the breaker does not count it (Codex reports timeouts apart from denials).
+     */
+    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, key: string, check: () => void): Promise<AutoReviewVerdict> {
         if (request.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one review; configure an explicit scoped rule");
-        const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal);
+        const retry = this.autoRetries.delete(key);
+        const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal, retry);
         // A cancelled turn or a stale permission context is not the reviewer's rejection.
         check();
+        if (verdict.failed) {
+            if (ctx.hasUI) ctx.ui.notify(`Auto 审查未完成，改为询问你：${tool} — ${verdict.reason}`, "warning");
+            return verdict;
+        }
         const tripped = this.autoReview!.record(verdict.approved);
         if (ctx.hasUI) {
-            ctx.ui.notify(`Auto 审查${verdict.approved ? "批准" : "拒绝"}：${tool}${verdict.reason ? " — " + verdict.reason : ""}`, verdict.approved ? "info" : "warning");
+            ctx.ui.notify(`Auto 审查${verdict.approved ? "批准" : "拒绝"}：${tool}${verdict.reason ? " — " + verdict.reason : ""}`
+                + (verdict.approved ? "" : "\n/permissions auto 可允许重试一次"), verdict.approved ? "info" : "warning");
             if (tripped) {
                 ctx.ui.setStatus("permissions", AUTO_PAUSED_STATUS);
-                ctx.ui.notify("Auto 审查连续拒绝 3 次或最近 50 次中拒绝 10 次，本次运行改回人工询问；重新选择 /permissions 可恢复。", "warning");
+                ctx.ui.notify("Auto 审查连续拒绝 3 次或最近 50 次中拒绝 10 次，之后的审批改为询问你；你允许其中一次后恢复 Auto 审查。", "warning");
             }
         }
-        if (!verdict.approved) throw new Error("[AUTO_REVIEW_DENIED] Auto review rejected this operation; it was not executed"
-            + (verdict.reason ? ": " + verdict.reason : "") + ". Do not retry it in another form; tell the user or take an approach that needs no approval.");
+        if (verdict.approved) return verdict;
+        for (let index = 0; index < this.autoDenials.length; index++)
+            if (this.autoDenials[index]!.key === key) { this.autoDenials.splice(index, 1); break; }
+        if (this.autoDenials.length >= MAX_AUTO_DENIALS) this.autoDenials.shift();
+        this.autoDenials.push(Object.freeze({ key, tool, request, reason: verdict.reason }));
+        throw new Error("[AUTO_REVIEW_DENIED] Auto review rejected this operation; it was not executed"
+            + (verdict.reason ? ": " + verdict.reason : "") + ". Do not retry it in another form; tell the user, who can allow one retry of this exact call"
+            + " with /permissions auto, or take an approach that needs no approval.");
+    }
+    /** host-auto: recent Auto denials for `/permissions auto`, oldest first; empty in every other mode. */
+    listAutoDenials(ctx: ExtensionContext): readonly AutoReviewDenial[] {
+        this.guard(ctx)();
+        return this.autoDenials.slice();
+    }
+    /**
+     * The user allows one more review of this exact invocation (`AutoReviewDenial.key`); the reviewer is told so.
+     * Not an approval by itself. The grant is used by the next identical call, whether reviewed or asked.
+     */
+    allowAutoRetry(ctx: ExtensionContext, key: string): boolean {
+        this.guard(ctx)();
+        for (let index = 0; index < this.autoDenials.length; index++) {
+            if (this.autoDenials[index]!.key !== key) continue;
+            this.autoDenials.splice(index, 1);
+            if (this.autoRetries.size >= MAX_AUTO_DENIALS) this.autoRetries.delete(this.autoRetries.values().next().value!);
+            this.autoRetries.add(key);
+            return true;
+        }
+        return false;
     }
     /** Project rules for `/permissions rules`; undefined when this session has no project store. */
     describeProjectRules(): ReturnType<ProjectPermissionStore["describe"]> | undefined {
@@ -616,16 +666,25 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (destructiveMcp) decision = "ask";
         // host-auto: the session model answers an ordinary ask in the user's place; explicit ask
         // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
-        if (decision === "ask" && this.autoReview && !this.autoReview.tripped && this.approval !== "never"
+        // A review without a verdict asks the user instead.
+        let unreviewed: string | undefined;
+        // The retry grant identity hashes the whole invocation, batch-level arguments such as `dryRun` included.
+        const grant = decision === "ask" && this.autoReview ? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
+        if (grant !== undefined && !this.autoReview!.tripped && this.approval !== "never"
             && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
             check();
-            await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`
-                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), check);
-            decision = "allow";
+            const verdict = await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`
+                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), grant, check);
+            if (verdict.failed) unreviewed = verdict.reason;
+            else decision = "allow";
         }
         if (decision === "ask") {
-            if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] Operation was not executed: " + event.toolName);
+            // A retry grant covers one identical call; reaching the user uses it up as a review would.
+            if (grant !== undefined) this.autoRetries.delete(grant);
+            if (this.approval === "never" || !ctx.hasUI) throw new Error("[APPROVAL_REQUIRED] "
+                + (unreviewed === undefined ? "" : `Auto review did not finish (${unreviewed}); that is not a finding that the operation is unsafe. `)
+                + "Operation was not executed: " + event.toolName);
             const details = askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp);
             if (details.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one interactive review; configure an explicit scoped rule");
             const remembered = liftable && !host?.ask && projectVerdict === RULE_NONE
@@ -634,10 +693,17 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
             const selected = await ctx.ui.select("允许这次操作？", remembered ? REMEMBER_CHOICES : APPROVAL_CHOICES,
                 { signal, timeout: APPROVAL_TIMEOUT_MS, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}`
-                    + (remembered ? `\n选择“${REMEMBER_CHOICE}”会在本项目保存：\n${describeRules(remembered)}` : "") });
+                    + (remembered ? `\n选择“${REMEMBER_CHOICE}”会在本项目保存：\n${describeRules(remembered)}` : "")
+                    + (this.autoReview?.tripped ? "\nAuto 审查已暂停；允许这次操作后恢复 Auto 审查。" : "") });
             check();
             if (selected !== APPROVAL_CHOICES[0] && selected !== APPROVAL_CHOICES[1] && selected !== APPROVAL_CHOICES[2] && (!remembered || selected !== REMEMBER_CHOICE))
                 throw new Error("[APPROVAL_CANCELLED] Operation was not executed; this request may be asked again");
+            // Like Claude Code's auto mode: the user allowing a prompted action resumes Auto with clean counters.
+            if (this.autoReview?.tripped && (selected === APPROVAL_CHOICES[0] || selected === REMEMBER_CHOICE)) {
+                this.autoReview.reset();
+                ctx.ui.setStatus("permissions", PERMISSION_MODE_LABELS["host-auto"]);
+                ctx.ui.notify("已恢复 Auto 审查。", "info");
+            }
             if (selected === REMEMBER_CHOICE) {
                 try {
                     await this.project!.remember(remembered!);
