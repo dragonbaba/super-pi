@@ -864,8 +864,7 @@ function inspectSegment(tokens: PermissionTokens, cwd: string, depth: number, bu
       else if (value.indexOf("/") < 0 && value.indexOf("\\") < 0 && value !== "." && value !== "..") {
         // A bare name may be a registered worktree's identifier (its last path component), not a cwd path:
         // the deleted directory is unknown here, so the target is uncertain and the host asks.
-        addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
-          expansion | (tokens.expansions?.[path] ?? 0), false, "contents");
+        builder.analysisOwner?.observeMutationTarget(value, cwd, expansion | (tokens.expansions?.[path] ?? 0), undefined, "delete");
       } else addTarget(builder, directory && !isAbsolute(value) ? directory + "/" + value : value, cwd, true,
         expansion | (tokens.expansions?.[path] ?? 0), true);
     }

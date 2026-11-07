@@ -10,7 +10,8 @@ const MAX_NATIVE_TARGETS = 34;
 const MAX_NATIVE_TARGET_CHARS = 4096;
 // Existing parseShellSegments flags; this adapter does not add token classification.
 const LEGACY_GLOB_EXPANSION = 16, LEGACY_HOME_EXPANSION = 32;
-export interface NativeShellTarget { target: string; kind: "delete" | "write" | "move"; }
+/** `contents`: files inside a directory are deleted (`rsync --delete`, `find -delete`), not the directory itself. */
+export interface NativeShellTarget { target: string; kind: "delete" | "write" | "move" | "contents"; }
 export const shellAnalysisOwnership = {
   created: 0, released: 0, liveOwners: 0, liveEntries: 0, liveBytes: 0,
   hits: 0, misses: 0, overflows: 0,
@@ -97,9 +98,9 @@ export class ShellAnalysisOwner {
   observeMutationTarget(raw: string, cwd: string, expansion: number, target: string | undefined, kind: "delete" | "write" | "move" | "contents"): void {
     const targets = this.nativeTargets;
     if (!targets) return;
-    // A search/glob scope is not an exact deletion operand. Shell-internal cwd and
+    // A glob is not an exact operand. Shell-internal cwd and
     // Windows Bash roots/HOME cannot borrow the legacy Node path interpretation.
-    if (target === undefined || target.length >= MAX_NATIVE_TARGET_CHARS || kind === "contents" || (expansion & LEGACY_GLOB_EXPANSION) !== 0 || cwd !== this.cwd
+    if (target === undefined || target.length >= MAX_NATIVE_TARGET_CHARS || (expansion & LEGACY_GLOB_EXPANSION) !== 0 || cwd !== this.cwd
       || this.nativeShell === "bash" && process.platform === "win32" && (raw.startsWith("/") || (expansion & LEGACY_HOME_EXPANSION) !== 0)) {
       this.nativePathUncertain = true; return;
     }

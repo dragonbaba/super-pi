@@ -157,6 +157,8 @@ function askDetails(input: Record<string, any>, shell: NativeShellMutations | un
 /** A recognized shell write whose canonical target is an existing directory; `paths` is index-aligned with the targets. */
 async function writesIntoDirectory(shell: NativeShellMutations, paths: readonly string[]): Promise<boolean> {
     for (let index = 0; index < shell.targets.length; index++) {
+        // A contents deletion always works inside a directory.
+        if (shell.targets[index]!.kind === "contents") return true;
         if (shell.targets[index]!.kind !== "write") continue;
         try { if ((await lstat(paths[index]!)).isDirectory()) return true; } catch { /* A new path is the target itself. */ }
     }
@@ -314,7 +316,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
     }
     private async assessShellMutations(ctx: ExtensionContext, resolved: ResolvedPolicyPaths, shell: NativeShellMutations) {
         const check = this.guard(ctx), operations: { operation: string }[] = [];
-        let metadata: string[] | undefined;
+        let metadata: string[] | undefined, contentsAsk = false;
         for (let index = 0; index < shell.targets.length; index++) {
             const kind = shell.targets[index]!.kind, target = resolved.paths[index]!;
             if (kind === "delete") {
@@ -322,6 +324,14 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 const assessment = assessCanonicalMutationPath(resolved.workspaces, target, metadata);
                 for (const violation of assessment.violations) if (violation !== "workspace_escape")
                     this.refuse(ctx, BLOCKED, `敏感目标禁止删除：${target}\n受保护目标（${violation}）。操作未执行，请明确告知用户。`);
+            } else if (kind === "contents") {
+                // `rsync --delete src/ dist/`, `find dist -name '*.map' -delete`: files inside a workspace directory
+                // run like other workspace deletes. The workspace root, a directory holding or inside .git/.sp,
+                // and anything outside the workspace ask.
+                metadata ??= await canonicalWorkspaceMetadata(resolved.workspaces); check();
+                let ask = assessCanonicalMutationPath(resolved.workspaces, target, metadata).violations.length !== 0;
+                for (let slot = 0; !ask && slot < metadata.length; slot++) if (inside(target, metadata[slot]!)) ask = true;
+                if (ask) contentsAsk = true;
             }
             operations.push({ operation: kind });
         }
@@ -329,6 +339,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const host = operations.length ? await assessHostMutations(resolved.workspaces, resolved.paths, "file_batch", { operations }, true)
             : { ask: false, details: "" };
         check();
+        if (contentsAsk) { host.ask = true; host.details += "会删除目录中的文件：目标是工作区根目录、包含或位于 .git/.sp，或在工作区外。\n"; }
         if (shell.uncertain) { host.ask = true; host.details += "已识别变更，但既有分析结果不能确认全部目标；请核对原命令。\n"; }
         return host;
     }

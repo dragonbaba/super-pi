@@ -209,10 +209,21 @@ test("native evidence preserves independent writes and does not treat search sco
   });
   await t.test("existing find scope asks without an invented overwrite",async()=>{
     const before=f.dialogs.length;await f.authorize("bash","find "+target+" -delete");
-    assert.equal(f.dialogs.length,before+1);assert.match(f.dialogs.at(-1)!,/不能确认全部目标/);
+    assert.equal(f.dialogs.length,before+1);assert.match(f.dialogs.at(-1)!,/会删除目录中的文件/);
   });
   const before=f.dialogs.length;
   await f.authorize("bash","mv "+target+" "+quote("bash",join(f.cwd,"moved.txt")));
   assert.equal(f.dialogs.length,before+1,"a move source is deletion evidence, not an invented overwrite");
   assert.equal(await fs.readFile(file,"utf8"),"original");
+});
+
+test("deleting files inside a workspace directory runs like other workspace deletes; the root, .git and outside ask",async t=>{
+  const f=await fixture(t);await fs.mkdir(join(f.cwd,"dist"));await fs.mkdir(join(f.cwd,".git"));
+  for(const command of ["rsync -a --delete src/ dist/","find dist -name '*.map' -delete"]) {
+    const before=f.dialogs.length;await f.authorize("bash",command);assert.equal(f.dialogs.length,before,command);
+  }
+  for(const command of ["rsync -a --delete ../build/ .","find .git -name '*.lock' -delete","rsync -a --delete src/ "+quote("bash",f.outside)]) {
+    const before=f.dialogs.length;await f.authorize("bash",command);
+    assert.equal(f.dialogs.length,before+1,command);assert.match(f.dialogs.at(-1)!,/会删除目录中的文件/,command);
+  }
 });
