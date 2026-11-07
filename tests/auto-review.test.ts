@@ -29,7 +29,13 @@ test("auto review verdicts, breaker and trimmed transcript", () => {
     { type: "toolCall", id: "c1", name: "bash", arguments: { command: "npm test" } }], api: "x", provider: "x", model: "x",
     usage: {} as any, stopReason: "toolUse", timestamp: 2 } as any);
   const transcript = autoReviewTranscript(manager);
-  assert.equal(transcript, "[user] run the tests\n\n[assistant] Running them.\n[tool call: bash]");
+  // Like Claude Code: the user's words and the agent's tool calls with arguments; no agent prose or reasoning.
+  assert.equal(transcript, '[user] run the tests\n\n[tool call] bash {"command":"npm test"}');
+
+  // A user allowing a prompted action while tripped resumes Auto with clean counters.
+  consecutive.reset();
+  assert.equal(consecutive.tripped, false);
+  assert.deepEqual([false, false].map(approved => consecutive.record(approved)), [false, false]);
 });
 
 async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", answers: string[], config = {}) {
@@ -37,7 +43,7 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
   const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-outside-")));
   const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(root);
   runtime.appendEntry = (customType, data) => { manager.appendCustomEntry(customType, data); };
-  const requests: string[] = [], dialogs: string[] = [], notes: string[] = [], statuses: (string | undefined)[] = [];
+  const requests: string[] = [], dialogs: string[] = [], notes: string[] = [], statuses: (string | undefined)[] = [], choices: (string | undefined)[] = [];
   runtime.withSupplementalSummary = (async (_signal: AbortSignal, run: (stream: any) => Promise<unknown>) => run(async (_model: unknown, context: any) => {
     requests.push(context.messages[0].content);
     const text = answers.length ? answers.shift()! : "APPROVE: ok";
@@ -46,7 +52,7 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
   const ctx: any = { cwd: root, hasUI: true, signal: new AbortController().signal, sessionManager: manager,
     model: { provider: "test", id: "reviewer", api: "test", maxTokens: 1000 },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }) },
-    ui: { select: async (title: string) => { dialogs.push(title); return undefined; }, notify: (message: string) => { notes.push(message); },
+    ui: { select: async (title: string) => { dialogs.push(title); return choices.shift(); }, notify: (message: string) => { notes.push(message); },
       setStatus: (_key: string, text: string | undefined) => { statuses.push(text); } } };
   const owner = new SessionExecutionPolicy(runtime, "trusted-host", config, mode);
   t.after(async () => {
@@ -57,7 +63,7 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
     try { (await owner.authorize({ type: "tool_call", toolName: name, input, toolCallId: "c" } as any, ctx, { name } as any)).release(); return "allow"; }
     catch (error: any) { return /AUTO_REVIEW_DENIED/.test(error.message) ? "denied" : /APPROVAL_CANCELLED/.test(error.message) ? "asked" : error.message; }
   }
-  return { root, outside, requests, dialogs, notes, statuses, decide };
+  return { root, outside, requests, dialogs, notes, statuses, choices, decide, owner, ctx };
 }
 
 test("host-auto reviews only what would ask; rule asks, outside deletes and a tripped breaker go back to the user", async t => {
@@ -78,13 +84,37 @@ test("host-auto reviews only what would ask; rule asks, outside deletes and a tr
   assert.equal(await f.decide("bash", { command: `rm ${path.join(f.outside, "b.txt").replaceAll("\\", "/")}` }), "asked");
   assert.equal(f.requests.length, 2); assert.equal(f.dialogs.length, 2);
 
-  // Unparseable answers are rejections; with the earlier one, the third in a row trips the breaker.
-  f.requests.length = 0;
-  const g = await fixture(t, "host-auto", ["maybe", "DENY: no", "DENY: no"]);
+  // A review without a verdict is not a denial: the user is asked, and the breaker does not count it.
+  const g = await fixture(t, "host-auto", ["maybe", "DENY: no", "DENY: no", "DENY: no"]);
+  assert.equal(await g.decide("bash", { command: "npm install" }), "asked");
+  assert.match(g.notes.join("\n"), /Auto 审查未完成，改为询问你/);
   for (let index = 0; index < 3; index++) assert.equal(await g.decide("bash", { command: "npm install" }), "denied");
   assert.deepEqual(g.statuses, ["宿主机受限 · Auto 已暂停（改为询问）"]);
-  assert.equal(await g.decide("bash", { command: "npm install" }), "asked");
-  assert.equal(g.requests.length, 3);
+  // Tripped: the user is asked; allowing once resumes Auto, so the next ask is reviewed again.
+  g.choices.push("允许一次");
+  assert.equal(await g.decide("bash", { command: "npm install" }), "allow");
+  assert.equal(g.requests.length, 4);
+  assert.deepEqual(g.statuses, ["宿主机受限 · Auto 已暂停（改为询问）", "宿主机受限 · Auto 审查"]);
+  assert.equal(await g.decide("bash", { command: "npm install" }), "allow");
+  assert.equal(g.requests.length, 5);
+
+  // Without a UI, an unfinished review says it is not a finding of unsafety.
+  const headless = await fixture(t, "host-auto", ["maybe"]);
+  headless.ctx.hasUI = false;
+  assert.match(await headless.decide("bash", { command: "npm test" }), /APPROVAL_REQUIRED.*not a finding/);
+
+  // `/permissions auto`: the user allows one retry of a recent denial; the identical request is reviewed
+  // once more with the reviewer told so, and only that once.
+  const r = await fixture(t, "host-auto", ["DENY: pushes without being asked", "APPROVE: the user allowed it", "DENY: again"]);
+  assert.equal(await r.decide("bash", { command: "git push" }), "denied");
+  const denials = r.owner.listAutoDenials(r.ctx);
+  assert.equal(denials.length, 1); assert.equal(denials[0]!.tool, "bash"); assert.equal(denials[0]!.reason, "pushes without being asked");
+  assert.equal(r.owner.allowAutoRetry(r.ctx, denials[0]!.request), true);
+  assert.equal(r.owner.listAutoDenials(r.ctx).length, 0);
+  assert.equal(await r.decide("bash", { command: "git push" }), "allow");
+  assert.match(r.requests[1]!, /<user-retry>/); assert.doesNotMatch(r.requests[0]!, /<user-retry>/);
+  assert.equal(await r.decide("bash", { command: "git push" }), "denied");
+  assert.doesNotMatch(r.requests[2]!, /<user-retry>/);
 
   // host-restricted itself never calls the reviewer.
   const h = await fixture(t, "host-restricted", []);

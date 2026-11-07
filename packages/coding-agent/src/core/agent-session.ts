@@ -11,7 +11,7 @@ import { SubagentExecution, type OpenSubagentExecution } from "./files/subagent-
 import type { ToolSelection } from "./tool-selection.ts";
 import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
-import type { PermissionRefusal } from "./execution-policy.ts";
+import type { AutoReviewDenial, PermissionRefusal } from "./execution-policy.ts";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -2556,6 +2556,16 @@ export class AgentSession {
 
 	revokePermissionRefusal(key: string): boolean {
 		return this._resourceLoader.getExtensions().runtime.nativePermissions?.revokeRefusal(this._extensionRunner.createContext(), key) ?? false;
+	}
+
+	/** host-auto (`/permissions auto`): recent Auto review denials, oldest first. */
+	getAutoReviewDenials(): readonly AutoReviewDenial[] {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.listAutoDenials(this._extensionRunner.createContext()) ?? [];
+	}
+
+	/** One more review of this exact request, with the reviewer told the user allowed it; not an approval by itself. */
+	allowAutoReviewRetry(request: string): boolean {
+		return this._resourceLoader.getExtensions().runtime.nativePermissions?.allowAutoRetry(this._extensionRunner.createContext(), request) ?? false;
 	}
 
 	async withSupplementalSummary<T>(signal: AbortSignal, callback: (stream: StreamFn) => Promise<T>): Promise<T> {
