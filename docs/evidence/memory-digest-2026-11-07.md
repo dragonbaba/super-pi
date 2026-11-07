@@ -45,3 +45,36 @@ smoke test and unrelated to this change.
 A regression found while writing the test: the omitted-count line was not
 budgeted, so the digest reached 2,031 characters. Space is now reserved for
 that line.
+
+## Follow-up: dead code removal
+
+Method:
+- Scanned for exports nobody references, using a whole-word search across
+  `src` and `tests`.
+- Scanned store classes for public methods that are never called.
+- Ran `tsc --noUnusedLocals`.
+- Repeated the scans until they found nothing new.
+
+Removed code had no production caller:
+- `store/session-indexer.ts` and `store/session-parser.ts`.
+- Direct review application: `runDirectMemoryCompletion`,
+  `applyReviewOperations`.
+- The review transport switch: `usesDirectTransport` and the
+  `reviewTransport` config field.
+- The consolidator hook and its retry branch. `setConsolidator` was never
+  called.
+- `registerSkillsCommand` and `confirmDeleteSelectedSkills`.
+- `scanSecrets`.
+- These sqlite helpers: `getMemories`, `removeMemory`, `getRecentFailures`,
+  `touchMemory`.
+- These `DatabaseManager` methods: `getLastRecovery`,
+  `withCorruptionRecovery`, `recoverFromCorruption`, `getPath`, `exists`,
+  `getStats`.
+- `AtomicLockCoordinator.closeShared` and `closeAllShared`.
+- `MemoryStore.getStorageIdentity` and `getAllFailureEntries`.
+- `SkillStore.getPiGlobalSkillsDir`.
+- `GLOBAL_MEMORY_CATEGORIES`.
+- Unused imports and locals.
+
+Verification: memory `npm test` passes 6/6, `npm run check` and root `tsgo`
+exit 0, and the lifecycle benchmark is unchanged (`startupMs≈3.7`).

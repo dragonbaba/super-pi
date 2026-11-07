@@ -19,14 +19,12 @@ import { scanContent } from "./content-scanner.js";
 import { normalizeMemoryLookupText } from "./memory-lookup.js";
 import {
   ENTRY_DELIMITER,
-  DEFAULT_MEMORY_CHAR_LIMIT,
-  DEFAULT_USER_CHAR_LIMIT,
   DEFAULT_FAILURE_INJECTION_MAX_AGE_DAYS,
   DEFAULT_FAILURE_INJECTION_MAX_ENTRIES,
   MEMORY_FILE,
   USER_FILE,
 } from "../constants.js";
-import type { MemoryConfig, MemoryResult, MemorySnapshot, ConsolidationResult, MemoryCategory, MemoryOverflowStrategy } from "../types.js";
+import type { MemoryConfig, MemoryResult, MemorySnapshot, MemoryCategory, MemoryOverflowStrategy } from "../types.js";
 import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
 
@@ -96,19 +94,10 @@ export class MemoryStore {
   private fileFingerprints: Record<string, string | undefined> = {};
   private storagePaths: Partial<Record<"memory" | "user" | "failure", string>> = {};
   private snapshot: MemorySnapshot = { memory: "", user: "" };
-  private consolidator: ((target: "memory" | "user" | "failure", signal?: AbortSignal) => Promise<ConsolidationResult>) | null = null;
   private mutationObserver: ((target: "memory" | "user" | "failure", entries: string[]) => Promise<string | null | undefined>) | null = null;
   private recoveryPrunedAt = new Map<string, number>();
 
   constructor(private config: MemoryConfig) {}
-
-  /**
-   * Inject a consolidation function (avoids circular imports).
-   * Called from index.ts after both store and pi are available.
-   */
-  setConsolidator(fn: (target: "memory" | "user" | "failure", signal?: AbortSignal) => Promise<ConsolidationResult>): void {
-    this.consolidator = fn;
-  }
 
   setMutationObserver(
     fn: (target: "memory" | "user" | "failure", entries: string[]) => Promise<string | null | undefined>,
@@ -126,10 +115,6 @@ export class MemoryStore {
     if (target === "user") return path.join(this.memoryDir, USER_FILE);
     if (target === "failure") return path.join(this.memoryDir, "failures.md");
     return path.join(this.memoryDir, MEMORY_FILE);
-  }
-
-  async getStorageIdentity(target: "memory" | "user" | "failure"): Promise<string> {
-    return this.resolveStoragePath(target);
   }
 
   private async resolveStoragePath(target: "memory" | "user" | "failure"): Promise<string> {
@@ -191,7 +176,7 @@ export class MemoryStore {
   // ─── CRUD ───
 
   async add(target: "memory" | "user" | "failure", content: string, signal?: AbortSignal): Promise<MemoryResult> {
-    return this.addWithConsolidation(target, content, signal, 1, "Entry added.");
+    return this.addLocked(target, content, signal, "Entry added.");
   }
 
   async addFailure(content: string, options: {
@@ -202,8 +187,8 @@ export class MemoryStore {
     project?: string;
   }): Promise<MemoryResult> {
     const failureText = this.buildFailureMemoryText(content, options);
-    return this.addWithConsolidation(
-      "failure", failureText, undefined, 1, "Failure memory saved: " + options.category, options.project,
+    return this.addLocked(
+      "failure", failureText, undefined, "Failure memory saved: " + options.category, options.project,
     );
   }
 
@@ -270,48 +255,14 @@ export class MemoryStore {
     return this.successResponse(target, addedMessage);
   }
 
-  private async addWithConsolidation(
+  private addLocked(
     target: "memory" | "user" | "failure",
     content: string,
     signal: AbortSignal | undefined,
-    retriesLeft: number,
     addedMessage: string,
     project?: string,
   ): Promise<MemoryResult> {
-    const result = await this.runTargetMutation(
-      target,
-      () => this._add(target, content, signal, addedMessage, project),
-    );
-    if (
-      result.success
-      || retriesLeft <= 0
-      || this.memoryOverflowStrategy() !== "auto-consolidate"
-      || !this.consolidator
-      || !result.error?.startsWith("Memory at ")
-    ) {
-      return result;
-    }
-
-    // Every failure mode (lock contention, spawn failure, non-zero exit, timeout
-    // kill) used to be swallowed here and present identically to a plain capacity
-    // error, making the auto path impossible to diagnose from outside (#135).
-    const consolidation = await this.consolidator(target, signal).catch(
-      (err): ConsolidationResult => ({ consolidated: false, error: `consolidator threw ${String(err).slice(0, 200)}` }),
-    );
-    if (!consolidation.consolidated) {
-      const reason = consolidation.error || "no reason reported";
-      return { ...result, error: `${result.error} Auto-consolidation attempted but failed: ${reason}` };
-    }
-
-    try {
-      await this.loadFromDisk();
-    } catch (err) {
-      return { ...result, error: `${result.error} Auto-consolidation succeeded but reloading memory failed: ${String(err).slice(0, 200)}` };
-    }
-
-    const retried = await this.addWithConsolidation(target, content, signal, retriesLeft - 1, addedMessage, project);
-    if (retried.success || !retried.error?.startsWith("Memory at ")) return retried;
-    return { ...retried, error: `${retried.error} Auto-consolidation ran but did not free enough space.` };
+    return this.runTargetMutation(target, () => this._add(target, content, signal, addedMessage, project));
   }
 
   private async fifoEvictAndAdd(
@@ -533,15 +484,6 @@ export class MemoryStore {
   formatProjectBlock(projectName: string): string {
     const block = this.renderProjectBlock(projectName, this.memoryEntries);
     return block ? this.fenceBlock(block) : "";
-  }
-
-  /**
-   * All failure entries (no age filter), metadata stripped.
-   * Used by consolidation, which must consider the full file size —
-   * unlike getFailureEntries(), which filters by age for injection.
-   */
-  getAllFailureEntries(): string[] {
-    return this.failureEntries.map((e) => this.stripMetadata(e));
   }
 
   getMemoryEntries(): string[] {

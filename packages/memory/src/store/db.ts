@@ -143,7 +143,6 @@ export class DatabaseManager {
   private readonly displayDbPath: string;
   private canonicalDbPath: string | null = null;
   private readonly recoveryOptions: ResolvedDatabaseRecoveryOptions;
-  private lastRecovery: DatabaseRecoveryResult | null = null;
   private openGuard: (() => void) | null = null;
   private activeRecoveryLease: { coordinator: AtomicLockCoordinator; key: string; token: string } | null = null;
 
@@ -200,48 +199,6 @@ export class DatabaseManager {
   }
 
   /**
-   * Last self-heal performed by this manager, if any. Exposed for diagnostics
-   * and tests; normal callers do not need it.
-   */
-  getLastRecovery(): DatabaseRecoveryResult | null {
-    return this.lastRecovery;
-  }
-
-  /**
-   * Retry a DB operation once after quarantining/rebuilding a corrupt DB.
-   */
-  withCorruptionRecovery<T>(operation: () => T): T {
-    try {
-      return operation();
-    } catch (err) {
-      if (!DatabaseManager.isCorruptionError(err)) {
-        throw err;
-      }
-      this.recoverFromCorruption(err);
-      return operation();
-    }
-  }
-
-  /**
-   * Close any open handle, rebuild/quarantine the DB file set, and let the next
-   * getDb() reopen a clean database.
-   */
-  recoverFromCorruption(cause?: unknown): DatabaseRecoveryResult {
-    this.close();
-    let verifiedDb: DatabaseLike | null = null;
-    let recovery: DatabaseRecoveryResult;
-    try {
-      recovery = this.recoverDatabaseFile(cause, () => {
-        verifiedDb = this.openUnchecked();
-      });
-    } finally {
-      if (verifiedDb) this.safeClose(verifiedDb);
-    }
-    this.lastRecovery = recovery;
-    return recovery;
-  }
-
-  /**
    * Open the database and initialize schema.
    */
   private open(): DatabaseLike {
@@ -258,16 +215,14 @@ export class DatabaseManager {
       }
 
       let recoveredDb: DatabaseLike | null = null;
-      let recovery: DatabaseRecoveryResult;
       try {
-        recovery = this.recoverDatabaseFile(err, () => {
+        this.recoverDatabaseFile(err, () => {
           recoveredDb = this.openUnchecked();
         });
       } catch (error) {
         if (recoveredDb) this.safeClose(recoveredDb);
         throw error;
       }
-      this.lastRecovery = recovery;
       if (!recoveredDb) throw new Error(`SQLite recovery verification did not open ${this.displayDbPath}`);
       return recoveredDb;
     }
@@ -1003,32 +958,4 @@ export class DatabaseManager {
     }
   }
 
-  /**
-   * Get the database file path.
-   */
-  getPath(): string {
-    return this.displayDbPath;
-  }
-
-  /**
-   * Check if the database file exists.
-   */
-  exists(): boolean {
-    return fs.existsSync(this.dbPath);
-  }
-
-  /**
-   * Get stats about the database.
-   */
-  getStats(): { sessions: number; messages: number; memories: number } {
-    const db = this.getDb();
-    const sessions = db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number };
-    const messages = db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number };
-    const memories = db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number };
-    return {
-      sessions: sessions.count,
-      messages: messages.count,
-      memories: memories.count,
-    };
-  }
 }

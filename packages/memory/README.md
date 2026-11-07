@@ -301,7 +301,7 @@ This lets Pi discover project skills as native skills without copying them into 
 
 ### Session History Search
 
-By default, the extension indexes your Pi session history into a SQLite database with FTS5 full-text search. The agent can search across all past conversations using the `session_search` tool:
+The `session_search` tool searches past conversations. The default `legacy` variant queries an existing SQLite FTS5 session index (this build contains no indexer); the opt-in `anchors` variant reads session JSONL files directly:
 
 | Tool | What it does |
 |---|---|---|

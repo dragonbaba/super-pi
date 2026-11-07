@@ -371,15 +371,6 @@ export class AtomicLockCoordinator {
     return coordinator;
   }
 
-  /** Release a known shared coordinator during owner shutdown or isolated tests. */
-  static closeShared(dbPath: string): void {
-    const key = path.resolve(dbPath);
-    const coordinator = sharedCoordinators.get(key);
-    if (!coordinator) return;
-    sharedCoordinators.delete(key);
-    coordinator.close();
-  }
-
   /** Release all shared coordinators rooted below an owner directory. */
   static closeSharedUnder(root: string): void {
     const resolvedRoot = path.resolve(root);
@@ -391,10 +382,4 @@ export class AtomicLockCoordinator {
     }
   }
 
-  /** Release the bounded process-wide coordinator set at extension shutdown. */
-  static closeAllShared(): void {
-    for (const coordinator of sharedCoordinators.values()) coordinator.close();
-    sharedCoordinators.clear();
-    pendingReleases.clear();
-  }
 }

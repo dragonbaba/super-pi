@@ -29,7 +29,6 @@ export const DEFAULT_FAILURE_INJECTION_MAX_ENTRIES = 5;
 // Global MEMORY.md uses visible, searchable categories without a second source
 // of truth. SQLite FTS remains the actual index.
 export const GLOBAL_MEMORY_CATEGORY_PATTERN = /^\[(attention|avoid|lesson|skill-route|environment)\]\s+\S/i;
-export const GLOBAL_MEMORY_CATEGORIES = ["attention", "avoid", "lesson", "skill-route", "environment"] as const;
 
 // ─── File names ───
 export const MEMORY_FILE = "MEMORY.md";

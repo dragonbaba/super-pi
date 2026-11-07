@@ -429,7 +429,6 @@ function summarizeAction(
 
 type SkillMoveStore = Pick<SkillStore, "move" | "loadIndex" | "getProjectName">;
 type SkillDeleteStore = Pick<SkillStore, "delete" | "loadIndex">;
-export type ConfirmDialog = (title: string, message: string) => Promise<boolean>;
 
 export interface SkillBatchActionResult {
   skills: SkillIndex[];
@@ -539,33 +538,6 @@ export async function deleteSelectedSkills(
     retainSelectedSkillIds: blocked.map((item) => item.skillId),
     focusSkillId: blocked[0]?.skillId,
   };
-}
-
-export async function confirmDeleteSelectedSkills(
-  confirm: ConfirmDialog,
-  store: SkillDeleteStore,
-  skillIds: string[],
-): Promise<SkillBatchActionResult> {
-  const currentSkills = await store.loadIndex();
-  if (skillIds.length === 0) {
-    return { skills: currentSkills, summaryLines: ["Select one or more skills first."] };
-  }
-
-  const confirmed = await confirm(
-    "Delete selected skills?",
-    `Delete ${skillIds.length} selected skill${skillIds.length === 1 ? "" : "s"}? This cannot be undone.`,
-  );
-
-  if (!confirmed) {
-    return {
-      skills: currentSkills,
-      summaryLines: ["Delete cancelled."],
-      retainSelectedSkillIds: skillIds,
-      focusSkillId: skillIds[0],
-    };
-  }
-
-  return deleteSelectedSkills(store, skillIds);
 }
 
 interface SkillsManagerCallbacks {
@@ -1333,9 +1305,3 @@ export async function runSkillsCommand(
   }
 }
 
-export function registerSkillsCommand(pi: ExtensionAPI, store: SkillStore): void {
-  pi.registerCommand("memory-skills", {
-    description: "Manage global, active-project, and loaded external procedural skills",
-    handler: (args, ctx) => runSkillsCommand(pi, store, args, ctx),
-  });
-}
