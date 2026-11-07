@@ -7,9 +7,11 @@ import type { ExtensionContext, ExtensionRuntime, ToolDefinition } from "../exte
 import { FileService, type FileReceipt } from "../files/file-service.ts";
 import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { assessProtectedMutationPath } from "../files/protected-path-policy.ts";
-import { WorkspaceSandboxBackend, WorkspaceOperationError, type WorkspaceChange, type WorkspaceReply, type WorkspaceSandboxOptions } from "./workspace-backend.ts";
+import { HOST_PATH_HOST_SYSTEM, HOST_PATH_TOOL, WorkspacePathStop, WorkspaceSandboxBackend, WorkspaceOperationError, type WorkspaceChange, type WorkspaceReply,
+  type WorkspaceSandboxOptions } from "./workspace-backend.ts";
 import type { ShellExecutionFacts } from "../tools/shell-execution.ts";
-import { parseSandboxNetwork } from "./network-policy.ts";
+import type { SandboxNetworkSession } from "./network-policy.ts";
+import { inspectSandboxCommand, type SandboxCommandFacts } from "../shell-policy/sandbox-command.ts";
 import { WORKSPACE_TOOL_NAMES } from "../session-execution-profile.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
 import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
@@ -25,6 +27,19 @@ const OPERATION_LIMITS = Object.freeze({ maxConcurrent: 1, maxTasks: HARD_MAX_CO
 // Queue admission only; native permissions and publication own mutation authorization.
 const OPERATION_SLOT: readonly TaskWorkspace[] = Object.freeze([{ canonicalCwd: "", allowMutation: false }]);
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+// R5 failure classification: what an offline VM or an unmapped path prints. A refused connection is not
+// listed: a local server that is not running (`localhost:3000`) refuses too.
+const NETWORK_FAILURE = /ENOTFOUND|EAI_AGAIN|getaddrinfo|Could not resolve (?:host|proxy)|No such host is known|Name or service not known|Temporary failure in name resolution|remote name could not be resolved|ENETUNREACH|Network is unreachable|Failed to establish a new (?:network )?connection/i;
+const PATH_NOT_FOUND = /cannot find (?:the )?path|No such file or directory|system cannot find|ENOENT|is not recognized as|does not exist|找不到/i;
+const ACCESS_DENIED = /Access (?:to the path .{0,512} )?is denied|EACCES|EPERM|Permission denied|Read-only file system|UnauthorizedAccess|拒绝访问/i;
+const NETWORK_CHOICES = ["允许本会话联网", "拒绝"];
+const NETWORK_TIMEOUT_MS = 60000, MAX_DIALOG_COMMAND = 4000;
+const NETWORK_STATUS_KEY = "sandbox-network";
+/** Output names `key` with either separator (`c:\\program files\\x`, `c:/program files/x`). */
+function mentionsPath(output: string, key: string): boolean {
+  if (output.indexOf(key) >= 0) return true;
+  return key.indexOf("\\") >= 0 && output.indexOf(key.replaceAll("\\", "/")) >= 0;
+}
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_WRITEBACK] " + reason); }
 function needImage(value: unknown, reason: string): asserts value { if (!value) throw new Error(reason); }
 function shellFacts(reply: WorkspaceReply, cwd: string, failure?: string): ShellExecutionFacts | undefined {
@@ -43,12 +58,19 @@ export class WorkspaceSandboxTools {
   private readonly definitions = new Map<string, ToolDefinition>();
   private readonly operations = new SubagentScheduler(OPERATION_LIMITS, "Sandbox operation");
   private readonly shutdown = new AbortController();
+  /** Reused by the serialized operations (one at a time). */
+  private readonly commandFacts: SandboxCommandFacts = { network: undefined, paths: [] };
+  private readonly networkSession?: SandboxNetworkSession;
+  private networkStatus = false;
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}) {
     this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
+    this.networkSession = toolchainOptions.networkSession;
+    const network = this.backend.networkEnabled ? "enabled" : this.networkSession
+      ? "disabled; common network commands (npm/pip install, git clone/fetch/pull/push, curl, wget) first ask the user to enable it for this session" : "disabled";
     const workspace = " Session host workspace: " + cwd + ". Additional working directories: " + (toolchainOptions.directories?.join("; ") || "none")
       + ". Relative paths use the primary workspace; absolute paths can address every added working directory. Use /add-dir to add another directory.";
     const commandEnvironment = " Command cwd: " + cwd
-      + ". Commands and file tools use the same workspace paths. Inside the VM these name isolated snapshots. Network access: " + parseSandboxNetwork(toolchainOptions.network) + ".";
+      + ". Commands and file tools use the same workspace paths. Inside the VM these name isolated snapshots. Network access: " + network + ".";
     for (const name of names) {
       const parameters = name === "powershell" || name === "bash" ? Type.Object({ command: Type.String(), cwd: Type.Optional(Type.String({ description: "Literal working directory inside the primary or added workspace; defaults to the primary workspace." })), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
         : name === "file_batch" ? Type.Object({ operations: Type.Array(Type.Any(), { minItems: 1, maxItems: 16 }) })
@@ -86,11 +108,26 @@ export class WorkspaceSandboxTools {
     const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
     const check = () => { boundary.assertCurrent(generation); signal?.throwIfAborted(); };
     const cwd = typeof input.cwd === "string" ? path.resolve(this.backend.workspace(), input.cwd) : this.backend.workspace();
+    const command = (name === "bash" || name === "powershell") && typeof input.command === "string" ? input.command : undefined;
+    let hostPaths: readonly string[] | undefined;
+    if (command !== undefined) {
+      const facts = this.commandFacts;
+      inspectSandboxCommand(name as "bash" | "powershell", command, facts);
+      if (facts.paths.length) hostPaths = facts.paths;
+      // Without a dialog (subagents, print mode) a network command runs offline as before.
+      if (ctx.hasUI) {
+        if (facts.network !== undefined && this.networkSession && !this.backend.networkEnabled) { await this.requestNetwork(ctx, facts.network, command, signal); check(); }
+        if (!this.networkStatus && this.networkSession?.enabled) { ctx.ui.setStatus(NETWORK_STATUS_KEY, "沙箱已联网（本会话）"); this.networkStatus = true; }
+      }
+    }
     check();
     let reply;
-    try { reply = await this.backend.invoke(name, input, signal); }
+    try { reply = await this.backend.invoke(name, input, signal, hostPaths); }
     catch (error) {
-      if (error instanceof WorkspaceOperationError) return { isError: true, content: [{ type: "text" as const, text: error.message }],
+      if (error instanceof WorkspacePathStop) this.stopForPath("[SANDBOX_PATH_UNMAPPED] 命令引用的宿主路径不在沙箱工作区内：" + error.hostPath
+        + "。沙箱里看不到这个路径，命令未执行。");
+      if (error instanceof WorkspaceOperationError) return { isError: true, content: [{ type: "text" as const,
+        text: command !== undefined && error.reply.phase === "execution" ? error.message + await this.failureNote(error.reply, ctx) : error.message }],
         details: { sandbox: true, phase: error.reply.phase, execution: error.reply.execution,
           shellExecution: shellFacts(error.reply, cwd, error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), published: 0 } };
       throw error;
@@ -117,6 +154,44 @@ export class WorkspaceSandboxTools {
         execution: reply.execution, shellExecution: shellFacts(reply, cwd, failure.message), published, partial, writeback: receipts } };
       throw failure;
     }
+  }
+  /** One dialog per recognized network command while offline; consent lasts for the session. */
+  private async requestNetwork(ctx: ExtensionContext, network: string, command: string, signal: AbortSignal): Promise<void> {
+    const shown = command.length > MAX_DIALOG_COMMAND ? command.slice(0, MAX_DIALOG_COMMAND) + "…" : command;
+    const selected = await ctx.ui.select("允许本会话的沙箱联网？", NETWORK_CHOICES, { signal, timeout: NETWORK_TIMEOUT_MS, kind: "permission",
+      details: "命令：" + shown + "\n识别为联网命令：" + network + "\n沙箱当前禁止联网。允许后关闭当前沙箱 VM，之后的命令在开启网络的新 VM 中运行（工作区重新快照），直到本会话结束；全局 sandboxNetwork 设置不变。" });
+    if (selected !== NETWORK_CHOICES[0]) throw new Error("[SANDBOX_NETWORK_DECLINED] 用户没有允许本会话的沙箱联网，命令未执行（" + network
+      + "）。不要换写法或改用其他联网方式重试；请告知用户，等待下一步指令。");
+    await this.backend.enableSessionNetwork();
+    ctx.ui.notify("本会话的沙箱已允许联网；下一条命令会在新的联网 VM 中运行。", "info");
+  }
+  /** Pause the whole turn: only the user can widen the workspace (`/add-dir`). */
+  private stopForPath(reason: string): never {
+    void this.runtime().executionBoundary.pauseForUser();
+    throw new Error(reason + "当前整轮任务已暂停：请告知用户这个路径；需要时由用户用 /add-dir 把所在目录加入工作区。不要换写法、复制到别处或改用其他路径绕开。");
+  }
+  /** Why a failed command failed, when the sandbox caused it (R5); path causes pause the turn. */
+  private async failureNote(reply: WorkspaceReply, ctx: ExtensionContext): Promise<string> {
+    const execution = reply.execution;
+    if (!execution || execution.timedOut) return "";
+    const output = execution.stdout + execution.stderr;
+    let lower: string | undefined;
+    if (!this.backend.networkEnabled && NETWORK_FAILURE.test(output))
+      return "\n[SANDBOX_NETWORK_DISABLED] 沙箱当前禁止联网，这次失败来自网络请求（DNS 解析失败或网络不可达），换写法、换镜像源重试同样会失败。请告知用户需要联网"
+        + (ctx.hasUI && this.networkSession ? "；常见联网命令（如 npm install、git clone）执行前会询问用户是否允许本会话联网。" : "；可在全局设置中开启 sandboxNetwork。");
+    for (const candidate of this.commandFacts.paths) {
+      const kind = await this.backend.hostPathKind(candidate);
+      if (kind !== HOST_PATH_HOST_SYSTEM && kind !== HOST_PATH_TOOL) continue;
+      // Only a failure that names this path is about it (`& 'C:\Program Files\nodejs\npm.cmd' test` may fail for its own reasons).
+      const resolved = path.resolve(candidate);
+      lower ??= output.toLowerCase();
+      if (!mentionsPath(lower, resolved.toLowerCase())) continue;
+      if (kind === HOST_PATH_HOST_SYSTEM && PATH_NOT_FOUND.test(output))
+        this.stopForPath("[SANDBOX_PATH_UNMAPPED] 命令引用的宿主路径没有映射到沙箱：" + resolved + "。命令在沙箱中失败。");
+      if (kind === HOST_PATH_TOOL && ACCESS_DENIED.test(output))
+        this.stopForPath("[SANDBOX_PATH_READ_ONLY] " + resolved + " 是工具链目录，在沙箱中只读挂载，命令在写入时失败。");
+    }
+    return "";
   }
   private async readImage(name: string, reply: WorkspaceReply, ctx: ExtensionContext, check: () => void) {
     try {

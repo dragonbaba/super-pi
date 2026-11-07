@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
 import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
-import { parseSandboxNetwork, type SandboxNetwork } from "./network-policy.ts";
+import { parseSandboxNetwork, type SandboxNetwork, type SandboxNetworkSession } from "./network-policy.ts";
 import { workspaceInput } from "./workspace-paths.ts";
 import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
 import { isVmPrivateName, isVmPrivateDirectory, isVmPrivatePath, parseSandboxPrivateDirectories } from "./workspace-policy.mjs";
@@ -13,6 +13,8 @@ export interface WorkspaceSandboxOptions {
   settings?: { include?: string[]; exclude?: string[] };
   powershellPath?: string;
   network?: SandboxNetwork;
+  /** Session-level consent that turns networking on for later VMs (R5). */
+  networkSession?: SandboxNetworkSession;
   directories?: readonly string[];
   privateDirectories?: readonly string[];
 }
@@ -27,6 +29,24 @@ export class WorkspaceOperationError extends Error {
   readonly reply: WorkspaceReply;
   constructor(reply: WorkspaceReply) { super("[SANDBOX_" + (reply.phase ?? "OPERATION").toUpperCase() + "] " + reply.error
     + (reply.execution ? "\nCommand exit=" + reply.execution.exitCode + "; timedOut=" + reply.execution.timedOut + "\n" + reply.execution.stdout + reply.execution.stderr : "")); this.reply = reply; }
+}
+/** A command names a host path the VM cannot see (R5): stopped before it runs, with no effects. */
+export class WorkspacePathStop extends WorkspaceOperationError {
+  readonly hostPath: string;
+  constructor(id: string, hostPath: string) {
+    super({ id, ok: false, phase: "request", noEffects: true, error: "Host path is not mapped into the sandbox: " + hostPath });
+    this.hostPath = hostPath;
+  }
+}
+/** Where a host path is inside the VM (R5 diagnostics). */
+export const HOST_PATH_WORKSPACE = 0, HOST_PATH_TOOL = 1, HOST_PATH_VM = 2, HOST_PATH_HOST_SYSTEM = 3, HOST_PATH_HOST_ONLY = 4, HOST_PATH_MISSING = 5;
+/** The VM's own Windows directories and profiles; Program Files and ProgramData exist there too, with other contents. */
+const VM_SYSTEM_ROOTS = Object.freeze(["c:\\windows", "c:\\users\\public", "c:\\users\\default"]);
+/** Exists in the VM, but its other children (host profiles) do not. */
+const VM_EXACT_DIRECTORIES = Object.freeze(["c:\\users"]);
+const VM_SHARED_ROOTS = Object.freeze(["c:\\program files", "c:\\program files (x86)", "c:\\programdata"]);
+function withinKey(key: string, root: string): boolean {
+  return key === root || key.length > root.length && key.startsWith(root) && key.charCodeAt(root.length) === 92;
 }
 const ARTIFACT_NAME = /^[a-f0-9]{32}-[0-9]{1,4}\.bin$/;
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -58,23 +78,64 @@ export class WorkspaceSandboxBackend {
   private readonly mode: "read-only" | "sandbox-write";
   private readonly toolchainOptions: WorkspaceSandboxOptions;
   private readonly network: SandboxNetwork;
+  private vmNetwork = false;
+  /** Lower-case host roots of the current VM's read-only tool mounts. */
+  private toolRoots: readonly string[] = [];
   private readonly privateDirectories: readonly string[];
+  /** Lower-case primary and added workspace roots. */
+  private readonly workspaceKeys: string[] = [];
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", toolchainOptions: WorkspaceSandboxOptions = {}) {
     this.cwd = path.resolve(cwd); this.parent = parent; this.mode = mode; this.toolchainOptions = toolchainOptions;
     this.network = parseSandboxNetwork(toolchainOptions.network);
     this.privateDirectories = parseSandboxPrivateDirectories(toolchainOptions.privateDirectories);
+    this.workspaceKeys.push(this.cwd.toLowerCase());
+    for (const directory of toolchainOptions.directories ?? []) this.workspaceKeys.push(path.resolve(directory).toLowerCase());
   }
   get diagnostics() { return { starts: this.starts, calls: this.calls, pending: !!this.pending, vm: !!this.vm, root: this.root, closed: this.closed, sourceFiles: this.sources.size, ownedArtifacts: this.owned.size }; }
+  /** Global setting or this session's consent. */
+  get networkEnabled(): boolean { return this.network === "enabled" || this.toolchainOptions.networkSession?.enabled === true; }
+  /** Record the session's consent; a running offline VM is closed so the next call starts one with networking. */
+  async enableSessionNetwork(): Promise<void> {
+    const session = this.toolchainOptions.networkSession;
+    need(session && !this.pending, "Session network consent is unavailable while an operation is active");
+    session.enabled = true;
+    if (this.vm && !this.vmNetwork) await this.discardSnapshot();
+  }
+  /** Where `candidate` (a static absolute drive path) is inside the VM; host access is one lstat and one realpath. */
+  async hostPathKind(candidate: string): Promise<number> {
+    const resolved = path.resolve(candidate);
+    let kind = this.lexicalPathKind(resolved.toLowerCase());
+    if (kind === HOST_PATH_WORKSPACE || kind === HOST_PATH_TOOL || kind === HOST_PATH_VM) return kind;
+    try { await fs.lstat(resolved); } catch { return HOST_PATH_MISSING; }
+    // `C:\Users\ADMINI~1\…` or a link may still name a workspace.
+    try { const real = (await fs.realpath(resolved)).toLowerCase(), current = this.lexicalPathKind(real); if (current !== HOST_PATH_HOST_ONLY) kind = current; }
+    catch { /* keep the lexical answer */ }
+    return kind;
+  }
+  private lexicalPathKind(key: string): number {
+    if (this.sourceRoot && withinKey(key, this.sourceRoot.toLowerCase())) return HOST_PATH_WORKSPACE;
+    for (const root of this.workspaceKeys) if (withinKey(key, root)) return HOST_PATH_WORKSPACE;
+    for (const root of this.toolRoots) if (withinKey(key, root)) return HOST_PATH_TOOL;
+    // A drive root, and a directory holding a workspace or tool mount (`D:\Projects` for `D:\Projects\app`), exist in the VM.
+    if (key.length <= 3) return HOST_PATH_VM;
+    for (const root of this.workspaceKeys) if (withinKey(root, key)) return HOST_PATH_VM;
+    for (const root of this.toolRoots) if (withinKey(root, key)) return HOST_PATH_VM;
+    for (const root of VM_SYSTEM_ROOTS) if (withinKey(key, root)) return HOST_PATH_VM;
+    for (const directory of VM_EXACT_DIRECTORIES) if (key === directory) return HOST_PATH_VM;
+    for (const root of VM_SHARED_ROOTS) if (withinKey(key, root)) return HOST_PATH_HOST_SYSTEM;
+    return HOST_PATH_HOST_ONLY;
+  }
   isPrivatePath(name: string): boolean { return isVmPrivatePath(name, this.privateDirectories); }
   workspace(index = 0): string {
     need(Number.isSafeInteger(index) && index >= 0 && index <= (this.toolchainOptions.directories?.length ?? 0), "Unknown workspace identity");
     return index === 0 ? this.cwd : this.toolchainOptions.directories![index - 1];
   }
   private sourceKey(name: string, index = 0): string { return path.resolve(index === 0 ? this.sourceRoot ?? this.cwd : this.workspace(index), name).toLowerCase(); }
-  invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
+  /** `hostPaths`: static absolute paths a command names; one that exists only on the host stops it after the VM starts (R5). */
+  invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal, hostPaths?: readonly string[]): Promise<WorkspaceReply> {
     if (this.closed) return Promise.reject(new Error("[SANDBOX_CLOSED] " + (this.cleanupFailure ?? "Session workspace is closed") + ". Waiting or retrying tools cannot reopen it; retry session shutdown to release retained owners."));
     if (this.pending || this.discardOperation) return Promise.reject(new Error("[SANDBOX_BUSY] Workspace has an active operation or cleanup; wait for that operation to settle"));
-    return this.pending = this.run(operation, input, signal).finally(this.releasePending);
+    return this.pending = this.run(operation, input, signal, hostPaths).finally(this.releasePending);
   }
   private readonly releasePending = (): void => { this.pending = undefined; };
   private async remember(file: string): Promise<void> {
@@ -183,20 +244,24 @@ export class WorkspaceSandboxBackend {
     this.compiler = undefined;
     await this.remember(path.join(tools, "command.exe"));
     const mappings = [[input, "C:\\SuperPiInput", true], [tools, "C:\\SuperPiTools", true], [exchange, "C:\\SuperPiExchange", false]] as const;
-    let config = "<Configuration><Networking>" + (this.network === "enabled" ? "Enable" : "Disable") + "</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
+    const network = this.networkEnabled;
+    let config = "<Configuration><Networking>" + (network ? "Enable" : "Disable") + "</Networking><ClipboardRedirection>Disable</ClipboardRedirection><AudioInput>Disable</AudioInput><VideoInput>Disable</VideoInput><PrinterRedirection>Disable</PrinterRedirection><vGPU>Disable</vGPU><MemoryInMB>2048</MemoryInMB><MappedFolders>";
     for (const [host, guest, readOnly] of mappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>" + readOnly + "</ReadOnly></MappedFolder>";
     for (const [host, guest] of additionalMappings) config += "<MappedFolder><HostFolder>" + xml(host) + "</HostFolder><SandboxFolder>" + guest + "</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>";
     config += "</MappedFolders></Configuration>";
     config = toolchains.appendConfig(config);
+    const roots: string[] = toolchains.mountRoots;
+    for (let i = 0; i < roots.length; i++) roots[i] = roots[i]!.toLowerCase();
+    this.toolRoots = roots;
     const journal = path.join(this.root, "owner.json"); await fs.writeFile(journal, "{}"); await this.remember(journal);
     this.vm = new runtime.SandboxLifecycle({ cli, config, taskId: randomUUID(), journal(record: unknown) { writeFileSync(journal, JSON.stringify(record)); } });
     await this.vm.start(signal, async (vm: any) => {
       toolchains.assertCurrent();
       return { instanceId: vm.id, config: vm.config, configSha256: vm.configSha256,
         validate(current: any) { toolchains.assertCurrent(); return current === vm && !signal?.aborted; } };
-    }); this.starts++;
+    }); this.starts++; this.vmNetwork = network;
   }
-  private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
+  private async run(operation: string, input: Record<string, unknown>, signal?: AbortSignal, hostPaths?: readonly string[]): Promise<WorkspaceReply> {
     // Argument preparation has not touched the VM, including an already healthy snapshot.
     input = workspaceInput(this.cwd, operation, input, this.toolchainOptions.directories);
     const id = randomUUID().replaceAll("-", "");
@@ -205,6 +270,9 @@ export class WorkspaceSandboxBackend {
     try {
       signal?.throwIfAborted(); if (!this.vm) await this.start(signal); signal?.throwIfAborted();
       await this.assertWorkspaceCurrent();
+      // Tool mounts are known only once the VM started; a stopped command leaves it running.
+      if (hostPaths) for (const candidate of hostPaths) if (await this.hostPathKind(candidate) === HOST_PATH_HOST_ONLY) throw new WorkspacePathStop(id, path.resolve(candidate));
+      signal?.throwIfAborted();
       const exchange = path.join(this.root!, "exchange");
       await fs.writeFile(path.join(exchange, "request.json"), request); this.calls++;
       await this.vm.invoke("exec", ["exec", "--id", this.vm.id, "-c", '"C:\\SuperPiTools\\node.exe" "C:\\SuperPiTools\\core\\sandbox\\workspace-worker.mjs"', "-d", "C:\\SuperPiTools", "-r", "System", "--raw"], 150000, signal);

@@ -52,6 +52,10 @@ PowerShell 的当前目录与会话项目路径一致。例如从 `D:\Projects\E
 
 `"disabled"` 或未设置表示禁网；其他值明确报错。修改后重新启动会话或执行 `/reload`，新 VM 才使用新配置。项目配置不能启用网络。该开关适用于前两档工作区沙箱；旧 SDK 显式 `inputs` / `writes` 协议仍保持离线。
 
+禁网时，交互会话里的常见联网命令（npm/pnpm/yarn install、pip install、git clone/fetch/pull/push、curl、wget、Invoke-WebRequest 等）执行前会询问“允许本会话的沙箱联网？”。同意后关闭当前 VM，之后的命令在联网的新 VM 中运行，直到会话结束，状态栏显示“沙箱已联网（本会话）”；拒绝则命令不执行。这项同意不写入任何配置。没有交互界面时（子代理、print 模式）不询问，命令照常离线运行。没有识别出的联网命令在禁网下失败时，结果会说明是禁网导致。
+
+命令里的盘符绝对路径如果只存在于宿主机（不在任何工作区、工具链挂载或 VM 自带目录内），命令不会执行，当前整轮任务暂停并给出该路径；需要访问时由用户用 `/add-dir` 添加目录。沙箱不会自动扩大工作区，也不提供沙箱外重跑。
+
 启用后通过 Windows Sandbox 虚拟网络访问外网及可达的局域网，并非域名白名单。DNS、代理、系统策略和防火墙仍可能影响连接；不继承宿主代理凭据，也不自动更改防火墙。网络由 Windows Sandbox 的 [Networking 配置](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-configure-using-wsb-file)控制，与构建用的 `build:offline` 和启动用的 `--offline` 无关。
 
 读写模式可在 VM 中运行 `npm install`。`node_modules` 不参与文件工具搜索和宿主写回，关闭或重建 VM 后需要重新安装；清单、锁文件、图片和构建产物按各自协议发布。只读模式不能向项目快照安装依赖，可使用来宾临时目录。

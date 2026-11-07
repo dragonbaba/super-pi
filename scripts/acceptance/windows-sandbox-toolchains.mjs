@@ -225,6 +225,8 @@ export class SandboxToolchains {
     }
     get shell() { return this.#shell; }
     get hostShell() { return this.#hostShell; }
+    /** Host roots of the read-only tool mounts, for the session's path diagnostics. */
+    get mountRoots() { const roots = []; for (const mount of this.#mounts) roots.push(mount.host); return roots; }
     get statistics() { return { mounts: this.#mounts.length, paths: this.#paths.length, scannedEntries: this.#entries, scannedDirectories: this.#directories, checked: this.#checked }; }
     async validateTrees(signal) {
         need(!this.#checked, "Tool trees already checked");
