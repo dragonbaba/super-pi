@@ -1,12 +1,8 @@
 import * as path from 'node:path';
 import type { ExtensionAPI } from "@super-pi/coding-agent";
 import { Type } from "../schema.js";
-import { StringEnum } from "../typebox-compat.js";
-import { DatabaseManager } from '../store/db.js';
-import { searchSessions, getIndexedMessageCount } from '../store/session-search.js';
 import { searchSessionAnchors } from '../store/session-anchor-search.js';
 import type { SessionAnchorRange, SessionAnchorSearchResult } from '../store/session-anchor-search.js';
-import type { SessionSearchConfig } from '../types.js';
 import { AGENT_ROOT } from '../paths.js';
 
 interface SearchResult {
@@ -14,65 +10,18 @@ interface SearchResult {
   count?: number;
   message?: string;
   output?: string;
-  outputChars?: number;
-  outputTruncated?: boolean;
-  snippetChars?: number;
-  truncatedCount?: number;
   ranges?: SessionAnchorRange[];
 }
 
-interface SessionSearchToolOptions {
-  sessionsDir?: string;
-}
-
 const DEFAULT_SESSIONS_DIR = path.join(AGENT_ROOT, 'sessions');
-const DEFAULT_LEGACY_SNIPPET_CHARS = 1_200;
-const MAX_LEGACY_SNIPPET_CHARS = 4_000;
-const MAX_LEGACY_OUTPUT_CHARS = 50 * 1024;
-const SESSION_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
-  year: 'numeric',
-  month: 'short',
-  day: 'numeric',
-});
 
-function truncateLegacySnippet(text: string, maxChars: number): { text: string; truncated: boolean } {
-  if (text.length <= maxChars) return { text, truncated: false };
-  return {
-    text: `${text.slice(0, maxChars)}\n... (truncated, ${text.length} chars total — refine the query or increase snippetChars)`,
-    truncated: true,
-  };
-}
-
-function capLegacyOutput(text: string): { text: string; truncated: boolean } {
-  if (text.length <= MAX_LEGACY_OUTPUT_CHARS) return { text, truncated: false };
-  const suffix = `\n... (output truncated, ${text.length} chars total — refine the query or lower the result limit)`;
-  return {
-    text: `${text.slice(0, MAX_LEGACY_OUTPUT_CHARS - suffix.length)}${suffix}`,
-    truncated: true,
-  };
-}
-
-export function registerSessionSearchTool(
-  pi: ExtensionAPI,
-  dbManager: DatabaseManager,
-  sessionSearchConfig: SessionSearchConfig = { variant: 'legacy' },
-  options: SessionSearchToolOptions = {},
-): void {
-  if (sessionSearchConfig.variant === 'anchors') {
-    registerAnchorSessionSearchTool(pi, options.sessionsDir ?? DEFAULT_SESSIONS_DIR);
-    return;
-  }
-
-  registerLegacySessionSearchTool(pi, dbManager);
-}
-
-function registerAnchorSessionSearchTool(pi: ExtensionAPI, sessionsDir: string): void {
+export function registerSessionSearchTool(pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'session_search',
     label: 'Session Search',
-    description: `Search Pi session JSONL files in the opt-in anchor mode using a Markdown request.
+    description: `Search past Pi conversations directly in session JSONL files using a Markdown request. No session index is required.
 
-This mode accepts only a markdown request. Supported scalar fields are from, to, cwd, and limit. Supported list sections are all, any, and exclude: all terms must match, any requires at least one listed term, and exclude removes matching ranges. It returns compact JSONL line-range anchors, not summaries or previews. Output is plain text: count, optional message, then anchors as path:startLine-endLine with a short reason.
+Supported scalar fields are from, to, cwd, and limit. Supported list sections are all, any, and exclude: all terms must match, any requires at least one listed term, and exclude removes matching ranges. Returns compact source line ranges; use read with the returned path, offset=startLine and limit=endLine-startLine+1 to retrieve the conversation text. Output is plain text: count, optional message, then anchors as path:startLine-endLine with a short reason.
 
 Example:
 from: 2026-05-14
@@ -100,7 +49,7 @@ exclude:
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
       }
 
-      const searchResult = await searchSessionAnchors(markdown, { sessionsDir });
+      const searchResult = await searchSessionAnchors(markdown, { sessionsDir: DEFAULT_SESSIONS_DIR });
       if (!searchResult.success) {
         const result: SearchResult = { success: false, message: searchResult.message ?? 'Anchor session search failed.' };
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
@@ -137,89 +86,4 @@ function compactReason(reason: string | undefined): string {
   if (!reason) return "";
   const oneLine = reason.replace(/\s+/g, " ").trim();
   return oneLine.length <= 180 ? oneLine : `${oneLine.slice(0, 177)}...`;
-}
-
-function registerLegacySessionSearchTool(pi: ExtensionAPI, dbManager: DatabaseManager): void {
-  pi.registerTool({
-    name: 'session_search',
-    label: 'Session Search',
-    description: 'Search prior Pi conversations by query and optional project/role filters. Returns bounded dated snippets; large messages report their original length.',
-    parameters: Type.Object({
-      query: Type.String({ description: 'Search query. Use natural language or specific terms.' }),
-      project: Type.Optional(Type.String({ description: 'Filter by project name (optional).' })),
-      role: Type.Optional(StringEnum(['user', 'assistant'] as const, { description: 'Filter by message role (optional).' })),
-      limit: Type.Optional(Type.Number({
-        description: 'Maximum results to return (default: 10, min: 1, max: 20).',
-        minimum: 1,
-        maximum: 20,
-      })),
-      snippetChars: Type.Optional(Type.Number({
-        description: `Maximum characters per result snippet (default: ${DEFAULT_LEGACY_SNIPPET_CHARS}, max: ${MAX_LEGACY_SNIPPET_CHARS}).`,
-        minimum: 100,
-        maximum: MAX_LEGACY_SNIPPET_CHARS,
-      })),
-    }),
-    execute: async (_id: string, args: { query: string; project?: string; role?: string; limit?: number; snippetChars?: number }) => {
-      const query = args.query;
-      const project = args.project;
-      const role = args.role;
-      const requestedLimit = Number.isFinite(args.limit) ? Math.floor(args.limit!) : 10;
-      const limit = Math.min(Math.max(requestedLimit, 1), 20);
-      const requestedSnippetChars = Number.isFinite(args.snippetChars)
-        ? Math.floor(args.snippetChars!)
-        : DEFAULT_LEGACY_SNIPPET_CHARS;
-      const snippetChars = Math.min(Math.max(requestedSnippetChars, 100), MAX_LEGACY_SNIPPET_CHARS);
-
-      if (!query || query.trim().length === 0) {
-        const result: SearchResult = { success: false, message: 'query is required' };
-        return { content: [{ type: 'text' as const, text: result.message! }], details: result };
-      }
-
-      const totalMessages = getIndexedMessageCount(dbManager);
-      if (totalMessages === 0) {
-        const result: SearchResult = { success: false, message: 'No indexed sessions are available. The legacy search variant only queries an existing index; configure the anchors variant to search session JSONL files directly.' };
-        return { content: [{ type: 'text' as const, text: result.message! }], details: result };
-      }
-
-      const results = searchSessions(dbManager, query, { project, role, limit });
-
-      if (results.length === 0) {
-        const output = capLegacyOutput('No results found. Try a different search term or broader query.');
-        const result: SearchResult = {
-          success: true,
-          count: 0,
-          message: output.text,
-          outputChars: output.text.length,
-          outputTruncated: output.truncated,
-        };
-        return { content: [{ type: 'text' as const, text: output.text }], details: result };
-      }
-
-      const blocks: string[] = [`Found ${results.length} results for "${query}":`];
-      let truncatedCount = 0;
-
-      for (const r of results) {
-        const date = SESSION_DATE_FORMATTER.format(Date.parse(r.timestamp));
-
-        const snippet = truncateLegacySnippet(r.snippet, snippetChars);
-        if (snippet.truncated) truncatedCount += 1;
-        blocks.push([
-          '---',
-          `📅 ${date} | 📁 ${r.project} | ${r.role === 'user' ? '👤 User' : '🤖 Assistant'}`,
-          snippet.text,
-        ].join('\n'));
-      }
-
-      const output = capLegacyOutput(blocks.join('\n\n').trim());
-      const finalResult: SearchResult = {
-        success: true,
-        count: results.length,
-        truncatedCount,
-        snippetChars,
-        outputChars: output.text.length,
-        outputTruncated: output.truncated,
-      };
-      return { content: [{ type: 'text' as const, text: output.text }], details: finalResult };
-    },
-  });
 }

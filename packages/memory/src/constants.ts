@@ -49,7 +49,7 @@ Save with the memory tool at the moment you learn something durable, without wai
 Write one fact per entry as a sentence that stands on its own. If a related entry exists, replace it instead of adding another; remove entries that turn out to be wrong.
 Do not save task progress, completed-work logs, TODOs, anything the code or git history already records, unverified guesses, or secrets.
 
-Use the current request, loaded instructions and snapshot first. Respect the user's restrictions on historical retrieval. Search only for a specific missing fact needed for the task, and stop when the answer is supported; do not repeatedly rephrase keywords without a new information need. memory_search finds matching entries, not a complete inventory. session_search finds past conversation text.
+Use the current request, loaded instructions and snapshot first. Respect the user's restrictions on historical retrieval. Search only for a specific missing fact needed for the task, and stop when the answer is supported; do not repeatedly rephrase keywords without a new information need. memory_search finds matching entries, not a complete inventory. session_search returns source line ranges; use read on those ranges for past conversation text.
 
 When asked what is remembered, use memory action "list" with the relevant target and follow nextOffset until null. This reads current canonical entries, which may differ from the frozen snapshot. For failure entries, scope "global" and "project" are separate. Never present keyword matches as a complete list. Creation and reference dates are not proof that a fact is still current.
 

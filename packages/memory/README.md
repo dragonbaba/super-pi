@@ -123,7 +123,7 @@ superpi -e ./packages/memory/src/index.ts
 
 ### Homebrew / Node ABI mismatches
 
-`better-sqlite3` is a native addon. If Pi is installed via Homebrew and the extension was compiled for a different Node ABI, session search may warn:
+`better-sqlite3` is a native addon used by `memory_search` and memory indexing. If Pi is installed via Homebrew and the extension was compiled for a different Node ABI, those operations may warn:
 
 ```text
 was compiled against a different Node.js version using NODE_MODULE_VERSION ...
@@ -301,25 +301,24 @@ This lets Pi discover project skills as native skills without copying them into 
 | **user** | `USER.md` | User profile — name, preferences, communication style, habits | 5,000 chars |
 | **skills** | `~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md` or `projects-memory/<project>/skills/<slug>/SKILL.md` | Procedures — *how* to debug, deploy, test, or fix something | Unlimited |
 | **extended** | `sessions.db` | Searchable memories beyond the core limit | Unlimited |
-| **sessions** | `sessions.db` | Past conversation history (searchable via FTS5) | Unlimited |
+| **sessions** | `~/.sp/agent/sessions/**/*.jsonl` | Past conversation history (bounded direct search) | Unlimited storage; bounded search |
 
 ### Session History Search
 
-The `session_search` tool searches past conversations. The default `legacy` variant queries an existing SQLite FTS5 session index (this build contains no indexer); the opt-in `anchors` variant reads session JSONL files directly:
+The `session_search` tool searches past conversations directly in session JSONL files. It needs no SQLite session index and runs only when called:
 
 | Tool | What it does |
-|---|---|---|
+|---|---|
 | `session_search` | Search past conversations — "what did we discuss about auth?" |
 | `memory_search` | Search extended memory store — unlimited capacity, keyword-based |
 
-Search behavior notes:
-- Multi-word natural-language queries are supported for both `memory_search` and `session_search`.
-- Exact phrases can be requested with quotes, for example `"memory search"`.
-- Advanced FTS queries with operators like `OR` still work when you need them.
+`session_search` accepts a `markdown` request with optional `from`, `to`, `cwd`, and `limit` fields, plus `all`, `any`, and `exclude` lists of literal search terms. It returns plain text with `count`, an optional `message`, and compact `path:startLine-endLine` anchors with short reasons. Use `read` on those paths and line ranges to retrieve the conversation text.
 
-Session history indexing is not performed at startup, during message handling, or at shutdown. The legacy search variant queries an existing SQLite session index; the opt-in `anchors` variant searches session JSONL files directly.
+For example, `{ "markdown": "limit: 10\nall:\n- authentication\nany:\n- token\n- session" }` finds ranges containing `authentication` and either `token` or `session`. File discovery, scanned lines, query size, and retained results are bounded; scan-limit failures are reported rather than presented as complete results.
 
-For users who prefer source anchors over snippets, `sessionSearch.variant` can be set to `anchors`. In that opt-in mode, the same `session_search` tool reads session JSONL files directly and accepts a Markdown request with fields such as `from`, `to`, `cwd`, and `limit`, plus `all`, `any`, and `exclude` lists. It returns plain text with `count`, an optional `message`, and compact `path:startLine-endLine` style anchors with short reasons instead of summaries or previews.
+The retired `sessionSearch.variant` setting is ignored, including an explicit `legacy` value. Existing configuration files and databases are left intact. The old `query`/`project`/`role`/`snippetChars` request surface is retired; reload the extension to obtain the current tool schema. No history indexing runs at startup, during message handling, or at shutdown.
+
+`memory_search` still queries the derived memory index and supports natural-language queries, quoted phrases, and FTS operators such as `OR`.
 
 ### Extended Memory Store
 
@@ -415,7 +414,6 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
   "projectCharLimit": 5000,
   "memoryDir": "~/.sp/agent/@super-pi/memory",
   "projectsMemoryDir": "projects-memory",
-  "sessionSearch": { "variant": "legacy" },
   "reviewRecentMessages": 0,
   "memoryOverflowStrategy": "reject",
   "failureInjectionEnabled": true,
@@ -435,7 +433,6 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
 | `projectCharLimit` | `5000` | Max characters in project-scoped MEMORY.md |
 | `memoryDir` | `~/.sp/agent/@super-pi/memory` | Custom directory for extension storage files |
 | `projectsMemoryDir` | `projects-memory` | Subdirectory under `~/.sp/agent/` for project-scoped memory |
-| `sessionSearch` | `{ "variant": "legacy" }` | Session search implementation: `legacy` keeps the existing SQLite/FTS snippet search; `anchors` uses the opt-in Markdown request surface and returns compact JSONL line-range anchors from `~/.sp/agent/sessions/` |
 | `reviewRecentMessages` | `0` | Recent conversation messages offered to explicit `/memory-review` before the hard 80,000-character tail bound (`0` = all eligible messages) |
 | `memoryOverflowStrategy` | `reject` | `reject` returns a capacity error; `fifo-evict` rotates oldest entries. Legacy `auto-consolidate` is accepted but no automatic consolidator is registered, so it also rejects until `/memory-review` is run |
 | `consolidationTimeoutMs` | `180000` | Legacy field name retained as the timeout for one explicit current-model `/memory-review` proposal |
@@ -476,13 +473,13 @@ These are plain markdown files. You can read and edit them directly if you want 
 
 If you are upgrading from a version that stored project memory directly at `~/.sp/agent/<project>/MEMORY.md`, run `/memory-sync-markdown`. It copies or merges those entries into `~/.sp/agent/projects-memory/<project>/MEMORY.md`; the old folders remain as a backup.
 
-The `sessions.db` SQLite database stores session history and extended memory entries. It's searchable via FTS5 full-text search.
+The `sessions.db` SQLite database holds the derived memory index used by `memory_search`. Older databases may also contain retired session-index tables; history search now reads the original JSONL files.
 
 ## Known Limitations
 
 - **`§` delimiter**: Memory entries are separated by `§` (section sign). If an entry naturally contains `§`, it will be split incorrectly on reload. This is rare in English text but possible. [Hermes uses the same delimiter.]
 - **Explicit review cost**: `/memory-review` costs one current-model request (and at most one correction retry) only when you invoke it; startup, normal turns, compaction, and shutdown do not call a model for memory maintenance.
-- **Legacy session search uses the existing index**: no automatic startup/live/shutdown indexing pass or standing indexing command is registered. Use the `anchors` search variant when direct JSONL search is required.
+- **History search is bounded**: large archives may reach the discovery or scan caps. Results are source line ranges, so read the referenced JSONL lines when conversation text is needed. No automatic indexing pass is registered.
 - **Older Markdown memories may need backfill**: If you saved memories before the SQLite mirror existed or search looks stale, run `/memory-sync-markdown`.
 - **Core memory limits still apply**: SQLite search mirroring does not bypass the 5,000-char core Markdown limit. A full-memory write fails; run `/memory-review` to approve a smaller merged result instead of relying on automatic consolidation.
 - **Project skill visibility depends on Pi discovery cycles**: project skills are exposed through `resources_discover` using the active project's `skills/` path. If a moved or newly created project skill doesn't show up immediately in a running session, trigger a reload/new session so Pi refreshes discovered resources.

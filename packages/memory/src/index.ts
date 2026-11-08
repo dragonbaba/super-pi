@@ -221,9 +221,8 @@ export default function (pi: ExtensionAPI) {
     },
   });
   registerMemoryCommand(pi, { store, projectStore, config, project, globalDir, review, cleanup, sync, skills });
-  // ── 6. SQLite search tools. Historical indexing is not exposed as a
-  // standing slash command; search remains available only when explicitly requested.
-  registerSessionSearchTool(pi, dbManager, config.sessionSearch ?? { variant: "legacy" });
+  // ── 6. Explicit search: JSONL history and the derived memory index. ──
+  registerSessionSearchTool(pi);
   registerMemorySearchTool(pi, dbManager, project.name);
 
   // ── 7. Constant-time owner shutdown. ──

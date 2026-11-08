@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { MemoryConfig, MemoryOverflowStrategy, SessionSearchVariant, ThinkingLevel } from "./types.js";
+import type { MemoryConfig, MemoryOverflowStrategy, ThinkingLevel } from "./types.js";
 import {
   DEFAULT_MEMORY_CHAR_LIMIT,
   DEFAULT_USER_CHAR_LIMIT,
@@ -14,15 +14,10 @@ import {
 import { AGENT_ROOT, normalizeConfiguredMemoryDir, normalizeProjectsMemoryDir } from "./paths.js";
 
 const MEMORY_OVERFLOW_STRATEGIES: readonly MemoryOverflowStrategy[] = ["auto-consolidate", "reject", "fifo-evict"];
-const SESSION_SEARCH_VARIANTS: readonly SessionSearchVariant[] = ["legacy", "anchors"];
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
 function isMemoryOverflowStrategy(value: unknown): value is MemoryOverflowStrategy {
   return typeof value === "string" && MEMORY_OVERFLOW_STRATEGIES.includes(value as MemoryOverflowStrategy);
-}
-
-function isSessionSearchVariant(value: unknown): value is SessionSearchVariant {
-  return typeof value === "string" && SESSION_SEARCH_VARIANTS.includes(value as SessionSearchVariant);
 }
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -43,7 +38,6 @@ const DEFAULT_CONFIG: MemoryConfig = {
   failureInjectionMaxEntries: DEFAULT_FAILURE_INJECTION_MAX_ENTRIES,
   consolidationTimeoutMs: DEFAULT_CONSOLIDATION_TIMEOUT_MS,
   projectsMemoryDir: DEFAULT_PROJECTS_MEMORY_DIR,
-  sessionSearch: { variant: "legacy" },
 };
 
 export const DEFAULT_CONFIG_PATH = path.join(
@@ -105,13 +99,6 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH): MemoryConfig {
       if (typeof parsed.projectsMemoryDir === "string") {
         const normalizedProjectsMemoryDir = normalizeProjectsMemoryDir(parsed.projectsMemoryDir);
         if (normalizedProjectsMemoryDir) config.projectsMemoryDir = normalizedProjectsMemoryDir;
-      }
-      if (
-        typeof parsed.sessionSearch === "object" &&
-        parsed.sessionSearch !== null &&
-        isSessionSearchVariant(parsed.sessionSearch.variant)
-      ) {
-        config.sessionSearch = { variant: parsed.sessionSearch.variant };
       }
       if (typeof parsed.llmModelOverride === "string") {
         const trimmed = parsed.llmModelOverride.trim();

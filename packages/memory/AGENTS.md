@@ -15,7 +15,7 @@
 - Unified management: `/memory` reuses explicit handlers for viewing, scoped review, skills, sync, and artifact cleanup. `/memory import` previews old basename entries, asks which project owns them, and revalidates both sides; it preserves original dates and old files and never imports during startup.
 - Reviewed extraction: `/memory-review [project|global] [memory|user|failure]` uses the current model, previews fully, requires confirmation, and revalidates the source snapshot. User entries are global; global failure review preserves legacy project-tagged records.
 - Digest sources share the fixed budget: user, global, current project, and scoped failures/corrections. Multiline conditions remain in shortened lines. Durable corrections do not expire with the temporary-failure window; canonical originals remain available through `list`.
-- Explicit maintenance: `/memory-cleanup` and `/memory-sync-markdown`. There is no session indexer; legacy `session_search` reads an existing index only.
+- Explicit maintenance: `/memory-cleanup` and `/memory-sync-markdown`. There is no session indexer; `session_search` directly reads bounded JSONL history and returns source ranges for `read`. The retired `sessionSearch.variant` setting is ignored; `memory_search` still uses SQLite.
 - Skills UI: `/memory-skills`; its TUI implementation must stay lazy-loaded.
 - Shutdown closes only the opened SQLite manager and exact-owner Markdown coordinators.
 

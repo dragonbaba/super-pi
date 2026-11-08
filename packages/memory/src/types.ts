@@ -6,15 +6,8 @@ import type { TextContent } from "@super-pi/ai";
 
 export type MemoryOverflowStrategy = "auto-consolidate" | "reject" | "fifo-evict";
 
-export type SessionSearchVariant = "legacy" | "anchors";
-
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-
-export interface SessionSearchConfig {
-  /** Session search implementation variant. Default: legacy */
-  variant: SessionSearchVariant;
-}
 
 export interface MemoryConfig {
   /**
@@ -40,8 +33,6 @@ export interface MemoryConfig {
   memoryDir?: string;
   /** Directory for project-scoped memory (relative to ~/.sp/agent). Default: "projects-memory" */
   projectsMemoryDir?: string;
-  /** Session search configuration. Default: { variant: "legacy" } */
-  sessionSearch?: SessionSearchConfig;
   /** Override model used for child superpi -p subprocess LLM calls. Default: unset */
   llmModelOverride?: string;
   /** Override thinking level used for child superpi -p subprocess LLM calls. Default: unset */
