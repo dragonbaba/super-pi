@@ -72,3 +72,11 @@ Reviewer 对 `4348414` 审核完成，无发现。CI 中两处未纳入首轮本
 两个文件的 8 项本地验证全过；本轮合计 12 个测试文件、388 项（386 通过、2 项平台跳过）。规划补充：以后调整通用结果协议时，除独立工具与 CodeMode 恢复用例，还须核对默认完整扩展配置及交互响应夹具中的结果语义。首轮遗漏的是消费方测试断言，不需要扩大权限/命令预检设计。
 
 临时根：`.task-tmp/grep-no-match-20261108-b598/`。文件与进程身份记录在该目录；子进程临时环境仅影响当前任务，并验证实际临时路径位于此根。前轮被策略拦截的清理不在本轮重试。
+
+## 复核补漏：tool-loop-guardrails
+
+首轮消费方核对遗漏了 `tool-loop-guardrails`：其 `tool_result` 只按 `isError` 记账。协议调整后，正常非零退出被当作成功的 shell 变更，既不触发“同一调用失败两次”提示，还会清空其他工具的失败记录（`core.ts` 的变更成功分支）。
+
+- 先在 `tests/tool-failure-classification.test.ts` 增加以真实协议（`isError: false` + `exitCode: 23`）走 `tool_result` 的用例：修复前 bash/powershell **0/2**。
+- 修复：`shellCommandFailed()` 读取已校验的 `shellExecution`，`termination === "exit"` 且非零即计为失败尝试；结果内容不改写、不追加恢复提示。不新增命令识别。
+- 验证：相关 6 个文件 **268/268**；`npm run check` 通过；新函数纳入 `tool-loop-repeat-hot-paths` 源码约束（每次工具结果一次已有的事实读取，无闭包/数组/Promise）。

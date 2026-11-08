@@ -28,6 +28,7 @@ import {
   repairReadOffsetFromError,
   resetBatchState,
   resetGuardState,
+  shellCommandFailed,
 } from "./core.js";
 import { createConfiguredMsysBashDefinition } from "./msys-bash.js";
 import { issueSnapshotForRead } from "../mutation-guard-write/snapshot-line-edit.ts";
@@ -274,8 +275,10 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     const retry = state.retry.operations.get(key);
     if (retry && pending.retryOperation === retry) retry.inFlight = false;
     const repeatReminder = observeRepeatedCall(state, event.toolName, event.input, key);
-    const failureText = event.isError ? boundedFailureText(event.content) : "";
-    const warning = recordResult(state, event.toolName, event.input, event.isError, failureText, key, event.details, pending.retryOperation, !pending.hasChildren);
+    // Nonzero exits count as failed attempts but keep their original content: no recovery hint is appended.
+    const failed = event.isError || shellCommandFailed(event.toolName, event.details);
+    const failureText = failed ? boundedFailureText(event.content) : "";
+    const warning = recordResult(state, event.toolName, event.input, failed, failureText, key, event.details, pending.retryOperation, !pending.hasChildren);
     const recoveryHint = event.isError
       ? await failureRecoveryHint(event.toolName, event.input, failureText, getShellCwdBinding(event.input)?.canonical ?? ctx.cwd, event.details)
       : undefined;
