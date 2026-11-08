@@ -68,7 +68,7 @@ test('canonical list is paginated, sees external edits and separates global/proj
     const last = await tool.execute('list', validate(tool, { action: 'list', target: 'user', offset: 20 }));
     assert.equal(last.details.entries.length, 3);
     assert.equal(last.details.nextOffset, null);
-    await store.addFailure('global correction', { category: 'correction' });
+    await writeFile(join(config.memoryDir, 'failures.md'), '[correction] global correction <!-- created=2000-01-01, last=2001-01-01 -->');
     await store.addFailure('legacy other project\nonly applies there', { category: 'correction', project: 'other' });
     await project.addFailure('project correction', { category: 'correction', project: 'project-a' });
     const global = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'global' }));
@@ -77,8 +77,9 @@ test('canonical list is paginated, sees external edits and separates global/proj
     const local = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'project' }));
     assert.equal(local.details.total, 1);
     assert.match(local.content[0].text, /project correction/);
-    const changed = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: 'global correction', content: '[correction] revised global' }));
+    const changed = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: '⚠️ [global] [correction] global correction', content: '[correction] revised global' }));
     assert.equal(changed.details.success, true);
+    assert.equal((await store.listEntries('failure', 0, 20, null)).entries[0].created, '2000-01-01');
     assert.match((await readFile(join(config.memoryDir, 'failures.md'), 'utf8')), /legacy other project\nonly applies there/);
     assert.equal(searchMemories(db, 'legacy', { project: null }).length, 0);
     assert.equal(searchMemories(db, 'legacy', { project: 'other' }).length, 1);
@@ -86,6 +87,12 @@ test('canonical list is paginated, sees external edits and separates global/proj
     const blank = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: 'revised global', content: ' \n\t ' }));
     assert.equal(blank.details.success, false);
     assert.equal(await readFile(join(config.memoryDir, 'failures.md'), 'utf8'), beforeBlank);
+    const unrelated = await tool.execute('remove', validate(tool, { action: 'remove', target: 'failure', scope: 'global', old_text: 'legacy other project' }));
+    assert.equal(unrelated.details.success, false);
+    const removed = await tool.execute('remove', validate(tool, { action: 'remove', target: 'failure', scope: 'global', old_text: '⚠️ [global] [correction] revised global' }));
+    assert.equal(removed.details.success, true);
+    assert.equal((await store.listEntries('failure', 0, 20, null)).total, 0);
+    assert.equal(searchMemories(db, 'legacy', { project: 'other' }).length, 1);
   } finally { db.close(); }
 });
 

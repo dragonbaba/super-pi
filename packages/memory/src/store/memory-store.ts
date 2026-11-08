@@ -326,11 +326,11 @@ export class MemoryStore {
     };
   }
 
-  async replace(target: "memory" | "user" | "failure", oldText: string, newContent: string): Promise<MemoryResult> {
-    return this.runTargetMutation(target, () => this.replaceUnlocked(target, oldText, newContent));
+  async replace(target: "memory" | "user" | "failure", oldText: string, newContent: string, project?: string | null): Promise<MemoryResult> {
+    return this.runTargetMutation(target, () => this.replaceUnlocked(target, oldText, newContent, project));
   }
 
-  private async replaceUnlocked(target: "memory" | "user" | "failure", oldText: string, newContent: string): Promise<MemoryResult> {
+  private async replaceUnlocked(target: "memory" | "user" | "failure", oldText: string, newContent: string, project?: string | null): Promise<MemoryResult> {
     oldText = normalizeMemoryLookupText(oldText);
     newContent = newContent.trim();
     if (!oldText) return { success: false, error: "old_text cannot be empty." };
@@ -342,7 +342,10 @@ export class MemoryStore {
     await this.syncTargetFromDiskIfChanged(target);
     const entries = this.entriesFor(target);
     // Match against stripped text (entries may have metadata comments)
-    const matches = entries.filter((e) => this.stripMetadata(e).includes(oldText));
+    const matches = entries.filter((entry) => {
+      const decoded = this.decodeEntry(entry);
+      return (project === undefined || decoded.project === project) && decoded.text.includes(oldText);
+    });
 
     if (matches.length === 0) return { success: false, error: `No entry matched '${oldText}'.` };
     if (matches.length > 1 && !this.areDistinctScopedFailureCopies(target, matches)) {
@@ -374,8 +377,8 @@ export class MemoryStore {
     return this.successResponse(target, "Entry replaced.");
   }
 
-  async remove(target: "memory" | "user" | "failure", oldText: string): Promise<MemoryResult> {
-    return this.runTargetMutation(target, () => this.removeUnlocked(target, oldText));
+  async remove(target: "memory" | "user" | "failure", oldText: string, project?: string | null): Promise<MemoryResult> {
+    return this.runTargetMutation(target, () => this.removeUnlocked(target, oldText, project));
   }
 
   private encodeReplacementEntries(entries: string[], target: "memory" | "user" | "failure", project?: string | null,
@@ -449,13 +452,16 @@ export class MemoryStore {
     });
   }
 
-  private async removeUnlocked(target: "memory" | "user" | "failure", oldText: string): Promise<MemoryResult> {
+  private async removeUnlocked(target: "memory" | "user" | "failure", oldText: string, project?: string | null): Promise<MemoryResult> {
     oldText = normalizeMemoryLookupText(oldText);
     if (!oldText) return { success: false, error: "old_text cannot be empty." };
 
     await this.syncTargetFromDiskIfChanged(target);
     const entries = this.entriesFor(target);
-    const matches = entries.filter((e) => this.stripMetadata(e).includes(oldText));
+    const matches = entries.filter((entry) => {
+      const decoded = this.decodeEntry(entry);
+      return (project === undefined || decoded.project === project) && decoded.text.includes(oldText);
+    });
 
     if (matches.length === 0) return { success: false, error: `No entry matched '${oldText}'.` };
     if (matches.length > 1 && !this.areDistinctScopedFailureCopies(target, matches)) {

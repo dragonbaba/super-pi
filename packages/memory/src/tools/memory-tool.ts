@@ -35,20 +35,6 @@ type MemoryToolParams = {
   limit?: number;
 };
 
-async function changeGlobalFailure(store: MemoryStore, oldText: string, content?: string): Promise<MemoryResult> {
-  if (content !== undefined) {
-    content = content.trim();
-    if (!content) return { success: false, error: "Replacement content cannot be empty." };
-  }
-  const before = await store.readEntries("failure", null);
-  const selector = oldText.trim();
-  const matches = before.filter((entry) => selector && entry.includes(selector));
-  if (matches.length !== 1) return { success: false, error: "Select exactly one global failure entry; other project records are not eligible." };
-  const after = before.filter((entry) => entry !== matches[0]);
-  if (content !== undefined) after.splice(before.indexOf(matches[0]!), 0, content);
-  return store.replaceMemoryEntriesIfUnchanged(before, after, "failure", null);
-}
-
 function appendSyncWarning(result: MemoryResult, warning: string): MemoryResult {
   const warnings = [...(((result as any).warnings ?? []) as string[]), warning];
   const message = result.message ? `${result.message} Warning: ${warning}` : warning;
@@ -406,8 +392,7 @@ export function registerMemoryTool(
               details: {},
             };
           }
-          result = rawTarget === "failure" && !projectFailure
-            ? await changeGlobalFailure(store_, old_text, content) : await store_.replace(target, old_text, content);
+          result = await store_.replace(target, old_text, content, rawTarget === "failure" && !projectFailure ? null : undefined);
           if (result.success && !syncHandled) syncWarning = await syncReplaceToSqlite(rawTarget, old_text, content, dbManager, projectName);
           break;
 
@@ -426,8 +411,7 @@ export function registerMemoryTool(
               details: {},
             };
           }
-          result = rawTarget === "failure" && !projectFailure
-            ? await changeGlobalFailure(store_, old_text) : await store_.remove(target, old_text);
+          result = await store_.remove(target, old_text, rawTarget === "failure" && !projectFailure ? null : undefined);
           if (result.success && !syncHandled) syncWarning = await syncRemoveFromSqlite(rawTarget, old_text, dbManager, projectName);
           break;
 
