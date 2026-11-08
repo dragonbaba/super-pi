@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createExtensionHarness } from './extension-harness.mjs';
+import { createExtensionHarness, emitAll } from './extension-harness.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'sp-memory-management-'));
 process.env.SP_CODING_AGENT_DIR = join(root, 'agent');
@@ -165,6 +165,36 @@ test('legacy import requires confirmation, preserves source, and rejects source 
   assert.equal(await readFile(file, 'utf8'), 'changed source');
   await importLegacyProjectEntries(ctx, config, project, store);
   assert.equal(store.getMemoryEntries().length, 2, 'repeated import does not duplicate entries');
+  const failures = join(legacy, 'failures.md');
+  const rawFailure = '[failure] obsolete temporary <!-- created=2000-01-01, last=2001-01-01 -->';
+  await writeFile(failures, rawFailure);
+  ctx.ui.select = async () => failures;
+  await importLegacyProjectEntries(ctx, config, project, store);
+  assert.deepEqual(store.getFailureEntries(7), [], 'import must not revive expired temporary failures');
+  const imported = (await store.listEntries('failure')).entries[0];
+  assert.equal(imported.created, '2000-01-01');
+  assert.equal(imported.lastReferenced, '2001-01-01');
+  assert.equal(imported.project, 'new-identity');
+  assert.equal(await readFile(failures, 'utf8'), rawFailure);
+});
+
+test('failure FIFO preserves other project scopes and rejects when only protected entries remain', async () => {
+  const { config, harness } = await fixture('failure-fifo');
+  const store = new MemoryStore({ ...config, memoryCharLimit: 150, memoryOverflowStrategy: 'fifo-evict' });
+  await store.loadFromDisk();
+  registerMemoryTool(harness.api, store, null);
+  await store.addFailure('other project correction', { category: 'correction', project: 'other' });
+  await store.addFailure('old global entry', { category: 'failure' });
+  const tool = harness.tools.get('memory');
+  const add = content => tool.execute('add', validate(tool, { action: 'add', target: 'failure', scope: 'global', content }));
+  const result = await add('new global entry ' + 'x'.repeat(75));
+  assert.equal(result.details.success, true);
+  assert.match(store.getEntries('failure', 'other')[0] ?? '', /other project correction/);
+  assert.doesNotMatch(store.getEntries('failure', null).join('\n'), /old global entry/);
+  const before = await readFile(join(config.memoryDir, 'failures.md'), 'utf8');
+  const rejected = await add('oversized relative to retained project ' + 'x'.repeat(130));
+  assert.equal(rejected.details.success, false);
+  assert.equal(await readFile(join(config.memoryDir, 'failures.md'), 'utf8'), before);
 });
 
 test('unified manager dispatches existing scoped review and maintenance handlers without changing headless data', async () => {
@@ -180,4 +210,26 @@ test('unified manager dispatches existing scoped review and maintenance handlers
   ctx.hasUI = false;
   await handler('', ctx);
   assert.equal(calls.length, 1);
+});
+
+test('shutdown closes the exact Markdown coordinators after writes and resolves owner path aliases', async () => {
+  const extension = (await import('../dist/index.js')).default;
+  const harness = createExtensionHarness();
+  extension(harness.api);
+  await emitAll(harness, 'session_start', { reason: 'startup' }, { cwd: root });
+  const tool = harness.tools.get('memory');
+  assert.equal((await tool.execute('write', { action: 'add', target: 'memory', content: '[lesson] shutdown fixture' })).details.success, true);
+  assert.equal((await tool.execute('write', { action: 'add', target: 'project', content: 'shutdown fixture' })).details.success, true);
+  await emitAll(harness, 'session_shutdown', {}, { cwd: root });
+  assert.equal((await readdir(process.env.SP_CODING_AGENT_DIR, { recursive: true })).some(name => name.endsWith('-wal') || name.endsWith('-shm')), false);
+  if (process.platform === 'win32') {
+    await mkdir(join(root, 'alias-owner'));
+    const dbPath = join(await realpath(join(root, 'alias-owner')), 'locks.sqlite');
+    const coordinator = AtomicLockCoordinator.shared(dbPath);
+    const lease = coordinator.tryAcquire('fixture', { staleMs: 1000 });
+    assert.ok(lease);
+    lease.release();
+    AtomicLockCoordinator.closeSharedUnder(join(root, 'alias-owner').toUpperCase());
+    assert.notEqual(AtomicLockCoordinator.shared(dbPath), coordinator);
+  }
 });

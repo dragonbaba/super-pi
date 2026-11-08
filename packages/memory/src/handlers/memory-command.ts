@@ -39,11 +39,13 @@ export async function importLegacyProjectEntries(ctx: ExtensionCommandContext, c
   const candidate = candidates.find((item) => item.file === selected);
   if (!candidate) return;
   const source = new MemoryStore({ ...config, memoryDir: path.dirname(candidate.file) });
-  const old = await source.readEntries(candidate.target);
+  const sourceEntries = await source.readEntriesWithMetadata(candidate.target);
+  const old = sourceEntries.map((entry) => entry.text);
+  const metadata = new Map(sourceEntries.map((entry) => [entry.text, { ...entry, project: project.name }]));
   const before = await destination.readEntries(candidate.target);
   const after = [...new Set([...before, ...old])];
   if (after.length === before.length) { ctx.ui.notify("没有需要新增的条目，原文件保留。", "info"); return; }
-  const evaluation = destination.evaluateMemoryReplacement(after, candidate.target);
+  const evaluation = destination.evaluateMemoryReplacement(after, candidate.target, undefined, metadata);
   if (!evaluation.success) { ctx.ui.notify(evaluation.error, "warning"); return; }
   const preview = `来源：${candidate.file}\n目标项目：${project.root}\n目标目录：${project.memoryDir}\n`
     + "旧文件会保留；请核对每条内容的归属。技能不会随条目自动迁移。\n\n" + after.join("\n§\n");
@@ -51,11 +53,15 @@ export async function importLegacyProjectEntries(ctx: ExtensionCommandContext, c
   if (await ctx.ui.editor("旧项目条目导入预览（只读）", preview) === undefined) return;
   if (!await ctx.ui.confirm("确认这些条目属于当前项目？", `${project.root}\n将新增 ${after.length - before.length} 条；旧文件保留。`)) return;
   if (!await regularFile(candidate.file)) { ctx.ui.notify("旧文件类型或路径已变化，请重新预览。没有导入。", "warning"); return; }
-  const current = await source.readEntries(candidate.target);
-  if (current.length !== old.length || current.some((entry, index) => entry !== old[index])) {
+  const current = await source.readEntriesWithMetadata(candidate.target);
+  if (current.length !== sourceEntries.length || current.some((entry, index) => {
+    const previous = sourceEntries[index]!;
+    return entry.text !== previous.text || entry.created !== previous.created
+      || entry.lastReferenced !== previous.lastReferenced || entry.project !== previous.project;
+  })) {
     ctx.ui.notify("旧文件在预览后已变化，请重新预览。没有导入。", "warning"); return;
   }
-  const result = await destination.replaceMemoryEntriesIfUnchanged(before, after, candidate.target);
+  const result = await destination.replaceMemoryEntriesIfUnchanged(before, after, candidate.target, undefined, metadata);
   ctx.ui.notify(result.success ? `已导入 ${after.length - before.length} 条；旧文件保留。现有会话摘要仍是启动时的快照。`
     : result.error ?? "导入未完成。", result.success ? "info" : "warning");
   if (result.warning) ctx.ui.notify(result.warning, "warning");

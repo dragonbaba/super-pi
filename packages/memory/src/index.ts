@@ -231,6 +231,8 @@ export default function (pi: ExtensionAPI) {
   // session file to parse. Close only resources this extension may have opened.
   pi.on("session_shutdown", () => {
     try { dbManager.close(); } catch { /* best effort — never block shutdown */ }
+    store.close();
+    projectStore?.close();
     AtomicLockCoordinator.closeSharedUnder(globalDir);
     if (project.memoryDir) AtomicLockCoordinator.closeSharedUnder(project.memoryDir);
     if (shouldMigrateExtensionRoot) AtomicLockCoordinator.closeSharedUnder(legacyGlobalDir);

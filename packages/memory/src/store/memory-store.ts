@@ -27,6 +27,7 @@ import {
 import type { MemoryConfig, MemoryResult, MemorySnapshot, MemoryCategory, MemoryOverflowStrategy } from "../types.js";
 import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
+import { AtomicLockCoordinator } from "./atomic-lock-coordinator.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
 const RECOVERY_ACTIVE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -87,6 +88,12 @@ function isGeneratedArtifactName(name: string, prefix: string): boolean {
 
 class ExternalMemoryWriteConflict extends Error {}
 
+interface MemoryEntryMetadata {
+  created: string;
+  lastReferenced: string;
+  project: string | null;
+}
+
 export class MemoryStore {
   private memoryEntries: string[] = [];
   private userEntries: string[] = [];
@@ -103,6 +110,13 @@ export class MemoryStore {
     fn: (target: "memory" | "user" | "failure", entries: string[]) => Promise<string | null | undefined>,
   ): void {
     this.mutationObserver = fn;
+  }
+
+  close(): void {
+    for (const file of Object.values(this.storagePaths)) {
+      AtomicLockCoordinator.closeSharedUnder(path.join(path.dirname(path.dirname(file)), ".pi-hermes-locks.sqlite"));
+    }
+    this.mutationObserver = null;
   }
 
   // ─── Path helpers ───
@@ -278,15 +292,17 @@ export class MemoryStore {
     }
 
     const evictedEntries: string[] = [];
-    let firstRetainedIndex = 0;
+    const remaining: string[] = [];
+    const project = target === "failure" ? this.decodeEntry(encoded).project : undefined;
     let total = appendedCharCount(entries, encoded);
-    while (total > limit && firstRetainedIndex < entries.length) {
-      const evicted = entries[firstRetainedIndex++]!;
-      total -= evicted.length + ENTRY_DELIMITER.length;
-      evictedEntries.push(this.stripMetadata(evicted));
+    for (const entry of entries) {
+      if (total > limit && (project === undefined || this.decodeEntry(entry).project === project)) {
+        total -= entry.length + ENTRY_DELIMITER.length;
+        evictedEntries.push(this.stripMetadata(entry));
+      } else remaining.push(entry);
     }
+    if (total > limit) return this.memoryFullError(target, contentLength);
 
-    const remaining = entries.slice(firstRetainedIndex);
     remaining.push(encoded);
     this.setEntries(target, remaining);
     await this.saveToDisk(target);
@@ -362,7 +378,22 @@ export class MemoryStore {
     return this.runTargetMutation(target, () => this.removeUnlocked(target, oldText));
   }
 
-  evaluateMemoryReplacement(nextEntries: string[], target: "memory" | "user" | "failure" = "memory", project?: string | null):
+  private encodeReplacementEntries(entries: string[], target: "memory" | "user" | "failure", project?: string | null,
+    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>): string[] {
+    const today = new Date().toISOString().split("T")[0];
+    const existingByText = new Map(this.scopedEntries(target, project).map((entry) => [this.stripMetadata(entry), entry]));
+    const encoded = entries.map((entry) => {
+      const existing = existingByText.get(entry);
+      if (existing !== undefined) return existing;
+      const metadata = importedMetadata?.get(entry);
+      return this.encodeEntry(entry, metadata?.created ?? today, metadata?.lastReferenced ?? today, metadata?.project ?? project ?? undefined);
+    });
+    if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
+    return encoded;
+  }
+
+  evaluateMemoryReplacement(nextEntries: string[], target: "memory" | "user" | "failure" = "memory", project?: string | null,
+    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>):
     | { success: true; chars: number; limit: number }
     | { success: false; error: string; chars?: number; limit?: number } {
     const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
@@ -374,11 +405,7 @@ export class MemoryStore {
       if (scanError) return { success: false, error: scanError };
     }
 
-    const today = new Date().toISOString().split("T")[0];
-    const selected = this.scopedEntries(target, project);
-    const existingByText = new Map(selected.map((entry) => [this.stripMetadata(entry), entry]));
-    const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today, project ?? undefined));
-    if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
+    const encoded = this.encodeReplacementEntries(normalized, target, project, importedMetadata);
     const chars = encoded.length ? encoded.join(ENTRY_DELIMITER).length : 0;
     const limit = this.charLimit(target);
     if (chars > limit) {
@@ -398,6 +425,7 @@ export class MemoryStore {
     nextEntries: string[],
     target: "memory" | "user" | "failure" = "memory",
     project?: string | null,
+    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>,
   ): Promise<MemoryResult> {
     return this.runTargetMutation(target, async () => {
       await this.syncTargetFromDiskIfChanged(target);
@@ -410,15 +438,11 @@ export class MemoryStore {
         };
       }
 
-      const evaluation = this.evaluateMemoryReplacement(nextEntries, target, project);
+      const evaluation = this.evaluateMemoryReplacement(nextEntries, target, project, importedMetadata);
       if (!evaluation.success) return evaluation;
 
       const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
-      const today = new Date().toISOString().split("T")[0];
-      const selected = this.scopedEntries(target, project);
-      const existingByText = new Map(selected.map((entry) => [this.stripMetadata(entry), entry]));
-      const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today, project ?? undefined));
-      if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
+      const encoded = this.encodeReplacementEntries(normalized, target, project, importedMetadata);
       this.setEntries(target, encoded);
       await this.saveToDisk(target);
       return this.successResponse(target, "Confirmed memory organization applied atomically.");
@@ -513,6 +537,11 @@ export class MemoryStore {
   async readEntries(target: "memory" | "user" | "failure", project?: string | null): Promise<string[]> {
     await this.syncTargetFromDiskIfChanged(target);
     return this.getEntries(target, project);
+  }
+
+  async readEntriesWithMetadata(target: "memory" | "user" | "failure") {
+    await this.syncTargetFromDiskIfChanged(target);
+    return this.entriesFor(target).map((entry) => this.decodeEntry(entry));
   }
 
   /** Explicit reads use canonical Markdown, including edits made after session startup. */

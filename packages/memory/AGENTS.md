@@ -12,7 +12,7 @@
 
 - Tools: `memory` (including paginated canonical `list`), `memory_search`, `session_search`, and `skill_manage`. Search defaults to global plus current project; `project: null` is global-only, `project: "*"` is explicit cross-project search.
 - Prompt (`digest` mode, default): constant trigger-based policy in the system prompt; one hidden `hermes-memory-digest` message (≤2,000 chars) built at session start and sent once per session context. Never put saved memory, dates, or per-turn data in the system prompt, and never add per-turn nudges.
-- Unified management: `/memory` reuses explicit handlers for viewing, scoped review, skills, sync, and artifact cleanup. `/memory import` previews old basename entries, asks which project owns them, and revalidates both sides; it preserves old files and never imports during startup.
+- Unified management: `/memory` reuses explicit handlers for viewing, scoped review, skills, sync, and artifact cleanup. `/memory import` previews old basename entries, asks which project owns them, and revalidates both sides; it preserves original dates and old files and never imports during startup.
 - Reviewed extraction: `/memory-review [project|global] [memory|user|failure]` uses the current model, previews fully, requires confirmation, and revalidates the source snapshot. User entries are global; global failure review preserves legacy project-tagged records.
 - Digest sources share the fixed budget: user, global, current project, and scoped failures/corrections. Multiline conditions remain in shortened lines. Durable corrections do not expire with the temporary-failure window; canonical originals remain available through `list`.
 - Explicit maintenance: `/memory-cleanup` and `/memory-sync-markdown`. There is no session indexer; legacy `session_search` reads an existing index only.
@@ -22,6 +22,7 @@
 ## Safety constraints
 
 - Keep project facts and failures project-scoped; global memory requires a supported cross-project category tag.
+- Failure FIFO eviction must stay within the incoming entry's scope; reject without mutation if preserving other scopes leaves insufficient capacity.
 - Never restore automatic background review, correction extraction, compaction/shutdown flush, live/startup indexing, or capacity consolidation.
 - Do not create persistent review previews or a second canonical memory index.
 - Keep recovery cleanup bounded, sequential, identity-safe, and explicitly confirmed.
