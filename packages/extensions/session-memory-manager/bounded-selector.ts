@@ -1,4 +1,4 @@
-import { isKeyRelease, isKeyRepeat, truncateToWidth, wrapTextWithAnsi } from "@super-pi/tui";
+import { isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@super-pi/tui";
 import type { KeybindingsManager, Theme } from "@super-pi/coding-agent";
 import { DynamicBorder } from "@super-pi/coding-agent";
 import { UI_LINE_BREAK_PATTERN } from "./regex.ts";
@@ -12,6 +12,8 @@ export interface BoundedSelectorItem<T> {
   selectable?: boolean;
   dangerous?: boolean;
   tone?: "normal" | "danger";
+  disabled?: boolean;
+  checked?: boolean;
 }
 
 type SelectorKeybindings = Pick<KeybindingsManager, "matches" | "getKeys">;
@@ -56,6 +58,9 @@ export class BoundedMemorySelector<T> {
   private readonly keybindings: SelectorKeybindings;
   private done: ((result: T | undefined) => void) | undefined;
   private getAvailableRows: (() => number) | undefined;
+  private submitChecked: ((values: T[] | undefined) => void) | undefined;
+  private canCheck: ((value: T) => boolean) | undefined;
+  private checkedCount = 0;
 
   constructor(
     title: string,
@@ -77,7 +82,8 @@ export class BoundedMemorySelector<T> {
       const label = sanitizeSessionText(item.label, Infinity);
       const description = sanitizeSessionText(item.description, Infinity);
       const detail = sanitizeSessionText(item.detail, Infinity);
-      this.items.push({ ...item, label, description, detail, display: description ? `${label} ${description}` : label });
+      this.items.push({ ...item, label, description, detail, display: description ? `${label} ${description}` : label,
+        disabled: item.disabled === true, checked: item.disabled !== true && item.checked === true });
       if (item.selectable === false) this.browse.push(index);
       else this.actions.push(index);
     }
@@ -96,6 +102,18 @@ export class BoundedMemorySelector<T> {
       this.hint("tui.select.up") + "/" + this.hint("tui.select.down") + " 移动；" + this.hint("tui.select.pageUp") + "/" + this.hint("tui.select.pageDown") + " 路径翻页",
       this.hint("tui.editor.cursorLeft") + "/" + this.hint("tui.editor.cursorRight") + " 展开/折叠详情；" + this.hint("tui.select.confirm") + " 确认；" + this.hint("tui.select.cancel") + " 取消",
     ];
+  }
+
+  /** Called once when opening the existing session management list. */
+  enableMultiSelect(submit: (values: T[] | undefined) => void, canCheck: (value: T) => boolean): void {
+    this.submitChecked = submit;
+    this.canCheck = canCheck;
+    this.checkedCount = 0;
+    for (const item of this.items) if (item.checked) this.checkedCount++;
+    this.hints.length = 0;
+    this.hints.push("空格 勾选/取消；使用中的会话不可勾选",
+      this.hint("tui.select.up") + "/" + this.hint("tui.select.down") + " 移动；" + this.hint("app.session.delete") + "/Delete 删除已选",
+      this.hint("tui.select.pageUp") + "/" + this.hint("tui.select.pageDown") + " 详情翻页；" + this.hint("tui.select.cancel") + " 关闭");
   }
 
   get focused(): boolean { return this.hasFocus; }
@@ -126,6 +144,9 @@ export class BoundedMemorySelector<T> {
     this.settled = true;
     this.done = undefined;
     this.getAvailableRows = undefined;
+    this.submitChecked = undefined;
+    this.canCheck = undefined;
+    this.checkedCount = 0;
     this.detailLines = [];
     this.detailIndex = undefined;
     this.detailText = undefined;
@@ -194,13 +215,15 @@ export class BoundedMemorySelector<T> {
       ? 0
       : Math.max(0, Math.min(this.actionIndex - Math.floor(this.actionVisible / 2), actionTotal - this.actionVisible));
     const actionEnd = Math.min(actionTotal, actionStart + this.actionVisible);
-		lines.push(this.line(actionTotal > this.actionVisible
+		lines.push(this.line(this.submitChecked ? `会话 ${actionStart + 1}-${actionEnd}/${actionTotal} · 已选 ${this.checkedCount}` : actionTotal > this.actionVisible
 			? `操作 ${actionStart + 1}-${actionEnd}/${actionTotal}`
 			: "操作", width, "muted"));
     for (let position = actionStart; position < actionEnd; position++) {
       const item = this.items[this.actions[position]!]!;
       const selected = this.focus === "actions" && position === this.actionIndex;
-      lines.push(this.line((selected ? "→ " : "  ") + item.display, width, item.dangerous ? "error" : selected ? "accent" : "text"));
+      const checkbox = this.submitChecked ? (item.disabled ? "[使用中] " : item.checked ? "[x] " : "[ ] ") : "";
+      lines.push(this.line((selected ? "→ " : "  ") + checkbox + item.display, width,
+        item.disabled ? "dim" : item.dangerous ? "error" : selected ? "accent" : "text"));
     }
     const index = this.browse.length > 0 ? this.browse[this.browseIndex] : this.actions[this.actionIndex];
     const detail = index === undefined ? undefined : this.items[index]!.detail;
@@ -255,6 +278,27 @@ export class BoundedMemorySelector<T> {
     }
     if (this.keybindings.matches(data, "tui.select.pageUp")) { this.detailOffset = Math.max(0, this.detailOffset - this.detailRows); return; }
     if (this.keybindings.matches(data, "tui.select.pageDown")) { this.detailOffset += this.detailRows; return; }
+    if (this.submitChecked) {
+      if (repeated) return;
+      if (matchesKey(data, "space")) {
+        const item = this.items[this.actions[this.actionIndex]!];
+        if (!item) return;
+        // Disk occupancy is rechecked only for explicit selection, never rendering/navigation.
+        item.disabled = !this.canCheck?.(item.value);
+        if (item.checked) { item.checked = false; this.checkedCount--; }
+        else if (!item.disabled) { item.checked = true; this.checkedCount++; }
+        return;
+      }
+      if (performance.now() >= this.inputReadyAt && (matchesKey(data, "delete") || this.keybindings.matches(data, "app.session.delete"))) {
+        if (this.checkedCount === 0) return;
+        const values: T[] = [];
+        for (const item of this.items) if (item.checked && !item.disabled) values.push(item.value);
+        const submit = this.submitChecked;
+        this.dispose();
+        submit(values);
+      }
+      return;
+    }
     const confirm = data === "\r" || data === "\n" || this.keybindings.matches(data, "tui.select.confirm");
     if (!repeated && performance.now() >= this.inputReadyAt && confirm && this.focus === "actions") {
       const item = this.items[this.actions[this.actionIndex]!];
@@ -294,8 +338,10 @@ export class BoundedMemorySelector<T> {
   private finish(value: T | undefined): void {
     if (this.settled) return;
     const done = this.done;
+    const submit = this.submitChecked;
     this.dispose();
-    done?.(value);
+    if (submit) submit(undefined);
+    else done?.(value);
   }
 }
 

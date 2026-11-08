@@ -1,38 +1,26 @@
 # Session Memory Manager
 
-Keeps Pi session files and Hermes Memory's SQLite session index consistent.
+Manages session files through the existing `/memory-sessions` command. It no longer depends on the retired SQLite session index.
 
 ## Commands
 
-- `/memory-sessions` — choose and delete one historical Session in TUI.
-- `/memory-sessions status` — show file/index/message counts plus session-trash count, bytes, oldest age, bounded candidates, and the exact next cleanup batch.
-- `/memory-sessions clean` — preview and confirm stale/orphan index cleanup; session-trash files require a separate second irreversible-deletion confirmation listing every exact file in the bounded batch.
-- `/memory-sessions delete <session-id>` — delete one historical Session by its full unique ID.
+- `/memory-sessions` — use arrows to move, Space to check/uncheck, and Delete or the configured session-delete key to delete checked sessions after one confirmation. Enter does not delete. An empty selection does nothing. Esc closes the list.
+- `/memory-sessions status` — show session and occupied-session counts, plus existing legacy trash and cleanup candidates.
+- `/memory-sessions clean` — preview and confirm the exact bounded batch of legacy trash files eligible for cleanup.
+- `/memory-sessions delete <session-id>` — delete one historical session by its full unique ID after confirmation.
 
-## Deletion semantics
+## Selection and deletion
 
-Deletion moves the JSONL file to:
+Current and other live owners' sessions are marked as in use and cannot be checked. Occupancy is read once when opening or refreshing the list and again on explicit checkbox input, never during navigation or rendering. The native publication lock covers the final path/ID occupancy checks and direct file deletion. A session activated after selection is skipped and reported as a failure.
 
-`~/.sp/agent/@super-pi/memory/session-trash/`
+Deletion creates no backup, recovery copy, or new database. Each file has an independent result; a failure does not prevent later selected files from being processed. The refreshed list removes successful deletions and shows failures with their reason. Failed unoccupied sessions remain checked for retry; occupied sessions become disabled. Canceling confirmation preserves the checked paths.
 
-It then removes only the corresponding rows from SQLite tables `sessions`, `messages`, and `session_files`.
+`clean` only considers existing manager-generated files in `~/.sp/agent/@super-pi/memory/session-trash/`. It does not clear ordinary session history. The existing eligibility limits are 10 files, 32 MiB and 30 days, with at most 16 candidates per confirmation. Changed files, occupied sessions, symlinks and unlisted files are preserved; partial failures are reported individually. New session deletions no longer add anything to this old directory.
 
-The trash retention envelope keeps the newest managed files within 10 files, 32 MiB, and 30 days. Status is always read-only. Clean considers only exact manager-generated names and ordinary unchanged files, deletes at most 16 per confirmation, and never removes lookalikes, symlinks, or unlisted files. Existing trash is never permanently deleted without the second confirmation.
+## Occupancy lifecycle
 
-It intentionally does **not** modify:
+The native host publishes one PID-backed lease per active AgentSession, including zero-extension SDK sessions, under the configured agent directory's `@super-pi/memory/session-leases/`. Reload keeps the owner. Successful resume waits for the old session's execution/provider owners to finish and its lease to be released, then activates the replacement while a target reservation protects the transition. The old owner clears its heartbeat, reservation timer and path/ID getters. Failed cleanup remains conservatively protected and is reported by the host; it is not silently treated as released.
 
-- `MEMORY.md`
-- `USER.md`
-- project memory
-- skills
-- SQLite `memories` entries
+Raw SDK callers use `dispose()` followed by `await waitForSessionLeaseRelease()` to observe completion or failure. Protection covers the configured lease domain, not arbitrary third-party deletion entry points. Native `/resume` commands and their existing deletion behavior are unchanged.
 
-This manager refuses to delete an active Session. The native host publishes one PID-backed lease per active AgentSession, including zero-extension SDK sessions, under the configured agent directory's `@super-pi/memory/session-leases/`. The v1 path/ID format is unchanged. Reload keeps the same owner; replacement holds a separate target reservation until the new session publishes its record. Heartbeats run every 30 seconds, never per message or delta. Normal release waits for registered execution and provider owners to finish. A failed drain or unlink is reported to the host and leaves conservative live-PID protection; dead-process records are reclaimed during deletion checks. Raw SDK callers use `dispose()` followed by `await waitForSessionLeaseRelease()` to observe completion or failure. The extension owns only management/index workflows and consumes the host's checks through a compatibility entry point.
-
-The manager checks both the current process path and all live cross-process leases before opening the transaction, then repeats both checks immediately before moving the file. Native startup `--resume` and interactive `/resume` selectors also check canonical-path leases, holding the publication lock through trash or synchronous unlink. The interactive selector uses its runtime's agent directory; startup uses the default agent directory. This protects leases published in that configured domain, not arbitrary other agent directories or every third-party deletion entry point. A timeout, output-limit failure or signal termination of trash reports failure without permanent-deletion fallback. Arbitrary third-party background work that only listens for `session_shutdown` does not acquire a new raw-SDK cleanup guarantee.
-
-There is no modification-age gate: a newly written but unoccupied Session is deletable immediately. Busy/inaccessible files and operational filesystem/database errors still fail safely without deleting the index. Deletion validates the Hermes schema/version first and coordinates the database transaction with the file move; failures roll both back when possible. The confirmed `session_id + old path` mapping is revalidated under the transaction lock, and cleanup never uses an `OR path` delete.
-
-Every manager SQLite connection applies a 256-page WAL autocheckpoint, a 2 MiB journal limit, a passive checkpoint before close, and an unconditional close in `finally`; it never truncates another live Pi writer's WAL.
-
-Hermes live indexing can temporarily create `sessions/messages` before a JSONL path is available. The clean command therefore excludes every Session ID found on disk, the current Session ID, and every ID held by a live-process lease before removing unmapped orphan rows; it repeats the ID lease and no-mapping checks inside the transaction. Native deletion through `/resume` remains available; stale Hermes rows left by native deletion are cleaned only through the explicit, confirmed `/memory-sessions clean` command. All Session-derived terminal text and errors are stripped of ANSI/OSC/control sequences and length-bounded.
+The manager does not modify memory Markdown, project memory, skills or SQLite memory entries. Session-derived terminal text is sanitized, and the list renders only its bounded viewport and active detail cache.

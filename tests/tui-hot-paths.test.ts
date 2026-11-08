@@ -216,6 +216,25 @@ test("selected hot runtime modules keep regular-expression literals in dedicated
 	assert.deepEqual(violations, []);
 });
 
+test("session selector hot methods keep callbacks and I/O outside rendering", () => {
+	const file = "packages/extensions/session-memory-manager/bounded-selector.ts";
+	const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+	const owner = source.statements.find(node => ts.isClassDeclaration(node)) as ts.ClassDeclaration;
+	// Constructor, enableMultiSelect and the explicit selection/deletion callback
+	// in handleInput are cold boundaries; ordinary render helpers remain synchronous.
+	for (const name of ["render", "line", "separator", "hint", "resetAction", "invalidate", "handleInput", "consumePaste"]) {
+		const method = owner.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === name) as ts.MethodDeclaration;
+		assert.ok(method?.body, name);
+		function inspect(node: ts.Node): void {
+			assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isNewExpression(node)
+				&& !ts.isObjectLiteralExpression(node) && !ts.isAwaitExpression(node), `${name}: ${node.getText(source)}`);
+			if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /(?:\.map|\.filter|\.then|\.catch|\.finally|\.bind|readSessionOccupancy|occupiedSessionPaths|readdirSync|lstatSync)$/);
+			ts.forEachChild(node, inspect);
+		}
+		inspect(method.body!);
+	}
+});
+
 test("image and permission pattern modules initialize regexes only as module constants", () => {
 	for (const file of ["packages/coding-agent/src/utils/image-input-regex.ts", "packages/coding-agent/src/utils/shell-regex.ts", "packages/coding-agent/src/core/tools/bash-regex.ts", "packages/coding-agent/src/core/shell-policy/regex.ts", "packages/extensions/session-memory-manager/regex.ts", "packages/ai/src/api/anthropic-messages-regex.ts", "packages/extensions/mutation-guard-write/regex.ts", "packages/extensions/mutation-guard-write/native-file-regex.mjs", "packages/extensions/false-success-guard/regex.ts"]) {
 		const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);

@@ -208,6 +208,16 @@ export function sessionIdIsLeased(leaseDir: string | undefined, sessionId: strin
   return false;
 }
 
+/** One disk snapshot per explicit list refresh, never per row render. */
+export function readSessionOccupancy(leaseDir: string | undefined): { paths: Set<string>; ids: Set<string> } {
+  const paths = new Set<string>(), ids = new Set<string>();
+  for (const record of liveLeaseRecords(leaseDir)) {
+    for (const file of record.sessionPaths) paths.add(canonicalPath(file));
+    for (const id of record.sessionIds) ids.add(id);
+  }
+  return { paths, ids };
+}
+
 export class SessionLease {
   readonly leaseDir: string;
   readonly instanceId: string;

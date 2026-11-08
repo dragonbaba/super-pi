@@ -151,6 +151,42 @@ test("memory clean selector pages long action lists inside the overlay", async (
   assert.equal((selector as any).items.length, 0);
 });
 
+test("session checkboxes exclude occupied rows and delete only checked values with no render-time occupancy reads", async () => {
+  let result: number[] | undefined, checks = 0;
+  const occupied = new Set([1]);
+  const selector = new BoundedMemorySelector("Session", [
+    { value: 0, label: "first", detail: "/synthetic/first.jsonl" },
+    { value: 1, label: "busy", disabled: true },
+    { value: 2, label: "last" },
+  ], theme, keybindings, undefined, () => 24);
+  selector.enableMultiSelect(value => { result = value; }, value => { checks++; return !occupied.has(value); });
+  selector.focused = true;
+  selector.render(60);
+  await new Promise<void>(resolve => setTimeout(resolve, 270));
+  selector.handleInput("\x1b[3~");
+  assert.equal(result, undefined, "empty selection must not delete the cursor row");
+  selector.handleInput(" ");
+  const selectedFrame = selector.render(60);
+  for (let frame = 0; frame < 100; frame++) assert.deepEqual(selector.render(60), selectedFrame);
+  assert.equal(checks, 1, "render must not query occupancy");
+  selector.handleInput("\x1b[B"); selector.render(60); selector.handleInput(" ");
+  assert.match(selector.render(60).join("\n"), /使用中.*busy/);
+  selector.handleInput("\x1b[B"); selector.render(60); selector.handleInput(" ");
+  occupied.add(2);
+  selector.handleInput(" ");
+  assert.match(selector.render(60).join("\n"), /已选 1/);
+  occupied.delete(2);
+  selector.handleInput(" "); selector.render(60);
+  selector.handleInput("\r"); assert.equal(result, undefined, "Enter does not delete in checkbox mode");
+  await new Promise<void>(resolve => setTimeout(resolve, 270));
+  selector.handleInput("\x1b[3~");
+  assert.deepEqual(result, [0, 2]);
+  assert.equal((selector as any).items.length, 0);
+  assert.equal((selector as any).submitChecked, undefined);
+  assert.equal((selector as any).canCheck, undefined);
+  assert.equal((selector as any).detailLines.length, 0);
+});
+
 test("memory clean selector retains raw Enter with incomplete keybindings", async () => {
   let result: boolean | undefined;
   const incomplete = {
@@ -471,6 +507,8 @@ test("focused benchmark separates ordinary, sampling, and lifecycle measurement"
   assert.equal("selectorWeakOwnerReleasedCount" in ordinary.metrics, false);
   assert.ok(ordinary.metrics.selectorMaximumCacheLines >= ordinary.metrics.selectorFinalCacheLines);
   assert.ok(ordinary.metrics.selectorMaximumVisibleDetailRows > 0);
+  assert.equal(ordinary.metrics.selectorOccupancyChecks, 2);
+  assert.equal(ordinary.metrics.selectorReleasedFieldCount, 12);
 
   const sampled = runJson(["--warmup", "1", "--runs", "1", "--iterations", "1", "--sample"]);
   assert.match(String(sampled.observations.sampling), /selector and shell phases sampled separately/);

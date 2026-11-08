@@ -7,26 +7,13 @@ import {
   type ExtensionCommandContext,
   type SessionInfo,
 } from "@super-pi/coding-agent";
-import {
-  cleanOrphanIndex,
-  cleanStaleIndex,
-  databaseCounts,
-  deleteSessionTrashCandidates,
-  inspectSessionTrash,
-  listOrphanIndexedSessions,
-  listStaleIndexedSessions,
-  sameFile,
-  trashSession,
-  type ManagedSession,
-  type SessionTrashEntry,
-} from "./core.ts";
+import { deleteSessions, occupiedSessionPaths, deleteSessionTrashCandidates, inspectSessionTrash,
+  type DeletionFailure, type SessionTrashEntry } from "./core.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { MAX_UI_ERROR, sanitizeSessionText } from "./ui-text.ts";
-import { sessionIdIsLeased } from "./lease.ts";
 import { BoundedMemorySelector, type BoundedSelectorItem } from "./bounded-selector.ts";
 
 const AGENT_DIR = getAgentDir();
-const DATABASE_PATH = join(AGENT_DIR, "@super-pi/memory", "sessions.db");
 const TRASH_DIR = join(AGENT_DIR, "@super-pi/memory", "session-trash");
 const LEASE_DIR = join(AGENT_DIR, "@super-pi/memory", "session-leases");
 const BYTE_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
@@ -55,11 +42,6 @@ function trashAgeText(oldestMtimeMs: number | null): string {
   if (oldestMtimeMs === null) return "无";
   const ageDays = Math.max(0, (Date.now() - oldestMtimeMs) / (24 * 60 * 60 * 1000));
   return `${BYTE_FORMATTER.format(ageDays)} 天`;
-}
-
-function sessionLabel(session: SessionInfo): string {
-  const title = sanitizeSessionText(session.name || session.firstMessage, 54) || "(空会话)";
-  return `${shortDate(session.modified)}  ${title}  [${session.messageCount}]  ID:${sanitizeSessionText(session.id, 80)}`;
 }
 
 export function formatTrashEntryLabel(entry: Pick<SessionTrashEntry, "name" | "size" | "mtimeMs">, index: number): string {
@@ -118,27 +100,41 @@ async function confirmTrashDeletion(
   );
   return (await selectBounded(
     ctx,
-    `再次确认永久删除 Session 回收文件？\n固定回收目录：${TRASH_DIR}\n候选清单可滚动；不会删除未列出的文件。`,
+    `确认永久删除旧 Session 回收文件？\n固定回收目录：${TRASH_DIR}\n候选清单可滚动；不会删除未列出的文件。`,
     items,
     items.length - 1,
   )) === true;
 }
 
-async function deleteSession(
-  session: SessionInfo,
-  getCurrentFile: () => string | undefined,
-  confirm: (title: string, message: string) => Promise<boolean>,
-): Promise<string | null> {
-  if (sameFile(session.path, getCurrentFile())) {
-    throw new Error("不能删除当前正在使用的 Session；请先 /new 或切换到其他 Session");
-  }
+function deletionSummary(deleted: number, failures: readonly DeletionFailure[]): string {
+  const lines = [`删除成功 ${deleted} 个；删除失败 ${failures.length} 个。`];
+  for (const failure of failures) lines.push(`删除失败：${sanitizeSessionText(failure.path)} — ${sanitizeSessionText(failure.error, MAX_UI_ERROR)}`);
+  return lines.join("\n");
+}
 
-  const accepted = await confirm(
-    "删除 Session？",
-    `${sessionLabel(session)}\n\n会话将移入可恢复目录，并同步清理 Hermes 搜索索引。`,
-  );
-  if (!accepted) return null;
-  return trashSession(session as ManagedSession, getCurrentFile, DATABASE_PATH, TRASH_DIR, LEASE_DIR);
+function newestSessionFirst(a: SessionInfo, b: SessionInfo): number { return b.modified.getTime() - a.modified.getTime(); }
+
+async function selectSessions(ctx: ExtensionCommandContext, sessions: SessionInfo[], failures: ReadonlyMap<string, string>, checked: ReadonlySet<string>): Promise<SessionInfo[] | undefined> {
+  const occupied = occupiedSessionPaths(sessions, ctx.sessionManager.getSessionFile(), LEASE_DIR);
+  const items: BoundedSelectorItem<SessionInfo>[] = [];
+  for (const session of sessions) {
+    const error = failures.get(session.path);
+    items.push({ value: session,
+      label: `${shortDate(session.modified)} ${sanitizeSessionText(session.name || session.firstMessage, 54) || "(空会话)"}`,
+      description: error ? `删除失败：${sanitizeSessionText(error, MAX_UI_ERROR)}` : `${session.messageCount} 条 · ${sanitizeSessionText(session.id, 80)}`,
+      detail: error ? `${session.path} — 删除失败：${sanitizeSessionText(error, MAX_UI_ERROR)}` : session.path,
+      disabled: occupied.has(session.path), checked: checked.has(session.path),
+    });
+  }
+  return ctx.ui.custom<SessionInfo[] | undefined>((tui, theme, keybindings, done) => {
+    const selector = new BoundedMemorySelector("勾选要删除的 Session；使用中不可勾选", items, theme, keybindings, undefined,
+      () => Math.min(SESSION_CLEAN_OVERLAY_MAX_HEIGHT, Math.max(0, tui.terminal.rows - SESSION_CLEAN_OVERLAY_MARGIN * 2)));
+    selector.enableMultiSelect(done, session => {
+      try { return !occupiedSessionPaths([session], ctx.sessionManager.getSessionFile(), LEASE_DIR).has(session.path); }
+      catch (error) { ctx.ui.notify(`无法核对占用：${sanitizeSessionText(error, MAX_UI_ERROR)}`, "error"); return false; }
+    });
+    return selector;
+  }, { overlay: true, overlayOptions: { width: 96, maxHeight: SESSION_CLEAN_OVERLAY_MAX_HEIGHT, margin: SESSION_CLEAN_OVERLAY_MARGIN } });
 }
 
 export default function sessionMemoryManager(pi: ExtensionAPI): void {
@@ -147,126 +143,56 @@ export default function sessionMemoryManager(pi: ExtensionAPI): void {
     return;
   }
   pi.registerCommand("memory-sessions", {
-    description: "管理 Pi Session，并同步维护 Hermes 搜索索引",
+    description: "勾选、删除历史 Session，查看状态并清理旧回收文件",
     handler: async (rawArgs, ctx) => {
       await ctx.waitForIdle();
       const args = rawArgs.trim();
-
       try {
         if (args === "clean") {
-          const currentFile = ctx.sessionManager.getSessionFile();
-          const currentId = ctx.sessionManager.getHeader()?.id;
-          const diskSessions = await SessionManager.listAll();
-          const diskIds = new Set(diskSessions.map((session) => session.id));
-          const stale = listStaleIndexedSessions(DATABASE_PATH, currentFile);
-          const orphans = listOrphanIndexedSessions(DATABASE_PATH).filter((row) =>
-            row.session_id !== currentId && !diskIds.has(row.session_id) && !sessionIdIsLeased(LEASE_DIR, row.session_id)
-          );
           const trash = inspectSessionTrash(TRASH_DIR);
-          const indexTotal = stale.length + orphans.length;
-          if (indexTotal === 0 && trash.cleanupCandidates.length === 0) {
-            ctx.ui.notify("没有可确认清理的失效索引、孤儿索引或超限 Session 回收文件", "info");
-            return;
-          }
-          const previewLines: string[] = [];
-          for (const row of stale) {
-            if (previewLines.length >= 8) break;
-            previewLines.push(`- 缺失文件 ${sanitizeSessionText(row.session_id, 80)}: ${sanitizeSessionText(row.path)}`);
-          }
-          for (const row of orphans) {
-            if (previewLines.length >= 8) break;
-            previewLines.push(`- 无文件映射 ${sanitizeSessionText(row.session_id, 80)} (${row.message_count} 条消息)`);
-          }
-          const omittedIndexes = Math.max(0, indexTotal - previewLines.length);
-          const preview = previewLines.join("\n");
-          const suffix = omittedIndexes > 0 ? `\n…另有 ${omittedIndexes} 个索引项` : "";
-          const accepted = await ctx.ui.confirm(
-            "确认 Session 清理计划？",
-            `索引：${stale.length} 个缺失映射、${orphans.length} 个孤儿。回收站：${trash.cleanupCandidates.length} 个候选、${formatBytes(trash.cleanupCandidateBytes)}；本轮永久删除至多 ${trash.deletionBatch.length} 个。此步不会删除现存 JSONL。\n\n${preview}${suffix}`,
-          );
-          if (!accepted) return;
-          const removedStale = cleanStaleIndex(DATABASE_PATH, stale, () => ctx.sessionManager.getSessionFile());
-          const removedOrphans = cleanOrphanIndex(DATABASE_PATH, orphans, LEASE_DIR, () => ctx.sessionManager.getHeader()?.id);
-          let deletedFiles = 0;
-          let deletedBytes = 0;
-          if (trash.deletionBatch.length > 0) {
-            const permanentAccepted = await confirmTrashDeletion(ctx, trash.deletionBatch);
-            if (permanentAccepted) {
-              const deleted = deleteSessionTrashCandidates(TRASH_DIR, trash.deletionBatch, LEASE_DIR);
-              deletedFiles = deleted.files;
-              deletedBytes = deleted.bytes;
-            }
-          }
-          ctx.ui.notify(
-            `已清理 ${removedStale} 个失效映射、${removedOrphans} 个孤儿索引；永久删除 ${deletedFiles} 个回收文件（${formatBytes(deletedBytes)}）`,
-            "info",
-          );
+          if (!trash.deletionBatch.length) { ctx.ui.notify("没有需要清理的旧 Session 回收文件。", "info"); return; }
+          if (!ctx.hasUI || ctx.mode !== "tui") { ctx.ui.notify("请在交互界面复核清理候选。", "info"); return; }
+          if (!await confirmTrashDeletion(ctx, trash.deletionBatch)) return;
+          const result = deleteSessionTrashCandidates(TRASH_DIR, trash.deletionBatch, LEASE_DIR);
+          ctx.ui.notify(deletionSummary(result.files, result.failures), result.failures.length ? "warning" : "info");
           return;
         }
-
         if (args === "status") {
           const sessions = await SessionManager.listAll();
-          const counts = databaseCounts(DATABASE_PATH);
+          const occupied = occupiedSessionPaths(sessions, ctx.sessionManager.getSessionFile(), LEASE_DIR);
           const trash = inspectSessionTrash(TRASH_DIR);
-          const ignored = trash.ignoredFiles > 0 ? `；另有 ${trash.ignoredFiles} 个非托管普通文件，绝不自动删除` : "";
-          ctx.ui.notify(
-            `Session 文件 ${sessions.length} 个；索引 ${counts.sessions} 个；消息 ${counts.messages} 条\n回收站 ${trash.totalFiles} 个、${formatBytes(trash.totalBytes)}，最老 ${trashAgeText(trash.oldestMtimeMs)}；候选 ${trash.cleanupCandidates.length} 个、${formatBytes(trash.cleanupCandidateBytes)}${ignored}\n运行 /memory-sessions clean 可在有界滚动清单中复核永久删除候选。`,
-            "info",
-          );
+          ctx.ui.notify(`Session 文件 ${sessions.length} 个，使用中 ${occupied.size} 个。\n旧回收目录 ${trash.totalFiles} 个文件、${formatBytes(trash.totalBytes)}，最老 ${trashAgeText(trash.oldestMtimeMs)}；可清理 ${trash.cleanupCandidates.length} 个。`, "info");
           return;
         }
-
-        const sessions = (await SessionManager.listAll()).sort(
-          (a, b) => b.modified.getTime() - a.modified.getTime(),
-        );
+        if (args && !args.startsWith("delete ")) { ctx.ui.notify("用法：/memory-sessions [status|clean|delete <session-id>]", "warning"); return; }
+        if (!ctx.hasUI || ctx.mode !== "tui") { ctx.ui.notify("请在交互界面勾选和确认删除 Session。", "info"); return; }
         const getCurrentFile = () => ctx.sessionManager.getSessionFile();
-
-        if (args.startsWith("delete ")) {
-          const id = args.slice("delete ".length).trim();
-          const matches = sessions.filter((session) => session.id === id);
-          if (matches.length !== 1) {
-            ctx.ui.notify(matches.length === 0 ? `找不到 Session ID：${sanitizeSessionText(id, 80)}` : `Session ID 不唯一：${sanitizeSessionText(id, 80)}`, "warning");
-            return;
+        const failures = new Map<string, string>();
+        const checked = new Set<string>();
+        while (true) {
+          const sessions = (await SessionManager.listAll()).sort(newestSessionFirst);
+          if (!sessions.length) { ctx.ui.notify("没有历史 Session。", "info"); return; }
+          let selected: SessionInfo[] | undefined;
+          if (args.startsWith("delete ")) {
+            const id = args.slice("delete ".length).trim();
+            selected = sessions.filter(session => session.id === id);
+            if (selected.length !== 1) { ctx.ui.notify(`Session ID 不存在或不唯一：${sanitizeSessionText(id, 80)}`, "warning"); return; }
+          } else selected = await selectSessions(ctx, sessions, failures, checked);
+          if (!selected?.length) return;
+          checked.clear();
+          for (const session of selected) checked.add(session.path);
+          if (!await ctx.ui.confirm(`删除已选 ${selected.length} 个 Session？`, "直接删除已勾选的会话文件。使用中的会话会跳过，并报告具体失败原因。")) {
+            if (args) return;
+            continue;
           }
-          const destination = await deleteSession(matches[0], getCurrentFile, (title, message) =>
-            ctx.ui.confirm(title, message),
-          );
-          if (destination) ctx.ui.notify(`Session 已移入：${sanitizeSessionText(destination)}`, "info");
-          return;
+          const result = deleteSessions(selected, getCurrentFile, LEASE_DIR);
+          ctx.ui.notify(deletionSummary(result.deleted.length, result.failures), result.failures.length ? "warning" : "info");
+          if (args) return;
+          failures.clear();
+          checked.clear();
+          for (const failure of result.failures) { failures.set(failure.path, failure.error); checked.add(failure.path); }
         }
-
-        if (!ctx.hasUI || ctx.mode !== "tui") {
-          const counts = databaseCounts(DATABASE_PATH);
-          console.log(`Session 文件 ${sessions.length} 个；索引 ${counts.sessions} 个；消息 ${counts.messages} 条`);
-          return;
-        }
-
-        const deletable = sessions.filter((session) => !sameFile(session.path, getCurrentFile()));
-        if (deletable.length === 0) {
-          ctx.ui.notify("没有可删除的历史 Session", "info");
-          return;
-        }
-
-        const session = await selectBounded(
-          ctx,
-          `选择要删除的历史 Session\n共 ${deletable.length} 个；当前 Session 已排除。`,
-          deletable.map((candidate) => ({
-            value: candidate,
-            label: `${shortDate(candidate.modified)}  ${sanitizeSessionText(candidate.name || candidate.firstMessage, 54) || "(空会话)"}`,
-            description: `${candidate.messageCount} 条 · ${sanitizeSessionText(candidate.id, 80)}`,
-            detail: sanitizeSessionText(candidate.path, 1024),
-          })),
-        );
-        if (!session) return;
-
-        const destination = await deleteSession(session, getCurrentFile, (title, message) =>
-          ctx.ui.confirm(title, message),
-        );
-        if (destination) ctx.ui.notify(`Session 已移入可恢复目录：${sanitizeSessionText(destination)}`, "info");
-      } catch (error) {
-        const detail = sanitizeSessionText(error instanceof Error ? error.message : error, MAX_UI_ERROR);
-        ctx.ui.notify(`Session 管理失败：${detail}`, "error");
-      }
+      } catch (error) { ctx.ui.notify(`Session 管理失败：${sanitizeSessionText(error, MAX_UI_ERROR)}`, "error"); }
     },
   });
 }
