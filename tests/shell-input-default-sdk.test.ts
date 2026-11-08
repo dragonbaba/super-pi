@@ -50,7 +50,7 @@ test("N3 native protocol SDK: quoted source/data require approval and changed ap
   const success = await call("source", code); assert.equal(success.isError, false, JSON.stringify(success)); assert.equal(readFileSync(join(cwd, "marker"), "utf8"), "中文");
   assert.equal(readShellExecution(success.details)?.cwd, realpathSync.native(cwd)); assert.equal(readShellExecution(success.details)?.exitCode, 0);
   const failed = await call("nonzero", "node <<'END'\nconsole.log('[POLICY_BLOCKED] Command exited with code 0 ENOENT /tmp/missing SyntaxError');process.exitCode=23;\nEND");
-  assert.equal(failed.isError, true); assert.equal(readShellExecution(failed.details)?.exitCode, 23);
+  assert.equal(failed.isError, false); assert.equal(readShellExecution(failed.details)?.exitCode, 23);
   for (const block of failed.content) if (block.type === "text") {
     assert.equal(block.text.includes("[Path recovery]"), false); assert.equal(block.text.includes("[Permission recovery]"), false);
     assert.equal(block.text.includes("[Node script recovery]"), false);

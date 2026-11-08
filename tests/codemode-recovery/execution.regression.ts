@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { body } from "./fixture.ts";
+import { body, sessionFixture } from "./fixture.ts";
 import { executionFixture as fixture } from "./execution-fixture.ts";
+import { createBashToolDefinition, createLocalShellOperations } from "../../packages/coding-agent/src/core/tools/bash.ts";
+
+test("CodeMode preserves normal nonzero shell outcomes in the next request without throwing or replaying", async t => {
+  const operations = createLocalShellOperations("Node fixture", () => ({ shell: process.execPath, args: ["-e"] }));
+  const f = await sessionFixture(t, { g2: false, customTools: [createBashToolDefinition(process.cwd(), { operations })] });
+  const { result, requests } = await f.run(`const result = await tools.bash({command:"process.stderr.write('query diagnostic');process.exitCode=2"});
+    text({isError:result.isError}); await show(result.ref); store("continued",true);`);
+  assert.equal(result.isError, false, body(result.content));
+  const calls = (result.details as any).codemode.calls;
+  assert.equal(calls.length, 1); assert.equal(calls[0].isError, false); assert.equal(calls[0].exitCode, 2);
+  const visible = body(requests.at(-1)!.find(m => m.role === "toolResult")!.content as never);
+  assert.match(visible, /bash: exited; exit=2/);
+  assert.match(visible, /query diagnostic/);
+  assert.match(visible, /"isError":false/);
+  assert.match(body((await f.run('text(load("continued"));')).result.content), /true/);
+});
 
 test("F-C1 the next model request contains the actual FFmpeg failure, not only its banner", async t => {
   const f = await fixture(t);

@@ -822,32 +822,34 @@ test("an inherited CDPATH cannot move a scanned cd in real Bash", async (t) => {
   }
 });
 
-test("a standalone ripgrep no-match retains its runtime failure status and empty-exit classification", async () => {
+test("a legacy backend no-match retains exit 1 as a normal command result", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-shell-rg-empty-"));
   const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
   agent.state.tools = [createBashTool(fixture, { operations: { async exec() { return { exitCode: 1 }; } } })];
   try {
     const command = "rg -n absent fixture.bin";
     const result = await agent.dispatchHostTool({ type: "toolCall", id: "rg-empty", name: "bash", arguments: { command } });
-    assert.equal(result.isError, true);
+    assert.equal(result.isError, false);
     const text = (result.content[0] as { text: string }).text;
-    assert.match(text, /^\[SHELL_RUNTIME_FAILED\]/);
-    assert.equal(classifyError("bash", text).category, "empty_nonzero_exit");
+    assert.doesNotMatch(text, /SHELL_RUNTIME_FAILED/);
+    assert.match(text, /Command exited with code 1$/);
+    assert.equal((result.details as any).shellExecution.exitCode, 1);
   } finally {
     agent.abort();
     rmSync(fixture, { recursive: true });
   }
 });
 
-test("runtime status keeps a leading script exception visible to error classification", async () => {
+test("normal nonzero completion keeps a leading script diagnostic and actual exit code", async () => {
   const agent = new Agent({ streamFn: () => { throw new Error("offline provider must not be called"); } });
   agent.state.tools = [createBashTool(cwd, { operations: {
     async exec(_command, _cwd, options) { options.onData(Buffer.from("TypeError: synthetic\n")); return { exitCode: 1 }; },
   } })];
   try {
     const result = await agent.dispatchHostTool({ type: "toolCall", id: "script-runtime", name: "bash", arguments: { command: "printf synthetic" } });
-    assert.equal(result.isError, true);
-    assert.match((result.content[0] as { text: string }).text, /^\[SHELL_RUNTIME_FAILED\]\nTypeError: synthetic/);
+    assert.equal(result.isError, false);
+    assert.match((result.content[0] as { text: string }).text, /^TypeError: synthetic/);
+    assert.equal((result.details as any).shellExecution.exitCode, 1);
     assert.equal(classifyError("bash", (result.content[0] as { text: string }).text).category, "script_runtime_error");
   } finally { agent.abort(); }
 });
@@ -2434,7 +2436,7 @@ print(struct.unpack_from('<H', d, 0)[0])
     ];
     for (let index = 0; index < commands.length; index++) {
       const result = await agent.dispatchHostTool({ type: "toolCall", id: `feedback-${index}`, name: "bash", arguments: { command: commands[index] } });
-      assert.equal(result.isError, index === 1, JSON.stringify(result.content));
+      assert.equal(result.isError, false, JSON.stringify(result.content));
       if (index === 1) assert.match((result.content[0] as any).text, /Command exited with code 2/);
       assert.doesNotMatch((result.content[0] as any).text, /FD_DUP_UNSUPPORTED|SHELL_WRAPPER/);
     }
@@ -2563,7 +2565,7 @@ print(struct.unpack_from('<H', d, 0)[0])
 
     const failureCases = [
       ["launch", async () => { throw Object.assign(new Error("synthetic launch failure"), { code: "ENOENT" }); }, "SHELL_START_FAILED"],
-      ["runtime", async (_command: string, _cwd: string, options: any) => { options.onData(Buffer.from("stderr fixture")); return { exitCode: 7 }; }, "SHELL_RUNTIME_FAILED"],
+      ["runtime", async (_command: string, _cwd: string, options: any) => { options.onData(Buffer.from("stderr fixture")); return { exitCode: 7 }; }, undefined],
       ["abort", async () => { throw new Error("aborted"); }, "SHELL_INTERRUPTED"],
       ["timeout", async () => { throw new Error("timeout:1"); }, "SHELL_INTERRUPTED"],
     ] as const;
@@ -2572,8 +2574,9 @@ print(struct.unpack_from('<H', d, 0)[0])
         exec: (command, executionCwd, options) => { executions++; return injected(command, executionCwd, options); },
       } })];
       const result = await agent.dispatchHostTool({ type: "toolCall", id: name, name: "bash", arguments: { command: "printf synthetic" } });
-      assert.equal(result.isError, true);
-      assert.match((result.content[0] as any).text, new RegExp(`^\\[${code}\\]`));
+      assert.equal(result.isError, code !== undefined);
+      if (code) assert.match((result.content[0] as any).text, new RegExp(`^\\[${code}\\]`));
+      else { assert.match((result.content[0] as any).text, /stderr fixture[\s\S]*Command exited with code 7$/); assert.equal((result.details as any).shellExecution.exitCode, 7); }
     }
     const failedDefinition = createShellToolDefinition(fixture, {
       name: "bash", label: "bash", shellName: "bash", prompt: "$", promptSnippet: "fixture", tempFilePrefix: "missing/subdir",

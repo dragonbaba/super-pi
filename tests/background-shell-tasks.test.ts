@@ -594,7 +594,9 @@ test("queued input and concurrent successes cannot erase a task-specific failed 
 	observeToolResult(state, observation("fails", "npm test -- first", "queued"));
 	observeToolResult(state, observation("sibling", "npm test -- first", "queued"));
 	observeInputBoundary(lifecycleState, { source: "rpc", streamingBehavior: "followUp" });
-	observeToolResult(state, observation("fails", "npm test -- first", "failed"));
+	const nonzero = observation("fails", "npm test -- first", "completed");
+	nonzero.details.shellExecution = shellFacts(1);
+	observeToolResult(state, nonzero);
 	beginPromptBoundary(state, lifecycleState, "continue");
 	observeToolResult(state, observation("sibling", "npm test -- first", "completed"));
 	assert.equal(state.obligations.size, 1); assert.equal([...state.obligations.values()][0].category, "command_failed");
@@ -619,7 +621,7 @@ test("permission invalidation and shutdown wait for the owned child and suppress
 	}
 });
 
-test("background failure/timeout facts and large-output tail survive bounded retention", { timeout: 15_000 }, async t => {
+test("background nonzero completion, timeout and large-output tail survive bounded retention", { timeout: 15_000 }, async t => {
 	const h = await fixture(t);
 	for (const [mode, timeout] of [["fail", 10], ["hold", 0.2], ["burst", 10]] as const) {
 		const id = taskId(await h.call("bash", { command: `node fixture.mjs ${mode}`, cwd: ".", background: true, timeout }));
@@ -630,7 +632,7 @@ test("background failure/timeout facts and large-output tail survive bounded ret
 		const report = h.messages.find(message => message.content.includes(`Task ${id};`));
 		assert.ok(report.content.length <= 8192);
 		assert.ok(report.content.includes(`exit=${details.shellExecution.exitCode ?? "unknown"}; termination=${details.shellExecution.termination}`));
-		if (mode === "fail") { assert.match(text(result), /failed/); assert.equal(details.shellExecution.exitCode, 7); }
+		if (mode === "fail") { assert.match(text(result), /completed/); assert.equal(details.shellExecution.exitCode, 7); assert.match(text(result), /Command exited with code 7/); assert.match(report.content, /state=completed/); }
 		else if (mode === "hold") { assert.match(text(result), /failed/); assert.equal(details.shellExecution.termination, "timeout"); }
 		else { assert.match(text(result), /FINAL-SHELL-SENTINEL/); assert.equal(details.fullOutputPath, undefined); assert.equal(details.truncation.content, ""); assert.equal(details.shellExecution.output.cleanup, "removed"); }
 	}

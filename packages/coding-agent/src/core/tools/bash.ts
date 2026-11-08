@@ -1144,9 +1144,10 @@ export function createShellToolDefinition(
 				} else if (facts.started === false) failure = "[SHELL_START_FAILED] Backend reports that the process did not start";
 				else if (facts.termination === "signal") failure = `[SHELL_INTERRUPTED] Command terminated by ${facts.signal ?? "an unobserved signal"}`;
 				else if (facts.exitCode === null) failure = "[SHELL_EXECUTION_FAILED] Command termination is unknown (null exit code)";
-				else if (facts.exitCode !== 0) { failure = "[SHELL_RUNTIME_FAILED]"; outputText = appendShellStatus(outputText, `Command exited with code ${facts.exitCode}`); }
 				else if (observation && !observation.outputDrained) failure = "[SHELL_OUTPUT_INCOMPLETE] Process exited but output streams did not finish before the drain boundary";
 				else if (facts.termination !== "exit") failure = `[SHELL_EXECUTION_FAILED] Command completion is ${facts.termination}; inspect state before retrying`;
+				// A numeric exit is a command outcome, not a transport failure. Keep it visible even alongside incomplete execution facts.
+				if (facts.exitCode !== null && facts.exitCode !== 0) outputText = appendShellStatus(outputText, `Command exited with code ${facts.exitCode}`);
 				if (facts.observationError !== undefined) failure = appendShellStatus(failure ?? "", `[SHELL_OBSERVATION_FAILED] ${facts.observationError}`);
 				if (facts.inputError !== undefined) {
 					const inputFailure = `[SHELL_INPUT_FAILED] Command input was not fully delivered: ${facts.inputError}`;
@@ -1180,7 +1181,7 @@ export function createShellToolDefinition(
 	return {
 		name: config.name,
 		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout, stderr and execution details. Normal completion returns the actual exit code, including nonzero; tool completion alone does not mean the command succeeded. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters,

@@ -11,6 +11,8 @@ await show(result.ref);
 
 工具返回 `{ content, details, isError, ref }`。`ref` 是宿主为本次脚本签发的引用；`show(ref)` 展示未被脚本改写的原生结果。`text(value)`、`console.log(value)` 和 `return` 用于报告计算结果，`image(...)` 用于图片，`exit()` 成功结束脚本。
 
+Bash / PowerShell 正常结束时返回原始输出和 `details.shellExecution.exitCode`，非零退出码本身不会抛工具异常，也不需要 `allowFailure`。例如搜索无匹配和编译失败都可能返回非零，含义由调用方根据结果判断；`isError: false`、`CODEMODE_OK` 或后台 `completed` 仅表示工具调用完成，不能作为编译或测试通过的证明。启动失败、超时、取消、输入/输出不完整等工具故障仍按错误返回。依赖命令成功的脚本须检查实际退出码，原有编译/测试验证检查仍要求退出 0。
+
 沙箱中覆盖已有文本文件或执行 `edit` 时，应传入本次读取返回的 SHA-256：
 
 ```js
