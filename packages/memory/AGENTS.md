@@ -3,16 +3,18 @@
 ## Architecture
 
 - TypeScript is authoritative; Pi loads deterministic `dist/index.js`.
-- Canonical memory is Markdown under `@super-pi/memory/` and `projects-memory/<project>/`.
+- Canonical memory is Markdown under `@super-pi/memory/` and `projects-memory/<basename>--<canonical-root-hash>/`. Same-repository worktrees share identity; unrelated same-name projects do not.
 - SQLite FTS is a derived search index, never the canonical source.
 - `src/index.ts` registers tools, explicit commands, and constant-time lifecycle hooks.
 - Normal startup reads only active canonical memory and skill roots.
 
 ## Active behavior
 
-- Tools: `memory`, `memory_search`, `session_search`, and `skill_manage`.
+- Tools: `memory` (including paginated canonical `list`), `memory_search`, `session_search`, and `skill_manage`. Search defaults to global plus current project; `project: null` is global-only, `project: "*"` is explicit cross-project search.
 - Prompt (`digest` mode, default): constant trigger-based policy in the system prompt; one hidden `hermes-memory-digest` message (≤2,000 chars) built at session start and sent once per session context. Never put saved memory, dates, or per-turn data in the system prompt, and never add per-turn nudges.
-- Reviewed extraction: `/memory-review [project|global]` uses the current model, previews fully, requires confirmation, and revalidates the source snapshot.
+- Unified management: `/memory` reuses explicit handlers for viewing, scoped review, skills, sync, and artifact cleanup. `/memory import` previews old basename entries, asks which project owns them, and revalidates both sides; it preserves old files and never imports during startup.
+- Reviewed extraction: `/memory-review [project|global] [memory|user|failure]` uses the current model, previews fully, requires confirmation, and revalidates the source snapshot. User entries are global; global failure review preserves legacy project-tagged records.
+- Digest sources share the fixed budget: user, global, current project, and scoped failures/corrections. Multiline conditions remain in shortened lines. Durable corrections do not expire with the temporary-failure window; canonical originals remain available through `list`.
 - Explicit maintenance: `/memory-cleanup` and `/memory-sync-markdown`. There is no session indexer; legacy `session_search` reads an existing index only.
 - Skills UI: `/memory-skills`; its TUI implementation must stay lazy-loaded.
 - Shutdown closes only the opened SQLite manager and exact-owner Markdown coordinators.

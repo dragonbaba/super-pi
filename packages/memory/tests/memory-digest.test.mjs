@@ -58,8 +58,7 @@ test("buildMemoryDigest is deterministic, one line per entry, and bounded", () =
 	const digest = buildMemoryDigest(sources);
 	assert.equal(digest, buildMemoryDigest(sources));
 	assert.match(digest, /^<memory-context>\n/);
-	assert.match(digest, /\n- First line\n/);
-	assert.doesNotMatch(digest, /second line/);
+	assert.match(digest, /\n- First line second line\n/);
 	assert.match(digest, /\n- x{159}…\n/);
 	assert.match(digest, /## Project p\n- Project fact\n<\/memory-context>$/);
 	assert.equal(buildMemoryDigest({ user: [], project: ["  "], projectName: "", failures: [] }), "");
@@ -67,7 +66,7 @@ test("buildMemoryDigest is deterministic, one line per entry, and bounded", () =
 	const many = { user: Array.from({ length: 200 }, (_, index) => `entry ${index} ${"y".repeat(40)}`), project: [], projectName: "", failures: [] };
 	const bounded = buildMemoryDigest(many, 2000);
 	assert.ok(bounded.length <= 2000, `digest length ${bounded.length}`);
-	assert.match(bounded, /\(\d+ more not shown; use memory_search\.\)\n<\/memory-context>$/);
+	assert.match(bounded, /\(\d+ more not shown; use memory action=list\.\)\n<\/memory-context>$/);
 });
 
 test("digest mode keeps the system prompt constant and sends saved memory once as a hidden message", async () => {
@@ -86,8 +85,7 @@ test("digest mode keeps the system prompt constant and sends saved memory once a
 	assert.equal(first.message.customType, MEMORY_DIGEST_CUSTOM_TYPE);
 	assert.equal(first.message.display, false);
 	assert.match(first.message.content, /## User\n- Prefers pnpm over npm\.\n- Wants reports in Chinese\./);
-	assert.match(first.message.content, new RegExp(`## Project ${projectName}\\n- Build with npm run build:offline\\.\\n`));
-	assert.doesNotMatch(first.message.content, /Plain build fetches/);
+	assert.match(first.message.content, new RegExp(`## Project ${projectName}\\n- Build with npm run build:offline\\. Plain build fetches the network\\.\\n`));
 	assert.match(first.message.content, /## Recent failures and corrections\n- \[tool-quirk\] python - hangs/);
 
 	const persisted = [{ type: "message" }, { type: "custom_message", customType: MEMORY_DIGEST_CUSTOM_TYPE }];

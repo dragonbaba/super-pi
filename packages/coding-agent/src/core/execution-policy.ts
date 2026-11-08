@@ -423,8 +423,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         }
         const tripped = this.autoReview!.record(verdict.approved);
         if (ctx.hasUI) {
-            ctx.ui.notify(`Auto 审查${verdict.approved ? "批准" : "拒绝"}：${tool}${verdict.reason ? " — " + verdict.reason : ""}`
-                + (verdict.approved ? "" : "\n/permissions auto 可允许重试一次"), verdict.approved ? "info" : "warning");
+            // Rejections already reach the UI and model as a tool error, including the retry command.
+            if (verdict.approved) ctx.ui.notify(`Auto 审查批准：${tool}${verdict.reason ? " — " + verdict.reason : ""}`, "info");
             if (tripped) {
                 ctx.ui.setStatus("permissions", AUTO_PAUSED_STATUS);
                 ctx.ui.notify("Auto 审查连续拒绝 3 次或最近 50 次中拒绝 10 次，之后的审批改为询问你；你允许其中一次后恢复 Auto 审查。", "warning");

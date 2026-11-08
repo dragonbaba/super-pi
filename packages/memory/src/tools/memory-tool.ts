@@ -21,14 +21,29 @@ import {
 import { MEMORY_TOOL_DESCRIPTION } from "../constants.js";
 import type { MemoryCategory, MemoryResult } from "../types.js";
 
+const MAX_LIST_OUTPUT_BYTES = 50 * 1024;
+
 type MemoryToolParams = {
-  action: "add" | "replace" | "remove";
+  action: "add" | "replace" | "remove" | "list";
   target: "memory" | "user" | "project" | "failure";
   content?: string;
   old_text?: string;
   category?: MemoryCategory;
   failure_reason?: string;
+  scope?: "global" | "project";
+  offset?: number;
+  limit?: number;
 };
+
+async function changeGlobalFailure(store: MemoryStore, oldText: string, content?: string): Promise<MemoryResult> {
+  const before = await store.readEntries("failure", null);
+  const selector = oldText.trim();
+  const matches = before.filter((entry) => selector && entry.includes(selector));
+  if (matches.length !== 1) return { success: false, error: "Select exactly one global failure entry; other project records are not eligible." };
+  const after = before.filter((entry) => entry !== matches[0]);
+  if (content !== undefined) after.splice(before.indexOf(matches[0]!), 0, content);
+  return store.replaceMemoryEntriesIfUnchanged(before, after, "failure", null);
+}
 
 function appendSyncWarning(result: MemoryResult, warning: string): MemoryResult {
   const warnings = [...(((result as any).warnings ?? []) as string[]), warning];
@@ -261,8 +276,11 @@ export function registerMemoryTool(
     label: "Memory",
     description: MEMORY_TOOL_DESCRIPTION,
     parameters: Type.Object({
-      action: StringEnum(["add", "replace", "remove"] as const),
+      action: StringEnum(["add", "replace", "remove", "list"] as const),
       target: StringEnum(["memory", "user", "project", "failure"] as const),
+      scope: Type.Optional(StringEnum(["global", "project"] as const, { description: 'For failure only. Defaults to project when available, otherwise global.' })),
+      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000000, description: 'List page offset; follow nextOffset until null.' })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: 'List page size, default 20.' })),
       content: Type.Optional(
         Type.String({ description: "Entry content for add/replace" })
       ),
@@ -283,14 +301,18 @@ export function registerMemoryTool(
     }),
     async execute(_toolCallId, params: MemoryToolParams, signal, _onUpdate, _ctx) {
       const { action, target: rawTarget, content, old_text, category, failure_reason } = params;
+      if (params.scope !== undefined && rawTarget !== "failure") {
+        return { content: [{ type: "text", text: "scope applies only to target failure; use target user/memory for global or project for current-project notes." }], isError: true, details: {} };
+      }
 
       // Route 'project' to projectStore using the normal MEMORY.md target.
       const target = rawTarget === "project" ? "memory" : rawTarget as "memory" | "user" | "failure";
-      const activeStore = rawTarget === "project" || (rawTarget === "failure" && projectStore)
+      const projectFailure = rawTarget === "failure" && (params.scope === "project" || params.scope === undefined && projectStore !== null);
+      const activeStore = rawTarget === "project" || projectFailure
         ? projectStore
         : store;
 
-      if (rawTarget === "project" && !projectStore) {
+      if ((rawTarget === "project" || projectFailure) && !projectStore) {
         return {
           content: [{ type: "text", text: JSON.stringify({ success: false, error: "Project memory is not available (no project detected)." }) }],
           details: {},
@@ -299,6 +321,18 @@ export function registerMemoryTool(
 
       // After the guard above, activeStore is guaranteed non-null when rawTarget === 'project'
       const store_ = activeStore!;
+
+      if (action === "list") {
+        const listed = await store_.listEntries(target, params.offset ?? 0, params.limit ?? 20,
+          rawTarget === "failure" && !projectFailure ? null : undefined);
+        const details = { ...listed, target: rawTarget, scope: activeStore === projectStore ? "project" : "global",
+          project: activeStore === projectStore ? projectName : null };
+        const text = JSON.stringify(details);
+        if (Buffer.byteLength(text, "utf8") > MAX_LIST_OUTPUT_BYTES) {
+          return { content: [{ type: "text", text: `List page exceeds 50 KiB. Reduce limit; for a single oversized entry, read ${listed.source} directly. No entries have been truncated.` }], isError: true, details: { source: listed.source, total: listed.total, offset: listed.offset } };
+        }
+        return { content: [{ type: "text", text }], details };
+      }
 
       let result: MemoryResult;
       let syncWarning: string | null = null;
@@ -325,7 +359,7 @@ export function registerMemoryTool(
             result = await store_.addFailure(content, {
               category: memoryCategory,
               failureReason: failure_reason,
-              project: projectStore ? projectName?.trim() || undefined : undefined,
+              project: projectFailure ? projectName?.trim() || undefined : undefined,
             });
             if (result.success && !syncHandled) {
               syncWarning = await syncAddToSqlite(rawTarget, content, memoryCategory, failure_reason, dbManager, projectName);
@@ -368,7 +402,8 @@ export function registerMemoryTool(
               details: {},
             };
           }
-          result = await store_.replace(target, old_text, content);
+          result = rawTarget === "failure" && !projectFailure
+            ? await changeGlobalFailure(store_, old_text, content) : await store_.replace(target, old_text, content);
           if (result.success && !syncHandled) syncWarning = await syncReplaceToSqlite(rawTarget, old_text, content, dbManager, projectName);
           break;
 
@@ -387,7 +422,8 @@ export function registerMemoryTool(
               details: {},
             };
           }
-          result = await store_.remove(target, old_text);
+          result = rawTarget === "failure" && !projectFailure
+            ? await changeGlobalFailure(store_, old_text) : await store_.remove(target, old_text);
           if (result.success && !syncHandled) syncWarning = await syncRemoveFromSqlite(rawTarget, old_text, dbManager, projectName);
           break;
 

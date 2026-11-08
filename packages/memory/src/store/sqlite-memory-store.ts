@@ -688,7 +688,7 @@ export function removeExactSyncedMemories(
 export function searchMemories(
   dbManager: DatabaseManager,
   query: string,
-  options: { project?: string; target?: string; category?: MemoryCategory; limit?: number } = {}
+  options: { project?: string | null; currentProject?: string | null; target?: string; category?: MemoryCategory; limit?: number } = {}
 ): SqliteMemoryEntry[] {
   if (query.trim().length === 0) {
     return [];
@@ -719,6 +719,12 @@ export function searchMemories(
       } else {
         conditions.push('m.project = ?');
         params.push(project);
+      }
+    } else if (options.currentProject !== undefined) {
+      if (options.currentProject === null) conditions.push('m.project IS NULL');
+      else {
+        conditions.push('(m.project IS NULL OR m.project = ?)');
+        params.push(options.currentProject);
       }
     }
 

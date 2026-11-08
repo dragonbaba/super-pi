@@ -42,7 +42,7 @@ const CONFLICT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const CONFLICT_MAX_COUNT = 32;
 const CONFLICT_MAX_BYTES = 64 * 1024 * 1024;
 const GENERATED_ARTIFACT_SUFFIX_PATTERN = /^\d+-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ENTRY_METADATA_PATTERN = /^(.*?)\s*<!--\s*created=([^,]+),\s*last=([^,>]+)(?:,\s*project64=([A-Za-z0-9_-]+))?\s*-->\s*$/;
+const ENTRY_METADATA_PATTERN = /^(.*?)\s*<!--\s*created=([^,]+),\s*last=([^,>]+)(?:,\s*project64=([A-Za-z0-9_-]+))?\s*-->\s*$/s;
 const ENTRY_DEDUPLICATION_SCRATCH = new Set<string>();
 const MATCHED_ENTRY_SCRATCH = new Set<string>();
 const VISIBLE_FAILURE_TEXT_SCRATCH = new Set<string>();
@@ -192,7 +192,7 @@ export class MemoryStore {
     );
   }
 
-  getFailureEntries(maxAgeDays = 7): string[] {
+  getFailureEntries(maxAgeDays = 7, project?: string | null): string[] {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - maxAgeDays);
     const cutoffStr = cutoff.toISOString().split("T")[0];
@@ -200,7 +200,8 @@ export class MemoryStore {
     return this.failureEntries
       .filter((entry) => {
         const decoded = this.decodeEntry(entry);
-        return decoded.created >= cutoffStr;
+        return (project === undefined || decoded.project === project)
+          && (decoded.text.startsWith("[correction]") || decoded.created >= cutoffStr);
       })
       .map((entry) => this.stripMetadata(entry));
   }
@@ -361,7 +362,7 @@ export class MemoryStore {
     return this.runTargetMutation(target, () => this.removeUnlocked(target, oldText));
   }
 
-  evaluateMemoryReplacement(nextEntries: string[]):
+  evaluateMemoryReplacement(nextEntries: string[], target: "memory" | "user" | "failure" = "memory", project?: string | null):
     | { success: true; chars: number; limit: number }
     | { success: false; error: string; chars?: number; limit?: number } {
     const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
@@ -374,10 +375,12 @@ export class MemoryStore {
     }
 
     const today = new Date().toISOString().split("T")[0];
-    const existingByText = new Map(this.memoryEntries.map((entry) => [this.stripMetadata(entry), entry]));
-    const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today));
+    const selected = this.scopedEntries(target, project);
+    const existingByText = new Map(selected.map((entry) => [this.stripMetadata(entry), entry]));
+    const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today, project ?? undefined));
+    if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
     const chars = encoded.length ? encoded.join(ENTRY_DELIMITER).length : 0;
-    const limit = this.charLimit("memory");
+    const limit = this.charLimit(target);
     if (chars > limit) {
       return { success: false, error: `Organization proposal would put memory at ${chars}/${limit} chars.`, chars, limit };
     }
@@ -393,10 +396,12 @@ export class MemoryStore {
   async replaceMemoryEntriesIfUnchanged(
     expectedEntries: string[],
     nextEntries: string[],
+    target: "memory" | "user" | "failure" = "memory",
+    project?: string | null,
   ): Promise<MemoryResult> {
-    return this.runTargetMutation("memory", async () => {
-      await this.syncTargetFromDiskIfChanged("memory");
-      const currentVisible = this.memoryEntries.map((entry) => this.stripMetadata(entry));
+    return this.runTargetMutation(target, async () => {
+      await this.syncTargetFromDiskIfChanged(target);
+      const currentVisible = this.getEntries(target, project);
       if (currentVisible.length !== expectedEntries.length
         || currentVisible.some((entry, index) => entry !== expectedEntries[index])) {
         return {
@@ -405,16 +410,18 @@ export class MemoryStore {
         };
       }
 
-      const evaluation = this.evaluateMemoryReplacement(nextEntries);
+      const evaluation = this.evaluateMemoryReplacement(nextEntries, target, project);
       if (!evaluation.success) return evaluation;
 
       const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
       const today = new Date().toISOString().split("T")[0];
-      const existingByText = new Map(this.memoryEntries.map((entry) => [this.stripMetadata(entry), entry]));
-      const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today));
-      this.memoryEntries = encoded;
-      await this.saveToDisk("memory");
-      return this.successResponse("memory", "Confirmed memory organization applied atomically.");
+      const selected = this.scopedEntries(target, project);
+      const existingByText = new Map(selected.map((entry) => [this.stripMetadata(entry), entry]));
+      const encoded = normalized.map((entry) => existingByText.get(entry) ?? this.encodeEntry(entry, today, today, project ?? undefined));
+      if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
+      this.setEntries(target, encoded);
+      await this.saveToDisk(target);
+      return this.successResponse(target, "Confirmed memory organization applied atomically.");
     });
   }
 
@@ -492,6 +499,29 @@ export class MemoryStore {
 
   getUserEntries(): string[] {
     return this.userEntries.map((e) => this.stripMetadata(e));
+  }
+
+  private scopedEntries(target: "memory" | "user" | "failure", project?: string | null): string[] {
+    const entries = this.entriesFor(target);
+    return project === undefined ? entries : entries.filter((entry) => this.decodeEntry(entry).project === project);
+  }
+
+  getEntries(target: "memory" | "user" | "failure", project?: string | null): string[] {
+    return this.scopedEntries(target, project).map((entry) => this.stripMetadata(entry));
+  }
+
+  async readEntries(target: "memory" | "user" | "failure", project?: string | null): Promise<string[]> {
+    await this.syncTargetFromDiskIfChanged(target);
+    return this.getEntries(target, project);
+  }
+
+  /** Explicit reads use canonical Markdown, including edits made after session startup. */
+  async listEntries(target: "memory" | "user" | "failure", offset = 0, limit = 20, project?: string | null) {
+    await this.syncTargetFromDiskIfChanged(target);
+    const all = this.scopedEntries(target, project);
+    const entries = all.slice(offset, offset + limit).map((entry) => this.decodeEntry(entry));
+    return { source: this.pathFor(target), total: all.length, offset, entries,
+      nextOffset: offset + entries.length < all.length ? offset + entries.length : null };
   }
 
   /** Raw Markdown entries, including metadata, for exact SQLite reconciliation. */

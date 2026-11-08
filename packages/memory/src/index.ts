@@ -28,6 +28,7 @@ import { registerSessionSearchTool } from "./tools/session-search-tool.js";
 import { registerMemorySearchTool } from "./tools/memory-search-tool.js";
 import { registerMemoryReviewCommand } from "./handlers/memory-review.js";
 import { registerMemoryCleanupCommand } from "./handlers/memory-cleanup.js";
+import { registerMemoryCommand } from "./handlers/memory-command.js";
 import { registerLazySkillsCommand } from "./handlers/skills-command-registration.js";
 import { migrateThenSyncMarkdownMemories, registerSyncMarkdownMemoriesCommand } from "./handlers/sync-markdown-memories.js";
 import { loadConfig } from "./config.js";
@@ -205,13 +206,13 @@ export default function (pi: ExtensionAPI) {
   // ── 5. Register explicit memory maintenance commands. ──
   // No background model call, session flush, live/backfill index scan, recovery
   // sweep, correction extraction, or capacity consolidation is registered.
-  registerMemoryReviewCommand(pi, store, config, config.consolidationTimeoutMs, {
+  const review = registerMemoryReviewCommand(pi, store, config, config.consolidationTimeoutMs, {
     projectStore,
     projectName: projectName || null,
   });
-  registerMemoryCleanupCommand(pi, { store, globalDir, projectsRoot });
-  registerLazySkillsCommand(pi, skillStore);
-  registerSyncMarkdownMemoriesCommand(pi, dbManager, globalDir, config.projectsMemoryDir, agentRoot, {
+  const cleanup = registerMemoryCleanupCommand(pi, { store, globalDir, projectsRoot });
+  const skills = registerLazySkillsCommand(pi, skillStore);
+  const sync = registerSyncMarkdownMemoriesCommand(pi, dbManager, globalDir, config.projectsMemoryDir, agentRoot, {
     legacyGlobalDir: shouldMigrateExtensionRoot ? legacyGlobalDir : null,
     onMigrationSucceeded: () => {
       databaseMigrationPending = false;
@@ -219,10 +220,11 @@ export default function (pi: ExtensionAPI) {
       dbManager.setOpenGuard(null);
     },
   });
+  registerMemoryCommand(pi, { store, projectStore, config, project, globalDir, review, cleanup, sync, skills });
   // ── 6. SQLite search tools. Historical indexing is not exposed as a
   // standing slash command; search remains available only when explicitly requested.
   registerSessionSearchTool(pi, dbManager, config.sessionSearch ?? { variant: "legacy" });
-  registerMemorySearchTool(pi, dbManager);
+  registerMemorySearchTool(pi, dbManager, project.name);
 
   // ── 7. Constant-time owner shutdown. ──
   // There are no background review/index/sweep tasks to abort or join and no

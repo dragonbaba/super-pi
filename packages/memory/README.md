@@ -63,7 +63,7 @@ A previously interrupted legacy `sessions.db` migration is the only migration re
 | 🧹 **Explicit Artifact Cleanup** | `/memory-cleanup` runs bounded identity-safe cleanup only when requested |
 | ⚡ **Fast Lifecycle** | Startup loads active memory only; shutdown closes owned resources only |
 | 🛡️ **Secret Scanning** | API keys, tokens, SSH keys blocked from persistence |
-| 📊 **Memory Aging** | Entries carry timestamps — consolidation knows what's stale |
+| 📊 **Memory Dates** | Creation/reference dates help review; they do not prove a fact is still valid |
 | 🏗️ **Two-Tier Memory** | Global + per-project memory, both searchable |
 | 💾 **Extended Store** | Unlimited searchable memories beyond core 5,000-char limit |
 
@@ -149,15 +149,19 @@ The extension stores memory at two levels:
 
 By default (`"memoryMode": "digest"`) the system prompt carries only a constant `<memory-policy>`: when to save (user corrections and preferences, fixes after failed attempts, project decisions not recorded in the repo), when to search, and what never to save. Its bytes do not depend on saved memory, so the provider prompt-cache prefix stays valid across sessions.
 
-Saved memory reaches the model as one hidden `<memory-context>` digest message (at most 2,000 characters: one line per user entry, current-project entry, and recent failure). It is built once at session start and sent with the first prompt of a session context. Because it is persisted in the session, later turns and resumes replay the same bytes; it is sent again only after compaction or tree navigation removes it.
+Saved memory reaches the model as one hidden `<memory-context>` digest message (at most 2,000 characters). User, global, current-project, and scoped failure/correction sources share the budget in round-robin order. Multiline conditions are collapsed into one bounded line; use `memory` with `action: "list"` for full current entries. The digest is built once at session start and sent with the first prompt of a session context. Later turns and resumes replay the same bytes; it is sent again only after compaction or tree navigation removes it.
+
+Project identities combine the canonical repository root with its basename. Subdirectories and linked worktrees share the repository identity; unrelated same-name repositories are isolated. Old basename directories remain untouched and are not auto-assigned. `/memory import` previews old entries and asks you to confirm that they belong to the current project before merging them. Source and destination changes invalidate the preview. Old skills are not copied automatically; verify their current instructions before migration.
+
+`memory_search` defaults to global plus current-project entries. `project: null` selects global only; an exact project identity selects that project; `project: "*"` explicitly searches all scopes, including retained legacy records. Keyword matches are not a complete inventory. `memory` `action: "list"` reads canonical Markdown, reports total/offset/nextOffset, and supports explicit global/project failure scope. The existing session digest remains frozen after edits.
 
 ```
 System Prompt (constant)            First prompt of a session context
 ┌──────────────────────────────┐    ┌──────────────────────────────────┐
 │ <memory-policy>              │    │ user message                     │
 │ save on correction/failure/  │    │ <memory-context> (hidden)        │
-│ decision; search before      │    │ ## User / ## Project / failures  │
-│ repeating earlier work       │    │ </memory-context>                │
+│ decision; retrieve only      │    │ User / Global / Project / fixes  │
+│ when needed and permitted    │    │ </memory-context>                │
 │ </memory-policy>             │    └──────────────────────────────────┘
 └──────────────────────────────┘
 ```
@@ -182,7 +186,7 @@ The agent learns from failures, corrections, and insights — just like humans d
 ### How It Works
 
 1. **Trigger-based saving**: The memory policy tells the agent to save a `failure`/`correction` entry when you correct it or when a fix follows a failed attempt
-2. **Session digest**: Recent failures for the current project appear in the session digest (`failureInjection*` settings)
+2. **Session digest**: Current-project and global failures share the configured entry budget; durable `[correction]` entries remain eligible after the temporary-failure age window (`failureInjection*` settings)
 3. **Reviewed extraction**: `/memory-review` proposes entries from the current conversation; nothing is extracted in the background
 4. **Searchable**: Use `memory_search("auth", category: "failure")` to find past failures
 
@@ -334,9 +338,9 @@ Important: if core Markdown memory is full and consolidation cannot free space, 
 
 ### Explicit Current-Model Memory Review
 
-`/memory-review [project|global]` replaces background extraction, correction auto-save, shutdown flush, and capacity-triggered consolidation:
+`/memory` is the unified management entry point. `/memory-review [project|global] [memory|user|failure]` replaces background extraction, correction auto-save, shutdown flush, and capacity-triggered consolidation:
 
-1. It reads a bounded recent tail of the active conversation and the selected canonical MEMORY.md.
+1. It reads a bounded recent tail of the active conversation and the selected canonical MEMORY.md, USER.md, or failures.md. User preferences are global; global failure review does not modify legacy project-tagged records in the same file.
 2. The currently selected model returns a read-only extraction/merge proposal. Model override and child-process settings are not used.
 3. Pi displays the complete resulting entry set in a read-only editor.
 4. Only an explicit user confirmation publishes the proposal.
@@ -362,8 +366,10 @@ Reusable procedures are created or updated deliberately through `skill_manage` d
 
 | Command | What it does |
 |---|---|
+| `/memory` | View current canonical entries, select scoped review, skills, sync or artifact cleanup |
+| `/memory import` | Preview and confirm old basename entries for the current project; preserve originals |
 | `/memory-skills` | Opens an interactive skills manager for search, multi-select, move, and delete |
-| `/memory-review [project|global]` | Current model extracts, merges, and replaces active-conversation memories after explicit approval |
+| `/memory-review [project|global] [memory|user|failure]` | Current model proposes scoped changes after full preview and explicit approval |
 | `/memory-cleanup` | Confirm and run bounded cleanup of generated recovery/retired/conflict artifacts |
 | `/memory-sync-markdown` | Explicitly migrate legacy memory paths and reconcile Markdown into SQLite search |
 

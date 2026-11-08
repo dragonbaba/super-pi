@@ -6,13 +6,18 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createHash } from "node:crypto";
 import { resolveProjectsRoot } from "./paths.js";
 
 export interface ProjectInfo {
-  /** Project name (directory basename), or null if not in a project. */
+  /** Stable storage/search identity, or null outside a project. */
   name: string | null;
   /** Path to the project-scoped memory directory, or null. */
   memoryDir: string | null;
+  displayName: string | null;
+  root: string | null;
+  /** Unassigned old basename locations; never loaded automatically. */
+  legacyMemoryDirs: string[];
 }
 
 export interface ProjectSkillInfo extends ProjectInfo {
@@ -101,67 +106,35 @@ function findGitRepoRootCached(resolved: string): string | null {
   return repoRoot;
 }
 
-/**
- * Detect project from the current working directory.
- *
- * A "project" is any directory that is not the user's home directory. Inside a
- * Git repository the project name is the *repository* root's basename, so every
- * linked worktree shares one identity instead of stranding its memory and
- * skills under the worktree directory name (#120). Outside Git it stays the
- * working directory's basename.
- *
- * An existing `projects-memory/<cwd-basename>/` directory still wins over a
- * newly derived repository name, so upgrading never orphans memory that was
- * written under the old cwd-basename identity.
- *
- * Project-scoped memory is stored at ~/.sp/agent/<projectsMemoryDir>/<projectName>/.
- */
+function canonicalDirectory(directory: string): string {
+  try { return fs.realpathSync.native(directory); } catch { return path.resolve(directory); }
+}
+
+function identityPath(directory: string): string {
+  return process.platform === "win32" ? directory.toLowerCase() : directory;
+}
+
+/** Same repository/worktree shares one identity; same basename elsewhere does not. */
 export function detectProject(projectsMemoryDir = "projects-memory", cwd?: string): ProjectInfo {
   const dir = cwd ?? process.cwd();
-  const homeDir = os.homedir();
-
-  // Normalize paths for comparison
-  const resolved = path.resolve(dir);
-  const resolvedHome = path.resolve(homeDir);
-
-  if (resolved === resolvedHome || resolved === "/" || !resolved || resolved === resolvedHome + "/") {
-    return { name: null, memoryDir: null };
+  const resolved = canonicalDirectory(dir);
+  const root = canonicalDirectory(findGitRepoRootCached(resolved) ?? resolved);
+  if (identityPath(root) === identityPath(canonicalDirectory(os.homedir())) || root === path.parse(root).root) {
+    return { name: null, memoryDir: null, displayName: null, root: null, legacyMemoryDirs: [] };
   }
-
-  const cwdName = path.basename(resolved);
-  if (!cwdName || cwdName === "." || cwdName === "..") {
-    return { name: null, memoryDir: null };
-  }
-
+  const displayName = path.basename(root);
   const projectsRoot = resolveProjectsRoot(projectsMemoryDir);
-  const name = resolveProjectName(resolved, resolvedHome, cwdName, projectsRoot);
-
+  const digest = createHash("sha256").update(identityPath(root)).digest("hex").slice(0, 24);
+  const prefix = identityPath(displayName).slice(0, 80);
+  const name = `${prefix}--${digest}`;
+  const legacyNames = new Set([displayName, path.basename(resolved)]);
   return {
     name,
     memoryDir: path.join(projectsRoot, name),
+    displayName,
+    root,
+    legacyMemoryDirs: [...legacyNames].map((legacy) => path.join(projectsRoot, legacy)),
   };
-}
-
-function resolveProjectName(
-  resolved: string,
-  resolvedHome: string,
-  cwdName: string,
-  projectsRoot: string,
-): string {
-  const repoRoot = findGitRepoRootCached(resolved);
-
-  if (!repoRoot || repoRoot === resolved || repoRoot === resolvedHome) return cwdName;
-
-  const repoName = path.basename(repoRoot);
-  if (!repoName || repoName === cwdName) return cwdName;
-
-  // Migration bridge: a store already written under the old cwd-basename
-  // identity keeps working. Only fresh directories adopt the repository name.
-  if (!fs.existsSync(path.join(projectsRoot, repoName)) && fs.existsSync(path.join(projectsRoot, cwdName))) {
-    return cwdName;
-  }
-
-  return repoName;
 }
 
 export function detectProjectSkills(projectsMemoryDir = "projects-memory", cwd?: string): ProjectSkillInfo {

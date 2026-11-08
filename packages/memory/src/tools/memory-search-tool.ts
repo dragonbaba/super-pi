@@ -14,19 +14,19 @@ interface SearchResult {
   output?: string;
 }
 
-export function registerMemorySearchTool(pi: ExtensionAPI, dbManager: DatabaseManager): void {
+export function registerMemorySearchTool(pi: ExtensionAPI, dbManager: DatabaseManager, currentProject: string | null = null): void {
   pi.registerTool({
     name: 'memory_search',
     label: 'Memory Search',
     description: 'Search durable user, project, global, or failure memories by query and optional scope filters. Returns matching entries with project context and dates.',
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 1000, description: 'Search query. Use natural language or specific terms.' }),
-      project: Type.Optional(Type.String({ maxLength: 500, description: 'Filter by project name. Pass null for global memories only.' })),
+      project: Type.Optional(Type.Unsafe({ type: ['string', 'null'], maxLength: 500, description: 'Exact project identity; null means global only. Omit for global plus the current project. Use "*" only for an explicit cross-project search.' })),
       target: Type.Optional(StringEnum(['memory', 'user', 'failure'] as const, { description: 'Filter by target type (memory, user, or failure).' })),
       category: Type.Optional(StringEnum(['failure', 'correction', 'insight', 'preference', 'convention', 'tool-quirk'] as const, { description: 'Filter by memory category.' })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: 'Maximum results to return (default: 10, max: 20).' })),
     }),
-    execute: async (_id: string, args: { query: string; project?: string; target?: string; category?: string; limit?: number }) => {
+    execute: async (_id: string, args: { query: string; project?: string | null; target?: string; category?: string; limit?: number }) => {
       const query = args.query;
       const project = args.project;
       const target = args.target;
@@ -44,7 +44,8 @@ export function registerMemorySearchTool(pi: ExtensionAPI, dbManager: DatabaseMa
         return { content: [{ type: 'text' as const, text: result.message! }], details: result };
       }
 
-      const results = searchMemories(dbManager, query, { project, target, category, limit });
+      const results = searchMemories(dbManager, query, { project: project === '*' ? undefined : project,
+        currentProject: project === '*' ? undefined : currentProject, target, category, limit });
 
       if (results.length === 0) {
         const result: SearchResult = { success: true, count: 0, message: `No memories found matching "${query}". Try a different search term or broader query.` };
