@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RpcClient } from "../../coding-agent/dist/modes/rpc/rpc-client.js";
 
@@ -13,7 +13,9 @@ await mkdir(projectDirectory);
 const client = new RpcClient({
   cliPath: join(repositoryRoot, "packages", "coding-agent", "dist", "cli.js"),
   cwd: projectDirectory,
-  env: { SP_CODING_AGENT_DIR: agentDirectory },
+  // This smoke only queries state/commands; a synthetic key enables model discovery without a network request.
+  env: { SP_CODING_AGENT_DIR: agentDirectory, OPENAI_API_KEY: "test-only-no-network",
+    PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` },
   args: [
     "--no-session",
     "--no-skills",
@@ -32,6 +34,7 @@ try {
   assert.equal(state.isStreaming, false);
   const commands = await client.getCommands();
   const names = new Set(commands.map((command) => command.name));
+  assert.equal(names.has("memory"), true);
   assert.equal(names.has("memory-review"), true);
   assert.equal(names.has("memory-cleanup"), true);
   assert.equal(names.has("memory-sync-markdown"), true);

@@ -6,9 +6,9 @@ export function registerMemoryCleanupCommand(
   pi: ExtensionAPI,
   options: { store: MemoryStore; globalDir: string; projectsRoot: string },
   deps: { runCleanup?: typeof runMemoryRecoveryCleanup } = {},
-): void {
+) {
   const runCleanup = deps.runCleanup ?? runMemoryRecoveryCleanup;
-  pi.registerCommand("memory-cleanup", {
+  const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Explicitly remove expired, superseded, or over-budget generated memory recovery artifacts",
     handler: async (rawArgs, ctx) => {
       if (rawArgs.trim()) {
@@ -46,5 +46,7 @@ export function registerMemoryCleanupCommand(
         ctx.ui.notify(`Memory cleanup failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       }
     },
-  });
+  };
+  pi.registerCommand("memory-cleanup", command);
+  return command.handler;
 }

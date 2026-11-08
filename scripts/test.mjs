@@ -269,10 +269,14 @@ async function runChild(unit, logFile, temporary, print, recordFailure) {
 }
 
 function memoryCommand() {
-	// Root verification already builds every workspace. Run the same memory test
+	// Root verification already builds every workspace. Run the same memory tests
 	// against those artifacts instead of compiling the package again inside CI.
 	// The standalone workspace npm test retains its build for local package work.
-	return { command: process.execPath, args: ["--test", resolve(REPOSITORY_ROOT, "packages/memory/tests/session-anchor-search.test.mjs")] };
+	return { command: process.execPath, args: ["--test",
+		resolve(REPOSITORY_ROOT, "packages/memory/tests/session-anchor-search.test.mjs"),
+		resolve(REPOSITORY_ROOT, "packages/memory/tests/memory-digest.test.mjs"),
+		resolve(REPOSITORY_ROOT, "packages/memory/tests/memory-management.test.mjs"),
+	] };
 }
 
 export function testFileArguments(file, root) {

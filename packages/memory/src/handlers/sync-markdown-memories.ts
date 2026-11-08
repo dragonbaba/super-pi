@@ -244,8 +244,8 @@ export function registerSyncMarkdownMemoriesCommand(
   projectsMemoryDir?: string,
   agentRoot = AGENT_ROOT,
   options: { legacyGlobalDir?: string | null; onMigrationSucceeded?: () => void } = {},
-): void {
-  pi.registerCommand('memory-sync-markdown', {
+) {
+  const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: 'Reconcile the SQLite search mirror with Markdown memories',
     handler: async (_args, ctx: ExtensionCommandContext) => {
       ctx.ui.notify('🔄 Reconciling the SQLite search mirror with Markdown memories...', 'info');
@@ -291,5 +291,7 @@ export function registerSyncMarkdownMemoriesCommand(
         ctx.ui.notify(`❌ Markdown sync failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     },
-  });
+  };
+  pi.registerCommand('memory-sync-markdown', command);
+  return command.handler;
 }

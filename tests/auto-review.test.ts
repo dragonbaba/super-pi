@@ -94,6 +94,7 @@ test("host-auto reviews only what would ask; rule asks, outside deletes and a tr
   assert.equal(await f.decide("bash", { command: "git push" }), "denied");
   assert.equal(f.dialogs.length, 0);
   assert.match(f.notes.join("\n"), /Auto 审查批准：bash — the user asked for tests/);
+  assert.doesNotMatch(f.notes.join("\n"), /Auto 审查拒绝/, "the tool error already presents the rejection; do not also render a warning");
 
   // The user's own ask rule and a delete outside the workspaces are never answered by the reviewer.
   assert.equal(await f.decide("bash", { command: "git push --force" }), "asked");

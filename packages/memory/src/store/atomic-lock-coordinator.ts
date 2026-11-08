@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { isBunRuntime, loadBetterSqlite3 } from './sqlite-native.js';
+import { canonicalStoragePathSync } from './canonical-storage-path.js';
 
 type StatementLike = {
   run: (...args: unknown[]) => unknown;
@@ -373,7 +374,7 @@ export class AtomicLockCoordinator {
 
   /** Release all shared coordinators rooted below an owner directory. */
   static closeSharedUnder(root: string): void {
-    const resolvedRoot = path.resolve(root);
+    const resolvedRoot = canonicalStoragePathSync(root);
     const prefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : `${resolvedRoot}${path.sep}`;
     for (const [key, coordinator] of sharedCoordinators) {
       if (key !== resolvedRoot && !key.startsWith(prefix)) continue;

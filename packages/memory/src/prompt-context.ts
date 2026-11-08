@@ -3,7 +3,7 @@ import type { MemoryConfig } from "./types.js";
 import type { MemoryStore } from "./store/memory-store.js";
 import { buildMemoryDigest } from "./memory-digest.js";
 
-/** Session digest for `digest` mode: user, current-project and recent failure entries. */
+/** Session-frozen digest; sources share a fixed budget, with no per-turn reads. */
 export function buildSessionMemoryDigest(
   config: Pick<MemoryConfig, "memoryMode" | "failureInjectionEnabled" | "failureInjectionMaxAgeDays" | "failureInjectionMaxEntries">,
   store: MemoryStore,
@@ -12,11 +12,20 @@ export function buildSessionMemoryDigest(
 ): string {
   if (config.memoryMode !== "digest") return "";
   const maxFailures = config.failureInjectionMaxEntries;
-  const failures = config.failureInjectionEnabled && maxFailures > 0
-    ? (projectStore ?? store).getFailureEntries(config.failureInjectionMaxAgeDays).slice(-maxFailures)
-    : [];
+  const failures: string[] = [];
+  if (config.failureInjectionEnabled && maxFailures > 0) {
+    const globalFailures = store.getFailureEntries(config.failureInjectionMaxAgeDays, null);
+    const projectFailures = projectStore?.getFailureEntries(config.failureInjectionMaxAgeDays) ?? [];
+    for (let index = 0; failures.length < maxFailures && (index < globalFailures.length || index < projectFailures.length); index++) {
+      const local = projectFailures[projectFailures.length - 1 - index];
+      const global = globalFailures[globalFailures.length - 1 - index];
+      if (local !== undefined) failures.push(local);
+      if (global !== undefined && failures.length < maxFailures) failures.push(global);
+    }
+  }
   return buildMemoryDigest({
     user: store.getUserEntries(),
+    global: store.getMemoryEntries(),
     project: projectStore ? projectStore.getMemoryEntries() : [],
     projectName,
     failures,
