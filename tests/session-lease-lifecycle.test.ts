@@ -131,6 +131,10 @@ test('native lease: reload, gated replacement, cancellation/failure and conserva
     factoryFinish.resolve(); await replacement;
     assert.equal(f.records().length, 1); f.protected(runtime.session.sessionManager);
     assert.equal((runtime as any).replacementLease, undefined); assert.equal(owner.timer, undefined);
+    assert.equal((first.session as any)._sessionLease, undefined);
+    assert.equal(owner.reservationTimer, undefined);
+    assert.equal(owner.getSessionPath(), undefined); assert.equal(owner.getSessionId(), undefined);
+    assert.doesNotThrow(() => assertSessionNotLeased(f.leaseDir, first.session.sessionFile!));
     failFactory = true;
     await assert.rejects(runtime.newSession(), /controlled factory failure/);
     assert.equal(f.records().length, 0); assert.equal((runtime as any).replacementLease, undefined);

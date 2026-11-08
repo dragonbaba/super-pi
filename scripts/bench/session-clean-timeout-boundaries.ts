@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { Session } from "node:inspector/promises";
-import { BoundedMemorySelector } from "../../packages/extensions/session-memory-manager/bounded-selector.ts";
+import { BoundedMemorySelector, type BoundedSelectorItem } from "../../packages/extensions/session-memory-manager/bounded-selector.ts";
 import { inspectBashPermissionScope } from "../../packages/extensions/resource-lifecycle-guard/permission-bash.ts";
 import { inspectBashResourceLifecycle, inspectHighRiskBashMutation } from "../../packages/extensions/resource-lifecycle-guard/core.ts";
 import { getKeybindings } from "../../packages/tui/src/keybindings.ts";
@@ -55,10 +55,17 @@ function selectorItems(): Array<{ value: number; label: string; selectable?: boo
 	return items;
 }
 
+function sessionItems(): BoundedSelectorItem<number>[] {
+	const items: BoundedSelectorItem<number>[] = [];
+	for (let index = 0; index < 30; index++) items.push({ value: index, label: `Session ${index}`, disabled: index === 1,
+		detail: "/tmp/synthetic/" + "长路径😀e\u0301/".repeat(40) });
+	return items;
+}
+
 interface SelectorRun {
 	renderCalls: number; renderedLines: number; detailWrapCalls: number;
 	firstFrameWrites: number; secondFrameWrites: number; totalFrameUtf16CodeUnits: number; maximumFrameUtf16CodeUnits: number;
-	maximumCacheLines: number; maximumVisibleDetailRows: number; finalCacheLines: number; releasedFieldCount: number;
+	maximumCacheLines: number; maximumVisibleDetailRows: number; finalCacheLines: number; releasedFieldCount: number; occupancyChecks: number;
 	ownerRefs?: WeakRef<object>[]; initialDetailRefs?: WeakRef<object>[]; resizedDetailRefs?: WeakRef<object>[];
 }
 
@@ -83,17 +90,19 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 	const first = new NoopTerminal(60, 24);
 	const second = new NoopTerminal(60, 24);
 	const counters = { renderCalls: 0, renderedLines: 0, maximumCacheLines: 0, maximumVisibleDetailRows: 0 };
+	let occupancyChecks = 0;
 	const selectors = [
 		new BoundedMemorySelector("清理", selectorItems(), theme, keybindings, () => {}, () => 22, 30),
-		new BoundedMemorySelector("清理", selectorItems(), theme, keybindings, () => {}, () => 22, 30),
+		new BoundedMemorySelector("批量删除", sessionItems(), theme, keybindings, undefined, () => 22),
 	];
+	selectors[1]!.enableMultiSelect(() => {}, value => { occupancyChecks++; return value !== 1; });
 	for (const selector of selectors) instrumentSelector(selector, counters);
 	const firstScreen = new TuiAltScreen(first, true);
 	const secondScreen = new TuiAltScreen(second, true);
 	firstScreen.addChild(selectors[0]!); secondScreen.addChild(selectors[1]!);
 	firstScreen.setFocus(selectors[0]!); secondScreen.setFocus(selectors[1]!);
 	firstScreen.start(); secondScreen.start(); firstScreen.renderNow(true); secondScreen.renderNow(true);
-	first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
+	first.emit("\t"); second.emit(" "); firstScreen.renderNow(true); secondScreen.renderNow(true);
 	const initialCaches: string[][] = [];
 	for (const selector of selectors) initialCaches.push((selector as unknown as { detailLines: string[] }).detailLines);
 	for (const cache of initialCaches) {
@@ -107,12 +116,13 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 		for (const cache of initialCaches) initialDetailRefs.push(new WeakRef<object>(cache));
 	}
 	for (let index = 1; index < iterations; index++) {
-		first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
+		first.emit("\t"); second.emit(" "); firstScreen.renderNow(true); secondScreen.renderNow(true);
 	}
-	first.emit("\t"); second.emit("\t"); firstScreen.renderNow(true); secondScreen.renderNow(true);
+	first.emit("\t"); second.emit(" "); firstScreen.renderNow(true); secondScreen.renderNow(true);
 	if ((selectors[0] as unknown as { focus: string }).focus === "actions") first.emit("\t");
 	if ((selectors[1] as unknown as { focus: string }).focus === "actions") second.emit("\t");
 	first.resizeTo(42, 16); second.resizeTo(42, 16); firstScreen.renderNow(true); secondScreen.renderNow(true);
+	if (occupancyChecks !== iterations + 1) throw new Error("occupancy must be checked only on explicit checkbox input");
 
 	const detailLines: string[][] = [];
 	for (const selector of selectors) detailLines.push((selector as unknown as { detailLines: string[] }).detailLines);
@@ -133,6 +143,7 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 		firstFrameWrites: first.frameWrites, secondFrameWrites: second.frameWrites,
 		totalFrameUtf16CodeUnits: first.totalFrameUtf16CodeUnits + second.totalFrameUtf16CodeUnits,
 		maximumFrameUtf16CodeUnits: Math.max(first.maximumFrameUtf16CodeUnits, second.maximumFrameUtf16CodeUnits),
+		occupancyChecks,
 	};
 	let ownerRefs: WeakRef<object>[] | undefined;
 	if (lifecycleDiagnostics) {
@@ -144,10 +155,11 @@ async function runSelectorFixture(iterations: number, lifecycleDiagnostics: bool
 	for (const selector of selectors) selector.dispose();
 	let releasedFieldCount = 0;
 	for (const selector of selectors) {
-		const state = selector as unknown as { items: unknown[]; detailLines: unknown[]; done?: unknown; getAvailableRows?: unknown };
-		releasedFieldCount += (state.items.length === 0 ? 1 : 0) + (state.detailLines.length === 0 ? 1 : 0) + (state.done === undefined ? 1 : 0) + (state.getAvailableRows === undefined ? 1 : 0);
+		const state = selector as unknown as { items: unknown[]; detailLines: unknown[]; done?: unknown; getAvailableRows?: unknown; submitChecked?: unknown; canCheck?: unknown };
+		releasedFieldCount += (state.items.length === 0 ? 1 : 0) + (state.detailLines.length === 0 ? 1 : 0) + (state.done === undefined ? 1 : 0) + (state.getAvailableRows === undefined ? 1 : 0)
+			+ (state.submitChecked === undefined ? 1 : 0) + (state.canCheck === undefined ? 1 : 0);
 	}
-	if (releasedFieldCount !== 8) throw new Error("selector retained owned records after async dispose");
+	if (releasedFieldCount !== 12) throw new Error("selector retained owned records after async dispose");
 	initialCaches.length = 0;
 	detailLines.length = 0;
 	return { ...metrics, releasedFieldCount, ownerRefs, initialDetailRefs, resizedDetailRefs };
@@ -281,6 +293,7 @@ await runBenchmarkMain({
 			selectorFrameWrites: selectorResult.value.firstFrameWrites + selectorResult.value.secondFrameWrites,
 			selectorTotalFrameUtf16CodeUnits: selectorResult.value.totalFrameUtf16CodeUnits, selectorMaximumFrameUtf16CodeUnits: selectorResult.value.maximumFrameUtf16CodeUnits,
 			selectorReleasedFieldCount: selectorResult.value.releasedFieldCount,
+			selectorOccupancyChecks: selectorResult.value.occupancyChecks,
 			shellCalls: shellResult.value.calls, shellMutationFindings: shellResult.value.mutationFindings, shellPermissionFindings: shellResult.value.permissionFindings,
 			shellLifecycleRefusals: shellResult.value.lifecycleRefusals, shellTargetCount: shellResult.value.targetCount,
 			fixtureElapsedMs: elapsedMs,
@@ -301,7 +314,7 @@ await runBenchmarkMain({
 		return metrics;
 	},
 	observations: () => ({
-		baselineCommit: "6e08fd47440796b528941ce0dba21213796db582",
+		baselineCommit: "431b1b0886464620c72e1dff3959ce5e323ebef8",
 		comparison: "candidate-only runtime evidence; baseline is immutable Git/structure point, with no copied source or baseline runtime",
 		timing: lifecycleRequested ? "lifecycle diagnostic run; runner timings include its bounded GC/WeakRef phase" : sampleRequested ? "allocation-sampled run; runner timings include profiler phases and are not ordinary latency" : "ordinary fixture timing; includes awaited dispose only, with no explicit GC, profiler, or WeakRef diagnostic",
 		sampling: sampleRequested ? "one final measured run; selector and shell phases sampled separately, including fixture setup/render/parse/dispose" : "not requested",
