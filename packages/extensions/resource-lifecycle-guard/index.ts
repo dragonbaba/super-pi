@@ -1,20 +1,12 @@
 import { getSessionFiles } from "@super-pi/coding-agent/internal/files/file-host";
 import { getShellCwdBinding, attachShellCwdBinding, prepareShellCwd, attachBackgroundShellLaunch, attachForegroundShellLaunch, validateBackgroundShellInput, type ShellCwdBinding } from "@super-pi/coding-agent";
-import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
-import { shutdownManagedBrowser } from "@super-pi/chrome-devtools/browser-manager";
 import { inspectBashResourceLifecycle, isBlockingLifecycleReason } from "./core.ts";
 import { ShellAnalysisOwner } from "./shell-analysis.ts";
 import { inspectPowerShellResourceLifecycle } from "./powershell-lifecycle.ts";
 import { SessionPermissionController } from "./permission-controller.ts";
 import { registerChanges } from "../mutation-guard-write/changes.ts";
 import { getBackgroundShellTasks, type BackgroundShellTasks } from "./background-shell.ts";
-
-const CHROME_TOOL_PREFIX = "chrome_devtools_";
-const DEFAULT_SCREENSHOT_PREFIX = "sp-chrome-devtools-screenshot-";
-const DEFAULT_SCREENSHOT_SUFFIX = ".png";
 
 const INVALIDATED = "Blocked by policy: authorized Bash request or authority changed before invocation. Submit the final request for current authorization; the protected tool was not invoked.";
 
@@ -85,64 +77,6 @@ class BashInvocationAuthorization {
   }
 }
 
-function isOwnedDefaultScreenshotPath(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const path = resolve(value);
-  const name = basename(path);
-  return dirname(path) === resolve(tmpdir())
-    && name.startsWith(DEFAULT_SCREENSHOT_PREFIX)
-    && name.endsWith(DEFAULT_SCREENSHOT_SUFFIX);
-}
-
-class OwnedResourceCleaner {
-  readonly #defaultScreenshots = new Set<string>();
-  #chromeUsed = false;
-  #cleanupPromise?: Promise<void>;
-
-  markChromeUsed(): void {
-    this.#chromeUsed = true;
-  }
-
-  trackScreenshot(path: string): void {
-    this.#defaultScreenshots.add(path);
-  }
-
-  cleanup(): Promise<void> {
-    if (this.#cleanupPromise) return this.#cleanupPromise;
-    this.#cleanupPromise = this.#runCleanupWithReset();
-    return this.#cleanupPromise;
-  }
-
-  async #runCleanupWithReset(): Promise<void> {
-    try {
-      await this.#runCleanup();
-    } finally {
-      this.#cleanupPromise = undefined;
-    }
-  }
-
-  async #runCleanup(): Promise<void> {
-    const failures: string[] = [];
-    for (const path of this.#defaultScreenshots) {
-      try {
-        await rm(path, { force: true });
-        this.#defaultScreenshots.delete(path);
-      } catch (error) {
-        failures.push(`temporary screenshot ${path}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-		if (this.#chromeUsed) {
-			try {
-				await shutdownManagedBrowser();
-        this.#chromeUsed = false;
-      } catch (error) {
-        failures.push(`managed Chrome: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    if (failures.length > 0) console.warn(`[resource-lifecycle-guard] Cleanup incomplete:\n- ${failures.join("\n- ")}`);
-  }
-}
-
 export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   // Explicit new execution profiles have one native operation-policy owner.
   // The legacy controller remains only for unmigrated settings during the documented compatibility window.
@@ -163,7 +97,6 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     return "unavailable";
   }
   const permissions = new SessionPermissionController(pi);
-  const resources = new OwnedResourceCleaner();
   const backgroundTasks = getBackgroundShellTasks(pi);
   permissions.registerCommands();
   const files = getSessionFiles(pi);
@@ -181,7 +114,6 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
   }));
 
   pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName.startsWith(CHROME_TOOL_PREFIX)) resources.markChromeUsed();
     // Side-effect-free Bash denial only; acceptance still requires current permission.
     const shell = event.toolName === "bash" || event.toolName === "powershell";
     const shellName = event.toolName;
@@ -240,15 +172,5 @@ export default function resourceLifecycleGuard(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("tool_result", (event) => {
-    if (event.toolName !== "chrome_devtools_screenshot") return undefined;
-    const details = event.details as { savedPath?: unknown; isDefaultPath?: unknown } | undefined;
-    if (details?.isDefaultPath === true && isOwnedDefaultScreenshotPath(details.savedPath)) {
-      resources.trackScreenshot(details.savedPath);
-    }
-    return undefined;
-  });
-
-  pi.on("agent_settled", () => resources.cleanup());
-  pi.on("session_shutdown", () => { permissions.invalidate(); return resources.cleanup(); });
+  pi.on("session_shutdown", () => { permissions.invalidate(); });
 }
