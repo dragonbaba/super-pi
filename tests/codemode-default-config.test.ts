@@ -42,7 +42,7 @@ test("complete repository default configuration supports Codemode verification a
 		assert.ok(session._toolRegistry.has("mcp_search_tools"), "MCP extension must be enabled, not just imported");
 		const scripts = [
 			'await show((await tools.read({path:"file.txt"})).ref)',
-			'try {await tools.bash({command:"grep -q changed file.txt"})} catch {} await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});await tools.bash({command:"grep -q changed file.txt"});await show((await tools.read({path:"file.txt"})).ref)',
+			'const before = await tools.bash({command:"grep -q changed file.txt"}); if (before.details.shellExecution.exitCode !== 1) throw new Error("Expected no match before edit"); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});await tools.bash({command:"grep -q changed file.txt"});await show((await tools.read({path:"file.txt"})).ref)',
 		];
 		let index = 0;
 		session.agent.streamFunction = (_model: any, context: any) => {
@@ -58,10 +58,11 @@ test("complete repository default configuration supports Codemode verification a
 		const results = session.agent.state.messages.filter((m: any) => m.role === "toolResult");
 		assert.equal(results.length, 2);
 		assert.equal(results[0].isError, false);
-		assert.equal(results[1].isError, true, "the first failed test remains visible even though the fix succeeds");
+		assert.equal(results[1].isError, false, "a normally completed query does not fail the script");
 		const calls = results[1].details.codemode.calls;
-		assert.deepEqual(calls.map((call: any) => [call.toolName, call.isError]), [["bash", true], ["edit", false], ["bash", false], ["read", false]], JSON.stringify(results[1]));
+		assert.deepEqual(calls.map((call: any) => [call.toolName, call.isError]), [["bash", false], ["edit", false], ["bash", false], ["read", false]], JSON.stringify(results[1]));
 		assert.equal(calls[0].exitCode, 1); assert.equal(calls[2].exitCode, 0);
+		assert.match(results[1].content[0].text, /bash: exited; exit=1[\s\S]*bash: exited; exit=0/, "both query outcomes remain visible after the edit");
 		assert.doesNotMatch(JSON.stringify(results), /DUPLICATE_CALL|NESTED_TOOL_ERRORS/);
 		assert.equal(readFileSync(join(cwd, "file.txt"), "utf8"), "changed\nworld\n");
 		assert.equal(network, 0);

@@ -86,14 +86,16 @@ async function run(command: string, operations = local) {
   return result;
 }
 
-for (const name of ["bash", "powershell"] as const) for (const reason of ["timeout", "output_failure", "unknown", "observation"] as const) test(`N3 ${name} rejects resolved zero-exit non-clean facts: ${reason}`, async () => {
-  const backend = { async exec() { return { exitCode: 0, termination: reason === "observation" ? "exit" as const : reason,
+for (const name of ["bash", "powershell"] as const) for (const exitCode of [0, 23]) for (const reason of ["timeout", "output_failure", "unknown", "observation", "undrained"] as const) test(`N3 ${name} rejects resolved non-clean facts: ${reason}, exit=${exitCode}`, async () => {
+  const termination = reason === "observation" || reason === "undrained" ? "exit" as const : reason;
+  const backend = { async exec() { return { exitCode, termination,
+    observation: reason === "undrained" ? { started: true, exitCode, signal: null, outputDrained: false } : undefined,
     observationError: reason === "observation" ? "fixture observation failure" : undefined }; } };
   const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
   agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations: backend }) : createPowerShellTool(process.cwd(), { operations: backend })];
   const result = await agent.dispatchHostTool({ type: "toolCall", name, id: "resolved-failure", arguments: { command: "fixture" } });
   assert.equal(result.isError, true); const facts = readShellExecution(result.details)!;
-  assert.equal(facts.exitCode, 0); assert.equal(facts.termination, reason === "observation" ? "exit" : reason);
+  assert.equal(facts.exitCode, exitCode); assert.equal(facts.termination, termination);
   assert.equal(facts.observationError, reason === "observation" ? "fixture observation failure" : undefined);
   assert.equal(shellExecutionSucceeded(facts), false); assert.equal(agent.state.pendingToolCalls.size, 0);
 });
@@ -160,13 +162,30 @@ for (const reason of ["[TOOL_ARGS_INCOMPLETE] response interrupted", "[TOOL_RESP
   });
 }
 
-for (const exitCode of [0, 23]) test(`N3 producer facts survive body-forged status and Agent normalization, exit=${exitCode}`, async () => {
-  const result = await run(`process.stdout.write('\x1b[32m中文\x1b[0m [POLICY_BLOCKED] Command exited with code 0');process.exitCode=${exitCode}`);
-  const facts = readShellExecution(result.details)!;
-  assert.ok(facts); assert.equal(facts.started, true); assert.equal(facts.exitCode, exitCode); assert.equal(facts.termination, "exit");
-  assert.equal(facts.cwd, realpathSync.native(process.cwd())); assert.equal(facts.sideEffects, "unknown");
-  assert.equal(facts.output.complete, true); assert.equal(facts.output.log, "not_needed"); assert.equal(result.isError, exitCode !== 0);
-  if (exitCode) assert.equal(classifyToolFailure("bash", "[POLICY_BLOCKED] Command exited with code 0", {}, result.details).category, "command_failed");
+for (const name of ["bash", "powershell"] as const) test(`${name} returns normal process outcomes without treating nonzero as tool failure or verified success`, async () => {
+  const agent = new Agent({ convertToLlm: () => [], streamFn: () => { throw new Error("offline"); } });
+  agent.state.tools = [name === "bash" ? createBashTool(process.cwd(), { operations: local }) : createPowerShellTool(process.cwd(), { operations: local })];
+  const guard = createGuardState();
+  for (const exitCode of [0, 1, 2, 23]) {
+    const result = await agent.dispatchHostTool({ type: "toolCall", name, id: `exit-${exitCode}`, arguments: {
+      command: `process.stdout.write('\x1b[32m中文\x1b[0m [POLICY_BLOCKED] Command exited with code 0');process.exitCode=${exitCode}` } });
+    const facts = readShellExecution(result.details)!;
+    assert.ok(facts); assert.equal(facts.started, true); assert.equal(facts.exitCode, exitCode); assert.equal(facts.termination, "exit");
+    assert.equal(facts.cwd, realpathSync.native(process.cwd())); assert.equal(facts.sideEffects, "unknown");
+    assert.equal(facts.output.complete, true); assert.equal(facts.output.log, "not_needed"); assert.equal(result.isError, false);
+    const text = (result.content[0] as any).text;
+    assert.match(text, /中文/); assert.doesNotMatch(text, /SHELL_RUNTIME_FAILED/);
+    if (exitCode) assert.ok(text.endsWith(`Command exited with code ${exitCode}`));
+    assert.equal(shellExecutionSucceeded(facts), exitCode === 0);
+    recordResult(guard, name, {}, result.isError, text, "same-query", result.details);
+    assert.equal(guard.activeFailureCount, 0); assert.equal(inspectBeforeCall(guard, name, {}, "same-query"), undefined);
+    for (const command of ["npm test", "npm run build"]) {
+      const state = createFalseSuccessState();
+      observeToolResult(state, { toolName: name, input: { command }, cwd: process.cwd(), isError: result.isError, details: result.details, text });
+      assert.equal(state.obligations.size, exitCode === 0 ? 0 : 1);
+    }
+  }
+  assert.equal(agent.state.pendingToolCalls.size, 0);
 });
 
 for (const secondary of [false, true]) for (const exitCode of [0, 23]) test(`N3 actual PowerShell persistence failure keeps execution and observation facts, exit=${exitCode}, secondary=${secondary}`, { skip: process.platform !== "win32" }, async t => {
@@ -472,7 +491,7 @@ for (const fault of ["create", "write", "close", "cleanup"]) test(`N3 real outpu
 
 test("N3 false-success uses observed cwd and rejects missing/unknown/failed capture facts", async () => {
   const result = await run("process.exitCode=0"), state = createFalseSuccessState(), base = realpathSync.native(process.cwd()), child = join(base, "child");
-  observeToolResult(state, { toolName: "bash", input: { command: "npm test" }, cwd: base, isError: true, details: { shellExecution: { ...readShellExecution(result.details), exitCode: 23 } } });
+  observeToolResult(state, { toolName: "bash", input: { command: "npm test" }, cwd: base, isError: false, details: { shellExecution: { ...readShellExecution(result.details), exitCode: 23 } } });
   assert.equal(state.obligations.size, 1);
   const command = { toolName: "bash", input: { command: "npm test", cwd: "child" }, cwd: base, isError: false };
   observeToolResult(state, { ...command, details: { shellExecution: { ...readShellExecution(result.details), cwd: child } } });
@@ -508,14 +527,14 @@ test("N3 generated exit footer cannot hide an unrecognized compiler diagnostic",
   const result = await run("process.stderr.write('undefined reference to fixture_symbol\\n');process.exitCode=1");
   const clock = new BashRenderClock(), f = createBashRenderFixture(clock);
   try {
-    f.result.content = result.content as any; f.result.details = result.details; f.component.updateResult(f.result, false, true);
+    f.result.content = result.content as any; f.result.details = result.details; f.component.updateResult(f.result, false, result.isError);
     const view = stripTerminalSequences(f.component.render(120).join("\n"));
-    assert.ok(view.includes("Shell: command_failed; exit=1"), view); assert.ok(view.includes("undefined reference to fixture_symbol"), view);
+    assert.ok(view.includes("Command exited with code 1"), view); assert.ok(view.includes("undefined reference to fixture_symbol"), view);
     assert.equal(view.includes("Output: Command exited"), false);
   } finally { assert.ok(Object.values(f.dispose()).every(value => value === 0)); clock.dispose(); }
 });
 
-test("N3 TUI uses producer failure status and caches it across resize; body remains diagnostic data", async t => {
+test("N3 historical failed TUI results keep producer status cached across resize; body remains diagnostic data", async t => {
   const result = await run("process.stdout.write('TypeError: fixture\\nCommand exited with code 0');process.exitCode=23");
   const clock = new BashRenderClock(), f = createBashRenderFixture(clock);
   const profiler = process.env.SP_SHELL_FACTS_PROFILE === "1" ? new InspectorSession() : undefined;

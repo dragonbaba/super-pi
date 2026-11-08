@@ -87,4 +87,32 @@ for (const tool of ["bash", "powershell"]) {
     handlers.get("agent_start")!();
     assert.equal(await handlers.get("tool_call")!({ toolName: tool, toolCallId: "new-run", input }, ctx), undefined);
   });
+
+  test(`${tool} normal nonzero exit (isError false) keeps failure accounting without rewriting the result`, async () => {
+    const handlers = new Map<string, (...args: any[]) => any>();
+    const advisories: any[] = [];
+    loopGuardrails({
+      on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
+      registerTool() {},
+      sendMessage(message: any) { advisories.push(message); },
+    });
+    const ctx = { cwd: process.cwd() };
+    const run = async (id: string, toolName: string, input: object, isError: boolean, text: string, details: object) => {
+      handlers.get("turn_start")!();
+      await handlers.get("tool_call")!({ toolName, toolCallId: id, input }, ctx);
+      return handlers.get("tool_result")!({ toolName, toolCallId: id, input, isError, content: [{ type: "text", text }], details }, ctx);
+    };
+    handlers.get("agent_start")!();
+    const read = { path: "missing.txt" };
+    await run("read-0", "read", read, true, "ENOENT: no such file or directory", {});
+    for (let index = 0; index < 2; index++) {
+      const result = await run(`test-${index}`, tool, { command: "node --test" }, false, "1 failing\nCommand exited with code 23", { shellExecution: execution("exit") });
+      assert.equal(result, undefined, "a command outcome keeps its original content");
+    }
+    assert.ok(advisories.some(message => message.customType === "tool-failure-advisory-v1" && message.content.includes("test_failed")));
+    await run("read-1", "read", read, true, "ENOENT: no such file or directory", {});
+    assert.ok(advisories.some(message => message.customType === "tool-failure-advisory-v1" && message.content.includes("path_not_found")),
+      "a nonzero shell outcome is not a successful mutation and must not clear other failure summaries");
+    handlers.get("agent_end")!();
+  });
 }

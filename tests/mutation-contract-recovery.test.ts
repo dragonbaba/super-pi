@@ -689,11 +689,11 @@ test("boundary error classification explains ambiguous intent without mandating 
  assert.equal(result.category, "input_validation"); assert.match(result.cause, /意图不明确/); assert.doesNotMatch(result.cause, /应从 newLines 移除/);
 });
 
-test("non-lifecycle arithmetic syntax errors retain their actual shell failure", async t => {
+test("non-lifecycle arithmetic syntax errors return the actual shell exit without tool failure", async t => {
  const f = await fixture(t);
  const { results } = await f.run([() => call("arithmetic", "bash", { command: 'echo $((1 << 2)' })]);
- assert.equal(results[0].isError, true);
- assert.match(text(results[0]), /SHELL_RUNTIME_FAILED/);
+ assert.equal(results[0].isError, false);
+ assert.doesNotMatch(text(results[0]), /SHELL_RUNTIME_FAILED/);
  assert.match(text(results[0]), /Command exited with code 2/);
  assert.equal(f.counts().processes, 1);
  assert.deepEqual(readdirSync(f.cwd), []);
@@ -724,16 +724,16 @@ test("syntax parser resolves the pinned host dependency without a global Node-di
  await assert.rejects(standalone.assertNoNewSyntaxDiagnostics("valid.js", "", "const x = 1;"), /parser is unavailable/);
 });
 
-test("ordinary stderr marker cannot suppress actual runtime recovery in next model context", async t => {
+test("normal nonzero stderr reaches next model context without tool recovery guidance", async t => {
  const f = await fixture(t, true);
  writeFileSync(join(f.cwd, "diagnostic.mjs"), "console.error('[Lifecycle recovery]'); await import('./invalid.mjs');\n");
  writeFileSync(join(f.cwd, "invalid.mjs"), "const = ;\n");
  const { contexts, results } = await f.run([() => call("runtime", "bash", { command: "node diagnostic.mjs", cwd: f.cwd, timeout: 60 })]);
  const delivered = lastResult(contexts.at(-1)!);
- assert.equal(delivered.isError, true); assert.match(text(delivered), /\[Lifecycle recovery\]/);
+ assert.equal(delivered.isError, false); assert.match(text(delivered), /\[Lifecycle recovery\]/);
  assert.match(text(delivered), /SyntaxError/); assert.match(text(delivered), /invalid\.mjs/);
  assert.doesNotMatch(text(delivered), /Not executed/);
- assert.equal(text(delivered).split("[Shell execution recovery]").length - 1, 1);
+ assert.equal(text(delivered).includes("[Shell execution recovery]"), false);
  assert.equal(text(delivered).includes("[Node script recovery]"), false);
  assert.equal(delivered.details.shellExecution.started, true);
  assert.equal(delivered.details.shellExecution.exitCode, 1);

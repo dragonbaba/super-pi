@@ -404,6 +404,13 @@ export function inspectBeforeCall(
   return undefined;
 }
 
+/** A normally completed shell command with a nonzero exit is an outcome, not a tool error, but still a failed attempt for repeat accounting. */
+export function shellCommandFailed(toolName: string, details: unknown): boolean {
+  if (toolName !== "bash" && toolName !== "powershell") return false;
+  const execution = readShellExecution(details);
+  return execution !== undefined && execution.termination === "exit" && execution.exitCode !== 0;
+}
+
 export function recordResult(
   state: GuardState,
   toolName: string,

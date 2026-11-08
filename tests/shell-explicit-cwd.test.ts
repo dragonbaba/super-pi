@@ -67,7 +67,7 @@ test("loop guard preserves shell directory resolution, recovery and actual failu
   ] as const) {
     const result = await f.call("bash", command, f.cwd);
     const output = result.content.map(block => block.type === "text" ? block.text : "").join("\n");
-    assert.equal(result.isError, failed, output);
+    assert.equal(result.isError, false, output);
     assert.ok(output.includes(marker), output);
     assert.equal((result.details as any).shellExecution.started, true);
     assert.equal((result.details as any).shellExecution.exitCode === 0, !failed);
