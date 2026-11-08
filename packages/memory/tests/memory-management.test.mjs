@@ -13,7 +13,7 @@ const { AtomicLockCoordinator } = await import('../dist/store/atomic-lock-coordi
 const { loadConfig } = await import('../dist/config.js');
 const { registerMemoryTool } = await import('../dist/tools/memory-tool.js');
 const { registerMemorySearchTool } = await import('../dist/tools/memory-search-tool.js');
-const { addMemory } = await import('../dist/store/sqlite-memory-store.js');
+const { addMemory, searchMemories } = await import('../dist/store/sqlite-memory-store.js');
 const { validateToolArguments } = await import('../../ai/dist/utils/validation.js');
 const { buildSessionMemoryDigest } = await import('../dist/prompt-context.js');
 const { buildMemoryDigest } = await import('../dist/memory-digest.js');
@@ -57,27 +57,32 @@ test('global null survives real validation; global, named and omitted searches h
 test('canonical list is paginated, sees external edits and separates global/project failure scopes', async () => {
   const { store, config, harness } = await fixture('list');
   const { store: project } = await fixture('list-project');
-  registerMemoryTool(harness.api, store, project, null, 'project-a');
-  const tool = harness.tools.get('memory');
-  await writeFile(join(config.memoryDir, 'USER.md'), Array.from({ length: 23 }, (_, i) => `preference ${i}`).join('\n§\n'));
-  const first = await tool.execute('list', validate(tool, { action: 'list', target: 'user', limit: 20 }));
-  assert.equal(first.details.total, 23);
-  assert.equal(first.details.nextOffset, 20);
-  const last = await tool.execute('list', validate(tool, { action: 'list', target: 'user', offset: 20 }));
-  assert.equal(last.details.entries.length, 3);
-  assert.equal(last.details.nextOffset, null);
-  await store.addFailure('global correction', { category: 'correction' });
-  await store.addFailure('legacy other project\nonly applies there', { category: 'correction', project: 'other' });
-  await project.addFailure('project correction', { category: 'correction', project: 'project-a' });
-  const global = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'global' }));
-  assert.equal(global.details.total, 1);
-  assert.match(global.content[0].text, /global correction/);
-  const local = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'project' }));
-  assert.equal(local.details.total, 1);
-  assert.match(local.content[0].text, /project correction/);
-  const changed = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: 'global correction', content: '[correction] revised global' }));
-  assert.equal(changed.details.success, true);
-  assert.match((await readFile(join(config.memoryDir, 'failures.md'), 'utf8')), /legacy other project\nonly applies there/);
+  const db = new DatabaseManager(config.memoryDir);
+  try {
+    registerMemoryTool(harness.api, store, project, db, 'project-a');
+    const tool = harness.tools.get('memory');
+    await writeFile(join(config.memoryDir, 'USER.md'), Array.from({ length: 23 }, (_, i) => `preference ${i}`).join('\n§\n'));
+    const first = await tool.execute('list', validate(tool, { action: 'list', target: 'user', limit: 20 }));
+    assert.equal(first.details.total, 23);
+    assert.equal(first.details.nextOffset, 20);
+    const last = await tool.execute('list', validate(tool, { action: 'list', target: 'user', offset: 20 }));
+    assert.equal(last.details.entries.length, 3);
+    assert.equal(last.details.nextOffset, null);
+    await store.addFailure('global correction', { category: 'correction' });
+    await store.addFailure('legacy other project\nonly applies there', { category: 'correction', project: 'other' });
+    await project.addFailure('project correction', { category: 'correction', project: 'project-a' });
+    const global = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'global' }));
+    assert.equal(global.details.total, 1);
+    assert.match(global.content[0].text, /global correction/);
+    const local = await tool.execute('list', validate(tool, { action: 'list', target: 'failure', scope: 'project' }));
+    assert.equal(local.details.total, 1);
+    assert.match(local.content[0].text, /project correction/);
+    const changed = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: 'global correction', content: '[correction] revised global' }));
+    assert.equal(changed.details.success, true);
+    assert.match((await readFile(join(config.memoryDir, 'failures.md'), 'utf8')), /legacy other project\nonly applies there/);
+    assert.equal(searchMemories(db, 'legacy', { project: null }).length, 0);
+    assert.equal(searchMemories(db, 'legacy', { project: 'other' }).length, 1);
+  } finally { db.close(); }
 });
 
 test('same-name repositories isolate memory while subdirectories and linked worktrees share identity', async () => {
