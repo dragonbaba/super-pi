@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@super-pi/coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
+import { rm } from "node:fs/promises";
 import { shutdownManagedBrowser } from "./browser-manager.js";
 import { state } from "./runtime.js";
 import { loadSettings } from "./settings.js";
@@ -42,11 +43,20 @@ const MENU_OPTIONS = {
 } as const;
 
 export default function chromeDevtools(pi: ExtensionAPI) {
+	const screenshots = new Set<string>();
 	pi.registerTool(listPagesTool);
 	pi.registerTool(selectPageTool);
 	pi.registerTool(navigateTool);
 	pi.registerTool(evaluateTool);
-	pi.registerTool(screenshotTool);
+	pi.registerTool({
+		...screenshotTool,
+		async execute(id, params, signal, onUpdate, ctx) {
+			const result = await screenshotTool.execute(id, params, signal, onUpdate, ctx);
+			// Only this producer's generated temporary paths belong to this instance.
+			if (result.details.isDefaultPath) screenshots.add(result.details.savedPath);
+			return result;
+		},
+	});
 
 	pi.registerCommand("chrome-devtools", {
 		description: "Open Chrome DevTools help and tool controls",
@@ -81,8 +91,9 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_settled", async () => {
-		await shutdownManagedBrowser();
+	pi.on("agent_settled", async (_event, ctx) => {
+		try { await shutdownManagedBrowser(); }
+		finally { await cleanupScreenshots(screenshots, ctx); }
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -90,9 +101,22 @@ export default function chromeDevtools(pi: ExtensionAPI) {
 		replaceSessionController("Chrome DevTools session shut down");
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		const browserShutdown = shutdownManagedBrowser(undefined, { cancelLaunch: true });
-		await waitForChromeDevtoolsSettings();
-		await browserShutdown;
+		try {
+			await waitForChromeDevtoolsSettings();
+			await browserShutdown;
+		} finally { await cleanupScreenshots(screenshots, ctx); }
 	});
+}
+
+async function cleanupScreenshots(screenshots: Set<string>, ctx: ExtensionContext): Promise<void> {
+	for (const file of screenshots) {
+		try {
+			await rm(file, { force: true });
+			screenshots.delete(file);
+		} catch (error) {
+			ctx.ui.notify(`Chrome screenshot cleanup failed: ${file}: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	}
 }
 
 async function handleChromeDevtoolsCommand(

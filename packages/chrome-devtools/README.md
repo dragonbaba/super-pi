@@ -117,6 +117,8 @@ the extension writes a unique temp file such as:
 /tmp/sp-chrome-devtools-screenshot-<uuid>.png
 ```
 
+The extension removes its generated temporary screenshots when the agent settles or the session shuts down, including when native permissions skip the legacy lifecycle guard. Each extension instance tracks only paths returned by its own screenshot tool. Cleanup failures are reported and retained for the next cleanup attempt. Files saved with an explicit `savePath` are preserved.
+
 Pass `savePath` to choose the output path:
 
 ```js
