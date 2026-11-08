@@ -379,13 +379,13 @@ export class MemoryStore {
   }
 
   private encodeReplacementEntries(entries: string[], target: "memory" | "user" | "failure", project?: string | null,
-    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>): string[] {
+    entryMetadata?: ReadonlyMap<string, Partial<MemoryEntryMetadata>>): string[] {
     const today = new Date().toISOString().split("T")[0];
     const existingByText = new Map(this.scopedEntries(target, project).map((entry) => [this.stripMetadata(entry), entry]));
     const encoded = entries.map((entry) => {
       const existing = existingByText.get(entry);
       if (existing !== undefined) return existing;
-      const metadata = importedMetadata?.get(entry);
+      const metadata = entryMetadata?.get(entry);
       return this.encodeEntry(entry, metadata?.created ?? today, metadata?.lastReferenced ?? today, metadata?.project ?? project ?? undefined);
     });
     if (project !== undefined) encoded.push(...this.entriesFor(target).filter((entry) => this.decodeEntry(entry).project !== project));
@@ -393,7 +393,7 @@ export class MemoryStore {
   }
 
   evaluateMemoryReplacement(nextEntries: string[], target: "memory" | "user" | "failure" = "memory", project?: string | null,
-    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>):
+    entryMetadata?: ReadonlyMap<string, Partial<MemoryEntryMetadata>>):
     | { success: true; chars: number; limit: number }
     | { success: false; error: string; chars?: number; limit?: number } {
     const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
@@ -405,7 +405,7 @@ export class MemoryStore {
       if (scanError) return { success: false, error: scanError };
     }
 
-    const encoded = this.encodeReplacementEntries(normalized, target, project, importedMetadata);
+    const encoded = this.encodeReplacementEntries(normalized, target, project, entryMetadata);
     const chars = encoded.length ? encoded.join(ENTRY_DELIMITER).length : 0;
     const limit = this.charLimit(target);
     if (chars > limit) {
@@ -425,7 +425,7 @@ export class MemoryStore {
     nextEntries: string[],
     target: "memory" | "user" | "failure" = "memory",
     project?: string | null,
-    importedMetadata?: ReadonlyMap<string, MemoryEntryMetadata>,
+    entryMetadata?: ReadonlyMap<string, Partial<MemoryEntryMetadata>>,
   ): Promise<MemoryResult> {
     return this.runTargetMutation(target, async () => {
       await this.syncTargetFromDiskIfChanged(target);
@@ -438,11 +438,11 @@ export class MemoryStore {
         };
       }
 
-      const evaluation = this.evaluateMemoryReplacement(nextEntries, target, project, importedMetadata);
+      const evaluation = this.evaluateMemoryReplacement(nextEntries, target, project, entryMetadata);
       if (!evaluation.success) return evaluation;
 
       const normalized = nextEntries.map((entry) => entry.trim()).filter(Boolean);
-      const encoded = this.encodeReplacementEntries(normalized, target, project, importedMetadata);
+      const encoded = this.encodeReplacementEntries(normalized, target, project, entryMetadata);
       this.setEntries(target, encoded);
       await this.saveToDisk(target);
       return this.successResponse(target, "Confirmed memory organization applied atomically.");

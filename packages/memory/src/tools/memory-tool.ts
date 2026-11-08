@@ -36,6 +36,10 @@ type MemoryToolParams = {
 };
 
 async function changeGlobalFailure(store: MemoryStore, oldText: string, content?: string): Promise<MemoryResult> {
+  if (content !== undefined) {
+    content = content.trim();
+    if (!content) return { success: false, error: "Replacement content cannot be empty." };
+  }
   const before = await store.readEntries("failure", null);
   const selector = oldText.trim();
   const matches = before.filter((entry) => selector && entry.includes(selector));

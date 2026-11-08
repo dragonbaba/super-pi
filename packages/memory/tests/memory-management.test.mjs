@@ -82,6 +82,10 @@ test('canonical list is paginated, sees external edits and separates global/proj
     assert.match((await readFile(join(config.memoryDir, 'failures.md'), 'utf8')), /legacy other project\nonly applies there/);
     assert.equal(searchMemories(db, 'legacy', { project: null }).length, 0);
     assert.equal(searchMemories(db, 'legacy', { project: 'other' }).length, 1);
+    const beforeBlank = await readFile(join(config.memoryDir, 'failures.md'), 'utf8');
+    const blank = await tool.execute('replace', validate(tool, { action: 'replace', target: 'failure', scope: 'global', old_text: 'revised global', content: ' \n\t ' }));
+    assert.equal(blank.details.success, false);
+    assert.equal(await readFile(join(config.memoryDir, 'failures.md'), 'utf8'), beforeBlank);
   } finally { db.close(); }
 });
 
@@ -195,6 +199,22 @@ test('failure FIFO preserves other project scopes and rejects when only protecte
   const rejected = await add('oversized relative to retained project ' + 'x'.repeat(130));
   assert.equal(rejected.details.success, false);
   assert.equal(await readFile(join(config.memoryDir, 'failures.md'), 'utf8'), before);
+});
+
+test('project failure review preserves the identity used by subsequent FIFO writes', async () => {
+  const { config, harness } = await fixture('review-fifo');
+  const store = new MemoryStore({ ...config, memoryCharLimit: 130, memoryOverflowStrategy: 'fifo-evict' });
+  await store.loadFromDisk();
+  await store.addFailure('old project correction', { category: 'correction', project: 'project-a' });
+  registerMemoryReviewCommand(harness.api, store, config, 1000, { projectStore: store, projectName: 'project-a',
+    runProposal: async () => ({ ok: true, operations: [{ action: 'replace', target: 'failure', old_text: 'old project correction', content: '[correction] revised project correction' }] }) });
+  const context = { hasUI: true, sessionManager: { getBranch: () => [{ type: 'message', message: { role: 'user', content: 'Revise this project correction.' } }] },
+    ui: { notify: () => {}, editor: async (_title, preview) => preview, confirm: async () => true } };
+  await harness.commands.get('memory-review').handler('project failure', context);
+  assert.equal((await store.listEntries('failure')).entries[0].project, 'project-a');
+  const result = await store.addFailure('new project entry ' + 'x'.repeat(60), { category: 'failure', project: 'project-a' });
+  assert.equal(result.success, true);
+  assert.equal(result.evicted_count, 1);
 });
 
 test('unified manager dispatches existing scoped review and maintenance handlers without changing headless data', async () => {

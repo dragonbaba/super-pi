@@ -249,10 +249,13 @@ export function registerMemoryReviewCommand(
       }
 
       type ValidatedPlan = MemoryReviewPlan | { error: string; chars?: number; limit?: number };
+      let publicationMetadata: Parameters<MemoryStore["evaluateMemoryReplacement"]>[3];
       const buildValidatedPlan = (operations: ReviewMemoryOperation[]): ValidatedPlan => {
         const candidate = buildMemoryReviewPlan(before, operations, scope, expectedTarget);
         if ("error" in candidate) return candidate;
-        const evaluation = selectedStore.evaluateMemoryReplacement(candidate.after, target, failureScope);
+        publicationMetadata = scope === "project" && target === "failure"
+          ? new Map(candidate.after.map((entry) => [entry, { project: deps.projectName ?? null }])) : undefined;
+        const evaluation = selectedStore.evaluateMemoryReplacement(candidate.after, target, failureScope, publicationMetadata);
         return evaluation.success ? candidate : evaluation;
       };
 
@@ -301,7 +304,7 @@ export function registerMemoryReviewCommand(
         return;
       }
 
-      const result = await selectedStore.replaceMemoryEntriesIfUnchanged(built.before, built.after, target, failureScope);
+      const result = await selectedStore.replaceMemoryEntriesIfUnchanged(built.before, built.after, target, failureScope, publicationMetadata);
       if (!result.success) {
         ctx.ui.notify(`${result.error ?? "Memory review failed"} No unconfirmed changes were applied.`, "error");
         return;
