@@ -168,7 +168,8 @@ export async function runBashResponsiveness(scenario: BashResponseScenario, sour
 		// SDK admission now rejects an already-aborted turn before provider dispatch.
 		assert.equal(providerCalls, termination === "abort" ? 1 : 2); assert.equal(abortedProviderCalls, 0); assert.equal(toolCalls, 1);
 		if (termination === "abort") assert.equal(session.agent.state.messages.at(-1)?.stopReason, "aborted");
-		assert.equal(toolError, termination !== "success");
+		assert.equal(toolError, termination === "abort");
+		if (termination !== "abort") assert.equal(canonical.details.shellExecution.exitCode, termination === "failure" ? 1 : 0);
 		if (termination === "success") assert.equal(canonical.content[0].text.trim(), scenario === "output-then-quiet" ? "initial output 中文 😀" : "(no output)");
 		else assert.match(canonical.content[0].text, termination === "abort" ? /Command aborted/ : /code 1/);
 		assert.equal(session.agent.state.messages.filter((message: any) => message.role === "toolResult").length, 1, "one canonical result; no tool replay");
