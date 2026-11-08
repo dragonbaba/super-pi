@@ -1,5 +1,5 @@
 /**
- * Parse structured memory operations proposed by an explicit /memory-review run.
+ * Parse structured memory operations proposed by an explicit /memory > 整理记忆 run.
  */
 
 import type { Api, Model, ProviderHeaders } from "@super-pi/ai";

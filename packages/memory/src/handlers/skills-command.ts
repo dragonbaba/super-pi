@@ -1,5 +1,5 @@
 /**
- * Skills command — /memory-skills opens an interactive skills manager.
+ * Skills command — /memory > 管理技能 opens an interactive skills manager.
  */
 
 import { createHash } from "node:crypto";

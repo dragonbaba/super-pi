@@ -162,157 +162,151 @@ Allowed actions are add, replace, and remove. Selectors must uniquely identify o
 const USER_REVIEW_SYSTEM_PROMPT = `Produce a read-only proposal for USER.md. Preserve confirmed durable user preferences and their scope. Replace superseded statements only with evidence from the current conversation; merge duplicates. Do not save temporary authorization, task state, secrets, or inferred preferences. Modify only target user. Return JSON {"operations":[{"action":"replace","target":"user","old_text":"unique selector","content":"confirmed preference"}]}. Actions: add, replace, remove. Return {"operations":[]} if nothing should change.`;
 const FAILURE_REVIEW_SYSTEM_PROMPT = `Produce a read-only proposal for the selected failures.md scope. Preserve confirmed durable corrections, conditions and causes; remove or replace obsolete facts only with evidence. Do not move records between projects or save task logs or secrets. Modify only target failure. Every resulting entry must retain a category prefix: [failure], [correction], [insight], [preference], [convention], or [tool-quirk]. Durable user corrections use [correction]. Return JSON {"operations":[{"action":"replace","target":"failure","old_text":"unique selector","content":"[correction] confirmed correction"}]}. Actions: add, replace, remove. Return {"operations":[]} if nothing should change.`;
 
-export function registerMemoryReviewCommand(
-  pi: ExtensionAPI,
+export function createMemoryReviewHandler(
   store: MemoryStore,
   config: MemoryReviewConfig,
   timeoutMs: number,
   deps: { runProposal?: ProposalRunner; projectStore?: MemoryStore | null; projectName?: string | null } = {},
-) {
+): Parameters<ExtensionAPI["registerCommand"]>[1]["handler"] {
   const runProposal = deps.runProposal ?? (async (ctx, options) => {
     const { runDirectMemoryProposal } = await import("./review-memory-ops.js");
     return runDirectMemoryProposal(ctx, options);
   });
-  const command: Parameters<ExtensionAPI["registerCommand"]>[1] = {
-    description: "Review [project|global] [memory|user|failure] with the current model, preview and confirm",
-    handler: async (rawArgs, ctx) => {
-      if (!ctx.hasUI) {
-        ctx.ui.notify("Memory review requires an interactive confirmation UI; no changes were made.", "warning");
-        return;
-      }
+  return async (rawArgs, ctx) => {
+    if (!ctx.hasUI) {
+      ctx.ui.notify("Memory review requires an interactive confirmation UI; no changes were made.", "warning");
+      return;
+    }
 
-      const [argument, requestedTarget = "memory", extra] = rawArgs.trim().toLowerCase().split(/\s+/);
-      if ((argument && argument !== "global" && argument !== "project") || extra !== undefined
-        || !["memory", "user", "failure"].includes(requestedTarget) || requestedTarget === "user" && argument === "project") {
-        ctx.ui.notify("Usage: /memory-review [project|global] [memory|user|failure]. User preferences are global. No changes were made.", "warning");
-        return;
-      }
-      const scope: "global" | "project" = argument === "global"
-        ? "global"
-        : argument === "project" || deps.projectStore
-          ? "project"
-          : "global";
-      const selectedStore = scope === "project" ? deps.projectStore : store;
-      if (!selectedStore) {
-        ctx.ui.notify("No canonical current-project memory store is available; no changes were made.", "warning");
-        return;
-      }
-      const target = requestedTarget as "memory" | "user" | "failure";
-      const scopeLabel = `${scope === "global" ? "global" : `project ${deps.projectName ?? "current"}`} ${target}`;
-      const systemPrompt = target === "user" ? USER_REVIEW_SYSTEM_PROMPT : target === "failure" ? FAILURE_REVIEW_SYSTEM_PROMPT
-        : scope === "global" ? GLOBAL_REVIEW_SYSTEM_PROMPT : PROJECT_REVIEW_SYSTEM_PROMPT;
-      const expectedTarget = target === "memory" && scope === "project" ? "project" : target;
-      const failureScope = target === "failure" && scope === "global" ? null : undefined;
+    const [argument, requestedTarget = "memory", extra] = rawArgs.trim().toLowerCase().split(/\s+/);
+    if ((argument && argument !== "global" && argument !== "project") || extra !== undefined
+      || !["memory", "user", "failure"].includes(requestedTarget) || requestedTarget === "user" && argument === "project") {
+      ctx.ui.notify("Usage: /memory > 整理用户偏好/全局记忆/项目记忆/纠错. User preferences are global. No changes were made.", "warning");
+      return;
+    }
+    const scope: "global" | "project" = argument === "global"
+      ? "global"
+      : argument === "project" || deps.projectStore
+        ? "project"
+        : "global";
+    const selectedStore = scope === "project" ? deps.projectStore : store;
+    if (!selectedStore) {
+      ctx.ui.notify("No canonical current-project memory store is available; no changes were made.", "warning");
+      return;
+    }
+    const target = requestedTarget as "memory" | "user" | "failure";
+    const scopeLabel = `${scope === "global" ? "global" : `project ${deps.projectName ?? "current"}`} ${target}`;
+    const systemPrompt = target === "user" ? USER_REVIEW_SYSTEM_PROMPT : target === "failure" ? FAILURE_REVIEW_SYSTEM_PROMPT
+      : scope === "global" ? GLOBAL_REVIEW_SYSTEM_PROMPT : PROJECT_REVIEW_SYSTEM_PROMPT;
+    const expectedTarget = target === "memory" && scope === "project" ? "project" : target;
+    const failureScope = target === "failure" && scope === "global" ? null : undefined;
 
-      let branch: readonly unknown[];
-      try {
-        branch = ctx.sessionManager.getBranch();
-      } catch {
-        ctx.ui.notify("The active conversation is unavailable; no changes were made.", "warning");
-        return;
-      }
-      const allParts = collectMessageParts(branch);
-      const recentParts = applyRecentMessageLimit(allParts, config.reviewRecentMessages ?? 0);
-      const parts = boundRecentConversationParts(recentParts);
-      if (parts.length === 0) {
-        ctx.ui.notify("The active conversation has no reviewable messages; no changes were made.", "info");
-        return;
-      }
+    let branch: readonly unknown[];
+    try {
+      branch = ctx.sessionManager.getBranch();
+    } catch {
+      ctx.ui.notify("The active conversation is unavailable; no changes were made.", "warning");
+      return;
+    }
+    const allParts = collectMessageParts(branch);
+    const recentParts = applyRecentMessageLimit(allParts, config.reviewRecentMessages ?? 0);
+    const parts = boundRecentConversationParts(recentParts);
+    if (parts.length === 0) {
+      ctx.ui.notify("The active conversation has no reviewable messages; no changes were made.", "info");
+      return;
+    }
 
-      const before = await selectedStore.readEntries(target, failureScope);
-      const baseline = selectedStore.evaluateMemoryReplacement(before, target, failureScope);
-      const budgetPrompt = baseline.limit
-        ? `Storage budget: current complete metadata-encoded memory is ${baseline.chars ?? "unknown"}/${baseline.limit} characters. The proposal's complete result must stay within the hard limit and should be at most ${reviewWorkingLimit(baseline.limit)} characters to preserve safe headroom.`
-        : "Storage budget: compact the complete result and preserve safe headroom.";
-      const currentEntriesPrompt = [
-        `Current ${scopeLabel} entries:`,
-        "",
-        before.join(ENTRY_DELIMITER) || "(empty)",
-        "",
-        budgetPrompt,
-        "",
-        "Active conversation to extract and merge:",
-        "",
-        parts.join("\n\n"),
-      ].join("\n");
+    const before = await selectedStore.readEntries(target, failureScope);
+    const baseline = selectedStore.evaluateMemoryReplacement(before, target, failureScope);
+    const budgetPrompt = baseline.limit
+      ? `Storage budget: current complete metadata-encoded memory is ${baseline.chars ?? "unknown"}/${baseline.limit} characters. The proposal's complete result must stay within the hard limit and should be at most ${reviewWorkingLimit(baseline.limit)} characters to preserve safe headroom.`
+      : "Storage budget: compact the complete result and preserve safe headroom.";
+    const currentEntriesPrompt = [
+      `Current ${scopeLabel} entries:`,
+      "",
+      before.join(ENTRY_DELIMITER) || "(empty)",
+      "",
+      budgetPrompt,
+      "",
+      "Active conversation to extract and merge:",
+      "",
+      parts.join("\n\n"),
+    ].join("\n");
 
-      ctx.ui.notify(`Asking the current model for a read-only ${scopeLabel} memory review…`, "info");
-      let proposal = await runProposal(ctx, {
+    ctx.ui.notify(`Asking the current model for a read-only ${scopeLabel} memory review…`, "info");
+    let proposal = await runProposal(ctx, {
+      systemPrompt,
+      userPrompt: currentEntriesPrompt,
+      config: {},
+      timeoutMs,
+    });
+    if (!proposal.ok) {
+      ctx.ui.notify(`Memory review failed (${proposal.fallbackReason ?? "unknown"}): ${proposal.error ?? "no proposal returned"}. No changes were made.`, "error");
+      return;
+    }
+
+    type ValidatedPlan = MemoryReviewPlan | { error: string; chars?: number; limit?: number };
+    let publicationMetadata: Parameters<MemoryStore["evaluateMemoryReplacement"]>[3];
+    const buildValidatedPlan = (operations: ReviewMemoryOperation[]): ValidatedPlan => {
+      const candidate = buildMemoryReviewPlan(before, operations, scope, expectedTarget);
+      if ("error" in candidate) return candidate;
+      publicationMetadata = scope === "project" && target === "failure"
+        ? new Map(candidate.after.map((entry) => [entry, { project: deps.projectName ?? null }])) : undefined;
+      const evaluation = selectedStore.evaluateMemoryReplacement(candidate.after, target, failureScope, publicationMetadata);
+      return evaluation.success ? candidate : evaluation;
+    };
+
+    let built = buildValidatedPlan(proposal.operations);
+    let attempts = 1;
+    while ("error" in built && proposal.operations.length > 0 && attempts < MAX_REVIEW_PROPOSAL_ATTEMPTS) {
+      attempts++;
+      const capacityInstruction = built.limit
+        ? `The complete metadata-encoded result must be at most ${reviewWorkingLimit(built.limit)} characters for safe headroom; the rejected result was ${built.chars ?? "unknown"}/${built.limit}.`
+        : "Make the corrected complete result materially more concise.";
+      proposal = await runProposal(ctx, {
         systemPrompt,
-        userPrompt: currentEntriesPrompt,
+        userPrompt: `${currentEntriesPrompt}\n\nAttempt ${attempts - 1} was rejected: ${built.error}\n${capacityInstruction}\nReturn a corrected ${expectedTarget}-only proposal. Merge related entries and shorten wording without dropping durable constraints.`,
         config: {},
         timeoutMs,
       });
       if (!proposal.ok) {
-        ctx.ui.notify(`Memory review failed (${proposal.fallbackReason ?? "unknown"}): ${proposal.error ?? "no proposal returned"}. No changes were made.`, "error");
+        ctx.ui.notify(`Memory review retry failed (${proposal.fallbackReason ?? "unknown"}): ${proposal.error ?? "no proposal returned"}. No changes were made.`, "error");
         return;
       }
+      built = buildValidatedPlan(proposal.operations);
+    }
+    if ("error" in built) {
+      const level = proposal.operations.length === 0 ? "info" : "warning";
+      const attemptText = attempts > 1 ? ` after ${attempts} bounded attempts` : "";
+      ctx.ui.notify(`The current model could not produce a valid ${scopeLabel} memory proposal${attemptText}: ${built.error} No changes were made.`, level);
+      return;
+    }
 
-      type ValidatedPlan = MemoryReviewPlan | { error: string; chars?: number; limit?: number };
-      let publicationMetadata: Parameters<MemoryStore["evaluateMemoryReplacement"]>[3];
-      const buildValidatedPlan = (operations: ReviewMemoryOperation[]): ValidatedPlan => {
-        const candidate = buildMemoryReviewPlan(before, operations, scope, expectedTarget);
-        if ("error" in candidate) return candidate;
-        publicationMetadata = scope === "project" && target === "failure"
-          ? new Map(candidate.after.map((entry) => [entry, { project: deps.projectName ?? null }])) : undefined;
-        const evaluation = selectedStore.evaluateMemoryReplacement(candidate.after, target, failureScope, publicationMetadata);
-        return evaluation.success ? candidate : evaluation;
-      };
+    const preview = formatMemoryReviewPreview(built);
+    if (preview.length >= MAX_PREVIEW_CHARS) {
+      ctx.ui.notify("Memory review preview is too large to inspect safely. No changes were made.", "error");
+      return;
+    }
+    const reviewed = await ctx.ui.editor(`Review ${scopeLabel} memory proposal (read-only)`, preview);
+    if (reviewed === undefined) {
+      ctx.ui.notify("Memory review cancelled; no changes were made.", "info");
+      return;
+    }
+    const confirmed = await ctx.ui.confirm(
+      "Apply this reviewed memory proposal?",
+      `Publish ${built.after.length} ${scopeLabel} entries? The source snapshot will be revalidated first.`,
+    );
+    if (!confirmed) {
+      ctx.ui.notify("Memory review not approved; no changes were made.", "info");
+      return;
+    }
 
-      let built = buildValidatedPlan(proposal.operations);
-      let attempts = 1;
-      while ("error" in built && proposal.operations.length > 0 && attempts < MAX_REVIEW_PROPOSAL_ATTEMPTS) {
-        attempts++;
-        const capacityInstruction = built.limit
-          ? `The complete metadata-encoded result must be at most ${reviewWorkingLimit(built.limit)} characters for safe headroom; the rejected result was ${built.chars ?? "unknown"}/${built.limit}.`
-          : "Make the corrected complete result materially more concise.";
-        proposal = await runProposal(ctx, {
-          systemPrompt,
-          userPrompt: `${currentEntriesPrompt}\n\nAttempt ${attempts - 1} was rejected: ${built.error}\n${capacityInstruction}\nReturn a corrected ${expectedTarget}-only proposal. Merge related entries and shorten wording without dropping durable constraints.`,
-          config: {},
-          timeoutMs,
-        });
-        if (!proposal.ok) {
-          ctx.ui.notify(`Memory review retry failed (${proposal.fallbackReason ?? "unknown"}): ${proposal.error ?? "no proposal returned"}. No changes were made.`, "error");
-          return;
-        }
-        built = buildValidatedPlan(proposal.operations);
-      }
-      if ("error" in built) {
-        const level = proposal.operations.length === 0 ? "info" : "warning";
-        const attemptText = attempts > 1 ? ` after ${attempts} bounded attempts` : "";
-        ctx.ui.notify(`The current model could not produce a valid ${scopeLabel} memory proposal${attemptText}: ${built.error} No changes were made.`, level);
-        return;
-      }
-
-      const preview = formatMemoryReviewPreview(built);
-      if (preview.length >= MAX_PREVIEW_CHARS) {
-        ctx.ui.notify("Memory review preview is too large to inspect safely. No changes were made.", "error");
-        return;
-      }
-      const reviewed = await ctx.ui.editor(`Review ${scopeLabel} memory proposal (read-only)`, preview);
-      if (reviewed === undefined) {
-        ctx.ui.notify("Memory review cancelled; no changes were made.", "info");
-        return;
-      }
-      const confirmed = await ctx.ui.confirm(
-        "Apply this reviewed memory proposal?",
-        `Publish ${built.after.length} ${scopeLabel} entries? The source snapshot will be revalidated first.`,
-      );
-      if (!confirmed) {
-        ctx.ui.notify("Memory review not approved; no changes were made.", "info");
-        return;
-      }
-
-      const result = await selectedStore.replaceMemoryEntriesIfUnchanged(built.before, built.after, target, failureScope, publicationMetadata);
-      if (!result.success) {
-        ctx.ui.notify(`${result.error ?? "Memory review failed"} No unconfirmed changes were applied.`, "error");
-        return;
-      }
-      ctx.ui.notify(`${scopeLabel} memory reviewed and published: ${built.before.length} → ${built.after.length} entries.`, "info");
-      if (result.warning) ctx.ui.notify(result.warning, "warning");
-    },
+    const result = await selectedStore.replaceMemoryEntriesIfUnchanged(built.before, built.after, target, failureScope, publicationMetadata);
+    if (!result.success) {
+      ctx.ui.notify(`${result.error ?? "Memory review failed"} No unconfirmed changes were applied.`, "error");
+      return;
+    }
+    ctx.ui.notify(`${scopeLabel} memory reviewed and published: ${built.before.length} → ${built.after.length} entries.`, "info");
+    if (result.warning) ctx.ui.notify(result.warning, "warning");
   };
-  pi.registerCommand("memory-review", command);
-  return command.handler;
 }
