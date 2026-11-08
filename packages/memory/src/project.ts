@@ -16,8 +16,6 @@ export interface ProjectInfo {
   memoryDir: string | null;
   displayName: string | null;
   root: string | null;
-  /** Unassigned old basename locations; never loaded automatically. */
-  legacyMemoryDirs: string[];
 }
 
 export interface ProjectSkillInfo extends ProjectInfo {
@@ -120,20 +118,18 @@ export function detectProject(projectsMemoryDir = "projects-memory", cwd?: strin
   const resolved = canonicalDirectory(dir);
   const root = canonicalDirectory(findGitRepoRootCached(resolved) ?? resolved);
   if (identityPath(root) === identityPath(canonicalDirectory(os.homedir())) || root === path.parse(root).root) {
-    return { name: null, memoryDir: null, displayName: null, root: null, legacyMemoryDirs: [] };
+    return { name: null, memoryDir: null, displayName: null, root: null };
   }
   const displayName = path.basename(root);
   const projectsRoot = resolveProjectsRoot(projectsMemoryDir);
   const digest = createHash("sha256").update(identityPath(root)).digest("hex").slice(0, 24);
   const prefix = identityPath(displayName).slice(0, 80);
   const name = `${prefix}--${digest}`;
-  const legacyNames = new Set([displayName, path.basename(resolved)]);
   return {
     name,
     memoryDir: path.join(projectsRoot, name),
     displayName,
     root,
-    legacyMemoryDirs: [...legacyNames].map((legacy) => path.join(projectsRoot, legacy)),
   };
 }
 

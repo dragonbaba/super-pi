@@ -12,7 +12,7 @@
 
 Your Pi agent normally forgets everything when you close a session. **This extension fixes that.**
 
-- 🔍 **Search every conversation** — "what did we discuss about auth?" finds it instantly
+- 🔍 **Search conversation history** — bounded direct JSONL search returns source line ranges
 - 🧠 **Persistent memory** — facts, preferences, corrections survive across sessions
 - ⚠️ **Learns from failures** — remembers what didn't work so you don't repeat mistakes
 - 🏷️ **Categorized memories** — failures, corrections, insights, conventions, and tool quirks organized for fast retrieval
@@ -27,40 +27,27 @@ Your Pi agent normally forgets everything when you close a session. **This exten
 # Install
 pi install npm:@super-pi/memory
 
-# Backfill older Markdown memories into SQLite search (optional)
-/memory-sync-markdown
-
-# Extract and merge this conversation into current-project memory
-/memory-review
-
-# Explicitly clean expired/generated recovery artifacts
-/memory-cleanup
+# Open the memory management menu
+/memory
 ```
 
-## Upgrade Notes (v0.7.10)
+Use **同步搜索索引** to reconcile current Markdown into search, a **整理…** action to review the current conversation, or **清理恢复产物** for confirmed artifact cleanup. Arrows elsewhere in this document describe menu navigation, not command arguments.
 
-If you’re upgrading from older versions, run `/memory-sync-markdown` once to migrate and reconcile extension data safely:
+## Upgrade Notes
 
-- legacy extension root: `~/.sp/agent/memory` → `~/.sp/agent/@super-pi/memory`
-- legacy flat skills: `~/.sp/agent/@super-pi/memory/skills/*.md` → `~/.sp/agent/@super-pi/memory/skills/<slug>/SKILL.md`
-
-This resolves Pi skill index conflicts like:
-
-- `name "..." does not match parent directory "skills"`
-
-A previously interrupted legacy `sessions.db` migration is the only migration retried automatically before DB access. Ordinary project/root migration and Markdown reconciliation are explicit so startup stays fast.
+`/memory` replaces standalone maintenance commands. Legacy root, project, database, and flat-skill migrations are retired; old files and backups are retained. See the storage section for manual recovery requirements when upgrading from an unfinished old migration.
 
 ## Features
 
 | Feature | What happens |
 |---|---|
-| 🔍 **Session Search** | Search across all past conversations via SQLite FTS5 |
+| 🔍 **Session Search** | Search session JSONL directly with bounded scanning and source line ranges |
 | 🧠 **Persistent Memory** | Facts, preferences, lessons saved to markdown files |
 | 🔄 **Memory Search Sync** | Successful Markdown memory writes are mirrored into SQLite for `memory_search` |
 | ⚠️ **Failure Memory** | Learn from failures — stores what didn't work and why |
 | 📚 **Procedural Skills** | The agent saves *how* it solved problems as reusable docs |
-| ✅ **Reviewed Memory Extraction** | `/memory-review` uses the current model, previews the full result, and writes only after approval |
-| 🧹 **Explicit Artifact Cleanup** | `/memory-cleanup` runs bounded identity-safe cleanup only when requested |
+| ✅ **Reviewed Memory Extraction** | `/memory → 整理记忆` uses the current model, previews the full result, and writes only after approval |
+| 🧹 **Explicit Artifact Cleanup** | `/memory → 清理恢复产物` runs bounded identity-safe cleanup only when requested |
 | ⚡ **Fast Lifecycle** | Startup loads active memory only; shutdown closes owned resources only |
 | 🛡️ **Secret Scanning** | API keys, tokens, SSH keys blocked from persistence |
 | 📊 **Memory Dates** | Creation/reference dates help review; they do not prove a fact is still valid |
@@ -151,7 +138,7 @@ By default (`"memoryMode": "digest"`) the system prompt carries only a constant 
 
 Saved memory reaches the model as one hidden `<memory-context>` digest message (at most 2,000 characters). User, global, current-project, and scoped failure/correction sources share the budget in round-robin order. Multiline conditions are collapsed into one bounded line; use `memory` with `action: "list"` for full current entries. The digest is built once at session start and sent with the first prompt of a session context. Later turns and resumes replay the same bytes; it is sent again only after compaction or tree navigation removes it.
 
-Project identities combine the canonical repository root with its basename. Subdirectories and linked worktrees share the repository identity; unrelated same-name repositories are isolated. Old basename directories remain untouched and are not auto-assigned. `/memory import` previews old entries and asks you to confirm that they belong to the current project before merging them, preserving their original creation/reference dates. Source and destination changes invalidate the preview. Old skills are not copied automatically; verify their current instructions before migration.
+Project identities combine the canonical repository root with its basename. Subdirectories and linked worktrees share the repository identity; unrelated same-name repositories are isolated. Legacy import and automatic directory migrations are retired. Old basename directories, flat skill files, and backups remain untouched and are not assigned to a project. Recover old data manually only after verifying ownership and relevance; preserve original entry dates. Moving a repository changes its identity and does not automatically adopt an old directory.
 
 `memory_search` defaults to global plus current-project entries. `project: null` selects global only; an exact project identity selects that project; `project: "*"` explicitly searches all scopes, including retained legacy records. Keyword matches are not a complete inventory. `memory` `action: "list"` reads canonical Markdown, reports total/offset/nextOffset, and supports explicit global/project failure scope. The existing session digest remains frozen after edits.
 
@@ -187,7 +174,7 @@ The agent learns from failures, corrections, and insights — just like humans d
 
 1. **Trigger-based saving**: The memory policy tells the agent to save a `failure`/`correction` entry when you correct it or when a fix follows a failed attempt
 2. **Session digest**: Current-project and global failures share the configured entry budget; durable `[correction]` entries remain eligible after the temporary-failure age window (`failureInjection*` settings)
-3. **Reviewed extraction**: `/memory-review` proposes entries from the current conversation; nothing is extracted in the background
+3. **Reviewed extraction**: `/memory → 整理记忆` proposes entries from the current conversation; nothing is extracted in the background
 4. **Searchable**: Use `memory_search("auth", category: "failure")` to find past failures
 
 ### Example
@@ -326,7 +313,7 @@ The extension keeps Markdown memory as the human-readable source of truth, and m
 
 This means:
 - Fresh `memory` tool writes become searchable immediately
-- Older Markdown entries can be backfilled with `/memory-sync-markdown`
+- Older Markdown entries can be backfilled with `/memory → 同步搜索索引`
 - SQLite search does **not** replace the core Markdown limit
 
 This is the **hybrid memory architecture**:
@@ -337,7 +324,7 @@ Important: if core Markdown memory is full and consolidation cannot free space, 
 
 ### Explicit Current-Model Memory Review
 
-`/memory` is the unified management entry point. `/memory-review [project|global] [memory|user|failure]` replaces background extraction, correction auto-save, shutdown flush, and capacity-triggered consolidation:
+`/memory` is the single management command. Choose the user, global, project, or correction review action in its menu:
 
 1. It reads a bounded recent tail of the active conversation and the selected canonical MEMORY.md, USER.md, or failures.md. User preferences are global; global failure review does not modify legacy project-tagged records in the same file.
 2. The currently selected model returns a read-only extraction/merge proposal. Model override and child-process settings are not used.
@@ -345,36 +332,33 @@ Important: if core Markdown memory is full and consolidation cannot free space, 
 4. Only an explicit user confirmation publishes the proposal.
 5. Publication revalidates the source snapshot under the canonical Markdown mutation lock; concurrent changes make it fail closed.
 
-The command defaults to current-project memory when a project is active. Use `/memory-review global` only for categorized cross-project knowledge. If memory is full, review and merge entries first; no model is invoked automatically.
+The menu makes the review scope explicit. Global memory is only for categorized cross-project knowledge. If memory is full, review and merge entries first; no model is invoked automatically.
 
 ### Explicit Recovery Artifact Cleanup
 
-`/memory-cleanup` asks for confirmation and then scans only the global memory directory plus immediate project-memory directories. It removes generated recovery, retired, and conflict artifacts only under existing age/count/byte policies and exact file-identity checks. Canonical memory files, symlinks, lookalikes, and deeper user directories are untouched. No cleanup timer runs at startup.
+`/memory → 清理恢复产物` asks for confirmation and then scans only the global memory directory plus immediate project-memory directories. It removes generated recovery, retired, and conflict artifacts only under existing age/count/byte policies and exact file-identity checks. Canonical memory files, symlinks, lookalikes, and deeper user directories are untouched. No cleanup timer runs at startup.
 
 ### Fast Startup and Shutdown
 
-Normal startup loads active canonical memory and skill roots only. Markdown reconciliation, legacy project migration, recovery cleanup, and model review are explicit commands; session indexing is not registered as a standing command. The sole exception is a previously detected unfinished legacy SQLite migration, which must finish before DB access.
+Startup loads active canonical memory and skill roots only. Markdown reconciliation, recovery cleanup, and model review are explicit menu actions. No session indexing, legacy database/root migration, or old skill conversion runs during startup or maintenance.
 
 Shutdown performs no LLM call, session parse, indexing pass, backfill wait, or cleanup sweep. It only closes SQLite if opened and releases exact-owner Markdown lock coordinators.
 
 ### Explicit Skill Management
 
-Reusable procedures are created or updated deliberately through `skill_manage` during normal work. `/memory-skills` provides reviewed search, move, and delete operations. No background turn/tool-call hook extracts skills.
+Reusable procedures are created or updated deliberately through `skill_manage` during normal work. `/memory → 管理技能` provides reviewed search, move, and delete operations. No background turn/tool-call hook extracts skills.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
 | `/memory` | View current canonical entries, select scoped review, skills, sync or artifact cleanup |
-| `/memory import` | Preview and confirm old basename entries for the current project; preserve originals |
-| `/memory-skills` | Opens an interactive skills manager for search, multi-select, move, and delete |
-| `/memory-review [project|global] [memory|user|failure]` | Current model proposes scoped changes after full preview and explicit approval |
-| `/memory-cleanup` | Confirm and run bounded cleanup of generated recovery/retired/conflict artifacts |
-| `/memory-sync-markdown` | Explicitly migrate legacy memory paths and reconcile Markdown into SQLite search |
 
-### `/memory-skills` Manager
+Standalone `/memory-review`, `/memory-cleanup`, `/memory-sync-markdown`, `/memory-skills`, and `/memory import` are retired. Use the corresponding menu actions; import is no longer provided. Headless `/memory` displays storage locations without modifying data.
 
-`/memory-skills` now opens an interactive TUI modal for skill management.
+### `/memory → 管理技能` Manager
+
+`/memory → 管理技能` now opens an interactive TUI modal for skill management.
 
 Features:
 - fuzzy search by skill name
@@ -433,9 +417,9 @@ Create `~/.sp/agent/config/hermes-memory-config.json`:
 | `projectCharLimit` | `5000` | Max characters in project-scoped MEMORY.md |
 | `memoryDir` | `~/.sp/agent/@super-pi/memory` | Custom directory for extension storage files |
 | `projectsMemoryDir` | `projects-memory` | Subdirectory under `~/.sp/agent/` for project-scoped memory |
-| `reviewRecentMessages` | `0` | Recent conversation messages offered to explicit `/memory-review` before the hard 80,000-character tail bound (`0` = all eligible messages) |
-| `memoryOverflowStrategy` | `reject` | `reject` returns a capacity error; `fifo-evict` rotates oldest entries. Legacy `auto-consolidate` is accepted but no automatic consolidator is registered, so it also rejects until `/memory-review` is run |
-| `consolidationTimeoutMs` | `180000` | Legacy field name retained as the timeout for one explicit current-model `/memory-review` proposal |
+| `reviewRecentMessages` | `0` | Recent conversation messages offered to explicit `/memory → 整理记忆` before the hard 80,000-character tail bound (`0` = all eligible messages) |
+| `memoryOverflowStrategy` | `reject` | `reject` returns a capacity error; `fifo-evict` rotates oldest entries. Legacy `auto-consolidate` is accepted but no automatic consolidator is registered, so it also rejects until `/memory → 整理记忆` is run |
+| `consolidationTimeoutMs` | `180000` | Legacy field name retained as the timeout for one explicit current-model `/memory → 整理记忆` proposal |
 | `failureInjectionEnabled` | `true` | Digest and legacy modes: enable/disable including recent failure memories into the system prompt |
 | `failureInjectionMaxAgeDays` | `7` | Digest and legacy modes: maximum age in days for injected failure memories |
 | `failureInjectionMaxEntries` | `5` | Digest and legacy modes: maximum number of failure memories to inject |
@@ -451,39 +435,38 @@ Removed legacy fields (`nudgeInterval`, `nudgeToolCalls`, `reviewEnabled`, `flus
 ├── @super-pi/memory/      ← Global extension storage root
 │   ├── MEMORY.md          ← Agent's personal notes (env facts, patterns, lessons)
 │   ├── USER.md            ← User profile (name, preferences, habits)
-│   ├── sessions.db        ← SQLite database (session history + extended memory)
-│   ├── skills/            ← Global extension-managed skills
-│   │   ├── debug-typescript-errors/
-│   │   │   └── SKILL.md
-│   │   └── testing-checklist/
-│   │       └── SKILL.md
-│   └── .skills-migrated-to-extension-storage
+│   ├── sessions.db        ← Derived memory search index
+│   └── skills/            ← Global extension-managed skills
+│       ├── debug-typescript-errors/
+│       │   └── SKILL.md
+│       └── testing-checklist/
+│           └── SKILL.md
 ├── projects-memory/       ← ALL project-scoped memories (one subfolder per project)
-│   ├── my-project/
+│   ├── my-project--<root-hash>/
 │   │   ├── MEMORY.md
 │   │   └── skills/
 │   │       └── deploy-checklist/
 │   │           └── SKILL.md
-│   └── another-project/
+│   └── another-project--<root-hash>/
 │       └── MEMORY.md
 └── ...
 ```
 
 These are plain markdown files. You can read and edit them directly if you want to curate what the agent remembers. Memory entries are separated by `§` (section sign). Skills use Pi-compatible `SKILL.md` files with frontmatter.
 
-If you are upgrading from a version that stored project memory directly at `~/.sp/agent/<project>/MEMORY.md`, run `/memory-sync-markdown`. It copies or merges those entries into `~/.sp/agent/projects-memory/<project>/MEMORY.md`; the old folders remain as a backup.
+One-time migrations from `~/.sp/agent/memory`, agent-root project folders, basename project folders, and flat skill files are retired. Resolve any interrupted legacy SQLite migration manually before upgrading; this version neither resumes it nor removes its recovery files or pending markers. After ownership checks, put recovered entries in the current canonical Markdown directory shown by `/memory`, then choose **同步搜索索引**. Index sync reads current global files and hashed project identities only. The old `memoryDir` spelling `~/.sp/agent/memory` remains an alias for the current global root; it is not an import source.
 
 The `sessions.db` SQLite database holds the derived memory index used by `memory_search`. Older databases may also contain retired session-index tables; history search now reads the original JSONL files.
 
 ## Known Limitations
 
 - **`§` delimiter**: Memory entries are separated by `§` (section sign). If an entry naturally contains `§`, it will be split incorrectly on reload. This is rare in English text but possible. [Hermes uses the same delimiter.]
-- **Explicit review cost**: `/memory-review` costs one current-model request (and at most one correction retry) only when you invoke it; startup, normal turns, compaction, and shutdown do not call a model for memory maintenance.
+- **Explicit review cost**: `/memory → 整理记忆` costs one current-model request (and at most one correction retry) only when you invoke it; startup, normal turns, compaction, and shutdown do not call a model for memory maintenance.
 - **History search is bounded**: large archives may reach the discovery or scan caps. Results are source line ranges, so read the referenced JSONL lines when conversation text is needed. No automatic indexing pass is registered.
-- **Older Markdown memories may need backfill**: If you saved memories before the SQLite mirror existed or search looks stale, run `/memory-sync-markdown`.
-- **Core memory limits still apply**: SQLite search mirroring does not bypass the 5,000-char core Markdown limit. A full-memory write fails; run `/memory-review` to approve a smaller merged result instead of relying on automatic consolidation.
+- **Older Markdown memories may need backfill**: If you saved memories before the SQLite mirror existed or search looks stale, run `/memory → 同步搜索索引`.
+- **Core memory limits still apply**: SQLite search mirroring does not bypass the 5,000-char core Markdown limit. A full-memory write fails; run `/memory → 整理记忆` to approve a smaller merged result instead of relying on automatic consolidation.
 - **Project skill visibility depends on Pi discovery cycles**: project skills are exposed through `resources_discover` using the active project's `skills/` path. If a moved or newly created project skill doesn't show up immediately in a running session, trigger a reload/new session so Pi refreshes discovered resources.
-- **Project move requires active project context**: in `/memory-skills`, the `p` hotkey is disabled when Pi is not currently in a detected project directory.
+- **Project move requires active project context**: in `/memory → 管理技能`, the `p` hotkey is disabled when Pi is not currently in a detected project directory.
 - **Skills still need curation**: Skills are saved by the agent through the `skill_manage` tool when it decides a reusable procedure is worth keeping. They may still need review. You can move, delete, or edit them directly in `~/.sp/agent/@super-pi/memory/skills/` or the active project's `skills/` folder.
 
 ## Architecture

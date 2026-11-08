@@ -18,8 +18,8 @@ const { validateToolArguments } = await import('../../ai/dist/utils/validation.j
 const { buildSessionMemoryDigest } = await import('../dist/prompt-context.js');
 const { buildMemoryDigest } = await import('../dist/memory-digest.js');
 const { detectProject } = await import('../dist/project.js');
-const { registerMemoryReviewCommand } = await import('../dist/handlers/memory-review.js');
-const { importLegacyProjectEntries, registerMemoryCommand } = await import('../dist/handlers/memory-command.js');
+const { createMemoryReviewHandler } = await import('../dist/handlers/memory-review.js');
+const { registerMemoryCommand } = await import('../dist/handlers/memory-command.js');
 test.after(async () => { await AtomicLockCoordinator.closeSharedUnder(root); await rm(root, { recursive: true, force: true }); });
 
 async function fixture(name) {
@@ -139,9 +139,9 @@ test('review can update user and failure files, revalidates after confirmation a
     const old = target === 'user' ? 'old preference' : '[correction] old correction';
     const next = target === 'user' ? 'new preference' : '[correction] new correction';
     const messages = [];
-    registerMemoryReviewCommand(harness.api, store, config, 1000, { runProposal: async () => ({ ok: true, operations: [{ action: 'replace', target, old_text: old, content: next }] }) });
+    const review = createMemoryReviewHandler(store, config, 1000, { runProposal: async () => ({ ok: true, operations: [{ action: 'replace', target, old_text: old, content: next }] }) });
     const context = { hasUI: true, sessionManager: { getBranch: () => [{ type: 'message', message: { role: 'user', content: 'Please update my saved preference.' } }] }, ui: { notify: text => messages.push(text), editor: async (_title, preview) => preview, confirm: async () => true } };
-    await harness.commands.get('memory-review').handler(`global ${target}`, context);
+    await review(`global ${target}`, context);
     assert.ok(store.getEntries(target).includes(next), messages.join('\n'));
     if (target === 'failure') assert.ok(store.getEntries(target).includes('[correction] other project correction'));
     // A newer canonical edit must survive a stale confirmed proposal.
@@ -153,40 +153,48 @@ test('review can update user and failure files, revalidates after confirmation a
   }
 });
 
-test('legacy import requires confirmation, preserves source, and rejects source or destination changes after preview', async () => {
-  const { store, config } = await fixture('legacy-import');
-  const legacy = join(root, 'old-basename');
-  await mkdir(legacy);
-  const file = join(legacy, 'MEMORY.md');
-  await writeFile(file, 'old project decision');
-  const project = { name: 'new-identity', displayName: 'demo', root: join(root, 'repository'), memoryDir: config.memoryDir, legacyMemoryDirs: [legacy] };
-  const notes = [];
-  const ctx = { hasUI: true, ui: { notify: text => notes.push(text), select: async (_title, choices) => choices[0], editor: async (_title, text) => text, confirm: async () => false } };
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.deepEqual(store.getMemoryEntries(), []);
-  ctx.ui.confirm = async () => { await writeFile(file, 'changed source'); return true; };
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.deepEqual(store.getMemoryEntries(), []);
-  ctx.ui.confirm = async () => { await store.add('memory', 'concurrent destination'); return true; };
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.deepEqual(store.getMemoryEntries(), ['concurrent destination']);
-  ctx.ui.confirm = async () => true;
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.deepEqual(store.getMemoryEntries(), ['concurrent destination', 'changed source']);
-  assert.equal(await readFile(file, 'utf8'), 'changed source');
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.equal(store.getMemoryEntries().length, 2, 'repeated import does not duplicate entries');
-  const failures = join(legacy, 'failures.md');
-  const rawFailure = '[failure] obsolete temporary <!-- created=2000-01-01, last=2001-01-01 -->';
-  await writeFile(failures, rawFailure);
-  ctx.ui.select = async () => failures;
-  await importLegacyProjectEntries(ctx, config, project, store);
-  assert.deepEqual(store.getFailureEntries(7), [], 'import must not revive expired temporary failures');
-  const imported = (await store.listEntries('failure')).entries[0];
-  assert.equal(imported.created, '2000-01-01');
-  assert.equal(imported.lastReferenced, '2001-01-01');
-  assert.equal(imported.project, 'new-identity');
-  assert.equal(await readFile(failures, 'utf8'), rawFailure);
+test('only the memory menu is registered; startup and sync preserve retired sources without importing them', async () => {
+  const agentRoot = process.env.SP_CODING_AGENT_DIR;
+  const globalDir = join(agentRoot, '@super-pi', 'memory');
+  const project = detectProject();
+  const preserved = [
+    [join(agentRoot, 'memory', 'MEMORY.md'), 'retired global'],
+    [join(agentRoot, 'memory', 'sessions.db'), 'retired database'],
+    [join(agentRoot, 'memory', 'skills', 'old.md'), 'retired skill'],
+    [join(agentRoot, 'retired-project', 'MEMORY.md'), 'retired root project'],
+    [join(agentRoot, 'projects-memory', 'old-basename', 'MEMORY.md'), 'retired basename'],
+    [join(globalDir, 'skills', 'flat.md'), 'flat skill is not converted'],
+  ];
+  for (const [file, content] of preserved) {
+    await mkdir(join(file, '..'), { recursive: true });
+    await writeFile(file, content);
+  }
+  await mkdir(project.memoryDir, { recursive: true });
+  await writeFile(join(project.memoryDir, 'MEMORY.md'), 'current project source');
+  await writeFile(join(globalDir, 'MEMORY.md'), '[lesson] current global source');
+  const extension = (await import('../dist/index.js')).default;
+  const harness = createExtensionHarness();
+  const messages = [];
+  const ctx = { cwd: process.cwd(), hasUI: true, ui: {
+    notify: (text, level) => messages.push({ text, level }),
+    select: async (_title, choices) => choices.find(choice => choice === '同步搜索索引'),
+  } };
+  extension(harness.api);
+  try {
+    assert.deepEqual([...harness.commands.keys()], ['memory']);
+    await emitAll(harness, 'session_start', {}, ctx);
+    await harness.commands.get('memory').handler('', ctx);
+    assert.equal(messages.some(message => message.level === 'error'), false, JSON.stringify(messages));
+    const result = await harness.tools.get('memory_search').execute('search', { query: 'current', project: '*' });
+    assert.equal(result.details.count, 2);
+    assert.equal((await harness.tools.get('memory_search').execute('old', { query: 'retired', project: '*' })).details.count, 0);
+    assert.equal((await readdir(join(agentRoot, 'projects-memory'))).includes('retired-project'), false);
+    for (const [file, content] of preserved) assert.equal(await readFile(file, 'utf8'), content);
+    await harness.commands.get('memory').handler('import', ctx);
+    assert.match(messages.at(-1).text, /导入已退役/);
+  } finally {
+    await emitAll(harness, 'session_shutdown', {}, ctx);
+  }
 });
 
 test('failure FIFO preserves other project scopes and rejects when only protected entries remain', async () => {
@@ -213,11 +221,11 @@ test('project failure review preserves the identity used by subsequent FIFO writ
   const store = new MemoryStore({ ...config, memoryCharLimit: 130, memoryOverflowStrategy: 'fifo-evict' });
   await store.loadFromDisk();
   await store.addFailure('old project correction', { category: 'correction', project: 'project-a' });
-  registerMemoryReviewCommand(harness.api, store, config, 1000, { projectStore: store, projectName: 'project-a',
+  const review = createMemoryReviewHandler(store, config, 1000, { projectStore: store, projectName: 'project-a',
     runProposal: async () => ({ ok: true, operations: [{ action: 'replace', target: 'failure', old_text: 'old project correction', content: '[correction] revised project correction' }] }) });
   const context = { hasUI: true, sessionManager: { getBranch: () => [{ type: 'message', message: { role: 'user', content: 'Revise this project correction.' } }] },
     ui: { notify: () => {}, editor: async (_title, preview) => preview, confirm: async () => true } };
-  await harness.commands.get('memory-review').handler('project failure', context);
+  await review('project failure', context);
   assert.equal((await store.listEntries('failure')).entries[0].project, 'project-a');
   const result = await store.addFailure('new project entry ' + 'x'.repeat(60), { category: 'failure', project: 'project-a' });
   assert.equal(result.success, true);
@@ -228,15 +236,20 @@ test('unified manager dispatches existing scoped review and maintenance handlers
   const { store, config, harness } = await fixture('manager');
   const calls = [];
   const record = name => async args => { calls.push([name, args]); };
-  registerMemoryCommand(harness.api, { store, projectStore: store, config, project: { root: root, memoryDir: config.memoryDir }, globalDir: config.memoryDir,
+  registerMemoryCommand(harness.api, { store, projectStore: store, project: { root: root, memoryDir: config.memoryDir }, globalDir: config.memoryDir,
     review: record('review'), cleanup: record('cleanup'), sync: record('sync'), skills: record('skills') });
   const handler = harness.commands.get('memory').handler;
   const ctx = { hasUI: true, ui: { select: async (_title, choices) => choices[5], notify: () => {} } };
   await handler('', ctx);
   assert.deepEqual(calls, [['review', 'global user']]);
+  for (const [label, name] of [['管理技能', 'skills'], ['同步搜索索引', 'sync'], ['清理恢复产物', 'cleanup']]) {
+    ctx.ui.select = async (_title, choices) => choices.find(choice => choice === label);
+    await handler('', ctx);
+    assert.deepEqual(calls.at(-1), [name, '']);
+  }
   ctx.hasUI = false;
   await handler('', ctx);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 4);
 });
 
 test('shutdown closes the exact Markdown coordinators after writes and resolves owner path aliases', async () => {

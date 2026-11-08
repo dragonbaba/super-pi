@@ -35,9 +35,9 @@ try {
   const commands = await client.getCommands();
   const names = new Set(commands.map((command) => command.name));
   assert.equal(names.has("memory"), true);
-  assert.equal(names.has("memory-review"), true);
-  assert.equal(names.has("memory-cleanup"), true);
-  assert.equal(names.has("memory-sync-markdown"), true);
+  for (const retired of ["memory-review", "memory-cleanup", "memory-skills", "memory-sync-markdown"]) {
+    assert.equal(names.has(retired), false);
+  }
   assert.equal(names.has("memory-index-sessions"), false);
   console.log(JSON.stringify({ sessionId: state.sessionId, memoryCommands: [...names].filter((name) => name.startsWith("memory")) }));
 } finally {

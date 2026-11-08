@@ -809,7 +809,7 @@ export class MemoryStore {
           if (attempt >= MAX_EXTERNAL_WRITE_RETRIES) {
             return await this.finalizeTargetMutation(target, storagePath, {
               success: false,
-              error: "Memory file changed repeatedly during this update. No external changes were overwritten. If you edited the file manually, re-run the memory tool or /memory-sync-markdown after the file is stable.",
+              error: "Memory file changed repeatedly during this update. No external changes were overwritten. After the file is stable, re-run the memory tool or open /memory and choose 同步搜索索引.",
             });
           }
         }

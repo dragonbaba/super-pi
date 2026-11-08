@@ -27,7 +27,7 @@ export interface MemoryConfig {
   userCharLimit: number;
   /** Max chars for project-level MEMORY.md. Default: 5000 */
   projectCharLimit: number;
-  /** Recent conversation messages included by explicit /memory-review. 0 = all. Default: 0 */
+  /** Recent conversation messages included by explicit /memory > 整理记忆. 0 = all. Default: 0 */
   reviewRecentMessages?: number;
   /** Override extension storage directory. Default: ~/.sp/agent/@super-pi/memory */
   memoryDir?: string;
@@ -47,7 +47,7 @@ export interface MemoryConfig {
   failureInjectionMaxAgeDays: number;
   /** Maximum number of failure memories to inject. Default: 5 */
   failureInjectionMaxEntries: number;
-  /** Maximum time for the explicit current-model /memory-review proposal. Legacy field name retained. Default: 180000 */
+  /** Maximum time for the explicit current-model /memory > 整理记忆 proposal. Legacy field name retained. Default: 180000 */
   consolidationTimeoutMs: number;
 }
 

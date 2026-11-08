@@ -143,7 +143,6 @@ export class DatabaseManager {
   private readonly displayDbPath: string;
   private canonicalDbPath: string | null = null;
   private readonly recoveryOptions: ResolvedDatabaseRecoveryOptions;
-  private openGuard: (() => void) | null = null;
   private activeRecoveryLease: { coordinator: AtomicLockCoordinator; key: string; token: string } | null = null;
 
   constructor(memoryDir: string, recoveryOptions: DatabaseRecoveryOptions = {}) {
@@ -156,10 +155,6 @@ export class DatabaseManager {
       this.canonicalDbPath = canonicalStoragePathSync(this.displayDbPath);
     }
     return this.canonicalDbPath;
-  }
-
-  setOpenGuard(guard: (() => void) | null): void {
-    this.openGuard = guard;
   }
 
   /**
@@ -192,7 +187,6 @@ export class DatabaseManager {
    */
   getDb(): DatabaseLike {
     if (!this.db) {
-      this.openGuard?.();
       this.db = this.open();
     }
     return this.db;

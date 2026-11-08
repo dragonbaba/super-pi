@@ -20,16 +20,20 @@ commit-by-commit history.
 - Normal startup reads only active canonical memory and skill roots. It does
   not run review, cleanup, reconciliation, session indexing, or capacity
   consolidation.
-- The only startup exception is completion of an already-detected legacy
-  SQLite migration before database access.
+- Legacy extension-root/SQLite, basename-project, and flat/legacy-skill
+  migrations are retired. Startup has no migration exception and does not
+  alter old files, migration markers, or backups. An unfinished old migration
+  requires manual recovery before upgrading; it is not resumed by this build.
 - Shutdown performs no model call, session parse, indexing, backfill, or
   cleanup sweep. It closes only an opened SQLite manager and exact-owner
   Markdown coordinators.
-- Memory review is explicit through `/memory-review [project|global]`, uses the
+- Memory review is explicit through the scoped `/memory` menu, uses the
   current model, displays the complete proposal, requires confirmation, and
   revalidates the source snapshot before publication.
-- Recovery artifact cleanup and Markdown reconciliation are explicit through
-  `/memory-cleanup` and `/memory-sync-markdown`.
+- Recovery artifact cleanup and Markdown reconciliation are explicit actions
+  in `/memory`, the sole command registered by this package. Old standalone
+  commands and `/memory import` are removed. Index sync reads canonical global
+  files and hashed project identities; it cannot recreate basename directories.
 
 ## Prompt memory
 
@@ -44,7 +48,7 @@ commit-by-commit history.
 ## Skills and search
 
 - Project skill discovery is provided through `resources_discover` and the
-  `/memory-skills` TUI remains lazy-loaded.
+  `/memory` skills TUI remains lazy-loaded.
 - No background hook extracts skills from turns or tool calls.
 - Session search reads JSONL directly without opening SQLite. The retired
   `sessionSearch.variant` setting is ignored, including explicit `legacy`.
@@ -52,7 +56,7 @@ commit-by-commit history.
   is registered. Memory search still uses the derived SQLite memory index.
 - The automatic consolidator hook, direct review application, and review
   transport switch were removed. `memoryOverflowStrategy: "auto-consolidate"`
-  rejects like `reject`; `/memory-review` is the only consolidation path.
+  rejects like `reject`; reviewed menu actions are the only consolidation path.
 - Session search streams JSONL files and returns source line ranges for `read`.
   Discovery entries, files, lines, line length, event traversal,
   query size, and retained results are bounded.

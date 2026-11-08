@@ -29,8 +29,6 @@ interface SkillStoreOptions {
   piGlobalSkillsDir?: string;
   projectSkillsDir?: string | null;
   projectName?: string | null;
-  legacySkillsDir?: string;
-  migrationSentinelPath?: string;
 }
 
 interface SkillLocation {
@@ -40,12 +38,6 @@ interface SkillLocation {
   fileName: string;
   path: string;
   projectName?: string;
-}
-
-export interface LegacySkillMigrationResult {
-  migrated: number;
-  skipped: number;
-  warnings: string[];
 }
 
 const LIST_SECTIONS = new Set(["procedure", "pitfalls", "verification"]);
@@ -158,8 +150,6 @@ export class SkillStore {
   private piGlobalSkillsDir: string;
   private projectSkillsDir: string | null;
   private projectName: string | null;
-  private legacySkillsDir: string;
-  private migrationSentinelPath: string;
 
   constructor(options: SkillStoreOptions = {}) {
     const agentRoot = AGENT_ROOT;
@@ -167,9 +157,6 @@ export class SkillStore {
     this.piGlobalSkillsDir = options.piGlobalSkillsDir ?? path.join(agentRoot, "skills");
     this.projectSkillsDir = options.projectSkillsDir ?? null;
     this.projectName = options.projectName ?? null;
-    this.legacySkillsDir = options.legacySkillsDir ?? path.join(agentRoot, "memory", "skills");
-    this.migrationSentinelPath = options.migrationSentinelPath
-      ?? path.join(agentRoot, "@super-pi/memory", ".skills-migrated-to-extension-storage");
   }
 
   getGlobalSkillsDir(): string {
@@ -193,121 +180,6 @@ export class SkillStore {
     await fs.mkdir(this.globalSkillsDir, { recursive: true });
     if (this.projectSkillsDir) {
       await fs.mkdir(this.projectSkillsDir, { recursive: true });
-    }
-  }
-
-  async migrateLegacySkills(): Promise<LegacySkillMigrationResult> {
-    const result: LegacySkillMigrationResult = { migrated: 0, skipped: 0, warnings: [] };
-
-    // Always normalize flat markdown files under the global skills root,
-    // even when a previous migration sentinel already exists.
-    await this.migrateFlatMarkdownInGlobalSkillsDir(result);
-
-    if (await exists(this.migrationSentinelPath)) return result;
-
-    await fs.mkdir(path.dirname(this.migrationSentinelPath), { recursive: true });
-
-    // Only this migration's own warnings may hold back its sentinel — a
-    // permanently shadowed skill reported above must not make it retry forever.
-    const warningsBefore = result.warnings.length;
-    try {
-      await this.migrateLegacyMarkdownSkills(result);
-    } finally {
-      if (result.warnings.length === warningsBefore) {
-        await fs.writeFile(this.migrationSentinelPath, `${new Date().toISOString()}\n`, "utf-8");
-      }
-    }
-
-    return result;
-  }
-
-  private async migrateLegacyMarkdownSkills(result: LegacySkillMigrationResult): Promise<void> {
-    if (!await exists(this.legacySkillsDir)) return;
-
-    const files = (await fs.readdir(this.legacySkillsDir))
-      .filter((file) => file.endsWith(".md"))
-      .sort();
-
-    for (const file of files) {
-      const legacyPath = path.join(this.legacySkillsDir, file);
-      try {
-        const raw = await fs.readFile(legacyPath, "utf-8");
-        const parsed = parseFrontmatter(raw);
-        const fallbackSlug = slugify(path.basename(file, ".md"));
-        const slug = slugify(parsed.meta.name || fallbackSlug);
-        if (!slug) {
-          result.skipped++;
-          continue;
-        }
-
-        const targetPath = path.join(this.globalSkillsDir, slug, "SKILL.md");
-        if (await exists(targetPath)) {
-          result.skipped++;
-          continue;
-        }
-
-        const skillDoc = {
-          name: slug,
-          displayName: parsed.meta.display_name?.trim() || parsed.meta.name?.trim() || undefined,
-          description: parsed.meta.description?.trim() || `Migrated legacy skill: ${slug}`,
-          version: Number.parseInt(parsed.meta.version || "1", 10) || 1,
-          created: parsed.meta.created || today(),
-          updated: parsed.meta.updated || today(),
-          body: parsed.body || `# ${slug}\n`,
-        };
-
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await this.atomicWrite(targetPath, formatFrontmatter(skillDoc));
-        result.migrated++;
-      } catch (error) {
-        result.warnings.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }
-
-  private async migrateFlatMarkdownInGlobalSkillsDir(result: LegacySkillMigrationResult): Promise<void> {
-    if (!await exists(this.globalSkillsDir)) return;
-
-    const files = (await fs.readdir(this.globalSkillsDir))
-      .filter((file) => file.endsWith(".md") && file !== "SKILL.md")
-      .sort();
-
-    for (const file of files) {
-      const legacyPath = path.join(this.globalSkillsDir, file);
-      try {
-        const raw = await fs.readFile(legacyPath, "utf-8");
-        const parsed = parseFrontmatter(raw);
-        const fallbackSlug = slugify(path.basename(file, ".md"));
-        const slug = slugify(parsed.meta.name || fallbackSlug);
-        if (!slug) {
-          result.skipped++;
-          continue;
-        }
-
-        const targetPath = path.join(this.globalSkillsDir, slug, "SKILL.md");
-        if (await exists(targetPath)) {
-          await fs.rm(legacyPath, { force: true });
-          result.skipped++;
-          continue;
-        }
-
-        const skillDoc = {
-          name: slug,
-          displayName: parsed.meta.display_name?.trim() || parsed.meta.name?.trim() || undefined,
-          description: parsed.meta.description?.trim() || `Migrated legacy skill: ${slug}`,
-          version: Number.parseInt(parsed.meta.version || "1", 10) || 1,
-          created: parsed.meta.created || today(),
-          updated: parsed.meta.updated || today(),
-          body: parsed.body || `# ${slug}\n`,
-        };
-
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await this.atomicWrite(targetPath, formatFrontmatter(skillDoc));
-        await fs.rm(legacyPath, { force: true });
-        result.migrated++;
-      } catch (error) {
-        result.warnings.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
-      }
     }
   }
 
