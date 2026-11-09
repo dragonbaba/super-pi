@@ -25,7 +25,7 @@ import { INPUT_LIMITS } from "./windows-sandbox-input-snapshot.mjs";
 import { WindowsWorkspaceInputCapture } from "./windows-sandbox-workspace-input-capture.mjs";
 import { WindowsSourceNative } from "./windows-sandbox-source-native.mjs";
 
-const aliasNames = ["file-invocation", "file-host", "file-batch-protocol", "file-commit", "file-creation", "input-workspace-grant-lease", "session-input-read-permission"];
+const aliasNames = ["file-invocation", "extension-permissions", "file-host", "file-batch-protocol", "file-commit", "file-creation", "input-workspace-grant-lease", "session-input-read-permission"];
 const aliases = new Map(aliasNames.map(name => [`@super-pi/coding-agent/internal/files/${name}`,
     new URL(`../../packages/coding-agent/src/core/files/${name}.ts`, import.meta.url).href]));
 const loadedAliases = new Set(), lifecycleUrl = new URL("../../packages/extensions/resource-lifecycle-guard/index.ts", import.meta.url).href;
@@ -59,7 +59,7 @@ let lifecycle;
 try {
     ({ default: lifecycle } = await import(lifecycleUrl));
     ({ state: browserRuntime } = await import(browserRuntimeUrl));
-    assert.equal(browserRuntimeResolutions, 1);
+    assert.equal(browserRuntimeResolutions, 0); // the guard no longer loads the browser manager (#274)
     assert.equal(browserRuntime.managedBrowser, undefined); assert.equal(browserRuntime.launchPromise, undefined);
     const contract = await import("../../packages/extensions/resource-lifecycle-guard/permission-contract.ts");
     assert.equal(contract.mutationRequestHash, mutationRequestHash);
@@ -329,7 +329,7 @@ export async function runInputHostFixture(produce, taskId, snapshotId, retain) {
         && streamCalls === 2 && childResults.length === 2 && parentResults.length === 1 && weak.length === 2
         && !workerRetained && worker.workerStarts - workerBefore.workerStarts === 1 && !worker.loaded && worker.pending === 0
         && worker.calls - workerBefore.calls <= 128 && nativeOwnerClosed && boundaryClosed && providerOwnersClosed
-        && transformed === 1 && browserRuntimeResolutions === 1 && !browserRuntime.managedBrowser && !browserRuntime.launchPromise;
+        && transformed === 1 && browserRuntimeResolutions === 0 && !browserRuntime.managedBrowser && !browserRuntime.launchPromise;
     const unresolved = nodes.some(node => !node.removed) || fixtureHandle || bootstrap || workerRetained
         || !nativeOwnerClosed || !boundaryClosed || !providerOwnersClosed;
     const retained = unresolved ? responsibility : undefined;
