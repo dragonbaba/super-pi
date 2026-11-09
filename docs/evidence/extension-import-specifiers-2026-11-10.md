@@ -20,6 +20,8 @@
 
 - 三个测试按旧的 `.js` 名字引用或桩接这些模块（`codemode-session`、`lsp-validation-scope`、`chrome-screenshot-lifecycle`），同步改为 `.ts`。jiti 按引用名缓存，`runtime.js` 与 `runtime.ts` 会成为两份状态独立的模块实例。
 
+- 删除两个已过期的冻结验收测试（`windows-sandbox-captured-host-source-resolution`、`windows-sandbox-captured-agent-orchestration`）：它们断言加载 `resource-lifecycle-guard` 时会解析一次 `browser-manager` 的 `runtime` 引用，而该扩展自 #274 起不再引入 `chrome-devtools`，在 main 上即失败。
+
 没有加构建步骤，改扩展源码后仍然无需重新构建。
 
 ## 验证

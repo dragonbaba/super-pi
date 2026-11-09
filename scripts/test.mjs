@@ -14,8 +14,6 @@ const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]s)$/;
 // Exact paths only: new sandbox model regressions remain automatic by default.
 // See docs/Windows Sandbox 故障收尾组合接线交接.md §64.
 const MANUAL_ACCEPTANCE_TESTS = new Set([
-	"windows-sandbox-captured-agent-orchestration.test.mjs",
-	"windows-sandbox-captured-host-source-resolution.test.mjs",
 	"windows-sandbox-captured-host-write.test.mjs",
 	"windows-sandbox-explicit-write-snapshot.test.mjs",
 	"windows-sandbox-input-capture.test.mjs",
