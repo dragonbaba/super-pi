@@ -1,11 +1,11 @@
 import { type Focusable, Input, Key, matchesKey, wrapTextWithAnsi } from "@super-pi/tui";
-import type { MenuScreen } from "../types.js";
+import type { MenuScreen } from "../types.ts";
 import type {
 	MenuChangeResponse,
 	MenuScreenComponent,
 	MenuScreenComponentOptions,
-} from "./contracts.js";
-import { handleSearchInput, renderFrame, safeMenuText } from "./rendering.js";
+} from "./contracts.ts";
+import { handleSearchInput, renderFrame, safeMenuText } from "./rendering.ts";
 
 export type InputOptions<
 	ScreenId extends string,

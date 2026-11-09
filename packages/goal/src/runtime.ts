@@ -5,33 +5,33 @@ import {
 	formatDuration,
 	formatTokenCount,
 	updateGoalUsage,
-} from "./accounting.js";
-import { formatError, truncateNotification } from "./errors.js";
+} from "./accounting.ts";
+import { formatError, truncateNotification } from "./errors.ts";
 import {
 	appendGoalPromptMarker,
 	extractContinuationMarker,
 	extractGoalPromptMarker,
-} from "./markers.js";
+} from "./markers.ts";
 import {
 	type ActiveGoal,
 	clearLegacyPersistedGoal,
 	type PendingQueueAction,
 	type SafetyPauseCause,
 	serializeGoalState,
-} from "./persistence.js";
-import { buildContinuePrompt, type GoalStatus } from "./prompts.js";
-import { nextToolFreeRepeatState, resetGoalSafetyEpoch } from "./safety.js";
+} from "./persistence.ts";
+import { buildContinuePrompt, type GoalStatus } from "./prompts.ts";
+import { nextToolFreeRepeatState, resetGoalSafetyEpoch } from "./safety.ts";
 
-export { queueGoalSafetyReset, resetGoalSafetyEpoch } from "./safety.js";
+export { queueGoalSafetyReset, resetGoalSafetyEpoch } from "./safety.ts";
 
 import {
 	DEFAULT_GOAL_SETTINGS,
 	type GoalSettings,
 	type GoalSettingsLoadIssue,
-} from "./settings.js";
-import { GoalToolPolicy, type GoalToolVisibilitySnapshot } from "./tool-policy.js";
+} from "./settings.ts";
+import { GoalToolPolicy, type GoalToolVisibilitySnapshot } from "./tool-policy.ts";
 
-export { GOAL_BLOCKED_TOOL, GOAL_COMPLETE_TOOL, GOAL_TOOL_NAMES } from "./tool-policy.js";
+export { GOAL_BLOCKED_TOOL, GOAL_COMPLETE_TOOL, GOAL_TOOL_NAMES } from "./tool-policy.ts";
 
 export interface ContinuationTicket {
 	goalId: string;
@@ -1282,7 +1282,7 @@ function continuationMarker(goal: ActiveGoal) {
 	return `${goal.id}:${goal.iteration}:${randomUUID()}`;
 }
 
-export type { AssistantMessageLike } from "./errors.js";
+export type { AssistantMessageLike } from "./errors.ts";
 export {
 	findFinalAssistantMessage,
 	formatError,
@@ -1290,4 +1290,4 @@ export {
 	isRetryableGoalInterruption,
 	isUsageLimitedGoalInterruption,
 	truncateNotification,
-} from "./errors.js";
+} from "./errors.ts";

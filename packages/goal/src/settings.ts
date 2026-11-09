@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { getConfigDir } from "./pi-runtime-lite.js";
+import { getConfigDir } from "./pi-runtime-lite.ts";
 
 export const GOAL_SETTINGS_FILE = "pi-goal.json";
 export const GOAL_TOOL_VISIBILITIES = ["always", "after-first-goal"] as const;

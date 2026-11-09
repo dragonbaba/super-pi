@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "./pi-runtime-lite.js";
+import { getAgentDir } from "./pi-runtime-lite.ts";
 import {
 	isNonNegativeFiniteNumber,
 	nonNegativeFiniteNumber,
 	normalizeTokenBudget,
-} from "./accounting.js";
-import type { GoalStatus } from "./prompts.js";
+} from "./accounting.ts";
+import type { GoalStatus } from "./prompts.ts";
 
 const GOAL_STATE_ENTRY_TYPE = "goal-state";
 const LEGACY_GOALS_STATE_ENTRY_TYPE = "goals-state";

@@ -1,4 +1,4 @@
-import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.js";
+import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.ts";
 
 const PLAN_MODE_QUESTION_TOOL = "plan_mode_question";
 const PLAN_MODE_COMPLETE_TOOL = "plan_mode_complete";

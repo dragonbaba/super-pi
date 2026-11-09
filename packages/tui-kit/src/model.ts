@@ -5,7 +5,7 @@ import {
 	type MenuContext,
 	type MenuDefinition,
 	type MenuScreen,
-} from "./types.js";
+} from "./types.ts";
 
 export function defineMenu<
 	State,

@@ -1,1 +1,1 @@
-export { default } from "./pi-lsp.js";
+export { default } from "./pi-lsp.ts";

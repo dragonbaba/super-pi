@@ -1,74 +1,74 @@
 import { randomUUID } from "node:crypto";
-import { PlanExecutionOwner } from "./execution-owner.js";
+import { PlanExecutionOwner } from "./execution-owner.ts";
 import {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 	findNonReadOnlyShellSegment,
 } from "@super-pi/coding-agent";
-import { completePlanArguments } from "./command.js";
+import { completePlanArguments } from "./command.ts";
 import {
 	normalizePlanModeCompletion,
 	PLAN_MODE_COMPLETE_PARAMS,
 	PLAN_MODE_COMPLETE_TOOL_NAME,
 	planModeCompleted,
 	renderPlanModeCompletion,
-} from "./completion-tool.js";
+} from "./completion-tool.ts";
 import {
 	isStaleExtensionContextError,
 	onAgentSettled,
 	setPlanThinkingLevel,
-} from "./extension-runtime.js";
+} from "./extension-runtime.ts";
 import {
 	formatImplementationHandoff,
 	startFreshImplementationFromState,
-} from "./fresh-implementation.js";
+} from "./fresh-implementation.ts";
 import {
 	createImplementationRetentionCoordinator,
 	implementationRetentionPreview,
-} from "./implementation-retention.js";
-import { invalidPlanMessage, latestAssistantText, parseProposedPlan } from "./message-transform.js";
-import { createPlanActionController } from "./plan-action-controller.js";
-import { createPlanExportController } from "./plan-export-controller.js";
+} from "./implementation-retention.ts";
+import { invalidPlanMessage, latestAssistantText, parseProposedPlan } from "./message-transform.ts";
+import { createPlanActionController } from "./plan-action-controller.ts";
+import { createPlanExportController } from "./plan-export-controller.ts";
 import {
 	clearPlanModeUi,
 	planModeStatusText as formatPlanModeStatusText,
 	showStoredPlan,
 	updatePlanModeUi,
-} from "./presentation.js";
-import { buildPlanModePrompt } from "./prompt.js";
+} from "./presentation.ts";
+import { buildPlanModePrompt } from "./prompt.ts";
 import {
 	answerPlanModeQuestions,
 	normalizePlanModeQuestionParams,
 	PLAN_MODE_QUESTION_PARAMS,
 	PLAN_MODE_QUESTION_TOOL_NAME,
 	planModeQuestionCancelled,
-} from "./question-tool.js";
-import { withoutRequiredPlanModeTools, withRequiredPlanModeTools } from "./required-tools.js";
+} from "./question-tool.ts";
+import { withoutRequiredPlanModeTools, withRequiredPlanModeTools } from "./required-tools.ts";
 import {
 	preflightSavedPlanImplementation,
 	savedPlanBlocksNewWorkflow,
-} from "./saved-plan-preflight.js";
+} from "./saved-plan-preflight.ts";
 import {
 	awaitPlanModeSettingsWrites,
 	configuredImplementationPlanRetention,
 	configuredThinkingLevel,
 	type PlanModeSettings,
 	readPlanModeSettings,
-} from "./settings.js";
-import { type PlanCompletionSource, type PlanModeState, restorePlanModeState } from "./state.js";
+} from "./settings.ts";
+import { type PlanCompletionSource, type PlanModeState, restorePlanModeState } from "./state.ts";
 import {
 	canSelectToolInPlanMode,
 	classifyPlanModeTool,
 	readCommand,
-} from "./tool-policy.js";
+} from "./tool-policy.ts";
 import {
 	compareTools,
 	filterAvailableSelectedToolNames,
 	snapshotPlanModeSelectedNames,
 	snapshotPlanModeToolNames,
 	toolPolicyLabel,
-} from "./tool-selection.js";
+} from "./tool-selection.ts";
 
 const STATE_ENTRY_TYPE = "plan-mode-state";
 const PROPOSED_PLAN_MESSAGE_TYPE = "proposed-plan";
@@ -106,7 +106,7 @@ interface ReadyPresentationIntent {
 	plan: string;
 	source: PlanCompletionSource;
 }
-type InteractiveUi = typeof import("./interactive-ui.js");
+type InteractiveUi = typeof import("./interactive-ui.ts");
 
 interface PlanModeDependencies {
 	readSettings?(): ReturnType<typeof readPlanModeSettings>;
@@ -118,7 +118,7 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 	const loadInteractiveUi = () => {
 		if (dependencies.loadInteractiveUi) return dependencies.loadInteractiveUi();
 		if (!interactiveUiPromise) {
-			interactiveUiPromise = import("./interactive-ui.js").catch((error) => {
+			interactiveUiPromise = import("./interactive-ui.ts").catch((error) => {
 				interactiveUiPromise = undefined;
 				throw error;
 			});
@@ -1076,16 +1076,16 @@ export default function planMode(pi: ExtensionAPI, dependencies: PlanModeDepende
 	}
 }
 
-export { completePlanArguments } from "./command.js";
+export { completePlanArguments } from "./command.ts";
 export {
 	extractProposedPlan,
 	latestAssistantText,
 	parseProposedPlan,
 	stripProposedPlanBlocks,
 	stripProposedPlanBlocksFromMessage,
-} from "./message-transform.js";
-export { buildPlanModePrompt } from "./prompt.js";
-export { normalizePlanModeQuestionParams } from "./question-tool.js";
-export { withoutPlanModeQuestionTool, withRequiredPlanModeTools } from "./required-tools.js";
-export { normalizePlanModeSettings, readPlanModeSettings } from "./settings.js";
-export { canSelectToolInPlanMode, classifyPlanModeTool, isSafeCommand } from "./tool-policy.js";
+} from "./message-transform.ts";
+export { buildPlanModePrompt } from "./prompt.ts";
+export { normalizePlanModeQuestionParams } from "./question-tool.ts";
+export { withoutPlanModeQuestionTool, withRequiredPlanModeTools } from "./required-tools.ts";
+export { normalizePlanModeSettings, readPlanModeSettings } from "./settings.ts";
+export { canSelectToolInPlanMode, classifyPlanModeTool, isSafeCommand } from "./tool-policy.ts";

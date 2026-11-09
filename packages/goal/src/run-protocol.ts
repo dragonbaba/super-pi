@@ -1,13 +1,13 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import { validateObjective } from "./command.js";
-import type { GoalCommandController } from "./commands.js";
+import { validateObjective } from "./command.ts";
+import type { GoalCommandController } from "./commands.ts";
 import {
 	formatError,
 	type GoalRuntime,
 	type GoalStateSnapshot,
 	isTerminalGoalStatus,
 	type StatusContext,
-} from "./runtime.js";
+} from "./runtime.ts";
 
 export const GOAL_RUN_START_CHANNEL = "pi-goal:start";
 export const GOAL_RUN_CANCEL_CHANNEL = "pi-goal:cancel";

@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import { registerGoalCommand } from "./command-registration.js";
-import { GoalCommandController } from "./commands.js";
-import { registerGoalLifecycle } from "./lifecycle.js";
-import { GoalRunController } from "./run-protocol.js";
-import { GoalRuntime } from "./runtime.js";
-import { registerGoalTools } from "./tools.js";
+import { registerGoalCommand } from "./command-registration.ts";
+import { GoalCommandController } from "./commands.ts";
+import { registerGoalLifecycle } from "./lifecycle.ts";
+import { GoalRunController } from "./run-protocol.ts";
+import { GoalRuntime } from "./runtime.ts";
+import { registerGoalTools } from "./tools.ts";
 
 interface GoalOptions {
 	settingsPath?: string;
@@ -32,16 +32,16 @@ export {
 	cumulativeAssistantTokens,
 	formatDuration,
 	formatTokenCount,
-} from "./accounting.js";
+} from "./accounting.ts";
 
 export {
 	completeGoalArguments,
 	parseCommand,
 	parseTokenBudget,
 	validateObjective,
-} from "./command.js";
+} from "./command.ts";
 
-export { buildGoalSystemPrompt } from "./prompts.js";
+export { buildGoalSystemPrompt } from "./prompts.ts";
 
 export {
 	findFinalAssistantMessage,
@@ -49,4 +49,4 @@ export {
 	isContradictoryCompletionSummary,
 	isRetryableGoalInterruption,
 	isUsageLimitedGoalInterruption,
-} from "./runtime.js";
+} from "./runtime.ts";

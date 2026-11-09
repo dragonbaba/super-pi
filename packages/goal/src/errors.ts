@@ -4,7 +4,7 @@ import {
 	type AssistantMessage as PiAssistantMessage,
 	type Usage,
 } from "@super-pi/ai";
-import { assistantUsageTokens, nonNegativeFiniteNumber } from "./accounting.js";
+import { assistantUsageTokens, nonNegativeFiniteNumber } from "./accounting.ts";
 
 export type AgentStopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 

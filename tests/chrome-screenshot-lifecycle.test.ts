@@ -11,8 +11,9 @@ const jiti = createJiti(import.meta.url, { interopDefault: true });
 const { default: chromeDevtools } = await jiti.import<any>("../packages/chrome-devtools/src/chrome-devtools.ts");
 // Mock the already-loaded dependency: a second Windows import can create a
 // distinct cache entry for slash/backslash spellings of the same source file.
-const { screenshotTool } = jiti.cache[fileURLToPath(new URL("../packages/chrome-devtools/src/tools.ts", import.meta.url))]!.exports;
-const { saveScreenshot } = jiti.cache[fileURLToPath(new URL("../packages/chrome-devtools/src/screenshot.ts", import.meta.url))]!.exports;
+const loaded = (file: string) => jiti.cache[fileURLToPath(new URL(file, import.meta.url)).replaceAll("\\", "/")]!.exports;
+const { screenshotTool } = loaded("../packages/chrome-devtools/src/tools.ts");
+const { saveScreenshot } = loaded("../packages/chrome-devtools/src/screenshot.ts");
 
 function host() {
   const tools = new Map<string, any>(), handlers = new Map<string, any>();

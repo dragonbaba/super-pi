@@ -10,6 +10,13 @@ General working rules live in each agent's global instructions (`~/.sp/agent/AGE
 - If a change does not touch a hot path, state that in one line and skip the benchmark.
 - Object pools require profiler proof and must satisfy the contract's ownership, safety, capacity, test, and measured-improvement gates.
 
+## Extension Source Imports
+
+- Bundled extensions that load from TypeScript source (and source-only packages they import, such as `packages/tui-kit`) must write relative imports with the real `.ts` extension, never `./x.js` for a file that is `./x.ts`.
+- jiti probes about 60 candidate paths before it retries a `.js` specifier as `.ts`; one extension written that way cost 6,384 failed stat calls and about 75 ms on every start. `tests/bundled-extensions.test.ts` fails on any such import.
+- Tests and other callers must import these files by the same `.ts` name. jiti caches by specifier, so `runtime.js` and `runtime.ts` become two module instances with separate state.
+- When syncing an extension from upstream, rewrite its relative specifiers before committing. A package tsconfig that does not extend `tsconfig.base.json` needs `"allowImportingTsExtensions": true`.
+
 ## Task Temporary Files
 
 - Put task scratch data (probes, logs, fixtures, downloads, profiles) under `.task-tmp/<task-id>-<unique-id>/`, which is gitignored; never in `.git` or `docs/evidence/`.

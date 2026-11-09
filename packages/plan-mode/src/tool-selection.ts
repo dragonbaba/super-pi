@@ -1,13 +1,13 @@
 import type { ToolInfo } from "@super-pi/coding-agent";
-import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.js";
-import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.js";
-import { withRequiredPlanModeTools } from "./required-tools.js";
+import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.ts";
+import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.ts";
+import { withRequiredPlanModeTools } from "./required-tools.ts";
 import {
 	canSelectToolInPlanMode,
 	classifyPlanModeTool,
 	isBuiltinTool,
 	SAFE_BUILTIN_PLAN_TOOLS,
-} from "./tool-policy.js";
+} from "./tool-policy.ts";
 
 export function toolNameFromLegacyKey(key: string, tools: ToolInfo[]) {
 	const directName = tools.find((tool) => tool.name === key)?.name;

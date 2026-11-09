@@ -13,7 +13,7 @@ import {
   resetFalseSuccessState,
   type InterventionAudit,
   type ToolObservation,
-} from "./core.js";
+} from "./core.ts";
 
 const GOAL_COMPLETE_TOOL = "goal_complete";
 

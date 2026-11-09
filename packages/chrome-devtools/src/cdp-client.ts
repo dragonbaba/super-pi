@@ -5,13 +5,13 @@ import {
 	formatPageListItem,
 	launchHint,
 	withEndpointRetry,
-} from "./browser-manager.js";
+} from "./browser-manager.ts";
 import {
 	DEFAULT_ENDPOINT_WAIT_MS,
 	DEFAULT_TIMEOUT_MS,
 	type DevToolsPage,
 	state,
-} from "./runtime.js";
+} from "./runtime.ts";
 
 interface CdpResponse<T = unknown> {
 	id: number;

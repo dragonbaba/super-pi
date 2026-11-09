@@ -1,6 +1,6 @@
 import { Container, Key, Loader, matchesKey, Spacer, Text, type TUI } from "@super-pi/tui";
-import type { MenuKeybindings } from "./contracts.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import type { MenuKeybindings } from "./contracts.ts";
+import { DynamicBorder } from "./dynamic-border.ts";
 
 interface TaskLoaderTheme {
 	fg(color: "accent" | "border" | "dim" | "muted", text: string): string;

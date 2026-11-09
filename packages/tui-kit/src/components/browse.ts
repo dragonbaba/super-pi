@@ -9,10 +9,10 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@super-pi/tui";
-import type { MenuBrowseItem } from "../types.js";
-import type { BrowseOptions, MenuKeybindings, MenuScreenComponent } from "./contracts.js";
-import { appendMutedLines, findItemIndex, handleSearchInput, safeMenuText } from "./rendering.js";
-import { reviewDialogPages } from "./review.js";
+import type { MenuBrowseItem } from "../types.ts";
+import type { BrowseOptions, MenuKeybindings, MenuScreenComponent } from "./contracts.ts";
+import { appendMutedLines, findItemIndex, handleSearchInput, safeMenuText } from "./rendering.ts";
+import { reviewDialogPages } from "./review.ts";
 
 const RESERVED_HOST_ROWS = 3;
 const MAX_CONTEXT_ROWS = 2;

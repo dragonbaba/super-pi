@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
 import { rm } from "node:fs/promises";
-import { shutdownManagedBrowser } from "./browser-manager.js";
-import { state } from "./runtime.js";
-import { loadSettings } from "./settings.js";
+import { shutdownManagedBrowser } from "./browser-manager.ts";
+import { state } from "./runtime.ts";
+import { loadSettings } from "./settings.ts";
 import {
 	allChromeDevtoolsTools,
 	applyChromeDevtoolsTools,
@@ -12,14 +12,14 @@ import {
 	showToolSelector,
 	updateChromeDevtoolsTools,
 	waitForChromeDevtoolsSettings,
-} from "./tool-selector.js";
+} from "./tool-selector.ts";
 import {
 	evaluateTool,
 	listPagesTool,
 	navigateTool,
 	screenshotTool,
 	selectPageTool,
-} from "./tools.js";
+} from "./tools.ts";
 
 type CommandAction = "menu" | "help" | "quickstart" | "status" | "tools" | "enable" | "disable";
 type CommandContext = ExtensionCommandContext;
@@ -255,13 +255,13 @@ export {
 	formatHostForUrl,
 	isLocalDevToolsHost,
 	quoteCommandPart,
-} from "./browser-manager.js";
-export { parseConfiguredPort } from "./runtime.js";
+} from "./browser-manager.ts";
+export { parseConfiguredPort } from "./runtime.ts";
 export {
 	hasParentPathSegment,
 	isPathInsideRoot,
 	resolveScreenshotPath,
 	selectAllowedRoot,
-} from "./screenshot.js";
-export { normalizeChromeDevtoolsSettings } from "./settings.js";
-export { orderedChromeDevtoolsTools } from "./tool-selector.js";
+} from "./screenshot.ts";
+export { normalizeChromeDevtoolsSettings } from "./settings.ts";
+export { orderedChromeDevtoolsTools } from "./tool-selector.ts";

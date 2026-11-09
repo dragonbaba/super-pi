@@ -2,21 +2,21 @@ import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ClientLease, LspClientPool } from "./client-pool.js";
-import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.js";
-import { DEFAULT_FILE_LIMIT } from "./limits.js";
-import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.js";
+import type { ClientLease, LspClientPool } from "./client-pool.ts";
+import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.ts";
+import { DEFAULT_FILE_LIMIT } from "./limits.ts";
+import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.ts";
 import { capturePathIdentity } from "@super-pi/coding-agent/internal/files/native-file-core";
 import { selectCommitMetadata } from "@super-pi/coding-agent/internal/files/file-commit-metadata";
 import { commitPreparedFile, commitFailure, commitSummary, FileCommitError, type FileCommitReceipt } from "@super-pi/coding-agent/internal/files/file-commit";
-import { applyTextEdits, collectWorkspaceEdits, hasOverlappingTextEdits } from "./text-edits.js";
+import { applyTextEdits, collectWorkspaceEdits, hasOverlappingTextEdits } from "./text-edits.ts";
 import type {
 	CodeAction,
 	DiagnosticEntry,
 	LspServerAdapter,
 	LspTextEdit,
 	StatusContext,
-} from "./types.js";
+} from "./types.ts";
 
 const MAX_LSP_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_MODEL_OUTPUT_BYTES = 50 * 1024;

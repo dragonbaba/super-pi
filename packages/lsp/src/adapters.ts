@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { CONFIG_DIR_NAME, getAgentDir } from "@super-pi/coding-agent";
-import { EMPTY_READONLY_ARRAY } from "./collections.js";
-import type { InternalLspServer, LspConfig, LspServerAdapter } from "./types.js";
+import { EMPTY_READONLY_ARRAY } from "./collections.ts";
+import type { InternalLspServer, LspConfig, LspServerAdapter } from "./types.ts";
 
 const COMMON_SKIP_DIRECTORIES = new Set([
 	".git",

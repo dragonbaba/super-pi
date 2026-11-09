@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
-import { LspClient } from "./lsp-client.js";
-import type { LspServerAdapter } from "./types.js";
+import { LspClient } from "./lsp-client.ts";
+import type { LspServerAdapter } from "./types.ts";
 
 const DEFAULT_IDLE_MS = 10 * 60_000;
 const FAILURE_BACKOFF_MS = 3 * 60_000;

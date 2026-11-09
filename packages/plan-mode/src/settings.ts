@@ -9,8 +9,8 @@ import {
 	type SafeGhSubcommandPath,
 	type SafeGitSubcommand,
 	type SafeSubcommands,
-} from "./tool-policy.js";
-import { PLAN_EXPORT_VISIBLE_CHARACTER_PATTERN } from "./settings-regex.js";
+} from "./tool-policy.ts";
+import { PLAN_EXPORT_VISIBLE_CHARACTER_PATTERN } from "./settings-regex.ts";
 
 export const PLAN_MODE_SETTINGS_FILE = "sp-plan-mode.json";
 const LEGACY_PLAN_MODE_SETTINGS_FILE = "plan-mode.json";

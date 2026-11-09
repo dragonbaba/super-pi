@@ -1,9 +1,9 @@
 import type { ExtensionContext, ToolInfo } from "@super-pi/coding-agent";
 import { defineMenu, type RunMenuResult, runMenu } from "@super-pi/tui-kit";
-import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.js";
-import { retentionLabel } from "./implementation-retention.js";
-import { planExportDestination } from "./plan-export.js";
-import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.js";
+import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.ts";
+import { retentionLabel } from "./implementation-retention.ts";
+import { planExportDestination } from "./plan-export.ts";
+import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.ts";
 import {
 	configuredImplementationPlanRetention,
 	configuredPlanExportPath,
@@ -16,9 +16,9 @@ import {
 	readPlanModeSettings,
 	type UpdatePlanModeSettingsOptions,
 	updatePlanModeSettings,
-} from "./settings.js";
-import { canSelectToolInPlanMode } from "./tool-policy.js";
-import { defaultPlanModeToolNames, toolPolicyLabel } from "./tool-selection.js";
+} from "./settings.ts";
+import { canSelectToolInPlanMode } from "./tool-policy.ts";
+import { defaultPlanModeToolNames, toolPolicyLabel } from "./tool-selection.ts";
 
 interface SettingsMenuState {
 	kind: "valid" | "invalid";

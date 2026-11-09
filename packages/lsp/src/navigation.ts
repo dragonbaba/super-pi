@@ -1,18 +1,18 @@
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ClientLease, LspClientPool } from "./client-pool.js";
-import { EMPTY_READONLY_ARRAY } from "./collections.js";
-import { resolveRoot, resolveSupportedFile } from "./files.js";
-import { IDENTIFIER_CHARACTER_PATTERN, LINE_BREAK_PATTERN, SYMBOL_SPEC_PATTERN } from "./regex.js";
-import { textResult } from "./runner.js";
+import type { ClientLease, LspClientPool } from "./client-pool.ts";
+import { EMPTY_READONLY_ARRAY } from "./collections.ts";
+import { resolveRoot, resolveSupportedFile } from "./files.ts";
+import { IDENTIFIER_CHARACTER_PATTERN, LINE_BREAK_PATTERN, SYMBOL_SPEC_PATTERN } from "./regex.ts";
+import { textResult } from "./runner.ts";
 import type {
 	LspLocation,
 	LspLocationLink,
 	LspServerAdapter,
 	LspSymbolInformation,
 	StatusContext,
-} from "./types.js";
+} from "./types.ts";
 
 export type NavigationAction = "definition" | "references" | "implementation" | "workspace_symbols";
 

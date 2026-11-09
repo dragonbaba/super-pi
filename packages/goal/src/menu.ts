@@ -1,12 +1,12 @@
 import type { ExtensionCommandContext } from "@super-pi/coding-agent";
 import type { ActionMenuItem } from "@super-pi/tui-kit";
-import { formatTokenCount as formatCompactTokenCount, formatDuration } from "./accounting.js";
-import { parseTokenBudget } from "./command.js";
-import type { GoalCommandController } from "./commands.js";
-import { safeGoalMenuText } from "./goal-text.js";
-import type { ActiveGoal, PendingQueueAction } from "./persistence.js";
-import { goalQueueIdentity } from "./queue.js";
-import { type GoalRuntime, goalSummary } from "./runtime.js";
+import { formatTokenCount as formatCompactTokenCount, formatDuration } from "./accounting.ts";
+import { parseTokenBudget } from "./command.ts";
+import type { GoalCommandController } from "./commands.ts";
+import { safeGoalMenuText } from "./goal-text.ts";
+import type { ActiveGoal, PendingQueueAction } from "./persistence.ts";
+import { goalQueueIdentity } from "./queue.ts";
+import { type GoalRuntime, goalSummary } from "./runtime.ts";
 
 export const GOAL_MENU_ACTIONS = {
 	start: "Start a goal…",

@@ -1,8 +1,8 @@
 import type { ExtensionContext } from "@super-pi/coding-agent";
-import type { PlanExportDestination } from "./plan-export.js";
-import type { PlanModeState } from "./state.js";
+import type { PlanExportDestination } from "./plan-export.ts";
+import type { PlanModeState } from "./state.ts";
 
-type InteractiveUi = typeof import("./interactive-ui.js");
+type InteractiveUi = typeof import("./interactive-ui.ts");
 
 interface MenuLifecycle {
 	signal: AbortSignal;

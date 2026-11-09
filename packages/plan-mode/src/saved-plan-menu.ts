@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@super-pi/coding-agent";
 import { defineMenu, runMenu } from "@super-pi/tui-kit";
-import { type PlanExportDestinationProvider, planExportInputScreen } from "./plan-export-screen.js";
+import { type PlanExportDestinationProvider, planExportInputScreen } from "./plan-export-screen.ts";
 
 interface SavedPlanMenuOptions {
 	statusText: string;

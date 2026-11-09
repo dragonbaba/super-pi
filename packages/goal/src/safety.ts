@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ActiveGoal } from "./persistence.js";
+import type { ActiveGoal } from "./persistence.ts";
 
 export interface ToolFreeRepeatState {
 	toolFreeRepeatCount: number;

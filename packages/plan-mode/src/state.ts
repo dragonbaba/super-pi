@@ -2,13 +2,13 @@ import {
 	normalizePlanModeCompletion,
 	PLAN_MODE_COMPLETE_TOOL_NAME,
 	planFromCompletionDetails,
-} from "./completion-tool.js";
+} from "./completion-tool.ts";
 import {
 	IMPLEMENTATION_PLAN_RETENTIONS,
 	type ImplementationPlanRetention,
 	PLAN_MODE_THINKING_LEVELS,
 	type PlanModeFixedThinkingLevel,
-} from "./settings.js";
+} from "./settings.ts";
 
 export type PlanCompletionSource = typeof PLAN_MODE_COMPLETE_TOOL_NAME | "legacy_proposed_plan";
 

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@super-pi/coding-age
 import {
 	CHROME_DEVTOOLS_TOOL_NAME_SET,
 	reconcileChromeDevtoolsTools,
-} from "./active-tool-policy.js";
+} from "./active-tool-policy.ts";
 import {
 	browserCandidateHint,
 	devToolsEndpoint,
@@ -11,10 +11,10 @@ import {
 	launchAttemptLines,
 	launchHint,
 	launchModeLabel,
-} from "./browser-manager.js";
-import { state } from "./runtime.js";
-import { loadSettings, saveSettings, settingsFilePath } from "./settings.js";
-import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.js";
+} from "./browser-manager.ts";
+import { state } from "./runtime.ts";
+import { loadSettings, saveSettings, settingsFilePath } from "./settings.ts";
+import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.ts";
 
 type CommandContext = ExtensionCommandContext;
 type ToolSelectorScreen = "tools";

@@ -62,13 +62,13 @@ test("LSP session transitions drain late acquisitions and own services independe
   runInNewContext(code, { module, exports: module.exports, AbortController, AbortSignal, require(name: string) {
     if (name === "@super-pi/coding-agent") return { defineTool: (tool: unknown) => tool };
     if (name === "typebox") return { Type };
-    if (name === "./limits.js") return { DEFAULT_FILE_LIMIT: 50, MAX_COLLECTED_FILES: 500, MAX_REQUESTED_PATHS: 100 };
-    if (name === "./fix-authorization.js") return {};
-    if (name === "./client-pool.js") return { LspClientPool };
-    if (name === "./adapters.js") return { loadRuntime };
-    if (name === "./files.js") return files;
-    if (name === "./routes.js") return { selectDiagnosticRoutes };
-    if (name === "./runner.js") return { runDiagnostics, textResult: (text: string, details: unknown) => ({ content: [{ type: "text", text }], details }) };
+    if (name === "./limits.ts") return { DEFAULT_FILE_LIMIT: 50, MAX_COLLECTED_FILES: 500, MAX_REQUESTED_PATHS: 100 };
+    if (name === "./fix-authorization.ts") return {};
+    if (name === "./client-pool.ts") return { LspClientPool };
+    if (name === "./adapters.ts") return { loadRuntime };
+    if (name === "./files.ts") return files;
+    if (name === "./routes.ts") return { selectDiagnosticRoutes };
+    if (name === "./runner.ts") return { runDiagnostics, textResult: (text: string, details: unknown) => ({ content: [{ type: "text", text }], details }) };
     throw new Error(name);
   } });
   const first = tools(boundary, module.exports.default), other = tools(otherBoundary, module.exports.default);
@@ -185,11 +185,11 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
         if (name === "node:timers/promises") return { setTimeout: tick };
         if (name === "@super-pi/coding-agent/internal/windows-shell-job") return { WindowsShellJob: { spawn(_cmd: string, _args: unknown, _cwd: string, _env: unknown, _stdin: boolean, signal: AbortSignal) { startupSignal = signal; spawn(); return jobReady; } } };
         if (name === "node:url") return url;
-        if (name === "./command.js") return { resolveCommandPath: () => "fixture", mergeEnvironment: () => ({}), commandPathValue() {} };
-        if (name === "./collections.js") return { EMPTY_READONLY_ARRAY: [] };
-        if (name === "./files.js") return { directoryUri: () => "file:///fixture/" };
-        if (name === "./regex.js") return { COMMAND_SCRIPT_PATTERN: /\.(?:bat|cmd)$/iu, LSP_CONTENT_LENGTH_PATTERN: /Content-Length:\s*(\d+)/iu };
-        if (name === "./text-edits.js") return {};
+        if (name === "./command.ts") return { resolveCommandPath: () => "fixture", mergeEnvironment: () => ({}), commandPathValue() {} };
+        if (name === "./collections.ts") return { EMPTY_READONLY_ARRAY: [] };
+        if (name === "./files.ts") return { directoryUri: () => "file:///fixture/" };
+        if (name === "./regex.ts") return { COMMAND_SCRIPT_PATTERN: /\.(?:bat|cmd)$/iu, LSP_CONTENT_LENGTH_PATTERN: /Content-Length:\s*(\d+)/iu };
+        if (name === "./text-edits.ts") return {};
         throw new Error(name);
       },
       setTimeout(fn: Function, ms: number) { const timer = { fn, ms, refresh() { return this; } }; timers.add(timer); peakTimers = Math.max(peakTimers, timers.size); if (ms === 7) { callbacks.add(fn); settleTimers++; } return timer; },
@@ -251,7 +251,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
       async shutdown() { shutdowns++; if (blocked) throw new Error("cleanup unconfirmed"); this.running = false; initialized?.(); }
     }
     const module = { exports: {} as any };
-    runInNewContext(poolCode, { module, exports: module.exports, require(name: string) { if (name === "node:fs") return { realpathSync: (root: string) => root }; if (name === "./lsp-client.js") return { LspClient: Client }; throw new Error(name); },
+    runInNewContext(poolCode, { module, exports: module.exports, require(name: string) { if (name === "node:fs") return { realpathSync: (root: string) => root }; if (name === "./lsp-client.ts") return { LspClient: Client }; throw new Error(name); },
       setTimeout(fn: Function) { const timer = { fn, unref() {} }; timers.add(timer); return timer; }, clearTimeout(timer: unknown) { timers.delete(timer); },
     });
     const pool = new module.exports.LspClientPool(10), adapter = { name: "fixture", defaultCommand: { command: "fixture", args: [] } };

@@ -6,9 +6,9 @@ import {
 	matchesKey,
 	wrapTextWithAnsi,
 } from "@super-pi/tui";
-import type { ActionMenuItem, MenuMultiSelectItem } from "../types.js";
-import type { MenuChangeResponse, MenuScreenComponent, MultiSelectOptions } from "./contracts.js";
-import { findItemIndex, getSearchText, handleSearchInput, renderFrame, safeMenuText } from "./rendering.js";
+import type { ActionMenuItem, MenuMultiSelectItem } from "../types.ts";
+import type { MenuChangeResponse, MenuScreenComponent, MultiSelectOptions } from "./contracts.ts";
+import { findItemIndex, getSearchText, handleSearchInput, renderFrame, safeMenuText } from "./rendering.ts";
 
 type ToggleRow = { kind: "toggle"; item: MenuMultiSelectItem };
 type ActionRow<ScreenId extends string, ActionId extends string> = {

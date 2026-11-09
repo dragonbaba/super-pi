@@ -3,7 +3,7 @@ import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withFileMutationQueue } from "@super-pi/coding-agent";
-import type { DevToolsPage } from "./runtime.js";
+import type { DevToolsPage } from "./runtime.ts";
 
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 

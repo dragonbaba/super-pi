@@ -1,6 +1,6 @@
 import type { Theme } from "@super-pi/coding-agent";
 import type { Component } from "@super-pi/tui";
-import type { MenuScreen, MenuTransition } from "../types.js";
+import type { MenuScreen, MenuTransition } from "../types.ts";
 
 const MENU_BINDINGS = [
 	"tui.select.up",

@@ -1,5 +1,5 @@
 import { type Input, truncateToWidth, wrapTextWithAnsi } from "@super-pi/tui";
-import type { MenuBinding, MenuKeybindings, MenuScreenComponentOptions } from "./contracts.js";
+import type { MenuBinding, MenuKeybindings, MenuScreenComponentOptions } from "./contracts.ts";
 
 const WHITESPACE_PATTERN = /\s+/gu;
 

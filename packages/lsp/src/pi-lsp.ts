@@ -1,9 +1,9 @@
 import { defineTool, type ExtensionAPI, type ToolDefinition } from "@super-pi/coding-agent";
 import { Type } from "typebox";
-import { DEFAULT_FILE_LIMIT, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.js";
-import { consumeFixAuthorization } from "./fix-authorization.js";
-import type { LspClientPool } from "./client-pool.js";
-import type { LspServerAdapter } from "./types.js";
+import { DEFAULT_FILE_LIMIT, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.ts";
+import { consumeFixAuthorization } from "./fix-authorization.ts";
+import type { LspClientPool } from "./client-pool.ts";
+import type { LspServerAdapter } from "./types.ts";
 
 const STATUS_KEY = "lsp";
 
@@ -52,7 +52,7 @@ export default function lsp(pi: ExtensionAPI) {
 	async function getClientPool() {
 		assertAvailable();
 		if (clientPool) return clientPool;
-		const { LspClientPool } = await import("./client-pool.js");
+		const { LspClientPool } = await import("./client-pool.ts");
 		assertAvailable();
 		return clientPool ??= new LspClientPool();
 	}
@@ -103,10 +103,10 @@ export default function lsp(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const [{ loadRuntime }, { resolveRoot }, { selectDiagnosticRoutes }, runner, pool] =
 				await Promise.all([
-					import("./adapters.js"),
-					import("./files.js"),
-					import("./routes.js"),
-					import("./runner.js"),
+					import("./adapters.ts"),
+					import("./files.ts"),
+					import("./routes.ts"),
+					import("./runner.ts"),
 					getClientPool(),
 				]);
 			const requestedRoot = resolveRoot(params.root, ctx.cwd);
@@ -191,10 +191,10 @@ export default function lsp(pi: ExtensionAPI) {
 			const authorization = input.write ? consumeFixAuthorization(params, toolCallId) : undefined;
 			const [{ loadRuntime }, { resolveRoot }, { selectFixRoute }, { runFix }, pool] =
 				await Promise.all([
-					import("./adapters.js"),
-					import("./files.js"),
-					import("./routes.js"),
-					import("./runner.js"),
+					import("./adapters.ts"),
+					import("./files.ts"),
+					import("./routes.ts"),
+					import("./runner.ts"),
 					getClientPool(),
 				]);
 			const requestedRoot = resolveRoot(input.root, ctx.cwd);
@@ -242,10 +242,10 @@ export default function lsp(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const [{ loadRuntime }, { resolveRoot }, { selectNavigationRoute }, { runNavigation }, pool] =
 				await Promise.all([
-					import("./adapters.js"),
-					import("./files.js"),
-					import("./routes.js"),
-					import("./navigation.js"),
+					import("./adapters.ts"),
+					import("./files.ts"),
+					import("./routes.ts"),
+					import("./navigation.ts"),
 					getClientPool(),
 				]);
 			const requestedRoot = resolveRoot(params.root, ctx.cwd);
@@ -278,8 +278,8 @@ export default function lsp(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			try {
 				const [{ consumeLspConfigNotice, loadRuntime }, command] = await Promise.all([
-					import("./adapters.js"),
-					import("./command.js"),
+					import("./adapters.ts"),
+					import("./command.ts"),
 				]);
 				const { adapters } = loadRuntime(ctx.cwd, {
 					projectTrusted: ctx.isProjectTrusted(),

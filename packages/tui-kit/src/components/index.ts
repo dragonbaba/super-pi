@@ -11,8 +11,8 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@super-pi/tui";
-import type { MenuScreen, MenuSettingItem } from "../types.js";
-import { createBrowseComponent } from "./browse.js";
+import type { MenuScreen, MenuSettingItem } from "../types.ts";
+import { createBrowseComponent } from "./browse.ts";
 import type {
 	BrowseOptions,
 	MenuChangeResponse,
@@ -20,14 +20,14 @@ import type {
 	MenuScreenComponent,
 	MenuScreenComponentOptions,
 	MultiSelectOptions,
-} from "./contracts.js";
-import { DynamicBorder } from "./dynamic-border.js";
-import { createInputComponent, type InputOptions } from "./input.js";
-import { createMultiSelectComponent } from "./multi-select.js";
-import { appendMutedLines, findItem, findValueIndex, getSearchLabel, handleSearchInput, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.js";
-import { createReviewComponent, type ReviewOptions } from "./review.js";
+} from "./contracts.ts";
+import { DynamicBorder } from "./dynamic-border.ts";
+import { createInputComponent, type InputOptions } from "./input.ts";
+import { createMultiSelectComponent } from "./multi-select.ts";
+import { appendMutedLines, findItem, findValueIndex, getSearchLabel, handleSearchInput, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.ts";
+import { createReviewComponent, type ReviewOptions } from "./review.ts";
 
-export { browseDialogLabel, browseDialogPages } from "./browse.js";
+export { browseDialogLabel, browseDialogPages } from "./browse.ts";
 export type {
 	MenuInputSubmit,
 	MenuMultiSelectChange,
@@ -35,9 +35,9 @@ export type {
 	MenuScreenComponentOptions,
 	MenuScreenEvent,
 	MenuSettingChange,
-} from "./contracts.js";
-export { safeMenuText } from "./rendering.js";
-export { reviewDialogPages } from "./review.js";
+} from "./contracts.ts";
+export { safeMenuText } from "./rendering.ts";
+export { reviewDialogPages } from "./review.ts";
 
 export function createMenuScreenComponent<ScreenId extends string, ActionId extends string>(
 	options: MenuScreenComponentOptions<ScreenId, ActionId>,
