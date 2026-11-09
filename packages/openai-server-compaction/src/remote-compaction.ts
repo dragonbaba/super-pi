@@ -25,7 +25,7 @@ import {
   type Usage,
 } from "@super-pi/ai";
 import { complete } from "@super-pi/ai/compat";
-import { getEncoding } from "js-tiktoken";
+import { getEncoding, type Tiktoken } from "js-tiktoken";
 import { isRecord } from "./config.ts";
 import { buildCompactionShapeDiagnostics, type CompactionShapeDiagnostics } from "./shape-diagnostics.ts";
 import {
@@ -100,7 +100,9 @@ const REMOTE_COMPACTION_HEADER_MAP_POOL: Map<string, string>[] = [];
 const MAX_REMOTE_COMPACTION_POOLED_COLLECTIONS = 4;
 const MAX_REMOTE_COMPACTION_POOLED_ENTRIES = 256;
 const RETAINED_MESSAGE_TOKEN_BUDGET = 20_000;
-const RETAINED_MESSAGE_ENCODING = getEncoding("o200k_base");
+// Building the o200k_base table costs about 230 ms and 66 MB of heap, so it
+// exists only while one synchronous truncation needs real token counts.
+let retainedMessageEncoding: Tiktoken | undefined;
 // js-tiktoken's BPE merge cost grows steeply on long repeated non-Latin text.
 // Small code-point-safe chunks keep the real-token bound deterministic without
 // turning a 20K replay cap into a multi-minute CPU path.
@@ -794,11 +796,18 @@ function safeTokenizerChunkEnd(text: string, start: number): number {
   return Math.max(start + 1, end);
 }
 
+function encodeRetainedChunk(chunk: string): number[] {
+  retainedMessageEncoding ??= getEncoding("o200k_base");
+  // User text may spell a special token such as <|endoftext|>. Count it as
+  // ordinary text instead of letting the tokenizer reject the whole history.
+  return retainedMessageEncoding.encode(chunk, [], []);
+}
+
 function countRetainedTextTokens(text: string, stopAfter = Number.POSITIVE_INFINITY): number {
   let tokens = 0;
   for (let start = 0; start < text.length;) {
     const end = safeTokenizerChunkEnd(text, start);
-    tokens += RETAINED_MESSAGE_ENCODING.encode(text.slice(start, end)).length;
+    tokens += encodeRetainedChunk(text.slice(start, end)).length;
     if (tokens > stopAfter) return tokens;
     start = end;
   }
@@ -816,7 +825,7 @@ function truncateRetainedText(text: string, maxTokens: number): { text: string; 
   for (let start = 0; start < text.length && tokens < maxTokens;) {
     const end = safeTokenizerChunkEnd(text, start);
     const sourceChunk = text.slice(start, end);
-    const encoded = RETAINED_MESSAGE_ENCODING.encode(sourceChunk);
+    const encoded = encodeRetainedChunk(sourceChunk);
     const available = maxTokens - tokens;
     if (encoded.length <= available) {
       chunks.push(sourceChunk);
@@ -824,7 +833,7 @@ function truncateRetainedText(text: string, maxTokens: number): { text: string; 
       start = end;
       continue;
     }
-    chunks.push(RETAINED_MESSAGE_ENCODING.decode(encoded.slice(0, available)));
+    chunks.push(retainedMessageEncoding!.decode(encoded.slice(0, available)));
     tokens += available;
     break;
   }
@@ -848,21 +857,41 @@ function truncateMessageToTokenBudget(item: ResponseItem, maxTokens: number): Re
   return content.length > 0 ? { ...item, content } : undefined;
 }
 
+/**
+ * A BPE token covers at least one UTF-8 byte, and a message without text counts
+ * as one token, so this byte total can only overstate the tokenizer's count.
+ */
+function retainedMessagesFitByBytes(prepared: ResponseItem[], maxTokens: number): boolean {
+  let bound = 0;
+  for (const item of prepared) {
+    bound += Math.max(1, Buffer.byteLength(responseMessageText(item), "utf8"));
+    if (bound > maxTokens) return false;
+  }
+  return true;
+}
+
 function truncateRetainedMessages(items: ResponseItem[], maxTokens: number): ResponseItem[] {
+  const prepared: ResponseItem[] = [];
+  for (const item of items) prepared.push(prepareRetainedMessage(item));
+  if (retainedMessagesFitByBytes(prepared, maxTokens)) return prepared;
   let remainingTokens = maxTokens;
   const retainedReversed: ResponseItem[] = [];
-  for (let index = items.length - 1; index >= 0; index--) {
-    if (remainingTokens === 0) break;
-    const item = prepareRetainedMessage(items[index]);
-    const tokenCount = retainedMessageTokens(item, remainingTokens);
-    if (tokenCount <= remainingTokens) {
-      retainedReversed.push(item);
-      remainingTokens -= tokenCount;
-      continue;
+  try {
+    for (let index = prepared.length - 1; index >= 0; index--) {
+      if (remainingTokens === 0) break;
+      const item = prepared[index];
+      const tokenCount = retainedMessageTokens(item, remainingTokens);
+      if (tokenCount <= remainingTokens) {
+        retainedReversed.push(item);
+        remainingTokens -= tokenCount;
+        continue;
+      }
+      const truncated = truncateMessageToTokenBudget(item, remainingTokens);
+      if (truncated) retainedReversed.push(truncated);
+      remainingTokens = 0;
     }
-    const truncated = truncateMessageToTokenBudget(item, remainingTokens);
-    if (truncated) retainedReversed.push(truncated);
-    remainingTokens = 0;
+  } finally {
+    retainedMessageEncoding = undefined;
   }
   return retainedReversed.reverse();
 }
