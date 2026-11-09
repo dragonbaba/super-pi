@@ -1,7 +1,7 @@
 // Explicit acceptance coordinator. Production CodeMode does not import this module.
 import { createHash } from "node:crypto";
-import { parseSandboxTaskRequest } from "../../packages/coding-agent/src/core/sandbox/task-request.ts";
-import { SandboxTaskBinding } from "../../packages/coding-agent/src/core/sandbox/task-binding.ts";
+import { parseSandboxTaskRequest } from "./retired-sandbox/task-request.ts";
+import { SandboxTaskBinding } from "./retired-sandbox/task-binding.ts";
 import { SandboxLifecycle } from "./windows-sandbox-lifecycle.mjs";
 import { TaskVolumeOwner } from "./windows-sandbox-volume.mjs";
 import { WindowsWorkspaceInputCapture } from "./windows-sandbox-workspace-input-capture.mjs";

@@ -12,6 +12,7 @@ const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "image-al
 const exchange = path.join(root, "exchange"); await fs.mkdir(exchange);
 const backend = new WorkspaceSandboxBackend(root, root, "read-only");
 (backend as any).root = root;
+(backend as any).exchange = exchange;
 const bytes = Buffer.alloc(2 * 1024 * 1024); Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(bytes);
 const artifact = { name: "a".repeat(32) + "-0.bin", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
 const weak: WeakRef<Buffer>[] = [];
@@ -21,9 +22,10 @@ function counted(size: number) { allocations++; allocatedBytes += size; return a
 try {
   for (let i = 0; i < 24; i++) {
     await fs.writeFile(path.join(exchange, artifact.name), bytes);
+    (backend as any).artifacts.add(artifact.name);
     Buffer.allocUnsafe = counted;
     let payload: Buffer | undefined;
-    try { payload = await backend.candidate(artifact, true); } finally { Buffer.allocUnsafe = allocate; }
+    try { payload = await backend.candidate(artifact); } finally { Buffer.allocUnsafe = allocate; }
     assert.ok(payload); assert.equal(detectSupportedImageMimeType(payload), "image/png");
     weak.push(new WeakRef(payload)); payload = undefined;
     await backend.releaseArtifact(artifact);

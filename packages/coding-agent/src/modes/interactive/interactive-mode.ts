@@ -4125,7 +4125,7 @@ export class InteractiveMode {
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. Press Esc to cancel it first.");
+						this.showWarning("A command is already running. Press Esc to cancel it first.");
 						this.editor.setText(text);
 						return;
 					}
@@ -8372,8 +8372,8 @@ export class InteractiveMode {
 | \`${dequeue}\` | Restore queued messages |
 | \`${pasteImage}\` | Paste image or text from clipboard |
 | \`/\` | Slash commands |
-| \`!\` | Run bash command |
-| \`!!\` | Run bash command (excluded from context) |
+| \`!\` | Run shell command (PowerShell 7 in sandbox, Bash on host) |
+| \`!!\` | Run shell command (excluded from context) |
 `;
 
 		// Add extension-registered shortcuts
@@ -8481,10 +8481,10 @@ export class InteractiveMode {
 		const extensionRunner = this.session.extensionRunner;
 		const lifecycleGeneration = this.tuiLifecycleGeneration;
 
-		// Emit user_bash event to let extensions intercept
+		// Host-only Bash hooks cannot intercept the sandbox's PowerShell entry.
 		let eventResult: Awaited<ReturnType<typeof extensionRunner.emitUserBash>>;
 		try {
-			eventResult = await extensionRunner.emitUserBash({
+			if (this.session.settingsManager.getExecutionEnvironment() !== "sandbox") eventResult = await extensionRunner.emitUserBash({
 				type: "user_bash",
 				command,
 				excludeFromContext,
@@ -8546,7 +8546,7 @@ export class InteractiveMode {
 		this.ui.requestRender();
 
 		try {
-			const result = await this.session.executeBash(
+			const result = await this.session.executeShellCommand(
 				command,
 				(chunk) => {
 					if (
@@ -8583,7 +8583,7 @@ export class InteractiveMode {
 				bashComponent.setComplete(undefined, false, undefined, undefined, true);
 				this.chatContainer.invalidateViewportChild(bashComponent);
 			}
-			this.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.showError(`Command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 
 		if (this.bashComponent === bashComponent) this.bashComponent = undefined;

@@ -1,7 +1,9 @@
 // Explicit Windows acceptance only; never imported by production or the CI test matrix.
-// Usage: node scripts/acceptance/windows-mxc-preflight.mjs <official wxc-exec.exe> <new report.json> [--allow-win32k] [--file-entry]
-// The optional diagnostic profile permits Win32k calls, keeping all other UI restrictions.
-// It is explicit, never a retry/fallback or a production policy change.
+// Usage: node scripts/acceptance/windows-mxc-preflight.mjs <official wxc-exec.exe> <new report.json>
+//   [--allow-win32k] [--file-entry] [--desktop-shared-clipboard] [--query-ancestors]
+//   [--readonly-project=<path> --read-relative=<file>] [--powershell=<pwsh.exe>]
+// The desktop profile allows clipboard sharing; this script never calls clipboard APIs.
+// Profiles are explicit, never a retry/fallback or a production policy change.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -23,7 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
 import { spawn } from "node:child_process";
-const [mode, root, port, literal] = process.argv.slice(1);
+const [mode, root, port, literal, project, readRelative] = process.argv.slice(1);
 const workspace = path.join(root, "工作区 space");
 if (mode === "cancel") {
   const ready = path.join(workspace, "descendant-ready");
@@ -39,8 +41,19 @@ if (mode === "cancel") {
     try { result[name] = {ok:true, value:operation()}; }
     catch(error) { result[name] = {ok:false, code:error.code}; }
   }
+  if (project) {
+    result.project = { entries:fs.readdirSync(project).length,
+      documentBytes:fs.readFileSync(path.join(project,readRelative)).length };
+  }
   attempt("workspaceRead", () => fs.readFileSync(path.join(workspace,"中文.txt"),"utf8"));
   attempt("workspaceWrite", () => fs.writeFileSync(path.join(workspace,"中文.txt"),"allowed"));
+  attempt("workspaceRenameDelete", () => {
+    const before = path.join(workspace,"rename-before"), after = path.join(workspace,"rename-after");
+    fs.writeFileSync(before,"owned fixture"); fs.renameSync(before,after); fs.unlinkSync(after); return true;
+  });
+  attempt("protectedWrite", () => fs.writeFileSync(path.join(workspace,".sp","canary"),"forbidden"));
+  attempt("protectedDelete", () => fs.unlinkSync(path.join(workspace,".sp","canary")));
+  attempt("protectedRename", () => fs.renameSync(path.join(workspace,".sp"),path.join(workspace,"moved-metadata")));
   attempt("tempWrite", () => fs.writeFileSync(path.join(root,"temporary","scratch"),"allowed"));
   attempt("toolRead", () => fs.readFileSync(path.join(root,"tools","canary"),"utf8"));
   attempt("toolWrite", () => fs.writeFileSync(path.join(root,"tools","canary"),"forbidden"));
@@ -149,10 +162,27 @@ async function main() {
 	assert.equal(process.platform, "win32");
 	assert.equal(process.arch, "x64", "Only the pinned Windows x64 artifact is reviewed");
 	const options = new Set(process.argv.slice(4));
-	assert.ok(process.argv.length >= 4 && options.size === process.argv.length - 4 && [...options].every(option => option === "--allow-win32k" || option === "--file-entry"), "Pass an executor, a new report path, and optional --allow-win32k / --file-entry");
-	const allowWin32k = options.has("--allow-win32k");
+	assert.ok(process.argv.length >= 4 && options.size === process.argv.length - 4 && [...options].every(option => ["--allow-win32k", "--file-entry", "--desktop-shared-clipboard", "--query-ancestors"].includes(option)
+		|| ["--readonly-project=", "--read-relative=", "--powershell="].some(prefix => option.startsWith(prefix))), "Invalid acceptance options");
+	function optionValue(prefix) {
+		const found = [...options].filter(option => option.startsWith(prefix));
+		assert.ok(found.length <= 1, "Repeated " + prefix);
+		return found.length ? found[0].slice(prefix.length) : "";
+	}
+	const desktopSharedClipboard = options.has("--desktop-shared-clipboard");
+	const queryAncestors = options.has("--query-ancestors");
+	const allowWin32k = options.has("--allow-win32k") || desktopSharedClipboard;
+	const projectOption = optionValue("--readonly-project="), readRelative = optionValue("--read-relative=");
+	const project = projectOption ? fs.realpathSync(projectOption) : "";
+	if (project) assert.ok(fs.statSync(project).isDirectory(), "Read-only project must be a directory");
+	assert.equal(Boolean(project), Boolean(readRelative), "Pair --readonly-project with --read-relative");
+	if (project) {
+		const relative = path.relative(project, fs.realpathSync(path.resolve(project, readRelative)));
+		assert.ok(relative && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative), "Read target must stay inside project");
+	}
+	const powershellOption = optionValue("--powershell="), powershell = powershellOption ? fs.realpathSync(powershellOption) : "";
 	const fileEntry = options.has("--file-entry");
-	report.profile = allowWin32k ? "win32k-compatible" : "no-win32k";
+	report.profile = desktopSharedClipboard ? "desktop-shared-clipboard" : allowWin32k ? "win32k-compatible" : "no-win32k";
 	report.nodeEntry = fileEntry ? "file-with-preserve-symlinks-flags" : "controlled-inline-module";
 	const executor = fs.realpathSync(process.argv[2]);
 	const reportPath = path.resolve(process.argv[3]);
@@ -169,12 +199,30 @@ async function main() {
 	const state = path.join(fixture, "dacl-state");
 	const tools = path.join(fixture, "tools");
 	for (const directory of [workspace, temporary, state, tools, path.join(fixture, "outside"), path.join(fixture, "ungranted")]) fs.mkdirSync(directory);
+	// Stop Node's package-scope discovery inside the granted fixture. A fixture
+	// under a repository must not need access to that repository's package.json.
+	fs.writeFileSync(path.join(tools, "package.json"), '{"type":"module"}');
+	fs.writeFileSync(path.join(workspace, "package.json"), '{"type":"commonjs"}');
+	const protectedDirectory = path.join(workspace, ".sp");
+	fs.mkdirSync(protectedDirectory);
+	fs.writeFileSync(path.join(protectedDirectory, "canary"), "unchanged");
 	for (const directory of [tools, path.join(fixture, "outside"), path.join(fixture, "ungranted")]) fs.writeFileSync(path.join(directory, "canary"), "unchanged");
 	fs.writeFileSync(path.join(workspace, "中文.txt"), "initial");
 	fs.writeFileSync(path.join(fixture, "ancestor-canary"), "unreadable-parent-content");
 	fs.symlinkSync(path.join(fixture, "outside"), path.join(workspace, "escape"), "junction");
 	junctionCreated = true;
 	const enumeratePaths = [];
+	if (queryAncestors) {
+		// Directory queries let ordinary Node loaders walk ancestors. This grants
+		// metadata/listing, not file contents or writes, and never scans a tree.
+		const ancestors = new Set();
+		for (const directory of [workspace, temporary, tools, path.dirname(process.execPath), ...(powershell ? [path.dirname(powershell)] : [])]) {
+			for (let parent = path.dirname(directory);;) {
+				ancestors.add(parent); const next = path.dirname(parent); if (next === parent) break; parent = next;
+			}
+		}
+		enumeratePaths.push(...ancestors);
+	}
 	const workload = path.join(tools, "中文 entry.mjs");
 	if (fileEntry) {
 		fs.mkdirSync(path.join(tools, "nested"));
@@ -186,8 +234,9 @@ async function main() {
 	report.enumeratePaths = enumeratePaths;
 	// Node's maintained loader flags avoid ancestor realpath walks without adding
 	// recursive directory-enumeration grants. Scoped to this controlled worker only.
-	const nodeEntryArguments = fileEntry ? ["--preserve-symlinks", "--preserve-symlinks-main", workload] : ["--input-type=module", "-e", WORKLOAD, "--"];
-	const env = { SystemRoot: process.env.SystemRoot, WINDIR: process.env.SystemRoot, LOCALAPPDATA: temporary, TEMP: temporary, TMP: temporary, PATH: `${path.dirname(process.execPath)};${process.env.SystemRoot}\\System32`, MXC_DACL_STATE_DIR: state };
+	const nodeEntryArguments = fileEntry ? queryAncestors ? [workload] : ["--preserve-symlinks", "--preserve-symlinks-main", workload] : ["--input-type=module", "-e", WORKLOAD, "--"];
+	if (fileEntry && queryAncestors) report.nodeEntry = "ordinary-file-entry";
+	const env = { SystemRoot: process.env.SystemRoot, WINDIR: process.env.SystemRoot, COMSPEC: `${process.env.SystemRoot}\\System32\\cmd.exe`, PATHEXT: ".COM;.EXE;.BAT;.CMD", LOCALAPPDATA: temporary, TEMP: temporary, TMP: temporary, TMPDIR: temporary, PATH: `${path.dirname(process.execPath)};${process.env.SystemRoot}\\System32`, MXC_DACL_STATE_DIR: state };
 	assert.ok(env.SystemRoot, "SYSTEMROOT is required");
 	server = net.createServer(socket => { connections++; socket.destroy(); });
 	await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -204,10 +253,10 @@ async function main() {
 		fallback: { allowDaclMutation: false }, telemetry: { enabled: false },
 		lifecycle: { destroyOnExit: true, preservePolicy: false },
 		process: { commandLine: "node --version", cwd: workspace, timeout: 10_000, env: Object.entries(env).filter(([key]) => key !== "MXC_DACL_STATE_DIR").map(([key, value]) => `${key}=${value}`), inheritDefaultEnv: false },
-		filesystem: { readwritePaths: [workspace, temporary], readonlyPaths: [tools, path.dirname(process.execPath)], deniedPaths: [path.join(fixture, "outside")] },
+		filesystem: { readwritePaths: [workspace, temporary], readonlyPaths: [tools, path.dirname(process.execPath), protectedDirectory, ...(project ? [project] : []), ...(powershell ? [path.dirname(powershell)] : [])], deniedPaths: [path.join(fixture, "outside")] },
 		network: { egress: { default: "deny" }, ingress: { default: "deny", hostLoopback: "deny" } },
-		ui: { disable: !allowWin32k, clipboard: "none", injection: false },
-		processContainer: { filesystem: { enumeratePaths }, ui: { isolation: "container", desktopSystemControl: false, systemSettings: "none", ime: false } },
+		ui: { disable: !allowWin32k, clipboard: desktopSharedClipboard ? "all" : "none", injection: false },
+		processContainer: { capabilities: desktopSharedClipboard ? ["registryRead"] : [], filesystem: { enumeratePaths }, ui: { isolation: desktopSharedClipboard ? "desktop" : "container", desktopSystemControl: false, systemSettings: "none", ime: false } },
 	};
 	const config = path.join(fixture, "policy.json");
 	{
@@ -223,25 +272,54 @@ async function main() {
 		for (const mode of ["write", "plan"]) {
 			if (mode === "plan") { policy.filesystem.readwritePaths = [temporary]; policy.filesystem.readonlyPaths.push(workspace); }
 			fs.writeFileSync(config, JSON.stringify(policy));
-			const result = requireSuccess(await invoke(executor, [config, "--", process.execPath, ...nodeEntryArguments, mode, fixture, String(port), ARGUMENT], workspace, env));
+			const started = performance.now();
+			const result = requireSuccess(await invoke(executor, [config, "--", process.execPath, ...nodeEntryArguments, mode, fixture, String(port), ARGUMENT, project, readRelative], workspace, env));
+			result.elapsedMs = Math.round(performance.now() - started);
 			report[mode] = result;
 			check(mode + "-files-argv-stdio-loopback", () => {
 				assert.equal(result.cwd, workspace); assert.equal(result.literal, ARGUMENT); assert.equal(result.stdin, STDIN);
 				assert.equal(result.workspaceRead.ok, true); assert.equal(result.toolRead.value, "unchanged"); assert.equal(result.tempWrite.ok, true);
-				if (mode === "write") assert.equal(result.workspaceWrite.ok, true); else denied(result.workspaceWrite);
-				for (const field of ["toolWrite", "outsideRead", "outsideWrite", "ungrantedRead", "ungrantedList", "ancestorContentRead", "junctionRead"]) denied(result[field]);
+				if (mode === "write") { assert.equal(result.workspaceWrite.ok, true); assert.equal(result.workspaceRenameDelete.ok, true); }
+				else { denied(result.workspaceWrite); denied(result.workspaceRenameDelete); }
+				for (const field of ["protectedWrite", "protectedDelete", "protectedRename", "toolWrite", "outsideRead", "outsideWrite", "ungrantedRead", "ancestorContentRead", "junctionRead"]) denied(result[field]);
+				if (queryAncestors) assert.deepEqual(result.ungrantedList, { ok: true, value: ["canary"] });
+				else denied(result.ungrantedList);
 				if (fileEntry) assert.deepEqual(result.imports, ["esm-loaded", "commonjs-loaded"]);
-				denied(result.driveRootMetadata);
+				if (queryAncestors) assert.equal(result.driveRootMetadata.ok, true);
+				else denied(result.driveRootMetadata);
 				assert.equal(result.loopback.connected, false); assert.equal(connections, 1);
 				assert.equal(fs.readFileSync(path.join(workspace, "中文.txt"), "utf8"), "allowed");
 				assert.equal(fs.readFileSync(path.join(tools, "canary"), "utf8"), "unchanged");
 				assert.equal(fs.readFileSync(path.join(fixture, "outside", "canary"), "utf8"), "unchanged");
+				assert.equal(fs.readFileSync(path.join(protectedDirectory, "canary"), "utf8"), "unchanged");
 				assert.equal(fs.existsSync(path.join(fixture, "outside", "new")), false);
+				if (project) {
+					assert.equal(result.project.entries, fs.readdirSync(project).length);
+					assert.equal(result.project.documentBytes, fs.statSync(path.join(project, readRelative)).size);
+				}
 			});
 		}
 		policy.filesystem.readwritePaths = [workspace, temporary];
 		policy.filesystem.readonlyPaths.pop();
 		fs.writeFileSync(config, JSON.stringify(policy));
+		if (powershell) {
+			// Ordinary shell and package launcher, not a specially rewritten command.
+			// Check output AND stderr: PowerShell can exit 0 after a script error.
+			const script = path.join(tools, "shell-check.ps1");
+			fs.writeFileSync(script, '$ErrorActionPreference="Stop"; if ($PSVersionTable.PSVersion.Major -ne 7) { throw "PowerShell 7 required" }; @{ok=$true; edition=$PSVersionTable.PSEdition} | ConvertTo-Json -Compress');
+			const started = performance.now();
+			const shell = requireSuccess(await invoke(executor, [config, "--", powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script], workspace, env));
+			check("ordinary-powershell-7", () => assert.deepEqual(shell, { ok: true, edition: "Core" }));
+			report.powershellMs = Math.round(performance.now() - started);
+			const npmStarted = performance.now();
+			const npm = await invoke(executor, [config, "--", powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "npm --version"], workspace, env);
+			check("ordinary-npm-launcher", () => {
+				assert.equal(npm.expired, false); assert.equal(npm.overflow, false); assert.equal(npm.code, 0);
+				assert.equal(npm.errors, ""); assert.equal(npm.observation.outputDrained, true);
+				assert.match(npm.output.trim(), /^\d+\.\d+\.\d+$/);
+			});
+			report.npm = { version: npm.output.trim(), elapsedMs: Math.round(performance.now() - npmStarted) };
+		}
 		const canceled = await invoke(executor, [config, "--", process.execPath, ...nodeEntryArguments, "cancel", fixture, String(port)], workspace, env, true);
 		check("nested-job-descendant-cancel-and-drain", () => {
 			assert.equal(canceled.canceled, true); assert.equal(canceled.expired, false); assert.equal(canceled.overflow, false);
@@ -251,7 +329,7 @@ async function main() {
 		report.jobs = windowsShellJobDiagnostics();
 		check("no-owned-handles-or-dacl-state", () => {
 			assert.equal(report.jobs.handles, 0); assert.equal(report.jobs.processHandles, 0);
-			assert.equal(report.jobs.created, 4); assert.ok(report.jobs.cleanupChecks >= 4);
+			assert.equal(report.jobs.created, powershell ? 6 : 4); assert.ok(report.jobs.cleanupChecks >= report.jobs.created);
 			assert.deepEqual(fs.readdirSync(state), []);
 		});
 		report.passed = true;

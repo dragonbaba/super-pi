@@ -1,7 +1,6 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
-import { SessionSandbox } from "./sandbox/session-sandbox.ts";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
@@ -919,7 +918,6 @@ export class AgentSession {
 	private _evidenceLeaf: string | null = null;
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private readonly _codemode: CodemodeController;
-	private readonly _sandboxCommands?: SessionSandbox;
 	private _workspaceSandbox?: WorkspaceSandboxTools;
 	/** Sandbox network consent for this session (R5); survives reload rebuilds, never persisted. */
 	private readonly _sandboxNetwork = new SandboxNetworkSession();
@@ -1051,14 +1049,10 @@ export class AgentSession {
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), networkSession: this._sandboxNetwork, directories: this.settingsManager.getSessionDirectories(), privateDirectories: this.settingsManager.getSandboxPrivateDirectories() });
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), networkSession: this._sandboxNetwork, directories: this.settingsManager.getSessionDirectories() });
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (!parentExecution && this.settingsManager.getExecutionEnvironment() === "sandbox") {
-			if (this._operationOptions) throw new Error("[SANDBOX_UNSUPPORTED] Experimental host operation journals require trusted-host execution");
-			this._sandboxCommands = new SessionSandbox(() => this._resourceLoader.getExtensions().runtime,
-				resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-tasks"), undefined,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath() });
-			this._codemode.setCommandSandbox(this._sandboxCommands);
+			throw new Error("[SANDBOX_MIGRATION] The legacy inputs/writes VM backend has retired. Select permissionMode read-only or sandbox-write to use MXC.");
 		}
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
@@ -1081,7 +1075,7 @@ export class AgentSession {
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
-		this._mcpEnabled = config.noMcp !== true && !this._sandboxCommands && !this._workspaceSandbox;
+		this._mcpEnabled = config.noMcp !== true && !this._workspaceSandbox;
 		this._toolSelection = config.toolSelection;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = { ...(config.sessionStartEvent ?? { type: "session_start", reason: "startup" }), mcpEnabled: this._mcpEnabled };
@@ -2519,12 +2513,15 @@ export class AgentSession {
 		return owner.readArtifact(id, this.agent.state.messages);
 	}
 
-	/**
-	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
-	 */
+	private isPowerShellAvailable(): boolean {
+		if (this._resourceLoader.getExtensions().runtime.parentExecution) return this._baseToolDefinitions.has("powershell");
+		return process.platform === "win32" && (this._workspaceSandbox !== undefined
+			|| this.settingsManager.getPowerShellStatus()?.available !== false && this._powerShellToolState.disabledReason === undefined);
+	}
+
+	/** Get configured tool schemas, descriptions, availability and source metadata. */
 	getAllTools(): ToolInfo[] {
-		const powerShellAvailable = process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false
-			&& this._powerShellToolState.disabledReason === undefined;
+		const powerShellAvailable = this.isPowerShellAvailable();
 		const tools: ToolInfo[] = [];
 		for (const { definition, sourceInfo } of this._toolDefinitions.values()) tools.push({
 			name: definition.name,
@@ -5094,7 +5091,7 @@ export class AgentSession {
 
 		if (!preservePlanSelection && selection) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
+				if (toolName === "powershell" && !this.isPowerShellAvailable()) continue;
 				if (selection.adds(toolName)) nextActiveToolNames.push(toolName);
 			}
 		}
@@ -5103,7 +5100,7 @@ export class AgentSession {
 			// selection. Still replace active wrappers and rebuild their descriptions below.
 		} else if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (selection && toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
+				if (selection && toolName === "powershell" && !this.isPowerShellAvailable()) continue;
 				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
@@ -5188,9 +5185,7 @@ export class AgentSession {
 
 		if (!this._baseToolsOverride && !this._workspaceSandbox) this._resourceLoader.getExtensions().runtime.nativeFiles?.install(baseToolDefinitions,
 			!this._allowedToolNames || this._allowedToolNames.has("edit") || this._allowedToolNames.has("write") || this._allowedToolNames.has("file_batch"), this._operationOptions !== undefined);
-		if (this._sandboxCommands && !this._baseToolsOverride) baseToolDefinitions.powershell = this._sandboxCommands.definition();
-		this._workspaceSandbox?.install(baseToolDefinitions);
-		if (this._sandboxCommands && this._baseToolsOverride) throw new Error("[SANDBOX_UNSUPPORTED] Host tool overrides require explicit trusted-host execution");
+		if (this._workspaceSandbox) baseToolDefinitions = this._workspaceSandbox.install(baseToolDefinitions);
 		if (Object.hasOwn(baseToolDefinitions, CODEMODE_NAME)) throw new Error("codemode is a reserved built-in orchestration tool");
 		baseToolDefinitions[CODEMODE_NAME] = this._codemode.definition;
 		const nativeTasks = this._resourceLoader.getExtensions().runtime.nativeTasks;
@@ -5237,7 +5232,6 @@ export class AgentSession {
 				await boundary.waitForPreparations();
 				await this.waitForIdle();
 				await runner.drainExecution();
-				await this._sandboxCommands?.drain();
 				if (boundary.isDisposed) await this._workspaceSandbox?.close();
 				else await this._workspaceSandbox?.drain();
 				if (this._unconfirmedBashOwners.size) throw new Error("[SHELL_CLEANUP_UNCONFIRMED] A command backend did not confirm process-family cleanup; execution remains closed.");
@@ -5254,8 +5248,7 @@ export class AgentSession {
 			? Object.keys(this._baseToolsOverride)
 			: [...getDefaultToolNames(), ...(nativeTasks ? ["tasks"] : []), ...(extensionsResult.runtime.nativeFiles ? ["delete", "move", "file_batch"] : [])];
 		const requestedActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
-		const powerShellAvailable =
-			process.platform === "win32" && this.settingsManager.getPowerShellStatus()?.available !== false;
+		const powerShellAvailable = this.isPowerShellAvailable();
 		const baseActiveToolNames: string[] = [];
 		for (const name of requestedActiveToolNames) {
 			if (name !== "powershell" || powerShellAvailable) baseActiveToolNames.push(name);
@@ -5273,7 +5266,7 @@ export class AgentSession {
 		await emitSessionShutdownEvent(oldRunner, { type: "session_shutdown", reason: "reload" });
 		oldRunner.invalidate();
 		await this.settingsManager.reload();
-		if ((this.settingsManager.getExecutionEnvironment() === "sandbox") !== Boolean(this._sandboxCommands || this._workspaceSandbox))
+		if ((this.settingsManager.getExecutionEnvironment() === "sandbox") !== Boolean(this._workspaceSandbox))
 			throw new Error("Execution environment changes require a new session runtime");
 		await initializePowerShellPersistence(this.settingsManager);
 		hydratePowerShellToolState(this.settingsManager, this._powerShellToolState);
@@ -5462,8 +5455,7 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
-		if (this._workspaceSandbox) return this.executeWorkspaceBash(command, onChunk, options);
-		if (this._sandboxCommands) throw new Error("[SANDBOX_UNSUPPORTED] The legacy explicit-input SDK backend supports PowerShell only");
+		if (this._workspaceSandbox) throw new Error("[SANDBOX_UNSUPPORTED] Bash is unavailable in Windows sandbox mode; use the PowerShell 7 tool or the interactive command entry.");
 		const policy = this._resourceLoader.getExtensions().runtime.nativePermissions;
 		if (policy) {
 			const input = { command, cwd: this._cwd };
@@ -5510,17 +5502,22 @@ export class AgentSession {
 		}
 	}
 
-	private async executeWorkspaceBash(command: string, onChunk?: (chunk: string) => void,
+	/** Interactive ! entry uses the current environment's shell; explicit Bash APIs retain Bash semantics. */
+	executeShellCommand(command: string, onChunk?: (chunk: string) => void,
+		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations }): Promise<BashResult> {
+		return this._workspaceSandbox ? this.executeWorkspacePowerShell(command, onChunk, options) : this.executeBash(command, onChunk, options);
+	}
+	private async executeWorkspacePowerShell(command: string, onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations }): Promise<BashResult> {
 		if (options?.operations) throw new Error("[SANDBOX_UNSUPPORTED] Custom host command operations cannot enter a workspace sandbox");
 		const runtime = this._resourceLoader.getExtensions().runtime, boundary = runtime.executionBoundary;
-		const definition = this._workspaceSandbox!.definition("bash")!, input = { command }, id = options?.id ?? "direct-user-command";
+		const definition = this._workspaceSandbox!.definition("powershell")!, input = { command }, id = options?.id ?? "direct-user-command";
 		const ctx = this._extensionRunner.createContext(), controller = new AbortController();
 		boundary.assertCurrent(); boundary.beginPreparation(); this._bashAbortControllers.add(controller);
 		try {
-			const permission = await runtime.nativePermissions!.authorize({ type: "tool_call", toolName: "bash", toolCallId: id, input }, ctx, definition, true);
+			const permission = await runtime.nativePermissions!.authorize({ type: "tool_call", toolName: "powershell", toolCallId: id, input }, ctx, definition, true);
 			try {
-				permission.consume(input, id, "bash", controller.signal);
+				permission.consume(input, id, "powershell", controller.signal);
 				const toolResult = await definition.execute(id, input, controller.signal, undefined, ctx);
 				const facts = readShellExecution(toolResult.details); let output = "";
 				for (const block of toolResult.content) if (block.type === "text") output += block.text;

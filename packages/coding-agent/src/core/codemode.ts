@@ -6,7 +6,6 @@ import { assignCodemodeIdentifiers, renderToolSignature } from "@super-pi/codemo
 import { parseCodemodeSource } from "@super-pi/codemode/source";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolDefinition, CodemodeReadEvent, ExtensionContext } from "./extensions/types.ts";
-import type { SessionSandbox } from "./sandbox/session-sandbox.ts";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
 import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
 	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
@@ -158,9 +157,6 @@ export class CodemodeController {
 	private pendingStore: { id: string; writes: CodemodeStoreWrites } | undefined;
 	private restoreError: string | undefined;
 	private closed = false;
-	private commandSandbox?: SessionSandbox;
-	private readonly dispatchSandboxChild = (invocation: Invocation, name: string, input: Record<string, unknown>, allowFailure: boolean) =>
-		this.runChild(invocation, name, input, allowFailure) as Promise<{ isError?: boolean; [key: string]: unknown }>;
 	private readonly saveStore: (values: Readonly<Record<string, unknown>>) => void;
 	private readonly saveCall: ((entry: unknown) => void) | undefined;
 	private readonly saveResult: ((entry: unknown) => void) | undefined;
@@ -175,10 +171,6 @@ export class CodemodeController {
 			parameters: CODEMODE_PARAMETERS, constrainedSampling: CODEMODE_SAMPLING, orchestration: true, executionMode: "sequential",
 			prepareArguments: args => typeof args === "string" ? { code: args } : args as { code: string },
 			execute: (_id, args, signal, _update, ctx, context) => this.execute((args as { code: string }).code, context, signal, ctx) };
-	}
-	setCommandSandbox(owner: SessionSandbox | undefined): void {
-		if (this.current) throw new Error("Cannot change command backend during CodeMode execution");
-		this.commandSandbox = owner;
 	}
 	recordInvocation(parent: string | undefined, id: string, name: string, args: unknown): void {
 		if (!parent || parent !== this.current?.context.parentToolCallId || !CODEMODE_MUTATION_NAMES.has(name)) return;
@@ -324,12 +316,6 @@ export class CodemodeController {
 				throw new Error("callTool options must be an object with an optional boolean allowFailure");
 			}
 			const allowFailure = (options as { allowFailure?: boolean } | undefined)?.allowFailure === true;
-			if (name === "powershell" && this.commandSandbox) {
-				if (!invocation.extensionContext || !invocation.signal || !args || typeof args !== "object" || Array.isArray(args))
-					throw new Error("Sandbox execution requires a live CodeMode session and object arguments");
-				return await this.commandSandbox.dispatch(args as Record<string, unknown>, invocation.extensionContext,
-					invocation.context, invocation.signal, this.dispatchSandboxChild, invocation, allowFailure);
-			}
 			return await this.runChild(invocation, name, args, allowFailure);
 		}
 		catch (error) { invocation.failed = true; throw error; }
@@ -702,7 +688,6 @@ export class CodemodeController {
 		this.documentationSnapshot = undefined;
 		try {
 			await this.sandbox?.close();
-			await this.commandSandbox?.close();
 		} finally {
 			this.sandbox = undefined;
 			this.tools = EMPTY_TOOLS;

@@ -7,7 +7,7 @@ import ts from "typescript";
 test("image sniffing and guest artifact transport add no per-byte callbacks, regexes or arrays", () => {
   for (const [file, names] of [
     ["packages/coding-agent/src/utils/image-signature.mjs", undefined],
-    ["packages/coding-agent/src/core/sandbox/workspace-worker.mjs", ["readImage", "fileHash"]],
+    ["packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", ["read", "readHandle"]],
   ] as const) {
     const source = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
     for (const node of source.statements) if (ts.isFunctionDeclaration(node) && (!names || (names as readonly string[]).includes(node.name!.text))) {

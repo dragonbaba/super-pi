@@ -218,8 +218,8 @@ test("project deny and ask rules apply in every tier; allow rules do not lift ou
     await host.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
     await host.owner.authorizeFileObservation(host.ctx, ["a.txt"]);
     const sandbox = await fixture(t, "sandbox", "sandbox-write");
-    await sandbox.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
-    assert.equal(await sandbox.decide("bash", { command: "git push" }), "deny");
+    await sandbox.writeRules([{ tool: "powershell", decision: "deny", command: "git push *" }]);
+    assert.equal(await sandbox.decide("powershell", { command: "git push" }), "deny");
     const restricted = await fixture(t, "trusted-host", "host-restricted"), outside = await temporary(t, "sp-project-outside-");
     await restricted.writeRules([{ tool: "bash", decision: "allow" }]);
     assert.equal(await restricted.decide("bash", { command: "npm test" }), "allow");
@@ -235,11 +235,11 @@ test("whole-tool shell rules, batch operations and non-ASCII PowerShell spelling
     const rules = new ProjectRuleSet([{ tool: "powershell", decision: "deny", command: "npm run DÉPLOY *" }]);
     for (const word of ["DÉPLOY", "déploy"]) assert.equal(rules.matchShellWords(true, ["npm", "run", word, "prod"]), RULE_DENY, word);
     // A quote inside a literal heredoc body does not swallow the command after the terminator.
-    const sandbox = await fixture(t, "sandbox", "sandbox-write");
-    await sandbox.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
-    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\nEOF\ngit push origin main" }), "deny");
-    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\n'\ngit push" }), "ask");
-    assert.equal(await sandbox.decide("bash", { command: "cat <<'EOF'\ngit push\nEOF" }), "allow");
+    const heredoc = await fixture(t, "trusted-host", "host-write");
+    await heredoc.writeRules([{ tool: "bash", decision: "deny", command: "git push *" }]);
+    assert.equal(await heredoc.decide("bash", { command: "cat <<'EOF'\n'\nEOF\ngit push origin main" }), "deny");
+    assert.equal(await heredoc.decide("bash", { command: "cat <<'EOF'\n'\ngit push" }), "ask");
+    assert.equal(await heredoc.decide("bash", { command: "cat <<'EOF'\ngit push\nEOF" }), "allow");
     // The host owner rewrites an interpreter heredoc for its own analysis; rules see the words as written.
     await host.writeRules([{ tool: "bash", decision: "deny", command: "node" }]);
     assert.equal(await host.decide("bash", { command: "node <<'EOF'\nconsole.log(1)\nEOF" }), "deny");

@@ -5,8 +5,8 @@ import { mkdtemp, open, lstat, realpath, unlink, rmdir } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
-import { parseSandboxTaskRequest, sandboxGuestCwd, WINDOWS_SANDBOX_PROFILE } from "../packages/coding-agent/src/core/sandbox/task-request.ts";
-import { SandboxTaskBinding } from "../packages/coding-agent/src/core/sandbox/task-binding.ts";
+import { parseSandboxTaskRequest, sandboxGuestCwd, WINDOWS_SANDBOX_PROFILE } from "../scripts/acceptance/retired-sandbox/task-request.ts";
+import { SandboxTaskBinding } from "../scripts/acceptance/retired-sandbox/task-binding.ts";
 import { SessionFiles } from "../packages/coding-agent/src/core/files/session-files.ts";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";

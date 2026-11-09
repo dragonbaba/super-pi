@@ -11,7 +11,7 @@ import type { TSchema } from "typebox";
 
 export const WORKSPACE_MESSAGE_PREFIX = "sp-workspace-v1:";
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
-const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "delete", "move", "file_batch", "bash"]);
+const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "delete", "move", "file_batch", "bash", "powershell"]);
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SEARCH_TOOLS = new Set(["grep", "find", "ls"]);
 const READY_TIMEOUT_MS = 30_000;
@@ -81,6 +81,7 @@ export class SubagentExecution {
         this.parentSignal = options.signal; this.parentToolCallId = options.toolCallId;
         for (const name of options.tools) {
             if (!WORKSPACE_TOOLS.has(name) || !options.profile.writable && !READ_TOOLS.has(name)) continue;
+            if (name === "bash" && (options.profile.mode === "read-only" || options.profile.mode === "sandbox-write")) continue;
             const definition = definitions.get(name);
             const tool = tools.get(name);
             if (!definition || !tool) throw new Error(`Parent tool is unavailable: ${name}`);
@@ -96,7 +97,7 @@ export class SubagentExecution {
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected tool arguments object");
         const args = { ...input } as Record<string, any>;
         // Only structured path fields change base. Shell source is passed through unchanged.
-        if (name === "bash") {
+        if (name === "bash" || name === "powershell") {
             // Child profiles do not expose tasks controls. Preserve that existing background admission rule.
             if (args.background === true) throw new Error("Subagent shells require foreground execution; the child has no shell task-management tools");
             if (args.cwd !== undefined) args.cwd = resolve(this.profile.cwd, args.cwd);
@@ -198,7 +199,7 @@ export class SubagentExecutionServer {
     }
 }
 
-/** Child runtime installs these proxies instead of local native files, tasks or a second VM. */
+/** Child runtime installs these proxies instead of local files, tasks or another isolation owner. */
 export class SubagentParentClient {
     profile!: SubagentExecutionProfile;
     private descriptors: Descriptor[] = [];

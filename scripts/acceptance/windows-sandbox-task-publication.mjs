@@ -2,8 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { assertSandboxTaskRequest } from "../../packages/coding-agent/src/core/sandbox/task-request.ts";
-import { TaskPackageBuilder, TASK_PACKAGE_LIMITS } from "../../packages/coding-agent/src/core/sandbox/task-package.ts";
+import { assertSandboxTaskRequest } from "./retired-sandbox/task-request.ts";
+import { TaskPackageBuilder, TASK_PACKAGE_LIMITS } from "./retired-sandbox/task-package.ts";
 import { WindowsWorkspaceInputCapture } from "./windows-sandbox-workspace-input-capture.mjs";
 import { nativePrivateIdentity } from "./windows-sandbox-volume-candidate-private.mjs";
 

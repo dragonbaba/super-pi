@@ -33,8 +33,8 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live image rea
     console.log("SANDBOX_IMAGE_LIVE " + JSON.stringify({ mode, dist: process.env.SUPERPI_SANDBOX_USE_DIST === "1", imageBytes: png.length, imageReads: 2, starts: 1, attachmentsRemaining: 0 }));
   } finally {
     await owner.close(); await runtime.executionBoundary.dispose();
-    assert.equal(owner.diagnostics.vm, false); assert.equal(owner.diagnostics.pending, false);
-    assert.equal(owner.diagnostics.ownedArtifacts, 0); assert.equal(owner.diagnostics.sourceFiles, 0);
+    assert.equal(owner.diagnostics.process.active, false); assert.equal(owner.diagnostics.pending, false);
+    assert.equal(owner.diagnostics.ownedArtifacts, 0); assert.equal(owner.diagnostics.process.retainedStreams, 0);
     assert.equal(await fs.realpath(root), root); await fs.rm(root, { recursive: true });
   }
 });

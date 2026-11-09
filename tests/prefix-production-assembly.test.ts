@@ -133,6 +133,7 @@ test("production assembly is deterministic without test-side resource sorting", 
 	const capture = async (creationOrder: readonly string[], basePrompt?: string): Promise<string> => {
 		writeSkills(skillsRoot, creationOrder);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setPermissionModeForSession("host-write");
 		const compositions: SystemPromptComposition[] = [];
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
@@ -229,6 +230,7 @@ test("production assembly diagnoses context and tool causes behind aggregate pro
 	const capture = async (contextContent: string, tools: Array<"read" | "write">, basePrompt?: string) => {
 		writeFileSync(join(cwd, "AGENTS.md"), contextContent);
 		const settingsManager = SettingsManager.create(cwd, agentDir);
+		settingsManager.setPermissionModeForSession("host-write");
 		const resourceLoader = new DefaultResourceLoader({
 			cwd,
 			agentDir,

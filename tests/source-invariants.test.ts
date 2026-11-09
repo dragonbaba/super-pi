@@ -6,35 +6,6 @@ import ts from "typescript";
 import { isUtf8 } from "node:buffer";
 import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
 
-test("sandbox text editing refuses invalid UTF-8 instead of rewriting replacement characters", () => {
-  const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
-  const helpers = source.statements.filter(node => ts.isFunctionDeclaration(node) && ["need", "needInput", "mutate"].includes(node.name?.text ?? "") || ts.isClassDeclaration(node) && node.name?.text === "WorkspaceInputError").map(node => node.getText(source)).join("\n");
-  let writes = 0;
-  const mutate = new Function("fs", "path", "local", "read", "sha", "isUtf8", "FILE_LIMIT", "let phase='request';\n" + helpers + "\nreturn mutate;")(
-    { writeFileSync() { writes++; } }, {}, (_root: string, name: string) => name, () => Buffer.from([97, 255, 98]), () => "snapshot", isUtf8, 2 * 1024 * 1024,
-  );
-  assert.throws(() => mutate("fixture", "edit", { path: "file", snapshot: "snapshot", edits: [{ oldText: "a", newText: "c" }] }, MAX_WRITE_BYTES), /UTF-8/);
-  assert.equal(writes, 0);
-});
-
-test("guest writes, edits and command candidates obey the host-supplied native byte budget", () => {
-  const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
-  const helpers = source.statements.filter(node => ts.isFunctionDeclaration(node) && ["need", "needInput", "mutate", "changes"].includes(node.name?.text ?? "") || ts.isClassDeclaration(node) && node.name?.text === "WorkspaceInputError").map(node => node.getText(source)).join("\n");
-  let writes = 0, bytes = Buffer.alloc(MAX_WRITE_BYTES, 65);
-  const { mutate, changes } = new Function("fs", "path", "local", "read", "sha", "isUtf8", "catalog", "OUTPUT_LIMIT", "let phase='request';\n" + helpers + "\nreturn { mutate, changes };")(
-    { existsSync: () => false, mkdirSync() {}, writeFileSync() { writes++; } }, { dirname: () => "." }, (_root: string, name: string) => name,
-    () => bytes, () => "snapshot", isUtf8, () => new Map([["file", "changed"]]), 16 * 1024 * 1024,
-  );
-  mutate("fixture", "write", { path: "file", content: bytes.toString() }, MAX_WRITE_BYTES);
-  assert.equal(writes, 1);
-  assert.equal(changes(new Map(), "fixture", undefined, MAX_WRITE_BYTES).length, 1);
-  bytes = Buffer.alloc(MAX_WRITE_BYTES + 1, 65);
-  assert.throws(() => mutate("fixture", "write", { path: "file", content: bytes.toString() }, MAX_WRITE_BYTES), /native write limit/);
-  assert.throws(() => mutate("fixture", "edit", { path: "file", snapshot: "snapshot", edits: [{ oldText: bytes.toString(), newText: bytes.toString() }] }, MAX_WRITE_BYTES), /native write limit/);
-  assert.throws(() => changes(new Map(), "fixture", undefined, MAX_WRITE_BYTES), /native write limit/);
-  assert.equal(writes, 1);
-});
-
 test("permission history and Escape navigation avoid repeated branch arrays and callback creation", () => {
   const policy = ts.createSourceFile("execution-policy.ts", readFileSync("packages/coding-agent/src/core/execution-policy.ts", "utf8"), ts.ScriptTarget.Latest, true);
   const owner = policy.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "SessionExecutionPolicy") as ts.ClassDeclaration;
@@ -60,7 +31,7 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
 const EXCLUDED_DIRECTORIES = new Set(["dist", "node_modules", "vendor"]);
 
 test("sandbox literal search scans monotonically and bounds rows without line arrays", t => {
-  const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/workspace-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
+  const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
   const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "grepRows") as ts.FunctionDeclaration;
   assert.ok(helper);
   function inspect(node: ts.Node): void {
@@ -70,15 +41,17 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
     ts.forEachChild(node, inspect);
   }
   inspect(helper.body!);
-  // Execute the actual pure guest helper without booting its VM-only entry point.
-  const search = new Function("SEARCH_ROWS", helper.getText(source) + "\nreturn grepRows;")(200);
+  const append = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "appendSearchRow") as ts.FunctionDeclaration;
+  inspect(append.body!);
+  // Execute the actual pure worker helpers without starting an isolated process.
+  const search = new Function("SEARCH_ROWS", append.getText(source) + "\n" + helper.getText(source) + "\nreturn grepRows;")(200);
   function measure(text: string, pattern: string) {
     let patternScans = 0, lineScans = 0, slices = 0; const rows: string[] = [];
     const input = { length: text.length, indexOf(value: string, start?: number) {
       if (value === "\n") lineScans++; else patternScans++;
       return text.indexOf(value, start);
     }, slice(start: number, end: number) { slices++; return text.slice(start, end); } };
-    search(input, pattern, "file", rows); return { patternScans, lineScans, slices, rows };
+    search(input, pattern, "file", rows, 32768); return { patternScans, lineScans, slices, rows };
   }
   const absent = measure("plain\n".repeat(100000), "missing");
   assert.equal(absent.patternScans, 1); assert.equal(absent.lineScans, 0); assert.equal(absent.slices, 0);
