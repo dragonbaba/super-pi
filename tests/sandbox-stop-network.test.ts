@@ -130,14 +130,16 @@ test("an offline sandbox asks once before a network command; consent lasts for t
 
 test("an observed outside-path failure pauses the turn without prechecking commands; offline failures name their cause", async () => {
   const f = fixture({ session: new SandboxNetworkSession() });
-  const outside = path.resolve("other", "x.txt");
+  // The Windows adapter recognizes Windows absolute operands. Its fake error
+  // must use the same host resolver as failureNote, including on Linux CI.
+  const argument = "D:/other/x.txt", outside = path.resolve(argument);
   f.backend.hostPathKind = async () => HOST_PATH_HOST_ONLY;
   f.backend.invoke = async (_name: string, input: { command: string }) => {
     f.invoked.push(input.command);
     return { ok: true, execution: { exitCode: 1, timedOut: false, closed: true, stdout: "", stderr: "Cannot find path " + outside } };
   };
-  await assert.rejects(f.run(`Get-Content '${outside}'`), error => /SANDBOX_PATH_UNMAPPED/.test(String(error)) && /\/add-dir/.test(String(error)));
-  assert.equal(f.invoked[0], `Get-Content '${outside}'`);
+  await assert.rejects(f.run(`Get-Content '${argument}'`), error => /SANDBOX_PATH_UNMAPPED/.test(String(error)) && /\/add-dir/.test(String(error)));
+  assert.equal(f.invoked[0], `Get-Content '${argument}'`);
   await assert.rejects(f.run("ls"), /PAUSED|new user instruction/i);
   await f.close();
 
