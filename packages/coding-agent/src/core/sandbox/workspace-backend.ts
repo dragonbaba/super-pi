@@ -147,7 +147,16 @@ export class WorkspaceSandboxBackend {
   private async run(operation: string, input: Record<string, unknown>, signal: AbortSignal): Promise<WorkspaceReply> {
     signal.throwIfAborted();
     input = workspaceInput(this.workspace(), operation, input, this.options.directories ?? []);
-    if (!this.starts) { try { await this.start(signal); } catch (error) { this.closed = true; throw error; } }
+    if (!this.starts) {
+      try { await this.start(signal); }
+      catch (error) {
+        if (signal.aborted && error === signal.reason && !this.shutdown.signal.aborted) {
+          try { await this.releaseResources(); }
+          catch (cleanupError) { this.closed = true; throw cleanupError; }
+        } else this.closed = true;
+        throw error;
+      }
+    }
     await this.assertWorkspaceCurrent(); signal.throwIfAborted();
     const id = randomUUID().replaceAll("-", ""), shell = operation === "powershell";
     const root = this.workspace(input.workspaceIndex as number | undefined);
@@ -216,6 +225,9 @@ export class WorkspaceSandboxBackend {
   private readonly closeFailed = (error: unknown): never => { this.closeOperation = undefined; throw error; };
   private async performClose(): Promise<void> {
     await this.drain();
+    await this.releaseResources();
+  }
+  private async releaseResources(): Promise<void> {
     this.runner.assertStopped();
     if (this.root) {
       const stat = await fs.lstat(this.root, { bigint: true });
