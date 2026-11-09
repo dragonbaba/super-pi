@@ -1,5 +1,5 @@
-import { EMPTY_READONLY_ARRAY } from "./collections.js";
-import type { LspPosition, LspTextEdit, WorkspaceEdit } from "./types.js";
+import { EMPTY_READONLY_ARRAY } from "./collections.ts";
+import type { LspPosition, LspTextEdit, WorkspaceEdit } from "./types.ts";
 
 export function positionAt(text: string, offset: number): LspPosition {
 	const boundedOffset = Math.max(0, Math.min(offset, text.length));

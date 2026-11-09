@@ -3,11 +3,11 @@ import {
 	currentTokenTotal,
 	formatTokenCount,
 	rebaseGoalUsageAfterStoppedInterval,
-} from "./accounting.js";
-import { validateObjective } from "./command.js";
-import { safeGoalMenuText } from "./goal-text.js";
-import type { ActiveGoal } from "./persistence.js";
-import { buildGoalPrompt, buildObjectiveUpdatedPrompt, buildResumePrompt } from "./prompts.js";
+} from "./accounting.ts";
+import { validateObjective } from "./command.ts";
+import { safeGoalMenuText } from "./goal-text.ts";
+import type { ActiveGoal } from "./persistence.ts";
+import { buildGoalPrompt, buildObjectiveUpdatedPrompt, buildResumePrompt } from "./prompts.ts";
 import {
 	activateQueuedGoal,
 	appendGoal,
@@ -16,7 +16,7 @@ import {
 	goalQueueIdentity,
 	prioritizeGoal as prioritizeQueuedGoal,
 	skipGoal as skipQueuedGoal,
-} from "./queue.js";
+} from "./queue.ts";
 import {
 	blocksStaleGoalToolCalls,
 	createGoal,
@@ -33,7 +33,7 @@ import {
 	type StatusContext,
 	stoppedStatusLabel,
 	transitionGoal,
-} from "./runtime.js";
+} from "./runtime.ts";
 
 // User-command mutations are kept separate from Pi event wiring. Every controller
 // receives exactly one per-factory GoalRuntime, preserving session isolation.

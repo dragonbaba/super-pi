@@ -9,8 +9,6 @@ import { classifyTestFile, discoverTestFiles, run, testFileArguments } from "../
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const preserved = [
-    ["windows-sandbox-captured-agent-orchestration.test.mjs", "45E2DC4F3C4D12B890CD8C8E26CE1A96B66BC8AFDF26ED8048C71F56C90E0D42"],
-    ["windows-sandbox-captured-host-source-resolution.test.mjs", "664A74C0B84E459672CA25C325C19778F5B0019F1E7C80A2128DDCAE50661E36"],
     ["windows-sandbox-captured-host-write.test.mjs", "AB3C290371E1B450E1A4F216116C7C11D456276FFB6D29377A7F6487355FC15C"],
     ["windows-sandbox-explicit-write-snapshot.test.mjs", "A98372F9004603176FD77548B2EB002E33E555EF59762172DAFD3827BEC952D0"],
     ["windows-sandbox-input-capture.test.mjs", "4D88C5FD13ADF11A83A74B1835A0FF338ED2B2EEC3BD3830BC0EDD081DE4DC08"],

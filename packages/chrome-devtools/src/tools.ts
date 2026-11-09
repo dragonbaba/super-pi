@@ -8,11 +8,11 @@ import {
 	resolvePageForNavigation,
 	textResult,
 	withCdp,
-} from "./cdp-client.js";
-import { renderScreenshotResult, renderTextResult, renderToolCall, withStatus } from "./render.js";
-import { state } from "./runtime.js";
-import { formatScreenshotText, saveScreenshot, throwIfAborted } from "./screenshot.js";
-import { CHROME_DEVTOOLS_TOOL_NAMES } from "./tool-names.js";
+} from "./cdp-client.ts";
+import { renderScreenshotResult, renderTextResult, renderToolCall, withStatus } from "./render.ts";
+import { state } from "./runtime.ts";
+import { formatScreenshotText, saveScreenshot, throwIfAborted } from "./screenshot.ts";
+import { CHROME_DEVTOOLS_TOOL_NAMES } from "./tool-names.ts";
 
 const MAX_CDP_TEXT_BYTES = 50 * 1024;
 const CDP_SCOPE = "Use for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or a requested CDP endpoint. These tools are discoverable through tool_search with browser_debug or their exact names; no manual enable command is required. A missing local endpoint may launch an isolated browser profile. Check list_pages and select the intended target; this profile may not share the user's login or Browser Harness connection. Do not switch here to bypass incomplete Browser Harness approval; wait for user direction for that workflow.";

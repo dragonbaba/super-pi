@@ -4,8 +4,8 @@ import type {
 	Theme,
 } from "@super-pi/coding-agent";
 import type { Component, Focusable, TUI } from "@super-pi/tui";
-import { safeMenuText } from "./components/rendering.js";
-import type { MenuContext } from "./types.js";
+import { safeMenuText } from "./components/rendering.ts";
+import type { MenuContext } from "./types.ts";
 
 type ExtensionMode = MenuContext["mode"];
 

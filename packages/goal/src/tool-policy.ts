@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import type { GoalToolVisibility } from "./settings.js";
+import type { GoalToolVisibility } from "./settings.ts";
 
 export const GOAL_COMPLETE_TOOL = "goal_complete";
 export const GOAL_BLOCKED_TOOL = "goal_blocked";

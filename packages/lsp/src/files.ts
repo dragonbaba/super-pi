@@ -2,9 +2,9 @@ import { type Dirent, type Stats, existsSync, readdirSync, realpathSync, statSyn
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { compareStrings } from "./collections.js";
-import { MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.js";
-import type { LspServerAdapter } from "./types.js";
+import { compareStrings } from "./collections.ts";
+import { MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.ts";
+import type { LspServerAdapter } from "./types.ts";
 const MAX_SCANNED_PATHS = 100_000;
 const MAX_VISITED_DIRECTORIES = 10_000;
 

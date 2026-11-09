@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getConfigDir } from "@super-pi/coding-agent";
-import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.js";
+import { CHROME_DEVTOOLS_TOOL_NAMES, type ChromeDevToolsToolName } from "./tool-names.ts";
 
 const NEW_SETTINGS_FILE_NAME = "sp-chrome-devtools.json";
 const LEGACY_SETTINGS_FILE_NAME = "sp-chrome-devtools-settings.json";

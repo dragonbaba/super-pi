@@ -855,7 +855,7 @@ test("Chrome automatic restoration follows explicit mode while manual selection 
 	t.after(() => { if (previousAgentDir === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = previousAgentDir; });
 	const { saveSettings } = await jiti.import<typeof import("../packages/chrome-devtools/src/settings.ts")>("../packages/chrome-devtools/src/settings.ts");
 	const { default: chromeDevtools } = await jiti.import<{ default: ExtensionFactory }>("../packages/chrome-devtools/src/chrome-devtools.ts");
-	const { state } = await jiti.import<typeof import("../packages/chrome-devtools/src/runtime.ts")>("../packages/chrome-devtools/src/runtime.js");
+	const { state } = await jiti.import<typeof import("../packages/chrome-devtools/src/runtime.ts")>("../packages/chrome-devtools/src/runtime.ts");
 	const hooks = new Map<string, (...args: any[]) => unknown>();
 	const modes: string[] = [];
 	let cancelGeneration = false;
@@ -1052,7 +1052,7 @@ test("explicit DevTools enable and selection clear only their session approval p
 	assert.equal(calls, 3);
 	// Hold real settings I/O while a previously submitted choice is overtaken by
 	// a browser failure. Its eventual successful save is not newer user direction.
-	const { saveSettings } = await jiti.import<any>("../packages/chrome-devtools/src/settings.js");
+	const { saveSettings } = await jiti.import<any>("../packages/chrome-devtools/src/settings.ts");
 	const { updateChromeDevtoolsTools, allChromeDevtoolsTools } = await jiti.import<any>("../packages/chrome-devtools/src/tool-selector.ts");
 	const { rename } = await import("node:fs/promises");
 	let releaseSave!: () => void, reachedSave!: () => void;

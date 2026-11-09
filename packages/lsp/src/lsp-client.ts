@@ -4,11 +4,11 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import type { WindowsShellJob } from "@super-pi/coding-agent/internal/windows-shell-job";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { commandPathValue, mergeEnvironment, resolveCommandPath } from "./command.js";
-import { EMPTY_READONLY_ARRAY } from "./collections.js";
-import { directoryUri } from "./files.js";
-import { COMMAND_SCRIPT_PATTERN, LSP_CONTENT_LENGTH_PATTERN } from "./regex.js";
-import { positionAt } from "./text-edits.js";
+import { commandPathValue, mergeEnvironment, resolveCommandPath } from "./command.ts";
+import { EMPTY_READONLY_ARRAY } from "./collections.ts";
+import { directoryUri } from "./files.ts";
+import { COMMAND_SCRIPT_PATTERN, LSP_CONTENT_LENGTH_PATTERN } from "./regex.ts";
+import { positionAt } from "./text-edits.ts";
 import type {
 	CodeAction,
 	JsonRpcMessage,
@@ -19,7 +19,7 @@ import type {
 	LspServerAdapter,
 	LspSymbolInformation,
 	ServerCommand,
-} from "./types.js";
+} from "./types.ts";
 
 export function resolveSpawnCommand(
 	command: ServerCommand,

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
-import type { PlanModeFixedThinkingLevel } from "./settings.js";
+import type { PlanModeFixedThinkingLevel } from "./settings.ts";
 
 type AgentSettledHandler = (event: unknown, ctx: ExtensionContext) => unknown;
 

@@ -1,4 +1,4 @@
-import type { MenuCloseReason, MenuTransition } from "./types.js";
+import type { MenuCloseReason, MenuTransition } from "./types.ts";
 
 export interface MenuNavigator<ScreenId extends string> {
 	readonly current: ScreenId;

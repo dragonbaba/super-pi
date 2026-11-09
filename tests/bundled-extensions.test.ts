@@ -184,3 +184,44 @@ test("TPS retains agent listeners, usage totals, elapsed time, and UI notificati
   ] }, { hasUI: true, ui: { notify(...args: unknown[]) { notices.push(args); } } });
   assert.deepEqual(notices, [["TPS 25.0 tok/s. out 50, in 25, cache r/w 5/7, total 87, 2.0s", "info"]]);
 });
+
+test("source-loaded extensions name their real .ts files in relative imports", () => {
+  // jiti probes about 60 candidate paths before it retries "./x.js" as "./x.ts".
+  // One extension written that way cost 6,384 failed stat calls and ~75 ms at startup.
+  const sourcePackages = new Map<string, string>();
+  for (const name of readdirSync(join(root, "packages"))) {
+    const manifestPath = join(root, "packages", name, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = json(manifestPath);
+    if (typeof manifest.main === "string" && manifest.main.endsWith(".ts")) sourcePackages.set(manifest.name, resolve(root, "packages", name, manifest.main));
+  }
+  const pending: string[] = [];
+  for (const packagePath of json(join(root, ".sp/config/settings.json")).packages) {
+    const packageRoot = resolve(root, ".sp/config", packagePath);
+    for (const entry of json(join(packageRoot, "package.json")).pi?.extensions ?? []) if (entry.endsWith(".ts")) pending.push(resolve(packageRoot, entry));
+  }
+  for (const name of readdirSync(join(root, ".sp/extensions"))) if (name.endsWith(".ts")) pending.push(join(root, ".sp/extensions", name));
+  const visited = new Set<string>();
+  const mismatched: string[] = [];
+  while (pending.length > 0) {
+    const file = pending.pop()!;
+    if (visited.has(file)) continue;
+    visited.add(file);
+    for (const { fileName: specifier } of ts.preProcessFile(readFileSync(file, "utf8"), true, true).importedFiles) {
+      if (!specifier.startsWith(".")) {
+        const source = sourcePackages.get(specifier);
+        if (source) pending.push(source);
+        continue;
+      }
+      const target = resolve(file, "..", specifier);
+      if (existsSync(target)) {
+        if (target.endsWith(".ts")) pending.push(target);
+      } else if (specifier.endsWith(".js") && existsSync(`${target.slice(0, -3)}.ts`)) {
+        mismatched.push(`${file.slice(root.length)} imports "${specifier}"`);
+        pending.push(`${target.slice(0, -3)}.ts`);
+      }
+    }
+  }
+  assert.ok(visited.size > 150, `walked only ${visited.size} extension source files`);
+  assert.deepEqual(mismatched, [], 'write the relative import with its ".ts" extension');
+});

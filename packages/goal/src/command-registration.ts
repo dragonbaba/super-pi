@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import { completeGoalArguments, parseCommand } from "./command.js";
-import type { GoalCommandController } from "./commands.js";
-import type { GoalRuntime } from "./runtime.js";
+import { completeGoalArguments, parseCommand } from "./command.ts";
+import type { GoalCommandController } from "./commands.ts";
+import type { GoalRuntime } from "./runtime.ts";
 
 interface GoalCommandRegistrationOptions {
 	settingsPath?: string;
@@ -29,8 +29,8 @@ export function registerGoalCommand(
 			}
 			if (result.kind === "show" && args.trim() === "") {
 				const [{ showGoalManager }, { showGoalSettings }] = await Promise.all([
-					import("./menu.js"),
-					import("./settings-ui.js"),
+					import("./menu.ts"),
+					import("./settings-ui.ts"),
 				]);
 				await showGoalManager(runtime, commands, ctx, (menuCtx, target) =>
 					showGoalSettings(runtime, menuCtx, {

@@ -1,7 +1,7 @@
 import path from "node:path";
-import { commandExists, commandPathValue } from "./command.js";
-import { collectSupportedFilesByAdapter, resolveRoot } from "./files.js";
-import type { LspServerAdapter } from "./types.js";
+import { commandExists, commandPathValue } from "./command.ts";
+import { collectSupportedFilesByAdapter, resolveRoot } from "./files.ts";
+import type { LspServerAdapter } from "./types.ts";
 
 export type LspAction = "diagnostics" | "fix" | "navigate";
 

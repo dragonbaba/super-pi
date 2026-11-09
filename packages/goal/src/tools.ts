@@ -10,7 +10,7 @@ import {
 	STATUS_KEY,
 	transitionGoal,
 	truncateNotification,
-} from "./runtime.js";
+} from "./runtime.ts";
 
 interface GoalCompleteDetails {
 	goal: string;

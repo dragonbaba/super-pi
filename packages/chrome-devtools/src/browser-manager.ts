@@ -15,7 +15,7 @@ import {
 	MANAGED_BROWSER_PROFILE_PREFIX,
 	type ManagedBrowser,
 	state,
-} from "./runtime.js";
+} from "./runtime.ts";
 
 function formatError(error: unknown) {
 	return error instanceof Error ? error.message : String(error);

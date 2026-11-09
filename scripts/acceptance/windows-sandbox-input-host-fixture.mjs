@@ -35,7 +35,7 @@ let browserRuntime, browserRuntimeResolutions = 0;
 let transformed = 0, transformSourceBytes = 0, transformOutputBytes = 0;
 const loader = registerHooks({
     resolve(specifier, context, next) {
-        if (context.parentURL === browserManagerUrl && specifier === "./runtime.js") {
+        if (context.parentURL === browserManagerUrl && specifier === "./runtime.ts") {
             assert.equal(browserRuntimeResolutions++, 0);
             return { url: browserRuntimeUrl, shortCircuit: true };
         }

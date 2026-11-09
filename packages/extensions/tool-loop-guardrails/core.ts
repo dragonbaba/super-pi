@@ -19,7 +19,7 @@ import {
   READ_OFFSET_ERROR_RE,
   SHELL_SYNTAX_FAILURE_RE,
   UNIX_TMP_PATH_RE,
-} from "./regex.js";
+} from "./regex.ts";
 
 const MAX_TRACKED_KEYS = 64;
 const FAILURE_WARNING_THRESHOLD = 2;

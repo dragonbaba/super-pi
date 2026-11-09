@@ -29,8 +29,8 @@ import {
   resetBatchState,
   resetGuardState,
   shellCommandFailed,
-} from "./core.js";
-import { createConfiguredMsysBashDefinition } from "./msys-bash.js";
+} from "./core.ts";
+import { createConfiguredMsysBashDefinition } from "./msys-bash.ts";
 import { issueSnapshotForRead } from "../mutation-guard-write/snapshot-line-edit.ts";
 import { SNAPSHOT_FAILURE_RE } from "./regex.ts";
 import { MAX_SUBSTITUTIONS, MAX_SUBSTITUTION_NESTING } from "../resource-lifecycle-guard/shell-substitution.ts";

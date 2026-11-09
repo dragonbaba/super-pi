@@ -6,14 +6,14 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@super-pi/tui";
-import type { MenuScreen, ReviewScreen } from "../types.js";
+import type { MenuScreen, ReviewScreen } from "../types.ts";
 import type {
 	MenuKeybindings,
 	MenuScreenComponent,
 	MenuScreenComponentOptions,
-} from "./contracts.js";
-import { appendMutedLines, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.js";
-import { getLanguageFromPath, highlightCode } from "./syntax-highlighting.js";
+} from "./contracts.ts";
+import { appendMutedLines, menuHint, renderFrame, safeMenuText, truncateOwnedLines } from "./rendering.ts";
+import { getLanguageFromPath, highlightCode } from "./syntax-highlighting.ts";
 
 const DEFAULT_REVIEW_VIEWPORT_SIZE = 14;
 const RPC_REVIEW_VIEWPORT_SIZE = 8;

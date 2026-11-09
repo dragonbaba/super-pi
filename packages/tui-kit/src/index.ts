@@ -4,11 +4,11 @@ export {
 	type RunCustomInteractionOptions,
 	type RunCustomInteractionResult,
 	runCustomInteraction,
-} from "./custom-interaction.js";
-export { defineMenu, resolveMenuScreen } from "./model.js";
-export { createMenuNavigator, type MenuNavigator } from "./navigator.js";
-export { type RunMenuOptions, type RunMenuResult, runMenu } from "./runtime.js";
-export { type RunTaskOptions, type RunTaskResult, runTask } from "./task.js";
+} from "./custom-interaction.ts";
+export { defineMenu, resolveMenuScreen } from "./model.ts";
+export { createMenuNavigator, type MenuNavigator } from "./navigator.ts";
+export { type RunMenuOptions, type RunMenuResult, runMenu } from "./runtime.ts";
+export { type RunTaskOptions, type RunTaskResult, runTask } from "./task.ts";
 export type {
 	ActionMenuItem,
 	ActionsScreen,
@@ -35,6 +35,6 @@ export type {
 	ReviewFormat,
 	ReviewScreen,
 	SettingsScreen,
-} from "./types.js";
+} from "./types.ts";
 
 export const PI_EXTENSION_MENU_API_VERSION = 6;

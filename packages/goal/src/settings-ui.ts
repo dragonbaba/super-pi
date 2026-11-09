@@ -1,14 +1,14 @@
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@super-pi/coding-agent";
-import { getConfigDir } from "./pi-runtime-lite.js";
-import { checkpointGoalActiveTime } from "./accounting.js";
-import { abortCurrentTurn, type GoalRuntime, STATUS_KEY } from "./runtime.js";
+import { getConfigDir } from "./pi-runtime-lite.ts";
+import { checkpointGoalActiveTime } from "./accounting.ts";
+import { abortCurrentTurn, type GoalRuntime, STATUS_KEY } from "./runtime.ts";
 import {
 	DEFAULT_GOAL_SETTINGS,
 	GOAL_SETTINGS_FILE,
 	type GoalSettings,
 	saveGoalSettings,
-} from "./settings.js";
+} from "./settings.ts";
 
 interface GoalSettingsUiOptions {
 	settingsPath?: string;

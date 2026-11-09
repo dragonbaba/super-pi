@@ -1,6 +1,6 @@
-import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.js";
-import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.js";
-import { unique } from "./tool-selection.js";
+import { PLAN_MODE_COMPLETE_TOOL_NAME } from "./completion-tool.ts";
+import { PLAN_MODE_QUESTION_TOOL_NAME } from "./question-tool.ts";
+import { unique } from "./tool-selection.ts";
 
 export function withRequiredPlanModeTools(toolNames: string[]) {
 	return unique([

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@super-pi/coding-agent";
-import type { PlanModeState } from "./state.js";
+import type { PlanModeState } from "./state.ts";
 
 const STATUS_KEY = "plan-mode";
 const PLAN_WIDGET_KEY = "plan-mode-plan";

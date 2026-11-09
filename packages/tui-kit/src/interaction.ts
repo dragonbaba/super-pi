@@ -1,6 +1,6 @@
 import type { ExtensionCommandContext } from "@super-pi/coding-agent";
-import { safeMenuText } from "./components/index.js";
-import { runTask } from "./task.js";
+import { safeMenuText } from "./components/index.ts";
+import { runTask } from "./task.ts";
 import type {
 	ActionMenuItem,
 	MenuActionHandler,
@@ -9,7 +9,7 @@ import type {
 	MenuDefinition,
 	MenuScreen,
 	MenuTransition,
-} from "./types.js";
+} from "./types.ts";
 
 export type MenuInteraction =
 	| { kind: "activate"; itemId: string }

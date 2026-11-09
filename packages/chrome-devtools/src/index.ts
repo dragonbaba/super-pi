@@ -1,1 +1,1 @@
-export { default } from "./chrome-devtools.js";
+export { default } from "./chrome-devtools.ts";

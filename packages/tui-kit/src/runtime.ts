@@ -10,23 +10,23 @@ import {
 	type MenuSettingChange,
 	reviewDialogPages,
 	safeMenuText,
-} from "./components/index.js";
+} from "./components/index.ts";
 import {
 	type InteractionInvocation,
 	invokeMenuInteraction,
 	isMenuCurrent,
 	type MenuInteraction,
 	reportMenuError,
-} from "./interaction.js";
-import { resolveMenuScreen } from "./model.js";
-import { createMenuNavigator } from "./navigator.js";
+} from "./interaction.ts";
+import { resolveMenuScreen } from "./model.ts";
+import { createMenuNavigator } from "./navigator.ts";
 import type {
 	MenuCloseReason,
 	MenuContext,
 	MenuDefinition,
 	MenuScreen,
 	MenuTransition,
-} from "./types.js";
+} from "./types.ts";
 
 type ExtensionMode = MenuContext["mode"];
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionCommandContext, ExtensionContext } from "@super-pi/coding-agent";
-import type { ImplementationPlanRetention } from "./settings.js";
-import type { PlanCompletionSource, PlanModeState } from "./state.js";
+import type { ImplementationPlanRetention } from "./settings.ts";
+import type { PlanCompletionSource, PlanModeState } from "./state.ts";
 
 type NewSessionOptions = Exclude<Parameters<ExtensionCommandContext["newSession"]>[0], undefined>;
 type ReplacementContext = Parameters<NonNullable<NewSessionOptions["withSession"]>>[0];

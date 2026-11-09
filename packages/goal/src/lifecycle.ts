@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
-import { currentTokenTotal } from "./accounting.js";
-import type { GoalCommandController } from "./commands.js";
-import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.js";
-import { buildGoalPrompt } from "./prompts.js";
-import { activateQueuedGoal } from "./queue.js";
-import type { GoalRunController } from "./run-protocol.js";
+import { currentTokenTotal } from "./accounting.ts";
+import type { GoalCommandController } from "./commands.ts";
+import { type ActiveGoal, loadGoalStateFromSession } from "./persistence.ts";
+import { buildGoalPrompt } from "./prompts.ts";
+import { activateQueuedGoal } from "./queue.ts";
+import type { GoalRunController } from "./run-protocol.ts";
 import {
 	type AssistantMessageLike,
 	abortCurrentTurn,
@@ -20,9 +20,9 @@ import {
 	STATUS_KEY,
 	type StatusContext,
 	truncateNotification,
-} from "./runtime.js";
-import { hasAssistantToolCall } from "./safety.js";
-import { DEFAULT_GOAL_SETTINGS, readGoalSettings } from "./settings.js";
+} from "./runtime.ts";
+import { hasAssistantToolCall } from "./safety.ts";
+import { DEFAULT_GOAL_SETTINGS, readGoalSettings } from "./settings.ts";
 
 const EXPERIMENTAL_GOALS_WARNING =
 	"Experimental ordered goals are enabled for pi-goal. Queue behavior and persisted state may change.";

@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@super-pi/coding-agent";
-import { safeMenuText } from "./components/rendering.js";
-import { TaskLoader } from "./components/task-loader.js";
-import type { MenuContext } from "./types.js";
+import { safeMenuText } from "./components/rendering.ts";
+import { TaskLoader } from "./components/task-loader.ts";
+import type { MenuContext } from "./types.ts";
 
 export type RunTaskResult<Value> =
 	| { kind: "completed"; value: Value }
