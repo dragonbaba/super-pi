@@ -37,7 +37,8 @@ test.after(async () => {
 async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-write" | "read-only" | "sandbox-write" = "host-write") {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), cwd = join(root, "project 中文 space");
   await fs.mkdir(cwd); await fs.writeFile(join(cwd, "sample.txt"), "marker\n");
-  await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false } }));
+  await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false },
+    powershellStatus: mode === "host-write" ? undefined : { available: false } }));
   const settings = SettingsManager.inMemory({ executionEnvironment: environment, shellCommandPrefix, compaction: { enabled: false }, retry: { enabled: false }, executionPermissions: { rules: [{ tool: "*", decision: "allow" }] } });
   settings.setPermissionModeForSession(mode);
   const additional = join(root, "Assets 中文 ' space");

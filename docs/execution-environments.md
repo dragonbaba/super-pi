@@ -30,7 +30,7 @@
 | --- | --- |
 | 文本读取 | 单文件 2 MiB；单次至多 2,000 行和 32,768 字符，返回 SHA-256 snapshot |
 | 图片读取 | 按签名识别 JPEG、PNG、GIF、WebP、BMP；单图 16 MiB，独立字节附件，不放进 stdout/base64 文本窗口 |
-| 搜索 | `ls` / `find` / `grep`，字面子串；200 条结果、单次 20,000 项遍历预算，达到预算返回截断提示，不阻止其他读取或命令 |
+| 搜索 | `ls` / `find` / `grep`，字面子串；200 条结果、32,768 字符（含路径与分隔符）、单次 20,000 项遍历预算；完整 JSON 保持在 256 KiB 内，达到预算返回截断提示，不阻止其他读取或命令 |
 | 文本修改 | 单文件写入/编辑 1 MiB；覆盖和编辑需要当前 `read` snapshot；原子替换前校验版本 |
 | 文件移动/批量 | 文件移动不覆盖目标；每批最多 16 项，可含不同工作区；跨工作区 move 不隐式复制删除；失败可能已有部分操作完成 |
 | 命令 | 原样传入 PowerShell 7；默认 30 秒、最多 120 秒；串行执行；stdout/stderr 各保留末尾 32 KiB |
@@ -39,7 +39,7 @@
 
 `target`、`.venv`、`__pycache__`、`node_modules` 都是普通工作区目录：已有内容可访问，新内容留在宿主项目。`sandboxPrivateDirectories` 和“仅 VM 保留、不写回”的规则已退役，旧字段不再生效。关闭会话只清理本次运行器的临时资源，不删除工作区依赖和产物。命令失败、超时或取消不回滚已发生的修改，也不自动重跑。
 
-原生文件覆盖/编辑使用内容 snapshot；直接命令遵循程序自身写入行为。PowerShell 启动只为本进程设置脚本执行策略和固定 UTF-8 输出初始化，不修改系统策略，不分析或改写用户命令主体。正常退出的命令保留真实退出码，即使非零也不抛成工具异常，编译或测试的非零仍表示未通过。启动、超时、协议或清理失败保留为执行错误。
+原生文件覆盖/编辑使用内容 snapshot；直接命令遵循程序自身写入行为。PowerShell 启动只为本进程设置脚本执行策略和固定 UTF-8 输出初始化，不修改系统策略，不分析或改写用户命令主体。正文通过受控、沙箱内只读的临时脚本文件传入，避免 Windows 命令行长度限制；PowerShell 从该文件创建并执行 ScriptBlock，保留显式退出码。正常退出的命令保留真实退出码，即使非零也不抛成工具异常，编译或测试的非零仍表示未通过。启动、超时、协议或清理失败保留为执行错误。
 
 ### 路径、网络与工具安装
 
@@ -60,7 +60,7 @@ Git/MSYS 仍有已复现兼容限制：Git Bash 初始化失败；PowerShell 间
 
 全局 `permissionMode` 只决定新会话的 `read-only` / `sandbox-write` 默认值。明确手动选择由本机会话记录保存，不修改全局默认值。历史 `full-access` / `never-ask`、项目配置和导入的消息不能授予宿主权限。
 
-旧交互命令 `add_workspace`、`remove_workspace` 和 `/permissions status|scope|approval|...` 已由原生入口接管并提供退役提示。旧 `executionEnvironment: "sandbox"` 搭配 `inputs/writes` 的 VM 入口已退役；SDK/非交互调用应显式选择 `read-only` 或 `sandbox-write` 会话权限，旧入口返回迁移提示，不静默转换授权。宿主配置兼容含义不变。
+旧交互命令 `add_workspace`、`remove_workspace` 和 `/permissions status|scope|approval|...` 已由原生入口接管并提供退役提示。旧 `executionEnvironment: "sandbox"` 搭配 `inputs/writes` 的 VM 入口已退役；SDK/非交互调用应选择 `read-only` 或 `sandbox-write` 会话权限，旧入口返回迁移提示，不静默转换授权。Windows 首次配置写入 `permissionMode: "sandbox-write"`；没有旧 executionEnvironment 的全局原生沙箱默认也用于 SDK/非交互会话，不写回已退役配置。项目设置不能选择权限，存储的宿主模式不作为新授权。已有宿主配置兼容含义不变。
 
 只读、沙箱读写和宿主机完全权限三档内已支持的操作默认按当前模式允许；宿主机受限按上表默认询问的部分不在此列，匹配的 `allow` 规则可免去这些询问，但不越过敏感目标与外部覆盖拒绝。原 `executionPermissions.rules` 中的精确 `deny` / `ask` 继续生效，拒绝优先于询问、询问优先于允许。规则可限定工具名、精确命令和路径；相对规则路径仍以主工作区为基准，附加目录可用绝对规则路径限定，不改变已有规则含义。不猜测 shell 风险等级。`approval: "never"` 仅表示没有交互批准渠道，需要询问的调用返回 `APPROVAL_REQUIRED`。Plan 模式另行拒绝命令与变更。
 

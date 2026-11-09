@@ -402,6 +402,10 @@ export class SettingsManager {
 		this.errors = [...initialErrors];
 		this.settingsPaths = settingsPaths;
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		if (initialGlobal.executionEnvironment === undefined
+			&& (initialGlobal.permissionMode === "read-only" || initialGlobal.permissionMode === "sandbox-write")) {
+			this.setPermissionModeForSession(initialGlobal.permissionMode);
+		}
 	}
 
 	/** Create a SettingsManager that loads from files */
@@ -439,7 +443,7 @@ export class SettingsManager {
 		if (process.platform === "win32" && settingsPaths.global && !globalLoad.error && !existsSync(settingsPaths.global)) {
 			storage.withLock("global", current => {
 				if (current !== undefined && current !== "") return undefined;
-				globalLoad.settings.executionEnvironment = "sandbox";
+				globalLoad.settings.permissionMode = "sandbox-write";
 				return JSON.stringify(globalLoad.settings, null, 2);
 			});
 		}

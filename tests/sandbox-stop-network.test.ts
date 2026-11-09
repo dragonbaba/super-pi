@@ -130,13 +130,14 @@ test("an offline sandbox asks once before a network command; consent lasts for t
 
 test("an observed outside-path failure pauses the turn without prechecking commands; offline failures name their cause", async () => {
   const f = fixture({ session: new SandboxNetworkSession() });
+  const outside = path.resolve("other", "x.txt");
   f.backend.hostPathKind = async () => HOST_PATH_HOST_ONLY;
   f.backend.invoke = async (_name: string, input: { command: string }) => {
     f.invoked.push(input.command);
-    return { ok: true, execution: { exitCode: 1, timedOut: false, closed: true, stdout: "", stderr: "Cannot find path D:\\other\\x.txt" } };
+    return { ok: true, execution: { exitCode: 1, timedOut: false, closed: true, stdout: "", stderr: "Cannot find path " + outside } };
   };
-  await assert.rejects(f.run("cat D:/other/x.txt"), error => /SANDBOX_PATH_UNMAPPED/.test(String(error)) && /\/add-dir/.test(String(error)));
-  assert.equal(f.invoked[0], "cat D:/other/x.txt");
+  await assert.rejects(f.run(`Get-Content '${outside}'`), error => /SANDBOX_PATH_UNMAPPED/.test(String(error)) && /\/add-dir/.test(String(error)));
+  assert.equal(f.invoked[0], `Get-Content '${outside}'`);
   await assert.rejects(f.run("ls"), /PAUSED|new user instruction/i);
   await f.close();
 
@@ -153,7 +154,7 @@ test("an observed outside-path failure pauses the turn without prechecking comma
 });
 
 test("diagnostic path kinds distinguish workspace, tool installations and ungranted paths", { skip: process.platform !== "win32" }, async () => {
-  const root = await fs.mkdtemp(path.join(process.env.TMP ?? process.cwd(), "r5-paths-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(process.env.TMP ?? process.cwd(), "r5-paths-")));
   try {
     const workspace = path.join(root, "workspace"), other = path.join(root, "other"), tools = path.join(root, "tools");
     for (const directory of [workspace, other, tools]) await fs.mkdir(directory);

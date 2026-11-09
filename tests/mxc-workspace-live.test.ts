@@ -44,6 +44,9 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
     const command = await invoke("powershell", { command: "[Console]::Write($PSVersionTable.PSVersion.Major); node --version; npm --version" });
     assert.equal(command.details.execution.exitCode, 0, JSON.stringify(command)); assert.match(command.details.execution.stdout, /^7v/);
     assert.equal(command.details.execution.stderr, "");
+    const longScript = await invoke("powershell", { command: "#" + "中文".repeat(6500) + "\n[Console]::Write('long script 中文')" });
+    assert.equal(longScript.details.execution.exitCode, 0, JSON.stringify(longScript));
+    assert.equal(longScript.details.execution.stdout, "long script 中文");
     const failure = await invoke("powershell", { command: "[Console]::Write('retained'); exit 23" });
     assert.equal(failure.isError, false); assert.equal(failure.details.shellExecution.exitCode, 23); assert.match(failure.details.execution.stdout, /retained/);
     const protectedRun = await invoke("powershell", { command: "$ErrorActionPreference='Stop'; foreach($p in @('.git/protected','.sp/protected')) { try {[IO.File]::WriteAllText((Join-Path $PWD $p),'changed'); throw 'UNEXPECTED_WRITE'} catch {if($_.Exception.Message -eq 'UNEXPECTED_WRITE'){throw}; 'DENIED'} }; try {[IO.File]::ReadAllText(" + quote(outside) + "); throw 'UNEXPECTED_READ'} catch {if($_.Exception.Message -eq 'UNEXPECTED_READ'){throw}; 'DENIED'}" });

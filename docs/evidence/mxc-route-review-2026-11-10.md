@@ -41,6 +41,10 @@ Windows `26300.9711`、Node `26.13.0`、完整 PowerShell 7。真实项目只读
 
 ## 兼容限制与来源
 
+启动与容量回归：Windows 首次配置曾生成退役 VM 设置，现改为持久化原生 sandbox-write 并验证首次/再次加载；旧 VM 显式选择仍拒绝。真实 writer 子进程在宿主 PowerShell 缓存为 unavailable 时复现工具丢失，修复后由父能力决定工具选择与可用性，5 次委派调用通过。13,000 余字符脚本复现 ENAMETOOLONG，改用只读受控脚本传输；真实 MXC 两档均验证长中文脚本、非零 23、元数据保护及清理。
+
+搜索完整响应按 32,768 UTF-16 字符预算约束（含路径/分隔符，JSON 最坏每字符 6 B），无需反复序列化结果。长中文路径与 200 个匹配文件的容量回归通过；生产扫描辅助函数 AST 无逐行闭包、数组、对象、Promise。`mxc-search.ts` 16 次扫描：1,104 条保留行、1,120 次有界片段、最大 32,490 字符，扫描内 JSON 物化 0，采样分配 8,352,672 B（含输入与测试观测），四次 GC 后 32 个输入/数组引用存活 0。搜索 owner 的 pending/rows 在 finally 清空；响应只在 worker 出口编码一次。
+
 本机 Git Bash 在 MXC 初始化时报 `NtCreateDirectoryObject: 0xC0000022`、退出 `0xC0000142`；PowerShell → Git → sh.exe 同样复现。git --version 成功不代表完整 Git 支持，测试仓库还出现所有者/工作树识别问题。用户可在宿主模式处理 Git；没有替换第三方库、写全局 Git 配置或自动回退。
 
 微软 [MXC #1061](https://github.com/microsoft/mxc/issues/1061) 仍记录 MSYS 问题。Codex [默认 shell 选择](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/shell-command/src/shell_detect.rs) 优先 PowerShell，不证明已解决 Git Bash；其 [MXC 策略](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/mxc-sandbox/src/policy.rs) 使用 desktop，固定微软依赖 `b21120168d70befe12356411423266bfef168446`，默认 clipboard=None，与本项目的用户授权 clipboard=all 不同。
@@ -52,6 +56,7 @@ Windows `26300.9711`、Node `26.13.0`、完整 PowerShell 7。真实项目只读
 ```text
 npm run check
 npm run build:offline
+node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts
 node --expose-gc --experimental-strip-types --test tests/mxc-process.test.ts tests/mxc-output-hot-paths.test.ts tests/mxc-file-worker.test.ts tests/mxc-workspace-lifecycle.test.ts tests/mxc-toolchains.test.mjs tests/sandbox-image-hot-paths.test.ts tests/sandbox-operation-queue.test.ts tests/source-invariants.test.ts
 node --experimental-strip-types --test tests/mxc-workspace-live.test.ts tests/sandbox-image-read-live.test.ts tests/subagent-parent-execution.test.ts
 ```

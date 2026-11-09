@@ -34,22 +34,29 @@ function readHandle(fd, limit) {
   need(stat.size === after.size && stat.mtimeNs === after.mtimeNs && stat.ctimeNs === after.ctimeNs, 'File changed during read');
   return bytes;
 }
-function grepRows(source, pattern, name, rows) {
+// At most six JSON bytes per UTF-16 code unit, leaving ample envelope space
+// in the 256 KiB protocol. Count paths, content and separators before retaining.
+function appendSearchRow(rows, row, remaining) {
+  if (rows.length === SEARCH_ROWS || row.length + 1 > remaining) return -1;
+  rows.push(row); return remaining - row.length - 1;
+}
+function grepRows(source, pattern, name, rows, remaining) {
   let match = source.indexOf(pattern), start = 0, line = 1;
   while (match >= 0 && start < source.length) {
     const next = source.indexOf('\n', start), end = next < 0 ? source.length : next;
     if (match >= start && match < end) {
-      if (rows.length === SEARCH_ROWS) return true;
-      rows.push(name + ':' + line + ':' + source.slice(start, Math.min(end, start + 256)));
+      if (rows.length === SEARCH_ROWS) return -1;
+      remaining = appendSearchRow(rows, name + ':' + line + ':' + source.slice(start, Math.min(end, start + 256)), remaining);
+      if (remaining < 0) return -1;
     }
     start = end + 1; line++;
     if (match < start) match = source.indexOf(pattern, start);
   }
-  return false;
+  return remaining;
 }
 function search(root, operation, scope, pattern) {
   if (operation === 'grep') need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
-  const pending = [scope], rows = []; let visited = 0, truncated = false;
+  const pending = [scope], rows = []; let visited = 0, truncated = false, remaining = TEXT_LIMIT;
   try {
     while (pending.length && !truncated) {
       const name = pending.pop(), file = local(root, name), stat = fs.lstatSync(file);
@@ -60,8 +67,8 @@ function search(root, operation, scope, pattern) {
           if (++visited > SEARCH_ENTRIES) { truncated = true; break; }
           const child = name === '.' ? entry.name : path.join(name, entry.name);
           if (operation === 'ls') {
-            if (rows.length === SEARCH_ROWS) { truncated = true; break; }
-            rows.push(child + (entry.isDirectory() ? '/' : ''));
+            remaining = appendSearchRow(rows, child + (entry.isDirectory() ? '/' : ''), remaining);
+            if (remaining < 0) { truncated = true; break; }
           } else pending.push(child);
         }
       } else if (stat.isFile()) {
@@ -69,9 +76,9 @@ function search(root, operation, scope, pattern) {
         if (operation === 'grep') {
           if (stat.size > FILE_LIMIT) continue;
           const bytes = read(file); if (!isUtf8(bytes) || bytes.includes(0)) continue;
-          truncated = grepRows(bytes.toString('utf8'), pattern, name, rows);
-        } else if (rows.length === SEARCH_ROWS) truncated = true;
-        else rows.push(name);
+          remaining = grepRows(bytes.toString('utf8'), pattern, name, rows, remaining);
+        } else remaining = appendSearchRow(rows, name, remaining);
+        truncated = remaining < 0;
       }
     }
     return (rows.join('\n') || '(no matches)') + (truncated ? '\n[Results truncated; narrow the search scope.]' : '');

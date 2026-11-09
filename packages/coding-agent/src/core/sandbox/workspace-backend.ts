@@ -158,8 +158,10 @@ export class WorkspaceSandboxBackend {
       need(typeof input.command === "string" && input.command.length <= 32768, "Invalid command");
       if (input.timeout !== undefined) need(typeof input.timeout === "number" && Number.isFinite(input.timeout) && input.timeout > 0 && input.timeout <= 120, "Invalid timeout");
       timeout = input.timeout === undefined ? 30000 : Number(input.timeout) * 1000;
+      const script = path.join(this.tools!, "command.ps1");
+      await fs.writeFile(script, POWERSHELL_UTF8 + input.command, "utf8");
       args = [this.toolchains!.hostShell, "-NoLogo", "-NoProfile", "-NonInteractive", "-SettingsFile", path.join(this.tools!, "powershell.config.json"),
-        "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(POWERSHELL_UTF8 + input.command, "utf16le").toString("base64")];
+        "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", "-Command", "& ([ScriptBlock]::Create([IO.File]::ReadAllText('" + script.replaceAll("'", "''") + "')))"];
     } else {
       const request = JSON.stringify({ id, mode: this.mode, workspaces: this.roots, operation, input, exchange: this.exchange, maxWriteBytes: MAX_WRITE_BYTES });
       need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");

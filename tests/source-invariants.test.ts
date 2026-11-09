@@ -41,15 +41,17 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
     ts.forEachChild(node, inspect);
   }
   inspect(helper.body!);
-  // Execute the actual pure guest helper without booting its VM-only entry point.
-  const search = new Function("SEARCH_ROWS", helper.getText(source) + "\nreturn grepRows;")(200);
+  const append = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "appendSearchRow") as ts.FunctionDeclaration;
+  inspect(append.body!);
+  // Execute the actual pure worker helpers without starting an isolated process.
+  const search = new Function("SEARCH_ROWS", append.getText(source) + "\n" + helper.getText(source) + "\nreturn grepRows;")(200);
   function measure(text: string, pattern: string) {
     let patternScans = 0, lineScans = 0, slices = 0; const rows: string[] = [];
     const input = { length: text.length, indexOf(value: string, start?: number) {
       if (value === "\n") lineScans++; else patternScans++;
       return text.indexOf(value, start);
     }, slice(start: number, end: number) { slices++; return text.slice(start, end); } };
-    search(input, pattern, "file", rows); return { patternScans, lineScans, slices, rows };
+    search(input, pattern, "file", rows, 32768); return { patternScans, lineScans, slices, rows };
   }
   const absent = measure("plain\n".repeat(100000), "missing");
   assert.equal(absent.patternScans, 1); assert.equal(absent.lineScans, 0); assert.equal(absent.slices, 0);

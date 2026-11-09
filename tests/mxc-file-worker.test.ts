@@ -72,3 +72,13 @@ test("MXC search scopes files and directories, bounds rows and preserves no-matc
   assert.equal(f.invoke("grep", { path: "search/0.txt", pattern: "absent" }).text, "(no matches)");
   const exact = f.invoke("grep", { path: "search/0.txt", pattern: "needle" }); assert.equal(exact.text, "search/0.txt:1:needle");
 });
+
+test("MXC search keeps the complete JSON response within the transport budget", t => {
+  const f = mxcFileFixture(t), scope = path.join("中".repeat(70), "文".repeat(70), "字".repeat(70));
+  fs.mkdirSync(path.join(f.input, scope), { recursive: true });
+  for (let index = 0; index < 200; index++) fs.writeFileSync(path.join(f.input, scope, index + ".txt"), "中".repeat(256));
+  const reply = f.invoke("grep", { path: scope, pattern: "中" });
+  assert.equal(reply.ok, true); assert.match(reply.text, /Results truncated/);
+  assert.ok(Buffer.byteLength(JSON.stringify(reply)) + 1 <= 256 * 1024);
+  assert.ok(reply.text.startsWith(scope));
+});

@@ -2727,12 +2727,13 @@ test("final shutdown rejects late extension bash setup before constructing its l
 			emitUserBash: () => new Promise<undefined>((resolve) => { settleExtension = resolve; }),
 		},
 		isStreaming: false,
-		executeBash: () => {
+		executeShellCommand: () => {
 			executeCalls++;
 			return new Promise((resolve) => { settleBash = resolve; });
 		},
 		recordBashResult(): void {},
 		settingsManager: {
+			getExecutionEnvironment: () => "trusted-host",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
@@ -2782,12 +2783,13 @@ test("final shutdown rejects late active bash chunks and completion after displa
 	mode.runtimeHost = { session: {
 		extensionRunner: { emitUserBash: async () => undefined },
 		isStreaming: false,
-		executeBash: (_command: string, chunk: (value: string) => void) => {
+		executeShellCommand: (_command: string, chunk: (value: string) => void) => {
 			onChunk = chunk;
 			return new Promise((resolve) => { settleBash = resolve; });
 		},
 		recordBashResult(): void {},
 		settingsManager: {
+			getExecutionEnvironment: () => "trusted-host",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },
@@ -2835,9 +2837,10 @@ test("final shutdown rejects a late active bash error continuation", async () =>
 	mode.runtimeHost = { session: {
 		extensionRunner: { emitUserBash: async () => undefined },
 		isStreaming: false,
-		executeBash: () => new Promise((_resolve, reject) => { rejectBash = reject; }),
+		executeShellCommand: () => new Promise((_resolve, reject) => { rejectBash = reject; }),
 		recordBashResult(): void {},
 		settingsManager: {
+			getExecutionEnvironment: () => "trusted-host",
 			getShowTerminalProgress: () => false,
 		},
 		sessionManager: { getCwd: () => process.cwd() },

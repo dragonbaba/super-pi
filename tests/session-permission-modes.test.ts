@@ -57,6 +57,15 @@ test("sandbox and host sessions expose their respective shells and reject legacy
   try { await assert.rejects(createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, resourceLoader: loader,
     sessionManager: SessionManager.inMemory(root), model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() }), /SANDBOX_MIGRATION/); }
   finally { await loader.getExtensions().runtime.executionBoundary.dispose(); }
+  if (process.platform === "win32") {
+    const agentDir = path.join(root, "fresh-agent");
+    for (let load = 0; load < 2; load++) {
+      const fresh = SettingsManager.create(root, agentDir);
+      assert.equal(fresh.getGlobalSettings().executionEnvironment, undefined);
+      assert.equal(fresh.getPermissionMode(), "sandbox-write");
+      assert.equal(fresh.getExecutionEnvironment(), "sandbox");
+    }
+  }
 });
 
 test("interactive sandbox commands bypass host Bash extension hooks", async t => {

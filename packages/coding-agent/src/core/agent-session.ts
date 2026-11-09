@@ -2513,12 +2513,15 @@ export class AgentSession {
 		return owner.readArtifact(id, this.agent.state.messages);
 	}
 
-	/**
-	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
-	 */
-	getAllTools(): ToolInfo[] {
-		const powerShellAvailable = process.platform === "win32" && (this._workspaceSandbox !== undefined
+	private isPowerShellAvailable(): boolean {
+		if (this._resourceLoader.getExtensions().runtime.parentExecution) return this._baseToolDefinitions.has("powershell");
+		return process.platform === "win32" && (this._workspaceSandbox !== undefined
 			|| this.settingsManager.getPowerShellStatus()?.available !== false && this._powerShellToolState.disabledReason === undefined);
+	}
+
+	/** Get configured tool schemas, descriptions, availability and source metadata. */
+	getAllTools(): ToolInfo[] {
+		const powerShellAvailable = this.isPowerShellAvailable();
 		const tools: ToolInfo[] = [];
 		for (const { definition, sourceInfo } of this._toolDefinitions.values()) tools.push({
 			name: definition.name,
@@ -5088,7 +5091,7 @@ export class AgentSession {
 
 		if (!preservePlanSelection && selection) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
+				if (toolName === "powershell" && !this.isPowerShellAvailable()) continue;
 				if (selection.adds(toolName)) nextActiveToolNames.push(toolName);
 			}
 		}
@@ -5097,7 +5100,7 @@ export class AgentSession {
 			// selection. Still replace active wrappers and rebuild their descriptions below.
 		} else if (allowedToolNames) {
 			for (const toolName of this._toolRegistry.keys()) {
-				if (selection && toolName === "powershell" && (process.platform !== "win32" || this.settingsManager.getPowerShellStatus()?.available === false)) continue;
+				if (selection && toolName === "powershell" && !this.isPowerShellAvailable()) continue;
 				if (allowedToolNames.has(toolName)) {
 					nextActiveToolNames.push(toolName);
 				}
@@ -5245,8 +5248,7 @@ export class AgentSession {
 			? Object.keys(this._baseToolsOverride)
 			: [...getDefaultToolNames(), ...(nativeTasks ? ["tasks"] : []), ...(extensionsResult.runtime.nativeFiles ? ["delete", "move", "file_batch"] : [])];
 		const requestedActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
-		const powerShellAvailable =
-			process.platform === "win32" && (this._workspaceSandbox !== undefined || this.settingsManager.getPowerShellStatus()?.available !== false);
+		const powerShellAvailable = this.isPowerShellAvailable();
 		const baseActiveToolNames: string[] = [];
 		for (const name of requestedActiveToolNames) {
 			if (name !== "powershell" || powerShellAvailable) baseActiveToolNames.push(name);
