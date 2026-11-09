@@ -362,7 +362,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		requestedActiveToolNames.includes("powershell") && !excludedToolNameSet?.has("powershell") && (!toolSelection || toolSelection.allows("powershell"));
 	const powerShellExplicitlyEnabled = powerShellRequested && (options.tools?.includes("powershell") === true || toolSelection?.explicitlyAdds("powershell") === true);
 	let powerShellAvailable = process.platform === "win32";
-	if (powerShellRequested && process.platform === "win32") {
+	if (!sandboxSelected && powerShellRequested && process.platform === "win32") {
 		powerShellAvailable = await initializePowerShellPersistence(settingsManager, {
 			forceEnable: powerShellExplicitlyEnabled,
 		});

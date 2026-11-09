@@ -1,10 +1,10 @@
 import { win32 as path } from "node:path";
 import type { AgentTool, AgentToolExecutionContext } from "@super-pi/agent-core";
-import type { ExtensionContext, ExtensionRuntime } from "../extensions/types.ts";
-import { SessionExecutionBoundary } from "../execution-boundary.ts";
-import { SessionFiles } from "../files/session-files.ts";
-import { SessionFileRevisionSource } from "../files/session-file-revision-source.ts";
-import { FileRevisions } from "../files/snapshot-line-edit.ts";
+import type { ExtensionContext, ExtensionRuntime } from "../../../packages/coding-agent/src/core/extensions/types.ts";
+import { SessionExecutionBoundary } from "../../../packages/coding-agent/src/core/execution-boundary.ts";
+import { SessionFiles } from "../../../packages/coding-agent/src/core/files/session-files.ts";
+import { SessionFileRevisionSource } from "../../../packages/coding-agent/src/core/files/session-file-revision-source.ts";
+import { FileRevisions } from "../../../packages/coding-agent/src/core/files/snapshot-line-edit.ts";
 import { assertSandboxTaskRequest, SANDBOX_TASK_LIMITS, type SandboxTaskRequest } from "./task-request.ts";
 
 const pinSource = SessionFiles.prototype.pinReadRevisions;

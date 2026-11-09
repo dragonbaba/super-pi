@@ -75,7 +75,7 @@ const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
 const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "delete", "move", "file_batch", "grep", "find", "ls", "bash", "powershell"]);
-const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "delete", "move", "file_batch", "bash"]);
+const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "delete", "move", "file_batch", "bash", "powershell"]);
 const CHILD_GUARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-guard.ts");
 
 function formatTokens(count: number): string {
@@ -529,16 +529,17 @@ function appendBoundedMessage(messages: Message[], message: Message, encodedByte
 	return bounded;
 }
 
-export function effectiveTools(agent: AgentConfig, allowMutation: boolean): { tools: string[]; allowBash: boolean } {
+export function effectiveTools(agent: AgentConfig, allowMutation: boolean, mode?: SubagentExecution["profile"]["mode"]): { tools: string[]; allowBash: boolean } {
 	const requested = agent.tools ?? DEFAULT_AGENT_TOOLS;
+	const sandbox = mode === "read-only" || mode === "sandbox-write";
 	const allowBash =
-		allowMutation && agent.source === "user" && agent.tools !== undefined && agent.tools.includes("bash");
+		!sandbox && allowMutation && agent.source === "user" && agent.tools !== undefined && agent.tools.includes("bash");
 	const tools: string[] = [];
 	for (const tool of requested) {
 		if (!BUILTIN_AGENT_TOOLS.has(tool)) continue;
 		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "delete" || tool === "move" || tool === "file_batch" || tool === "bash" || tool === "powershell")) continue;
 		if (tool === "bash" && !allowBash) continue;
-		if (tool === "powershell") continue;
+		if (tool === "powershell" && (!sandbox || agent.source !== "user" || agent.tools === undefined)) continue;
 		if (tools.includes(tool)) continue;
 		tools.push(tool);
 	}
@@ -571,7 +572,7 @@ export function assertSubagentBatchPreflight(
 			throw new Error(`Project-local agent "${name}" cannot use a non-primary workspace. Use the primary project cwd or a user-level agent; no subagent was started.`);
 		}
 		let canMutate = false;
-		for (const tool of effectiveTools(agent, policy.allowMutation).tools) if (MUTATING_AGENT_TOOLS.has(tool)) { canMutate = true; break; }
+		for (const tool of effectiveTools(agent, policy.allowMutation, policy.parentExecution?.profile.mode).tools) if (MUTATING_AGENT_TOOLS.has(tool)) { canMutate = true; break; }
 		// The parent's grant is a ceiling; read-only role tools do not reserve a writer scope.
 		if (policy.sharedParentScope && !canMutate) policy.allowMutation = false;
 		if (!parallel || !policy.allowMutation || !canMutate) continue;
@@ -1162,7 +1163,7 @@ async function runSingleAgent(
 		"--no-prompt-templates",
 	];
 	appendSubagentModelArgs(args, execution);
-	const toolPolicy = effectiveTools(agent, policy.allowMutation);
+	const toolPolicy = effectiveTools(agent, policy.allowMutation, policy.parentExecution?.profile.mode);
 	args.push("--tools", toolPolicy.tools.join(","));
 
 	let tmpPromptDir: string | null = null;

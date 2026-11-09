@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { TASK_PACKAGE_LIMITS, TASK_RESULT_MAGIC } from "../../packages/coding-agent/src/core/sandbox/task-package.ts";
+import { TASK_PACKAGE_LIMITS, TASK_RESULT_MAGIC } from "./retired-sandbox/task-package.ts";
 import { nativePrivateIdentity } from "./windows-sandbox-volume-candidate-private.mjs";
 
 const need = (value, why) => { if (!value) throw new Error(why); };

@@ -26,7 +26,7 @@ process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("fixtures/subagent-parent
 delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(agentDir, "agents"), { recursive: true }); mkdirSync(join(agentDir, "config"));
 writeFileSync(join(agentDir, "agents", "reader.md"), "---\nname: reader\ndescription: Owned fixture\n---\nRead the assigned fixture.");
-writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,find,write,edit,delete,move,file_batch,bash\n---\nExecute the assigned fixture.");
+writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,find,write,edit,delete,move,file_batch,bash,powershell\n---\nExecute the assigned fixture.");
 const { default: subagent } = await import("../packages/extensions/subagent/index.ts");
 test.after(async () => {
   await disposeNativeFileWorker();
@@ -82,7 +82,19 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
 }
 
 const liveSandbox = process.platform === "win32" && process.env.SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE === "1";
-test("live sandbox parent shares one VM with real read-only children and drains concurrent calls", { skip: !liveSandbox, timeout: 240000 }, async t => {
+test("PowerShell-only MXC roles keep writer admission and never expose Bash", async () => {
+  const { assertSubagentBatchPreflight, effectiveTools } = await import("../packages/extensions/subagent/index.ts");
+  const agent: any = { name: "shell", source: "user", tools: ["powershell"] };
+  const policy: any = { source: "primary", canonicalCwd: owned.root, allowMutation: true, sharedParentScope: true,
+    parentExecution: { profile: { mode: "sandbox-write" } } };
+  assertSubagentBatchPreflight([agent], ["shell"], [policy], false);
+  assert.equal(policy.allowMutation, true, "PowerShell is a writer capability even without file tools");
+  assert.throws(() => assertSubagentBatchPreflight([agent], ["shell", "shell"], [policy, { ...policy }], true), /Parallel mutation/);
+  assert.deepEqual(effectiveTools({ ...agent, tools: ["bash", "powershell"] }, true, "sandbox-write"), { tools: ["powershell"], allowBash: false });
+  assert.deepEqual(effectiveTools(agent, false, "read-only"), { tools: [], allowBash: false });
+});
+
+test("live sandbox parent shares one MXC owner with real read-only children and drains concurrent calls", { skip: !liveSandbox, timeout: 240000 }, async t => {
   const f = await fixture(t, "trusted-host", false, undefined, "read-only");
   assert.ok(f.session.getAllTools().some(tool => tool.name === "subagent"));
   const task = { agent: "reader", task: "Read fixture", scope: "Owned files", deliverable: "Read receipt", stopCondition: "After read", cwd: f.cwd };
@@ -96,40 +108,40 @@ test("live sandbox parent shares one VM with real read-only children and drains 
   assert.ok(entries.filter(entry => entry.event === "result").every(entry => !entry.isError), JSON.stringify(entries));
   assert.equal(owner.diagnostics.starts, 1); assert.equal(owner.diagnostics.highWaterMark, 1); assert.ok(owner.diagnostics.queueHighWaterMark >= 1);
   assert.equal(owner.diagnostics.reservations, 0); assert.equal(await fs.readFile(join(f.cwd, "sample.txt"), "utf8"), "marker\n");
-  t.diagnostic(JSON.stringify({ mode: "read-only", children: 2, vmStarts: 1, elapsedMs: performance.now() - start, ...owner.diagnostics }));
+  t.diagnostic(JSON.stringify({ mode: "read-only", children: 2, mxcStarts: 1, elapsedMs: performance.now() - start, ...owner.diagnostics }));
 });
 
-test("live sandbox-write child uses literal additional cwd and publishes through its parent VM", { skip: !liveSandbox, timeout: 240000 }, async t => {
+test("live sandbox-write child uses literal additional cwd and writes directly through its parent MXC owner", { skip: !liveSandbox, timeout: 240000 }, async t => {
   const f = await fixture(t, "trusted-host", false, undefined, "sandbox-write"), owner = (f.session as any)._workspaceSandbox;
-  const result = await f.run(`const r=await tools.read({path:"sample.txt"}); console.log(await tools.write({path:"sample.txt",content:"child published",snapshot:r.details.snapshot})); console.log(await tools.bash({command:"printf 'guest cwd\\n'; pwd",cwd:${JSON.stringify(f.additional)}})); console.log(await tools.write({path:"target/vm.txt",content:"VM only"})); console.log(await tools.find({path:"target",pattern:"vm"}));`, "writer", f.cwd, { timeoutMs: 180000 });
+  const result = await f.run(`const r=await tools.read({path:"sample.txt"}); console.log(await tools.write({path:"sample.txt",content:"child published",snapshot:r.details.snapshot})); console.log(await tools.powershell({command:"(Get-Location).Path",cwd:${JSON.stringify(f.additional)}})); console.log(await tools.write({path:"target/local.txt",content:"host workspace"})); console.log(await tools.find({path:"target",pattern:"local"}));`, "writer", f.cwd, { timeoutMs: 180000 });
   assert.equal((result as any)?.isError, false, JSON.stringify(result));
   const entries = await f.observations();
   assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "sandbox-write");
   const tools = entries.filter(entry => entry.event === "result" && entry.name !== "codemode");
   assert.ok(tools.every(entry => !entry.isError), JSON.stringify(entries)); assert.equal(tools.length, 5, JSON.stringify(entries));
-  assert.match(JSON.stringify(tools.find(entry => entry.name === "bash").content), /Assets 中文 ' space/);
+  assert.match(JSON.stringify(tools.find(entry => entry.name === "powershell").content), /Assets 中文 ' space/);
   assert.equal(await fs.readFile(join(f.cwd, "sample.txt"), "utf8"), "child published");
-  await assert.rejects(fs.stat(join(f.cwd, "target")), { code: "ENOENT" });
+  assert.equal(await fs.readFile(join(f.cwd, "target", "local.txt"), "utf8"), "host workspace");
   assert.equal(owner.diagnostics.starts, 1); assert.equal(owner.diagnostics.reservations, 0);
-  t.diagnostic(JSON.stringify({ mode: "sandbox-write", parentPublication: true, literalAdditionalCwd: true, privateWriteback: 0, ...owner.diagnostics }));
+  t.diagnostic(JSON.stringify({ mode: "sandbox-write", parentDirectWrite: true, literalAdditionalCwd: true, privateDirectories: false, ...owner.diagnostics }));
 });
 
-test("live parent pause cancels a real child command and queued VM request before a fresh user restart", { skip: !liveSandbox, timeout: 240000 }, async t => {
+test("live parent pause cancels a real child command and queued MXC request before a fresh user restart", { skip: !liveSandbox, timeout: 240000 }, async t => {
   const f = await fixture(t, "trusted-host", false, undefined, "sandbox-write"), owner = (f.session as any)._workspaceSandbox;
   const backend = owner.backend, boundary = f.runtime.executionBoundary;
-  // This existing exchange filename is already owned by the VM supervisor and its cleanup.
-  const command = `printf '{"fixtureStarted":true}' > /c/SuperPiExchange/command-result.json; sleep 30`;
-  const running = f.run(`await tools.read({path:"sample.txt"}); await tools.bash({command:${JSON.stringify(command)}}); await tools.write({path:"after-pause.txt",content:"must not run"});`, "writer", f.cwd, { timeoutMs: 180000 });
+  // A task-owned workspace marker confirms the real command started.
+  const command = `[IO.File]::WriteAllText((Join-Path $PWD "command-started.txt"),"started"); Start-Sleep 30`;
+  const running = f.run(`await tools.read({path:"sample.txt"}); await tools.powershell({command:${JSON.stringify(command)}}); await tools.write({path:"after-pause.txt",content:"must not run"});`, "writer", f.cwd, { timeoutMs: 180000 });
   const observedRun = Promise.allSettled([running]);
   let started = false;
   for (let i = 0; i < 600; i++) {
     if (backend.root) {
-      try { started = JSON.parse(await fs.readFile(join(backend.root, "exchange", "command-result.json"), "utf8")).fixtureStarted === true; }
+      try { started = await fs.readFile(join(f.cwd, "command-started.txt"), "utf8") === "started"; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     if (started) break; await delay(50);
   }
-  assert.equal(started, true, "guest command must actually start before cancellation");
+  assert.equal(started, true, "MXC command must actually start before cancellation");
   const scope = f.session.agent.createDelegatedToolDispatch("parent-queued", boundary.signal, () => {}, [...(f.session as any)._toolRegistry.values()]);
   const queued = Promise.allSettled([scope.callTool("read", { path: "sample.txt" })]);
   for (let i = 0; owner.diagnostics.queued === 0 && i < 100; i++) await delay(10);
@@ -137,12 +149,12 @@ test("live parent pause cancels a real child command and queued VM request befor
   const calls = owner.diagnostics.calls;
   await boundary.pauseForUser(); await observedRun; await queued; await scope.close();
   assert.equal(boundary.requiresUserInput, true); assert.equal(owner.diagnostics.calls, calls);
-  assert.equal(owner.diagnostics.vm, false); assert.equal(owner.diagnostics.ownedArtifacts, 0);
+  assert.equal(owner.diagnostics.process.active, false); assert.equal(owner.diagnostics.ownedArtifacts, 0);
   assert.equal(owner.diagnostics.active, 0); assert.equal(owner.diagnostics.queued, 0); assert.equal(owner.diagnostics.reservations, 0);
   await assert.rejects(fs.stat(join(f.cwd, "after-pause.txt")), { code: "ENOENT" });
   const result = await f.run('console.log(await tools.read({path:"sample.txt"}));', "reader", f.cwd, { timeoutMs: 180000 });
-  assert.equal((result as any)?.isError, false, JSON.stringify(result)); assert.equal(owner.diagnostics.starts, 2);
-  t.diagnostic(JSON.stringify({ guestCommandStarted: true, pausedVmReleased: true, queuedBackendCalls: 0, afterPauseWrites: 0, freshUserVmStarts: 2 }));
+  assert.equal((result as any)?.isError, false, JSON.stringify(result)); assert.equal(owner.diagnostics.starts, 1);
+  t.diagnostic(JSON.stringify({ mxcCommandStarted: true, pausedProcessReleased: true, queuedBackendCalls: 0, afterPauseWrites: 0, reusedPolicyOwner: true }));
 });
 
 test("real CLI children inherit explicit host mode across all global defaults and use parent read tools", { timeout: 90000 }, async t => {

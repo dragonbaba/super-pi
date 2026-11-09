@@ -58,7 +58,7 @@
 	},
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets && node ../../scripts/build-windows-sandbox-runtime.mjs",
+		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets && node ../../scripts/build-mxc-runtime.mjs",
 		"copy-assets": "shx mkdir -p dist/core/files && shx cp src/core/files/native-file-worker.mjs src/core/files/native-file-regex.mjs dist/core/files/ && shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/"
 	},
 	"dependencies": {
@@ -94,7 +94,8 @@
 		}
 	},
 	"optionalDependencies": {
-		"@mariozechner/clipboard": "0.3.9"
+		"@mariozechner/clipboard": "0.3.9",
+		"@microsoft/mxc-sdk": "1.0.1"
 	},
 	"devDependencies": {
 		"@types/cross-spawn": "6.0.6",

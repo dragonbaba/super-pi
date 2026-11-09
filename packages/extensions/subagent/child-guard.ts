@@ -17,7 +17,7 @@ export default function childGuard(pi: ExtensionAPI): void {
 	const parentExecution = process.env.SP_SUBAGENT_PARENT_EXECUTION === "1";
 	installChildControl(pi);
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Stay within the assigned task scope. ${parentExecution ? "Workspace operations execute in the parent under its original workspace and permissions; the assigned cwd grants no additional permission." : "Access files only inside the assigned canonical workspace."} Shells are not sandboxes; Bash is available only when explicitly permitted, and PowerShell is disabled.\n</subagent-security>`,
+		systemPrompt: `${event.systemPrompt}\n\n<subagent-security>\nDo not inspect credentials, secret environment values, Pi auth storage, browser profiles, or private key files. Stay within the assigned task scope. ${parentExecution ? "Workspace operations execute in the parent under its original workspace and permissions; the assigned cwd grants no additional permission. Use only the shell tools exposed by the parent execution profile." : "Access files only inside the assigned canonical workspace. Bash is available only when explicitly permitted; PowerShell is disabled."}\n</subagent-security>`,
 	}));
 
 	pi.on("tool_call", (event, ctx) => {
@@ -61,7 +61,7 @@ export default function childGuard(pi: ExtensionAPI): void {
 				return { block: true, reason: "Subagent guard: Bash may not change outside the assigned workspace" };
 			}
 		}
-		if (event.toolName === "powershell") {
+		if (event.toolName === "powershell" && !parentExecution) {
 			return { block: true, reason: "Subagent guard: PowerShell is disabled for this agent" };
 		}
 	});

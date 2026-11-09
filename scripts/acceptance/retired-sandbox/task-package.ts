@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { assertSandboxTaskRequest, SANDBOX_TASK_LIMITS, type SandboxTaskRequest } from "./task-request.ts";
 
-/** Data layout only: a package is not a permission or a live capture lease. */
+/** Retired VM acceptance layout; never imported by the production MXC runtime. */
 export const TASK_PACKAGE_LIMITS = Object.freeze({
   headerBytes: 16, metadataBytes: 32768, inputBytes: SANDBOX_TASK_LIMITS.inputBytes,
   packageBytes: 16 + 32768 + SANDBOX_TASK_LIMITS.inputBytes,

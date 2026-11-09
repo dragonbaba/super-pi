@@ -14,8 +14,8 @@ import { vmSnapshot, preflightSnapshot } from "./windows-sandbox-volume-share.mj
 import { SHARING_ROOT, sourceReceipt, hostLaunchGuard } from "./windows-sandbox-volume-share-acceptance.mjs";
 import { PrivateCandidateChannel, nativePrivateIdentity } from "./windows-sandbox-volume-candidate-private.mjs";
 import { INPUT_SOURCES as PREVIOUS_SOURCES, INPUT_HOST_SOURCES } from "./windows-sandbox-input-writeback-acceptance.mjs";
-import { parseSandboxTaskRequest } from "../../packages/coding-agent/src/core/sandbox/task-request.ts";
-import { TaskPackageBuilder } from "../../packages/coding-agent/src/core/sandbox/task-package.ts";
+import { parseSandboxTaskRequest } from "./retired-sandbox/task-request.ts";
+import { TaskPackageBuilder } from "./retired-sandbox/task-package.ts";
 import { parseTaskResult } from "./windows-sandbox-task-result.mjs";
 import { taskReport, taskFrame, taskHelpers, taskOutputPreview, produceTaskCandidates, finishInputCandidates, TASK_NORMAL_FILES } from "./windows-sandbox-task-session.mjs";
 import { SandboxToolchains } from "./windows-sandbox-toolchains.mjs";
@@ -30,8 +30,8 @@ export const TASK_SOURCES = Object.freeze([...PREVIOUS_SOURCES,
     "windows-sandbox-task-install.cs", "windows-sandbox-task-worker.cs", "windows-sandbox-task-publication.mjs",
     "windows-sandbox-task-result.mjs", "windows-sandbox-task-session.mjs", "windows-sandbox-task-acceptance.mjs"]);
 export const TASK_HOST_SOURCES = Object.freeze([...INPUT_HOST_SOURCES,
-    "packages/coding-agent/src/core/sandbox/task-request.ts", "packages/coding-agent/src/core/sandbox/task-binding.ts",
-    "tests/windows-sandbox-task-binding.test.mjs", "packages/coding-agent/src/core/sandbox/task-package.ts",
+    "scripts/acceptance/retired-sandbox/task-request.ts", "scripts/acceptance/retired-sandbox/task-binding.ts",
+    "tests/windows-sandbox-task-binding.test.mjs", "scripts/acceptance/retired-sandbox/task-package.ts",
     "packages/coding-agent/src/core/tools/powershell.ts"]);
 export function taskSourceManifest() {
     let bytes = 0;

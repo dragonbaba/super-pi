@@ -11,13 +11,14 @@ test("production request translates in-workspace absolute paths without mutating
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-workspace-path-")));
     const exchange = path.join(root, "exchange"); await fs.mkdir(exchange);
     const backend = new WorkspaceSandboxBackend(root, root, "sandbox-write"), internal = backend as any;
-    internal.root = root;
+    internal.starts = 1; internal.roots.push(root); internal.tools = exchange; internal.exchange = exchange;
+    t.mock.method(internal, "policy", async () => "fixture-policy");
     t.mock.method(internal, "assertWorkspaceCurrent", async () => {});
     const received: any[] = [];
-    internal.vm = { calls: [], async invoke() {
+    internal.runner.run = async () => {
         const request = JSON.parse(await fs.readFile(path.join(exchange, "request.json"), "utf8")); received.push(request);
-        await fs.writeFile(path.join(exchange, "response.json"), JSON.stringify({id:request.id,ok:true,text:"ok"}));
-    } };
+        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok"}),stderr:"",timedOut:false,truncated:false};
+    };
     try {
         const input = Object.freeze({ path: path.join(root, "src", "example.txt") });
         await backend.invoke("read", input); assert.equal(received.at(-1).input.path, "src/example.txt");
@@ -26,7 +27,7 @@ test("production request translates in-workspace absolute paths without mutating
         await backend.invoke("file_batch", {operations:[{operation:"move",path:input.path,destination:path.join(root,"new.txt")}]});
         assert.deepEqual(received.at(-1).input.operations, [{operation:"move",path:"src/example.txt",destination:"new.txt"}]);
     } finally {
-        internal.vm=undefined;internal.root=undefined;await backend.close();
+        internal.root=undefined;await backend.close();
         for(const name of ["request.json","response.json"]) await fs.unlink(path.join(exchange,name)).catch(() => {});
         await fs.rmdir(exchange);await fs.rmdir(root);
     }
@@ -61,10 +62,10 @@ test("path translation is bounded and preserves shell source and relative path g
     }
 });
 
-test("sandbox tool descriptions expose actual workspace, guest cwd and network policy", async () => {
+test("sandbox tool descriptions expose actual workspace, cwd and network policy", async () => {
     for(const mode of ["read-only","sandbox-write"] as const) {
         const owner = new WorkspaceSandboxTools(process.cwd(),process.cwd(),mode,() => {throw new Error("No execution");},{network:"enabled"});
-        const tools:Record<string,any>={}; owner.install(tools);
+        const tools = owner.install({bash:{} as any}); assert.equal(tools.bash,undefined);
         assert.ok(tools.ls.description.includes(process.cwd()));
         assert.ok(tools.powershell.description.includes("Command cwd: " + process.cwd()));
         assert.doesNotMatch(tools.powershell.description, /C:\\SuperPiInput|C:\\SuperPiWorkspace/);
@@ -74,9 +75,9 @@ test("sandbox tool descriptions expose actual workspace, guest cwd and network p
     }
 });
 
-test("outside-workspace paths are rejected before VM startup", async t => {
+test("outside-workspace paths are rejected before MXC startup", async t => {
     const backend = new WorkspaceSandboxBackend(process.cwd(), process.cwd(), "sandbox-write"), internal=backend as any;
-    let starts=0;t.mock.method(internal,"start",async () => {starts++;throw new Error("Unexpected VM startup");});
+    let starts=0;t.mock.method(internal,"start",async () => {starts++;throw new Error("Unexpected MXC startup");});
     try {
         await assert.rejects(backend.invoke("ls", {path:path.resolve(process.cwd(),"../outside")}), /outside.*workspace/i);
         assert.equal(starts,0);

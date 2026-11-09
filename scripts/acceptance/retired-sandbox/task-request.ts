@@ -1,6 +1,6 @@
 import { win32 as path } from "node:path";
 
-/** Intent only. This profile is not enabled by creating or serializing a request. */
+/** Historical VM profile. No production entry enables it or serializes this protocol. */
 export const WINDOWS_SANDBOX_PROFILE = Object.freeze({
   id: "windows-powershell-foreground-v1" as const,
   executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",

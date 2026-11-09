@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
-import { HOST_PATH_HOST_ONLY, HOST_PATH_MISSING, HOST_PATH_TOOL, HOST_PATH_VM, HOST_PATH_WORKSPACE, WorkspaceOperationError, WorkspacePathStop,
+import { HOST_PATH_HOST_ONLY, HOST_PATH_TOOL, HOST_PATH_WORKSPACE, WorkspaceOperationError,
   WorkspaceSandboxBackend } from "../packages/coding-agent/src/core/sandbox/workspace-backend.ts";
 import { SandboxNetworkSession } from "../packages/coding-agent/src/core/sandbox/network-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -48,53 +48,54 @@ test("sandbox command facts: common network commands and static absolute paths, 
 function fixture(options: { session?: SandboxNetworkSession; hasUI?: boolean; choice?: string } = {}) {
   const runtime = createExtensionRuntime();
   const owner = new WorkspaceSandboxTools(process.cwd(), process.cwd(), "read-only", () => runtime, { networkSession: options.session });
-  const backend = (owner as any).backend, dialogs: string[] = [], statuses: (string | undefined)[] = [], invoked: (readonly string[] | undefined)[] = [];
+  const backend = (owner as any).backend, dialogs: string[] = [], statuses: (string | undefined)[] = [], invoked: string[] = [];
   let enabled = 0;
-  backend.invoke = async (_name: string, _input: object, _signal: AbortSignal, hostPaths?: readonly string[]) => {
-    invoked.push(hostPaths ? [...hostPaths] : undefined); return { ok: true, text: "fixture", changes: [] };
+  backend.invoke = async (name: string, input: { command: string }) => {
+    assert.equal(name, "powershell"); invoked.push(input.command); return { ok: true, text: "fixture" };
   };
-  backend.releaseCandidates = async () => {};
   backend.enableSessionNetwork = async () => { enabled++; options.session!.enabled = true; };
   const ctx: any = { hasUI: options.hasUI ?? true, ui: {
     async select(title: string) { dialogs.push(title); return options.choice; },
     notify() {}, setStatus(_key: string, text: string | undefined) { statuses.push(text); } } };
   return { owner, runtime, backend, dialogs, statuses, invoked, get enabled() { return enabled; },
-    run(command: string) { return owner.definition("bash")!.execute("bash", { command }, undefined, undefined, ctx); },
+    run(command: string) { return owner.definition("powershell")!.execute("powershell", { command }, undefined, undefined, ctx); },
     async close() { await owner.close(); await runtime.executionBoundary.dispose(); } };
 }
 
-test("sandbox search patterns stay text while search files and redirections stay paths", async () => {
+test("diagnostic paths distinguish search text and shell commands reach MXC unchanged", async () => {
   const f = fixture({ hasUI: false });
   try {
     for (const command of ["rg -F -e 'D:/outside' .", "rg --regexp=D:/outside .", "rg -F 'D:/outside' .", "grep -F -e 'D:/outside' .",
       "rg -FeD:/outside .", "rg -g D:/glob -e D:/pattern .", "rg --pre-glob D:/pattern -e needle .",
       "rg --context-separator D:/separator -e needle .", "rg -E utf-8 D:/pattern .", "grep -d recurse D:/pattern ."]) {
       await f.run(command);
-      assert.deepEqual(f.invoked.at(-1), undefined, command);
+      assert.equal(f.invoked.at(-1), command);
+      assert.deepEqual((f.owner as any).commandFacts.paths, [], command);
     }
     await f.run("rg -F -e 'D:/pattern' D:/outside > D:/result.txt");
-    assert.deepEqual(f.invoked.at(-1), ["D:/outside", "D:/result.txt"]);
+    assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/outside", "D:/result.txt"]);
     await f.run("rg -f D:/patterns.txt D:/outside");
-    assert.deepEqual(f.invoked.at(-1), ["D:/patterns.txt", "D:/outside"]);
+    assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/patterns.txt", "D:/outside"]);
     await f.run("rg D:/outside -e needle");
-    assert.deepEqual(f.invoked.at(-1), ["D:/outside"]);
+    assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/outside"]);
     // Search data is excluded without dropping real option paths or wrapper working directories.
     for (const command of ["rg --pre=D:/tools/filter.exe -e D:/pattern .", "rg --pre D:/tools/filter.exe -e D:/pattern ."]) {
       await f.run(command);
-      assert.deepEqual(f.invoked.at(-1), ["D:/tools/filter.exe"], command);
+      assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/tools/filter.exe"], command);
     }
     for (const command of ["env -C D:/outside rg -e D:/pattern .", "env --chdir=D:/outside rg -e D:/pattern ."]) {
-      await f.run(command);
-      assert.deepEqual(f.invoked.at(-1), ["D:/outside"], command);
+      const facts: SandboxCommandFacts = { network: undefined, paths: [] };
+      inspectSandboxCommand("bash", command, facts);
+      assert.deepEqual(facts.paths, ["D:/outside"], command);
     }
     for (const command of ["rg --hostname-bin=D:/tools/hostname.exe needle .", "rg --hostname-bin D:/tools/hostname.exe needle ."]) {
       await f.run(command);
-      assert.deepEqual(f.invoked.at(-1), ["D:/tools/hostname.exe"], command);
+      assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/tools/hostname.exe"], command);
     }
     // grep's color value is optional and attached; rg's color value is required.
     for (const command of ["grep --color needle D:/outside", "grep --color=auto needle D:/outside", "rg --color always needle D:/outside"]) {
       await f.run(command);
-      assert.deepEqual(f.invoked.at(-1), ["D:/outside"], command);
+      assert.deepEqual((f.owner as any).commandFacts.paths, ["D:/outside"], command);
     }
     const facts: SandboxCommandFacts = { network: undefined, paths: [] };
     inspectSandboxCommand("powershell", "& 'D:\\tools\\rg.exe' -e 'D:\\pattern' D:\\outside", facts);
@@ -102,7 +103,7 @@ test("sandbox search patterns stay text while search files and redirections stay
   } finally { await f.close(); }
 });
 
-test("an offline sandbox asks once before a network command; consent rebuilds for the session, refusal does not run", async () => {
+test("an offline sandbox asks once before a network command; consent lasts for the session, refusal does not run", async () => {
   const session = new SandboxNetworkSession();
   const allowed = fixture({ session, choice: "允许本会话联网" });
   await allowed.run("npm test");
@@ -127,13 +128,15 @@ test("an offline sandbox asks once before a network command; consent rebuilds fo
   assert.equal(headless.dialogs.length, 0); assert.equal(headless.invoked.length, 1); await headless.close();
 });
 
-test("an unmapped host path stops the command and pauses the turn; offline failures name their cause", async () => {
+test("an observed outside-path failure pauses the turn without prechecking commands; offline failures name their cause", async () => {
   const f = fixture({ session: new SandboxNetworkSession() });
-  f.backend.invoke = async (_name: string, _input: object, _signal: AbortSignal, hostPaths?: readonly string[]) => {
-    f.invoked.push(hostPaths); throw new WorkspacePathStop("0".repeat(32), "D:\\other\\x.txt");
+  f.backend.hostPathKind = async () => HOST_PATH_HOST_ONLY;
+  f.backend.invoke = async (_name: string, input: { command: string }) => {
+    f.invoked.push(input.command);
+    return { ok: true, execution: { exitCode: 1, timedOut: false, closed: true, stdout: "", stderr: "Cannot find path D:\\other\\x.txt" } };
   };
   await assert.rejects(f.run("cat D:/other/x.txt"), error => /SANDBOX_PATH_UNMAPPED/.test(String(error)) && /\/add-dir/.test(String(error)));
-  assert.deepEqual(f.invoked[0], ["D:/other/x.txt"]);
+  assert.equal(f.invoked[0], "cat D:/other/x.txt");
   await assert.rejects(f.run("ls"), /PAUSED|new user instruction/i);
   await f.close();
 
@@ -149,31 +152,29 @@ test("an unmapped host path stops the command and pauses the turn; offline failu
   await offline.close();
 });
 
-// Sandbox paths are Windows paths; the VM exists only on Windows.
-test("host path kinds: workspace, its parents, tool mounts, host-only and missing paths", { skip: process.platform !== "win32" }, async () => {
+test("diagnostic path kinds distinguish workspace, tool installations and ungranted paths", { skip: process.platform !== "win32" }, async () => {
   const root = await fs.mkdtemp(path.join(process.env.TMP ?? process.cwd(), "r5-paths-"));
   try {
     const workspace = path.join(root, "workspace"), other = path.join(root, "other"), tools = path.join(root, "tools");
     for (const directory of [workspace, other, tools]) await fs.mkdir(directory);
     const backend = new WorkspaceSandboxBackend(workspace, root, "read-only", {});
-    (backend as any).toolRoots = [tools.toLowerCase()];
+    (backend as any).roots = [workspace];
+    (backend as any).toolchains = { mountRoots: [tools] };
     assert.equal(await backend.hostPathKind(path.join(workspace, "src", "a.ts")), HOST_PATH_WORKSPACE);
-    assert.equal(await backend.hostPathKind(root.toUpperCase()), HOST_PATH_VM);
+    assert.equal(await backend.hostPathKind(root.toUpperCase()), HOST_PATH_HOST_ONLY);
     assert.equal(await backend.hostPathKind(path.join(tools, "bin")), HOST_PATH_TOOL);
     assert.equal(await backend.hostPathKind(other.replaceAll("\\", "/")), HOST_PATH_HOST_ONLY);
-    assert.equal(await backend.hostPathKind(path.join(other, "missing")), HOST_PATH_MISSING);
-    assert.equal(await backend.hostPathKind("C:\\Windows\\System32\\cmd.exe"), HOST_PATH_VM);
+    assert.equal(await backend.hostPathKind(path.join(other, "missing")), HOST_PATH_HOST_ONLY);
   } finally { await fs.rm(root, { recursive: true }); }
 });
 
-test("session consent closes a running offline VM so the next call starts with networking", async () => {
+test("session consent changes the next process policy without recreating workspace resources", async () => {
   const session = new SandboxNetworkSession();
   const backend = new WorkspaceSandboxBackend(process.cwd(), process.cwd(), "read-only", { networkSession: session });
-  let discarded = 0;
-  (backend as any).vm = {}; (backend as any).discardSnapshot = async () => { discarded++; };
+  (backend as any).root = "fixture-owned-runtime";
   assert.equal(backend.networkEnabled, false);
   await backend.enableSessionNetwork();
-  assert.equal(backend.networkEnabled, true); assert.equal(discarded, 1);
+  assert.equal(backend.networkEnabled, true); assert.equal(backend.diagnostics.root, "fixture-owned-runtime");
   // The global setting still enables networking without a session consent.
   assert.equal(new WorkspaceSandboxBackend(process.cwd(), process.cwd(), "read-only", { network: "enabled" }).networkEnabled, true);
 });

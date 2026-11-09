@@ -14,7 +14,7 @@ export const PERMISSION_MODE_LABELS: Readonly<Record<SessionPermissionMode, stri
 export function assertPermissionMode(value: unknown): asserts value is SessionPermissionMode {
   if (value !== "read-only" && value !== "sandbox-write" && value !== "host-restricted" && value !== "host-auto" && value !== "host-write") throw new Error("Invalid session permission mode");
 }
-/** Every host tier runs on the trusted-host backend; the sandbox tiers run in the VM. */
+/** Every host tier runs on the trusted-host backend; sandbox tiers use native MXC isolation. */
 export function isHostPermissionMode(mode: SessionPermissionMode | undefined): mode is "host-restricted" | "host-auto" | "host-write" {
   return mode === "host-restricted" || mode === "host-auto" || mode === "host-write";
 }

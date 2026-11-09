@@ -13,16 +13,16 @@ function fixture() {
   const backend = (owner as any).backend, ctx: any = {};
   let calls = 0;
   backend.invoke = async () => { calls++; return { ok: true, text: "fixture", changes: [] }; };
-  backend.releaseCandidates = async () => {};
   return { owner, runtime, backend, get calls() { return calls; },
     run(signal?: AbortSignal) { return owner.definition("read")!.execute("read", { path: "fixture" }, signal, undefined, ctx); },
     async close() { await owner.close(); await runtime.executionBoundary.dispose(); } };
 }
 
-test("shared VM queue owns publication and release; queued cancellation never starts a backend call", async () => {
+test("shared MXC queue owns physical execution; queued cancellation never starts a backend call", async () => {
   const f = fixture(); let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  f.backend.releaseCandidates = () => gate;
+  const invoke = f.backend.invoke;
+  f.backend.invoke = async (...args: any[]) => { const reply = await invoke(...args); await gate; return reply; };
   const first = f.run(), cancel = new AbortController(), second = f.run(cancel.signal);
   const rejected = assert.rejects(second, /cancel queued/);
   await tick(); assert.equal(f.calls, 1); assert.equal(f.owner.diagnostics.queued, 1);
@@ -34,7 +34,7 @@ test("shared VM queue owns publication and release; queued cancellation never st
   await f.run(); assert.equal(f.calls, 2); await f.close();
 });
 
-test("shared VM capacity is bounded and shutdown joins the active physical operation", async () => {
+test("shared MXC capacity is bounded and shutdown joins the active physical operation", async () => {
   const f = fixture(); let release!: () => void, signal: AbortSignal | undefined;
   const gate = new Promise<void>(resolve => { release = resolve; });
   f.backend.invoke = async (_name: string, _input: object, current: AbortSignal) => {

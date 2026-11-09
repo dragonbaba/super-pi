@@ -116,14 +116,15 @@ test("persistent PATH refresh preserves process precedence without duplicate dir
 
 test("sandbox shell capability comes from the workspace adapter; legacy SDK cannot expose host Bash", async () => {
   const runtime = createExtensionRuntime(), owner = new WorkspaceSandboxTools(process.cwd(), process.cwd(), "sandbox-write", () => runtime);
-  const definitions: Record<string, any> = {}; owner.install(definitions);
+  const definitions = owner.install({});
   const policy = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
   try {
     assert.deepEqual(Object.keys(definitions), [...WORKSPACE_TOOL_NAMES]);
     for (const definition of Object.values(definitions)) { policy.registerDefinition(definition); assert.ok(policy.supports(definition)); }
-    assert.match(definitions.bash.description, /Bash.*Windows Sandbox/);
+    assert.equal(definitions.bash, undefined);
+    assert.match(definitions.powershell!.description, /PowerShell 7.*MXC/);
     const legacyRuntime = createExtensionRuntime(), legacy = new SessionExecutionPolicy(legacyRuntime, "sandbox");
-    try { legacy.registerDefinition(definitions.bash); assert.equal(legacy.supports(definitions.bash), false); }
+    try { const bash: any = { name: "bash" }; legacy.registerDefinition(bash); assert.equal(legacy.supports(bash), false); }
     finally { legacy.dispose(); await legacyRuntime.executionBoundary.dispose(); }
   } finally { await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose(); }
 });
