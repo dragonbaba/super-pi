@@ -3,6 +3,7 @@
  * CLI entry point. Standalone version queries only need package metadata.
  * All other invocations retain main.ts parsing and startup behavior.
  */
+import * as nodeModule from "node:module";
 import { isStandaloneVersionQuery } from "./cli/version-query.ts";
 import { APP_NAME, VERSION } from "./config.ts";
 
@@ -16,6 +17,10 @@ if (isStandaloneVersionQuery(args)) {
 	console.log(VERSION);
 	process.exit(0);
 } else {
+	// Reuse V8 code caches for the main module graph on later starts. Node
+	// reports an unusable or disabled cache directory as a status, never a throw;
+	// runtimes without the API skip it.
+	nodeModule.enableCompileCache?.();
 	// Configure undici before loading main and before provider SDKs issue requests.
 	// Runtime settings are applied after SettingsManager loads global/project settings.
 	const { configureHttpDispatcher } = await import("./core/http-dispatcher.ts");
