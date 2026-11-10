@@ -47,8 +47,9 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 	try {
 		for (const block of result.content) {
 			if (block.type === "text") {
-				appendText(output, block.text);
+				// A structured block's text is a preview of its source; writing both repeats the value.
 				const source = (block as { mcpSource?: McpTypedSource }).mcpSource;
+				if (source?.kind !== "structured") appendText(output, block.text);
 				if (source) appendText(output, serializeMcpStructured(verifiedMcpSource(source).value));
 			} else if (content.length <= MAX_KEPT_IMAGES) {
 				content.push(block);

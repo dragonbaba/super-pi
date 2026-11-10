@@ -203,6 +203,23 @@ test("Codemode output cap uses no nested callbacks, dynamic patterns or per-grou
 	assert.equal(found, 1);
 });
 
+test("MCP normalization and Codemode result delivery add no callback or promise factories", () => {
+	let found = 0;
+	for (const path of ["packages/mcp-bridge/src/result.js", "packages/coding-agent/src/core/codemode-result.ts"]) {
+		const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+		function audit(node: ts.Node): void {
+			assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node), false, node.getText(source));
+			if (ts.isNewExpression(node) || ts.isCallExpression(node)) assert.equal(["Promise", "AbortController", "String", "RegExp"].includes(node.expression.getText(source)), false);
+			ts.forEachChild(node, audit);
+		}
+		for (const node of source.statements) if (ts.isFunctionDeclaration(node) &&
+			["repeatsText", "convertMcpResult", "boundCodemodeResult", "appendText"].includes(node.name?.text ?? "")) {
+			found++; audit(node.body!);
+		}
+	}
+	assert.equal(found, 4);
+});
+
 test("user-message render has no per-frame callbacks or pattern/string constructors", () => {
 	const path = "packages/coding-agent/src/modes/interactive/components/user-message.ts";
 	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);

@@ -15,6 +15,7 @@ import {
   MAX_SSE_EVENT_BYTES,
   MAX_TRANSPORT_RESPONSE_BYTES,
   MAX_TOOL_CATALOG_BYTES,
+  McpCatalogError,
   canonicalJsonShape,
   piToolName,
   piToolServerPrefix,
@@ -305,9 +306,11 @@ function createTransport(config, state) {
   });
 }
 
+const SEARCH_WORD_SEPARATOR = /\s+/;
+
 function normalizeInputSchema(schema) {
   const cloned = validateJsonShape(schema ?? { type: "object", properties: {} });
-  if (!cloned || cloned.type !== "object" || Array.isArray(cloned)) throw new Error("MCP tool inputSchema must be a JSON object schema");
+  if (!cloned || cloned.type !== "object" || Array.isArray(cloned)) throw new McpCatalogError("MCP tool inputSchema must be a JSON object schema");
   return canonicalJsonShape(cloned);
 }
 
@@ -431,7 +434,7 @@ export class McpBridgeRuntime {
       for (const tool of listed.tools) {
         const name = piToolName(config.id, tool.name);
         const existing = this.registeredNames.get(name);
-        if (names.has(name) || (existing && existing !== `${config.id}\0${tool.name}`)) throw new Error(`MCP tool-name collision: ${name}`);
+        if (names.has(name) || (existing && existing !== `${config.id}\0${tool.name}`)) throw new McpCatalogError(`MCP tool-name collision: ${name}`);
         names.add(name);
       }
       state.serverInfo = client.getServerVersion() ?? null;
@@ -446,7 +449,10 @@ export class McpBridgeRuntime {
     } catch (error) {
       const code = signal?.aborted || this.closed ? "aborted"
         : error instanceof McpAuthorizationRequiredError || state.connectFetch?.authorizationRequired ? "authorization-required" : "protocol-error";
-      state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${config.id}` : "MCP connection failed (protocol-error).";
+      // Only the bridge's own catalog checks are named; server and SDK text stays out of the status.
+      const local = code === "protocol-error" && error instanceof McpCatalogError ? sanitizeText(error.message, 160) : "";
+      state.error = code === "authorization-required" ? `MCP authorization required. Run /mcp-login ${config.id}`
+        : local ? `MCP connection failed: ${local}.` : "MCP connection failed (protocol-error).";
       await closeMcpState(state);
       state.status = this.closed ? "closed" : "error";
       if (!this.closed) this.onToolsChanged?.();
@@ -458,7 +464,7 @@ export class McpBridgeRuntime {
     if (this.closed) throw new McpCallError("aborted");
     const name = piToolName(state.config.id, remoteTool.name);
     const existing = this.registeredNames.get(name);
-    if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new Error(`MCP tool-name collision: ${name}`);
+    if (existing && existing !== `${state.config.id}\0${remoteTool.name}`) throw new McpCatalogError(`MCP tool-name collision: ${name}`);
     // Destructive tools ask before execution even when every other hint is less privileged.
     const destructive = remoteTool.annotations?.destructiveHint === true;
     const signature = createHash("sha256").update(JSON.stringify(parameters)).update("\0").update(remoteTool.description ?? "")
@@ -572,12 +578,22 @@ export class McpBridgeRuntime {
   }
 
   searchTools(query, limit = 8, eligibleNames) {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return [];
-    const matches = [];
+    // Each word counts on its own: "blender scene execute python" must still find a
+    // tool that mentions three of the four. Tools matching more words come first.
+    const words = [];
+    for (const word of query.toLowerCase().split(SEARCH_WORD_SEPARATOR, 18)) if (word && words.length < 16) words.push(word);
+    if (words.length === 0) return [];
+    const ranked = [];
+    for (let index = 0; index <= words.length; index++) ranked.push([]);
     for (const [piName, haystack] of this.searchIndex) {
       if (eligibleNames !== undefined && !eligibleNames.has(piName)) continue;
-      if (haystack.includes(needle) && this.toolConfig(piName)) {
+      let score = 0;
+      for (const word of words) if (haystack.includes(word)) score++;
+      if (score > 0 && this.toolConfig(piName)) ranked[score].push(piName);
+    }
+    const matches = [];
+    for (let score = words.length; score > 0 && matches.length < limit; score--) {
+      for (const piName of ranked[score]) {
         matches.push(piName);
         if (matches.length >= limit) break;
       }

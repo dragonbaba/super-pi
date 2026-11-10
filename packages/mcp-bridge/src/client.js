@@ -4,7 +4,7 @@ import {
   CursorSchema, EmbeddedResourceSchema, ImageContentSchema, ListToolsResultSchema, ResourceLinkSchema,
   TextContentSchema, TextResourceContentsSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { MAX_CONTENT_ITEMS, MAX_TOOL_CATALOG_BYTES, canonicalJsonShape, validateJsonShape } from "./security.js";
+import { MAX_CONTENT_ITEMS, MAX_TOOL_CATALOG_BYTES, McpCatalogError, canonicalJsonShape, validateJsonShape } from "./security.js";
 
 export const MAX_TOOL_LIST_PAGES = 128;
 export { MAX_TOOL_CATALOG_BYTES } from "./security.js";
@@ -60,10 +60,10 @@ class McpClient extends Client {
           ToolPageSchema, { ...options, signal: activeRequest?.signal });
         activeRequest = undefined;
         signal?.throwIfAborted();
-        if (tools.length + page.tools.length > maxTools) throw new Error("MCP catalog exceeds the tool limit");
+        if (tools.length + page.tools.length > maxTools) throw new McpCatalogError("MCP catalog exceeds the tool limit");
         for (const tool of page.tools) {
           bytes += Buffer.byteLength(JSON.stringify(tool), "utf8");
-          if (bytes > MAX_TOOL_CATALOG_BYTES) throw new Error("MCP catalog exceeds the size limit");
+          if (bytes > MAX_TOOL_CATALOG_BYTES) throw new McpCatalogError("MCP catalog exceeds the size limit");
           tool.inputSchema = canonicalJsonShape(validateJsonShape(tool.inputSchema));
           if (tool.outputSchema) tool.outputSchema = validateJsonShape(tool.outputSchema);
           tools.push(tool);
@@ -73,10 +73,10 @@ class McpClient extends Client {
           this.cacheToolMetadata(tools);
           return { tools };
         }
-        if (cursors.has(cursor)) throw new Error("MCP catalog repeated a cursor");
+        if (cursors.has(cursor)) throw new McpCatalogError("MCP catalog repeated a cursor");
         cursors.add(cursor);
       }
-      throw new Error("MCP catalog exceeds the page limit");
+      throw new McpCatalogError("MCP catalog exceeds the page limit");
     } catch (error) {
       tools.length = 0;
       throw error;
