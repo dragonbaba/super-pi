@@ -24,6 +24,9 @@ export const MAX_CONTENT_ITEMS = 256;
 export const MAX_TRANSPORT_RESPONSE_BYTES = 10 * 1024 * 1024;
 export const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
 
+/** Diagnostics created by local catalog validation, never remote protocol text. */
+export class McpCatalogError extends Error {}
+
 export function sanitizeText(value, maxLength = 1000) {
   let text = value === null || value === undefined
     ? ""
@@ -68,14 +71,14 @@ export function boundedJson(value, maxBytes = MAX_TEXT_BYTES) {
 
 export function validateJsonShape(value, maxBytes = MAX_SCHEMA_BYTES, maxDepth = 32) {
   const serialized = JSON.stringify(value);
-  if (Buffer.byteLength(serialized, "utf8") > maxBytes) throw new Error("MCP tool schema exceeds the size limit");
+  if (Buffer.byteLength(serialized, "utf8") > maxBytes) throw new McpCatalogError("MCP tool schema exceeds the size limit");
   const stack = [{ value, depth: 0 }];
   const seen = new Set();
   while (stack.length) {
     const item = stack.pop();
-    if (item.depth > maxDepth) throw new Error("MCP tool schema exceeds the depth limit");
+    if (item.depth > maxDepth) throw new McpCatalogError("MCP tool schema exceeds the depth limit");
     if (!item.value || typeof item.value !== "object") continue;
-    if (seen.has(item.value)) throw new Error("MCP tool schema contains a cycle");
+    if (seen.has(item.value)) throw new McpCatalogError("MCP tool schema contains a cycle");
     seen.add(item.value);
     for (const child of Object.values(item.value)) stack.push({ value: child, depth: item.depth + 1 });
   }
@@ -102,8 +105,11 @@ export function piToolServerPrefix(serverId) {
 }
 
 export function piToolName(serverId, remoteName) {
-  const base = `${piToolServerPrefix(serverId)}${slug(remoteName, 32)}`;
-  if (base.length <= 58) return base;
+  const full = slug(remoteName, Infinity);
+  const base = `${piToolServerPrefix(serverId)}${full.slice(0, 32)}`;
+  // A shortened name carries a hash: servers ship tools that differ only past
+  // the cut (`..._libraries` and `..._libraries_for_cli`).
+  if (full.length <= 32 && base.length <= 58) return base;
   const hash = createHash("sha256").update(`${serverId}\0${remoteName}`).digest("hex").slice(0, 8);
   return `${base.slice(0, 49)}_${hash}`;
 }

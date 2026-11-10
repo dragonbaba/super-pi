@@ -12,9 +12,16 @@ import { createToolResultPresentationOwner } from "../../packages/coding-agent/s
 import { estimateToolOutputTokens } from "../../packages/coding-agent/src/core/tool-output-budget.ts";
 
 const mode = process.argv[2] ?? "timing";
-const scenarios = ["small", "structured", "mixed"] as const;
+const scenarios = ["small", "structured", "mixed", "duplicate", "different"] as const;
 type Scenario = typeof scenarios[number];
+const selected = (process.argv[3] ?? "mixed") as Scenario;
+assert.ok(scenarios.includes(selected), "unknown benchmark scenario");
 function fixture(name: Scenario): any {
+	if (name === "duplicate") {
+		const value = { text: "x".repeat(24 * 1024) };
+		return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
+	}
+	if (name === "different") return { content: [{ type: "text", text: "{}" }], structuredContent: { text: "x".repeat(1024 * 1024) } };
 	if (name === "small") return { content: [{ type: "text", text: "ordinary MCP text ".repeat(8) }] };
 	if (name === "structured") return { content: [], structuredContent: { text: "x".repeat(1024 * 1024), rows: [3, 1, 2] } };
 	return { content: [{ type: "text", text: "x".repeat(1024 * 1024) },
@@ -85,12 +92,12 @@ if (mode === "timing") {
 	}
 	console.log(JSON.stringify({ mode, node: process.version, platform: process.platform, rows }));
 } else if (mode === "allocation") {
-	const raw = fixture("mixed");
+	const raw = fixture(selected);
 	const inspector = new Session(); inspector.connect();
 	const initialHeap = process.memoryUsage().heapUsed;
 	let peakHeap = initialHeap;
-	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024 });
-	for (let index = 0; index < 12; index++) { run(raw, "mixed"); peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); }
+	await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
+	for (let index = 0; index < 12; index++) { run(raw, selected); peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed); }
 	const { profile } = await inspector.post("HeapProfiler.stopSampling"); inspector.disconnect();
 	const sites = new Map<string, number>();
 	function visit(node: typeof profile.head) {
@@ -99,18 +106,20 @@ if (mode === "timing") {
 		for (const child of node.children ?? []) visit(child);
 	}
 	visit(profile.head);
-	console.log(JSON.stringify({ mode, initialHeap, peakHeap, finalHeap: process.memoryUsage().heapUsed, sites: [...sites].sort((a, b) => b[1] - a[1]).slice(0, 15) }));
+	const sampledBytes = [...sites.values()].reduce((total, bytes) => total + bytes, 0);
+	console.log(JSON.stringify({ mode, selected, sampledBytes, sampledBytesPerCall: sampledBytes / 12, initialHeap, peakHeap, finalHeap: process.memoryUsage().heapUsed, sites: [...sites].sort((a, b) => b[1] - a[1]).slice(0, 15) }));
 } else if (mode === "gc") {
 	assert.ok(global.gc, "requires --expose-gc");
 	const refs: WeakRef<object>[] = [];
 	const initialHeap = process.memoryUsage().heapUsed;
 	let peakHeap = initialHeap;
 	function lifecycle() {
-		const raw = fixture("mixed");
+		const raw = fixture(selected);
 		const content = convertMcpResult(raw);
 		const owner = createToolResultPresentationOwner({ enabled: true, budgetTokens: 1024 }, "gc-session")!;
 		owner.create(content, "gc-call");
 		refs.push(new WeakRef(raw), new WeakRef(raw.content), new WeakRef(content), new WeakRef(owner));
+		if (raw.structuredContent) refs.push(new WeakRef(raw.structuredContent));
 		for (const block of content) { refs.push(new WeakRef(block)); if (block.mcpSource) refs.push(new WeakRef(block.mcpSource), new WeakRef(block.mcpSource.value)); }
 		peakHeap = process.memoryUsage().heapUsed;
 		owner.clearProjectionRecords(); owner.dispose();
@@ -119,6 +128,6 @@ if (mode === "timing") {
 	lifecycle();
 	for (let index = 0; index < 8; index++) { await nextTask(); global.gc(); }
 	const retained = refs.reduce((count, reference) => count + Number(reference.deref() !== undefined), 0);
-	console.log(JSON.stringify({ mode, initialHeap, peakHeap, finalHeap: process.memoryUsage().heapUsed, weakRefs: refs.length, retained }));
+	console.log(JSON.stringify({ mode, selected, initialHeap, peakHeap, finalHeap: process.memoryUsage().heapUsed, weakRefs: refs.length, retained }));
 	assert.equal(retained, 0);
 } else throw new Error("unknown benchmark mode");

@@ -82,6 +82,12 @@ test("MCP second-page failure publishes no partial replacement and preserves the
 	assert.deepEqual(f.runtime.toolNames(), ["mcp__fixture__new", "mcp__fixture__last"]);
 });
 
+test("MCP remote errors cannot impersonate a local catalog diagnostic", async t => {
+	const f = fixture(t, [new Error("MCP tool-name collision: PRIVATE_REMOTE_PAYLOAD")]);
+	await assert.rejects(f.connect(), { code: "protocol-error" });
+	assert.doesNotMatch(f.runtime.states.get("fixture").error, /PRIVATE_REMOTE_PAYLOAD/);
+});
+
 for (const cursor of [undefined, "", null]) for (const last of [false, true]) {
 	test(`MCP terminal cursor ${String(cursor)} on ${last ? "last" : "first"} page`, async t => {
 		const final = { tools: [tool("last")], nextCursor: cursor };
@@ -122,6 +128,29 @@ test("MCP configured tool limit is cumulative across pages", async t => {
 	const f = fixture(t, [{ tools: [tool("first")], nextCursor: "1" }, { tools: [tool("second"), tool("third")] }], { maxTools: 2 });
 	await assert.rejects(f.connect(), { code: "protocol-error" });
 	assert.equal(f.registered.size, 0);
+});
+
+test("MCP tools whose names differ only past the 32-character cut both register", async t => {
+	const long = "get_blendfile_summary_of_linked_libraries";
+	const f = fixture(t, [{ tools: [tool("short"), tool(long), tool(`${long}_for_cli`)] }]);
+	await f.connect();
+	const names = [...f.registered.keys()];
+	assert.equal(names.length, 3);
+	assert.ok(names.some(name => name.endsWith("__short")), "names that fit stay unchanged");
+	for (const name of names) assert.ok(name.length <= 58, name);
+});
+
+test("MCP search scores each word and names a local catalog failure", async t => {
+	const f = fixture(t, [{ tools: [tool("render", { description: "Render the scene" }), tool("execute_code", { description: "Execute Python" }), tool("docs")] }]);
+	await f.connect();
+	// One word no tool mentions does not hide the rest; more matching words rank first.
+	assert.deepEqual(f.runtime.searchTools("blender execute python"), ["mcp__fixture__execute_code"]);
+	assert.deepEqual(f.runtime.searchTools("fixture execute"), ["mcp__fixture__execute_code", "mcp__fixture__render", "mcp__fixture__docs"]);
+	assert.deepEqual(f.runtime.searchTools("unrelated"), []);
+
+	const broken = fixture(t, [{ tools: [tool("same"), tool("same")] }]);
+	await assert.rejects(broken.connect(), { code: "protocol-error" });
+	assert.match(broken.runtime.statusText(), /MCP connection failed: MCP tool-name collision: mcp__fixture__same\./);
 });
 
 test("MCP catalog byte limit is cumulative even when every individual schema fits", async t => {
@@ -268,7 +297,7 @@ test("MCP per-tool gathering has no callbacks, promises or repeated prefix copie
 		if (ts.isForOfStatement(node) && node.expression.getText(source) === "page.tools") {
 			inspected++;
 			function inspect(child: ts.Node) {
-				const failure = ts.isNewExpression(child) && child.expression.getText(source) === "Error" && ts.isThrowStatement(child.parent);
+				const failure = ts.isNewExpression(child) && ["Error", "McpCatalogError"].includes(child.expression.getText(source)) && ts.isThrowStatement(child.parent);
 				assert.equal(ts.isArrowFunction(child) || ts.isFunctionExpression(child) || ts.isAwaitExpression(child) ||
 					(ts.isNewExpression(child) && !failure) || ts.isArrayLiteralExpression(child) || ts.isSpreadElement(child), false, child.getText(source));
 				if (ts.isCallExpression(child)) assert.doesNotMatch(child.expression.getText(source), /\.(concat|slice|map|filter|flatMap|then|catch|finally|bind)$/);

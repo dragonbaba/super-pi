@@ -1,5 +1,6 @@
 import { createMcpTypedSource, McpSourceError, MCP_SOURCE_BYTES, serializeMcpStructured, previewMcpStructured } from "@super-pi/coding-agent/internal/tool-result-source";
 import { decodedBase64Bytes, base64Byte, MAX_CONTENT_ITEMS, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, sanitizeText } from "./security.js";
+import { isDeepStrictEqual } from "node:util";
 
 function typedBlock(kind, value, text) {
   return { type: "text", text, mcpSource: createMcpTypedSource(kind, value) };
@@ -43,6 +44,13 @@ function validateMedia(data, mimeType, bytes, image) {
     else if (mimeType === "audio/flac") valid = bytes >= 4 && headerIs(data, 0, "fLaC");
   }
   if (!valid) throw new McpSourceError("invalid-typed-content");
+}
+
+function repeatsText(items, validatedText, textBytes) {
+  if (items.length !== 1 || items[0].type !== "text" || textBytes > MAX_TEXT_BYTES) return false;
+  const text = items[0].text, first = text.trimStart()[0];
+  if (first !== "{" && first !== "[") return false;
+  try { return isDeepStrictEqual(JSON.parse(text), JSON.parse(validatedText)); } catch { return false; }
 }
 
 /** Source normalization, not a registry, estimator, cursor or presentation owner. */
@@ -141,8 +149,9 @@ export function convertMcpResult(result, allowRecovery = true) {
     const value = result[key];
     if (!allowRecovery) {
       let text;
-      try { text = serializeMcpStructured(value, MAX_TEXT_BYTES - textBytes); }
+      try { text = serializeMcpStructured(value, key === "structuredContent" ? MAX_TEXT_BYTES : MAX_TEXT_BYTES - textBytes); }
       catch (error) { if (error?.code === "result-size-limit") throw new McpSourceError("budget-not-configured"); throw error; }
+      if (key === "structuredContent" && repeatsText(items, text, textBytes)) continue;
       bytes += Buffer.byteLength(text);
       textBytes += Buffer.byteLength(text);
       if (textBytes > MAX_TEXT_BYTES) throw new McpSourceError("budget-not-configured");
@@ -151,6 +160,8 @@ export function convertMcpResult(result, allowRecovery = true) {
       continue;
     }
     const preview = previewMcpStructured(value);
+    // Compare only validated, complete inline JSON; never serialize a large source for deduplication.
+    if (key === "structuredContent" && preview.complete && repeatsText(items, preview.text, textBytes)) continue;
     const source = createMcpTypedSource("structured", value, !preview.complete);
     requiresRecovery ||= !preview.complete;
     accountedSources += source.bytes;
