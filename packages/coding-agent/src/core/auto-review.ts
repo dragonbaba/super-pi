@@ -155,11 +155,26 @@ const MAX_FILE_SCAN_ENTRIES = 2000;
 const MAX_SESSION_FILES = 2;
 const MAX_SESSION_FILE_BYTES = 256 * 1024;
 const MAX_SESSION_FILE_CHARS = 48000;
+const MAX_REFERENCE_CHARS = 16384;
 const REFERENCE_WHITESPACE = /\s/u;
 const READ_FILE_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 function attachmentPath(value: string): string {
   return process.platform === "win32" ? value.replaceAll("\\", "/") : value;
+}
+
+/** Tool arguments are already JSON data; keep string values separate from their display quoting. */
+function attachmentReferences(input: unknown): string[] {
+  const pending: unknown[] = [input], references: string[] = [];
+  while (pending.length) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (value.length <= MAX_REFERENCE_CHARS) references.push(attachmentPath(value));
+    } else if (value && typeof value === "object") {
+      for (const child of Object.values(value)) pending.push(child);
+    }
+  }
+  return references;
 }
 
 function mentions(text: string, needle: string): boolean {
@@ -200,9 +215,10 @@ async function readSessionFile(target: string, signal?: AbortSignal): Promise<Bu
  * that the request names. A file whose content no longer matches the session's last write
  * is named but not included. Edits include the complete post-edit file, not just added text.
  */
-export async function autoReviewSessionFiles(manager: ReadonlySessionManager, request: string, cwd: string, signal?: AbortSignal): Promise<string> {
-  const text = attachmentPath(request.replaceAll('\\"', '"').replaceAll("\\\\", "\\"));
-  const root = attachmentPath(cwd).replace(/\/+$/, "") + "/";
+export async function autoReviewSessionFiles(manager: ReadonlySessionManager, input: unknown, cwd: string | undefined, signal?: AbortSignal): Promise<string> {
+  const references = attachmentReferences(input);
+  if (references.length === 0) return "";
+  const root = cwd === undefined ? undefined : attachmentPath(cwd).replace(/\/+$/, "") + "/";
   const seen = new Set<string>();
   let out = "", files = 0, budget = MAX_SESSION_FILE_CHARS;
   let entry = manager.getLeafEntry();
@@ -215,7 +231,11 @@ export async function autoReviewSessionFiles(manager: ReadonlySessionManager, re
       if (!seen.has(key)) {
         // The newest write of a path is the one whose hash can still be current.
         seen.add(key);
-        if (mentions(text, key) || key.startsWith(root) && mentions(text, key.slice(root.length))) {
+        let referenced = false;
+        for (const text of references) if (mentions(text, key) || root !== undefined && key.startsWith(root) && mentions(text, key.slice(root.length))) {
+          referenced = true; break;
+        }
+        if (referenced) {
           files++;
           let body = "(changed or removed since the session wrote it, or unavailable; content not shown)";
           try {
@@ -246,7 +266,8 @@ function reviewContext(transcript: string, request: string, retry: boolean, file
 }
 
 /** One review on the session model through the host's supplemental request scope. Never throws for review failures. */
-export async function runAutoReview(runtime: ExtensionRuntime, ctx: ExtensionContext, request: string, signal: AbortSignal, retry = false): Promise<AutoReviewVerdict> {
+export async function runAutoReview(runtime: ExtensionRuntime, ctx: ExtensionContext, request: string, signal: AbortSignal, retry = false,
+  input?: Record<string, unknown>, executionCwd?: string): Promise<AutoReviewVerdict> {
   const model = ctx.model, host = runtime.withSupplementalSummary;
   if (!model || !host) return { approved: false, failed: true, reason: "no session model is available for review" };
   const scoped = AbortSignal.any([signal, AbortSignal.timeout(AUTO_REVIEW_TIMEOUT_MS)]);
@@ -255,7 +276,7 @@ export async function runAutoReview(runtime: ExtensionRuntime, ctx: ExtensionCon
     if (!auth.ok) return { approved: false, failed: true, reason: auth.error };
     const reviewModel: Model<Api> = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
     const context = reviewContext(autoReviewTranscript(ctx.sessionManager), request, retry,
-      await raceWithAbortSignal(autoReviewSessionFiles(ctx.sessionManager, request, ctx.cwd, scoped), scoped));
+      await raceWithAbortSignal(autoReviewSessionFiles(ctx.sessionManager, input, executionCwd, scoped), scoped));
     const maxTokens = model.maxTokens > 0 ? Math.min(MAX_REVIEW_TOKENS, model.maxTokens) : MAX_REVIEW_TOKENS;
     const response = await host(scoped, async (stream: StreamFn) => (await stream(reviewModel, context,
       { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens, signal: scoped })).result());

@@ -411,10 +411,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
      * One Auto review. A denial throws; a review without a verdict (`failed`) returns it so the
      * caller asks the user, and the breaker does not count it (Codex reports timeouts apart from denials).
      */
-    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, key: string, check: () => void): Promise<AutoReviewVerdict> {
+    private async autoApprove(ctx: ExtensionContext, tool: string, request: string, key: string, check: () => void,
+        input: Record<string, unknown>, executionCwd: string | undefined): Promise<AutoReviewVerdict> {
         if (request.length > 16384) throw new Error("[APPROVAL_REQUIRED] Request is too large for one review; configure an explicit scoped rule");
         const retry = this.autoRetries.delete(key);
-        const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal, retry);
+        const verdict = await runAutoReview(this.runtime, ctx, request, ctx.signal ?? this.runtime.executionBoundary.signal, retry, input, executionCwd);
         // A cancelled turn or a stale permission context is not the reviewer's rejection.
         check();
         if (verdict.failed) {
@@ -675,7 +676,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
             check();
             const verdict = await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`
-                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), grant, check);
+                + askDetails(input, shell, shellCwd, host, mutation, paths, destructiveMcp), grant, check, input, shellTool ? shellCwd : mutation ? ctx.cwd : undefined);
             if (verdict.failed) unreviewed = verdict.reason;
             else decision = "allow";
         }
