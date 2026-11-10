@@ -68,6 +68,7 @@ import {
 	isContextOverflow,
 	isRecoverableLength,
 	isRetryableAssistantError,
+	retryDelayMs,
 	modelsAreEqual,
 	type RetryCallbacks,
 	resetApiProviders,
@@ -5373,7 +5374,7 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = retryDelayMs(settings.baseDelayMs, this._retryAttempt);
 
 		this._emit({
 			type: "auto_retry_start",

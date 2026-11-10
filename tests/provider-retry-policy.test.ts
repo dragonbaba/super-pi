@@ -151,3 +151,28 @@ test("capacity wording is inert for success, abort and disabled retry", async ()
 	assert.equal(await retryAssistantCall(async () => { calls++; return failed; }, { ...policy, enabled: false }, undefined), failed);
 	assert.equal(calls, 1);
 });
+
+test("a failed fetch names its cause, stays retryable, and the default is six retries", async () => {
+	const { formatProviderError, normalizeProviderError } = await import("../packages/ai/src/utils/error-body.ts");
+	const { SettingsManager } = await import("../packages/coding-agent/src/core/settings-manager.ts");
+	const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+	const text = formatProviderError(normalizeProviderError(new TypeError("fetch failed", { cause: reset })));
+	assert.equal(text, "fetch failed (ECONNRESET)");
+	assert.equal(isRetryableAssistantError(message(text)), true);
+	assert.equal(formatProviderError(normalizeProviderError(new TypeError("fetch failed", { cause: new Error("other side closed") }))), "fetch failed (other side closed)");
+	assert.equal(formatProviderError(normalizeProviderError(new TypeError("fetch failed"))), "fetch failed");
+	assert.deepEqual(SettingsManager.inMemory({}).getRetrySettings(), { enabled: true, maxRetries: 6, baseDelayMs: 2000 });
+});
+
+test("shared summary retries cap six waits at 30s and release cancellation listeners", async t => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const controller = new AbortController(), delays: number[] = [];
+	const failed = message("fetch failed");
+	let calls = 0;
+	assert.equal(await retryAssistantCall(async () => { calls++; return failed; },
+		{ enabled: true, maxRetries: 6, baseDelayMs: 2000 }, controller.signal,
+		{ onRetryScheduled(_attempt, _max, delay) { delays.push(delay); setImmediate(() => t.mock.timers.tick(delay)); } }), failed);
+	assert.equal(calls, 7);
+	assert.deepEqual(delays, [2000, 4000, 8000, 16000, 30000, 30000]);
+	assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+});
