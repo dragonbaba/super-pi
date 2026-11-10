@@ -48,9 +48,29 @@ export function normalizeProviderError(error: unknown): NormalizedProviderError 
 	return {
 		status,
 		body,
-		message: error.message,
+		message: withFetchCause(error),
 		messageCarriesBody,
 	} satisfies NormalizedProviderError;
+}
+
+/**
+ * Node reports every transport failure as "fetch failed" and keeps the reason
+ * (ECONNRESET, UND_ERR_CONNECT_TIMEOUT, ...) on `cause`. Without it a reset by
+ * a local proxy and a DNS failure look the same to the user.
+ */
+function withFetchCause(error: Error): string {
+	if (error.message !== "fetch failed" || error.cause === undefined || error.cause === null) return error.message;
+	const causes: unknown[] = error.cause instanceof AggregateError ? error.cause.errors : [error.cause];
+	let codes = "";
+	let text = "";
+	for (const cause of causes) {
+		if (typeof cause !== "object" || cause === null) continue;
+		const code = (cause as { code?: unknown }).code;
+		if (typeof code === "string" && !codes.split(", ").includes(code)) codes += (codes ? ", " : "") + code;
+		if (!text && cause instanceof Error && cause.message) text = cause.message;
+	}
+	if (codes) return `fetch failed (${codes})`;
+	return text ? `fetch failed (${truncateErrorText(text, 200)})` : error.message;
 }
 
 /**

@@ -97,7 +97,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 ]);
 
 /**
- * Retry policy: bounded attempts with exponential backoff (`baseDelayMs * 2^(attempt-1)`).
+ * Retry policy: bounded attempts with exponential backoff capped at 30 seconds.
  * Matches `settings.retry` (`enabled`, `maxRetries`, `baseDelayMs`) in coding-agent; kept
  * here so the classifier and the policy-driven retry loop live together and stay reusable
  * by the SDK and other callers.
@@ -106,8 +106,15 @@ export interface RetryPolicy {
 	enabled: boolean;
 	/** Max retry attempts (0 = no retries). The initial call never counts as a retry. */
 	maxRetries: number;
-	/** Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)` before jitter. */
+	/** Base delay in ms. Per-attempt exponential backoff is capped at 30 seconds. */
 	baseDelayMs: number;
+}
+
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/** Shared by ordinary turns and supplemental summary requests. Attempt is one-based. */
+export function retryDelayMs(baseDelayMs: number, attempt: number): number {
+	return Math.min(MAX_RETRY_DELAY_MS, baseDelayMs * 2 ** (attempt - 1));
 }
 
 /** Optional callbacks emitted by {@link retryAssistantCall} around each retry. */
@@ -205,7 +212,7 @@ export async function retryAssistantCall(
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = policy!.baseDelayMs * 2 ** (attempt - 1);
+		const delayMs = retryDelayMs(policy!.baseDelayMs, attempt);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as

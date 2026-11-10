@@ -67,8 +67,8 @@
 			"additionalProperties": false,
 			"properties": {
 				"enabled": { "type": "boolean", "default": true, "description": "Enable automatic retries." },
-				"maxRetries": { "type": "integer", "minimum": 0, "default": 3, "description": "Maximum agent-level retries." },
-				"baseDelayMs": { "type": "number", "minimum": 0, "default": 2000, "description": "Initial exponential-backoff delay in milliseconds." },
+				"maxRetries": { "type": "integer", "minimum": 0, "default": 6, "description": "Maximum agent-level retries, excluding the initial request." },
+				"baseDelayMs": { "type": "number", "minimum": 0, "default": 2000, "description": "Initial exponential-backoff delay in milliseconds. Each wait is capped at 30000 ms." },
 				"maxDelayMs": { "type": "number", "minimum": 0, "description": "Legacy alias migrated to retry.provider.maxRetryDelayMs when not already configured." },
 				"provider": {
 					"type": "object",
