@@ -38,6 +38,11 @@ test("structured content that only repeats the one JSON text block is delivered 
 	for (const recovery of [true, false]) {
 		const nearLimit = { text: "x".repeat(30 * 1024) }, repeated = JSON.stringify(nearLimit);
 		assert.equal(convertMcpResult({ content: [{ type: "text", text: repeated }], structuredContent: nearLimit }, recovery).length, 1);
+		const original = { text: "before\u007fafter" };
+		const normalized = convertMcpResult({ content: [{ type: "text", text: JSON.stringify(original) }], structuredContent: original }, recovery);
+		assert.equal(normalized.length, 2, "sanitized text must not replace the intact structured source");
+		assert.equal(JSON.parse(normalized[0].text).text, "beforeafter");
+		assert.deepEqual(JSON.parse(normalized[1].text), original);
 	}
 	// Different data keeps both blocks, and Codemode writes a structured value once rather than preview plus source.
 	const content = convertMcpResult({ content: [{ type: "text", text: "summary" }], structuredContent: value });

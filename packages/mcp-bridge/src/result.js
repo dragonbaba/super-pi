@@ -151,7 +151,7 @@ export function convertMcpResult(result, allowRecovery = true) {
       let text;
       try { text = serializeMcpStructured(value, key === "structuredContent" ? MAX_TEXT_BYTES : MAX_TEXT_BYTES - textBytes); }
       catch (error) { if (error?.code === "result-size-limit") throw new McpSourceError("budget-not-configured"); throw error; }
-      if (key === "structuredContent" && repeatsText(items, text, textBytes)) continue;
+      if (key === "structuredContent" && repeatsText(content, text, textBytes)) continue;
       bytes += Buffer.byteLength(text);
       textBytes += Buffer.byteLength(text);
       if (textBytes > MAX_TEXT_BYTES) throw new McpSourceError("budget-not-configured");
@@ -161,7 +161,7 @@ export function convertMcpResult(result, allowRecovery = true) {
     }
     const preview = previewMcpStructured(value);
     // Compare only validated, complete inline JSON; never serialize a large source for deduplication.
-    if (key === "structuredContent" && preview.complete && repeatsText(items, preview.text, textBytes)) continue;
+    if (key === "structuredContent" && preview.complete && repeatsText(content, preview.text, textBytes)) continue;
     const source = createMcpTypedSource("structured", value, !preview.complete);
     requiresRecovery ||= !preview.complete;
     accountedSources += source.bytes;
