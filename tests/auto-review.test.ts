@@ -6,7 +6,7 @@ import path from "node:path";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
-import { AutoReviewBreaker, autoReviewTranscript, parseAutoReviewVerdict } from "../packages/coding-agent/src/core/auto-review.ts";
+import { AutoReviewBreaker, autoReviewSessionFiles, autoReviewTranscript, parseAutoReviewVerdict } from "../packages/coding-agent/src/core/auto-review.ts";
 
 test("auto review verdicts, breaker and trimmed transcript", () => {
   assert.deepEqual(parseAutoReviewVerdict("APPROVE: runs the tests the user asked for"), { approved: true, reason: "runs the tests the user asked for" });
@@ -36,6 +36,43 @@ test("auto review verdicts, breaker and trimmed transcript", () => {
   consecutive.reset();
   assert.equal(consecutive.tripped, false);
   assert.deepEqual([false, false].map(approved => consecutive.record(approved)), [false, false]);
+});
+
+test("auto review sees a session-written file that the request runs, and only while it is unchanged", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-files-")));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const script = path.join(root, "build_scene.py"), other = path.join(root, "notes.txt");
+  await fs.writeFile(script, "print('build')\n");
+  await fs.writeFile(other, "private notes\n");
+  const sha256 = (await import("node:crypto")).createHash("sha256").update("print('build')\n").digest("hex");
+  const manager = SessionManager.inMemory(root);
+  manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target: script, sha256 });
+  const request = (name: string) => `mcp__blender__execute_blender_code (host)\ncwd: ${root}\n` + JSON.stringify({ code: `exec(open('${name}').read())` }, null, 2);
+
+  const absolute = await autoReviewSessionFiles(manager, request(script.replaceAll("\\", "/")), root);
+  assert.match(absolute, /print\('build'\)/);
+  assert.match(await autoReviewSessionFiles(manager, request("./build_scene.py"), root), /print\('build'\)/);
+  // Files the session did not write, and names that merely contain the file name, add nothing.
+  assert.equal(await autoReviewSessionFiles(manager, request(other.replaceAll("\\", "/")), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("old_build_scene.py"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py.bak"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py-old"), root), "");
+
+  await fs.writeFile(script, "import shutil\n");
+  const changed = await autoReviewSessionFiles(manager, request("build_scene.py"), root);
+  assert.match(changed, /changed or removed/);
+  assert.doesNotMatch(changed, /shutil/);
+
+  // An exact-limit file is eligible (with the prompt cap); one extra byte is not.
+  const boundary = "x".repeat(256 * 1024);
+  for (const content of [boundary, boundary + "x"]) {
+    await fs.writeFile(script, content);
+    const hash = (await import("node:crypto")).createHash("sha256").update(content).digest("hex");
+    manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target: script, sha256: hash });
+    const attachment = await autoReviewSessionFiles(manager, request("build_scene.py"), root);
+    if (content.length === boundary.length) { assert.match(attachment, /truncated/); assert.ok(attachment.length < 49000); }
+    else { assert.match(attachment, /too large/); assert.doesNotMatch(attachment, /xxxx/); }
+  }
 });
 
 async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", answers: string[], config = {}) {

@@ -10,6 +10,7 @@ export const NPM_PACKAGE_ROOT_PATTERN = /^(.*\/node_modules)\/(@?[^/]+(?:\/[^/]+
 export const NPM_PACKAGE_PATH_PATTERN = /node_modules\/(@?[^/]+(?:\/[^/]+)?)\/(.*)/;
 export const GIT_PACKAGE_PATH_PATTERN = /git\/[^/]+\/[^/]+\/(.*)/;
 export const WHITESPACE_CHARACTER_PATTERN = /\s/;
+export const WHITESPACE_RUN_PATTERN = /\s+/g;
 export const NAME_COMMAND_PREFIX_PATTERN = /^\/name\s*/;
 
 export const TOOL_HOOK_DIAGNOSTIC_CONTROL_PATTERN = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;
