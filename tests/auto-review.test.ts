@@ -3,10 +3,14 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
+import { constants } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
-import { AutoReviewBreaker, autoReviewTranscript, parseAutoReviewVerdict } from "../packages/coding-agent/src/core/auto-review.ts";
+import { AutoReviewBreaker, autoReviewSessionFiles, autoReviewTranscript, parseAutoReviewVerdict, runAutoReview } from "../packages/coding-agent/src/core/auto-review.ts";
 
 test("auto review verdicts, breaker and trimmed transcript", () => {
   assert.deepEqual(parseAutoReviewVerdict("APPROVE: runs the tests the user asked for"), { approved: true, reason: "runs the tests the user asked for" });
@@ -38,6 +42,121 @@ test("auto review verdicts, breaker and trimmed transcript", () => {
   assert.deepEqual([false, false].map(approved => consecutive.record(approved)), [false, false]);
 });
 
+test("auto review sees a session-written file that the request runs, and only while it is unchanged", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-files-")));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const script = path.join(root, "build_scene.py"), other = path.join(root, "notes.txt");
+  await fs.writeFile(script, "print('build')\n");
+  await fs.writeFile(other, "private notes\n");
+  const sha256 = (await import("node:crypto")).createHash("sha256").update("print('build')\n").digest("hex");
+  const manager = SessionManager.inMemory(root);
+  manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target: script, sha256 });
+  const request = (name: string) => ({ code: `exec(open('${name}').read())` });
+
+  const absolute = await autoReviewSessionFiles(manager, request(script.replaceAll("\\", "/")), root);
+  assert.match(absolute, /print\('build'\)/);
+  assert.match(await autoReviewSessionFiles(manager, request("./build_scene.py"), root), /print\('build'\)/);
+  assert.match(await autoReviewSessionFiles(manager, { nested: { code: 'exec(open("build_scene.py").read())' } }, root), /print\('build'\)/);
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py"), undefined), "", "unknown remote cwd must not be guessed");
+  assert.match(await autoReviewSessionFiles(manager, request(script), undefined), /print\('build'\)/);
+  // Files the session did not write, and names that merely contain the file name, add nothing.
+  assert.equal(await autoReviewSessionFiles(manager, request(other.replaceAll("\\", "/")), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("old_build_scene.py"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py.bak"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py-old"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py~"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("build_scene.py+other"), root), "");
+  assert.equal(await autoReviewSessionFiles(manager, request("my build_scene.py"), root), "");
+
+  await fs.writeFile(script, "import shutil\n");
+  const changed = await autoReviewSessionFiles(manager, request("build_scene.py"), root);
+  assert.match(changed, /changed or removed/);
+  assert.doesNotMatch(changed, /shutil/);
+
+  // An exact-limit file is eligible (with the prompt cap); one extra byte is not.
+  const boundary = "x".repeat(256 * 1024);
+  for (const content of [boundary, boundary + "x"]) {
+    await fs.writeFile(script, content);
+    const hash = (await import("node:crypto")).createHash("sha256").update(content).digest("hex");
+    manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target: script, sha256: hash });
+    const attachment = await autoReviewSessionFiles(manager, request("build_scene.py"), root);
+    if (content.length === boundary.length) { assert.match(attachment, /truncated/); assert.ok(attachment.length < 49000); }
+    else { assert.match(attachment, /too large/); assert.doesNotMatch(attachment, /xxxx/); }
+  }
+});
+
+test("auto attachment identities preserve case and non-regular handles are never read", async t => {
+  const root = "/fixture", lower = "/fixture/build.py", upper = "/fixture/BUILD.py";
+  const lowerBytes = Buffer.from("lower"), upperBytes = Buffer.from("upper");
+  const { createHash } = await import("node:crypto");
+  const manager = SessionManager.inMemory(root);
+  for (const [target, bytes] of [[lower, lowerBytes], [upper, upperBytes]] as const)
+    manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target, sha256: createHash("sha256").update(bytes).digest("hex") });
+  let reads = 0, closes = 0, regular = true;
+  t.mock.method(fs, "open", async (target: string, flags: number) => {
+    if (constants.O_NONBLOCK !== undefined) assert.ok(flags & constants.O_NONBLOCK);
+    let position = 0;
+    const bytes = target === lower ? lowerBytes : upperBytes;
+    return {
+      async stat() { return { isFile: () => regular }; },
+      async read(buffer: Buffer, offset: number) { reads++; const count = bytes.length - position; bytes.copy(buffer, offset, position); position += count; return { bytesRead: count }; },
+      async close() { closes++; },
+    };
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await autoReviewSessionFiles(manager, "python /fixture/build.py", root);
+  assert.match(result, /\nlower\n/);
+  assert.doesNotMatch(result, /upper|BUILD/);
+  regular = false; reads = 0;
+  await autoReviewSessionFiles(manager, "python /fixture/build.py", root);
+  assert.equal(reads, 0);
+  assert.equal(closes, 2);
+});
+
+test("cancelled auto review stops awaiting attachment IO and closes a late handle", async t => {
+  const manager = SessionManager.inMemory("/fixture"), controller = new AbortController();
+  manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target: "/fixture/build.py", sha256: "unused" });
+  let notifyStarted!: () => void, releaseOpen!: (handle: any) => void;
+  const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+  const pending = new Promise<any>(resolve => { releaseOpen = resolve; });
+  let closes = 0, settled = false, modelRequests = 0;
+  t.mock.method(fs, "open", () => { notifyStarted(); return pending; });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const runtime = { withSupplementalSummary: async () => { modelRequests++; return { stopReason: "aborted" }; } };
+  const ctx = { sessionManager: manager, cwd: "/fixture", model: { maxTokens: 100 }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true }) } };
+  const reviewing = runAutoReview(runtime as any, ctx as any, "python /fixture/build.py", controller.signal, false, { command: "python /fixture/build.py" }, "/fixture");
+  void reviewing.then(() => { settled = true; });
+  await started;
+  controller.abort();
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, true, "cancel must not wait for an outstanding filesystem operation");
+    assert.equal((await reviewing).failed, true);
+    assert.equal(modelRequests, 0);
+  } finally {
+    releaseOpen({ async stat() { return { isFile: () => true }; }, async read() { return { bytesRead: 0 }; }, async close() { closes++; } });
+    await reviewing;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(closes, 1);
+  }
+});
+
+test("auto attachment rejects an actual POSIX FIFO without waiting for a writer", { skip: process.platform === "win32", timeout: 5000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-fifo-")), target = path.join(root, "build.py");
+  t.after(async () => {
+    // Also release a blocking reader if a regression reintroduces the old open flags.
+    const writer = await fs.open(target, constants.O_RDWR | constants.O_NONBLOCK);
+    await writer.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await promisify(execFile)("mkfifo", [target]);
+  const manager = SessionManager.inMemory(root);
+  manager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target, sha256: "unused" });
+  assert.match(await autoReviewSessionFiles(manager, JSON.stringify({ path: target }), root), /unavailable/);
+});
+
 async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", answers: string[], config = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-")));
   const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-outside-")));
@@ -65,6 +184,23 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
   }
   return { root, outside, requests, dialogs, notes, statuses, choices, decide, owner, ctx };
 }
+
+for (const override of [false, true]) test(`auto review uses decoded shell arguments and invocation cwd: override=${override}`, async t => {
+  const f = await fixture(t, "host-auto", []);
+  const sub = path.join(f.root, "sub"); await fs.mkdir(sub);
+  const { createHash } = await import("node:crypto");
+  for (const [dir, content] of [[f.root, "ROOT_SCRIPT"], [sub, "SUB_SCRIPT"]]) {
+    const target = path.join(dir!, "build.py"); await fs.writeFile(target, content!);
+    f.ctx.sessionManager.appendCustomEntry("file-mutation-progress-v2", { phase: "result", status: "succeeded", target, sha256: createHash("sha256").update(content!).digest("hex") });
+  }
+  for (const tool of ["bash", "powershell"]) {
+    const input = override ? { command: "python build.py --verbose", cwd: tool === "bash" ? "sub" : sub } : { command: "python build.py" };
+    assert.equal(await f.decide(tool, input), "allow");
+    const reviewed = f.requests.at(-1)!;
+    assert.match(reviewed, new RegExp(override ? "SUB_SCRIPT" : "ROOT_SCRIPT"));
+    assert.doesNotMatch(reviewed, new RegExp(override ? "ROOT_SCRIPT" : "SUB_SCRIPT"));
+  }
+});
 
 test("auto review keeps the latest user instruction after tool history fills either budget", async t => {
   const f = await fixture(t, "host-auto", []);

@@ -190,6 +190,7 @@ import {
 	SHELL_ARGUMENT_UNSAFE_CHARACTER_PATTERN,
 	TYPESCRIPT_INDEX_SUFFIX_PATTERN,
 	WHITESPACE_CHARACTER_PATTERN,
+	WHITESPACE_RUN_PATTERN,
 } from "./interactive-mode-regex.ts";
 import { getModelSearchText } from "./model-search.ts";
 import { ProgramStatusReporter } from "./program-status-reporter.ts";
@@ -2840,7 +2841,10 @@ export class InteractiveMode {
 			if (!records.length) { this.showExtensionNotify("当前没有被 Auto 审查拒绝的操作。", "info"); return; }
 			const choices: string[] = [];
 			for (let index = records.length - 1; index >= 0; index--) {
-				const record = records[index]!, detail = record.request.split("\n", 3)[2] ?? "";
+				// The request is "tool (env)", "cwd: …", then the shell command or the pretty-printed arguments.
+				const record = records[index]!, body = record.request.split("\n").slice(2);
+				const command = body.find((line) => line.startsWith("command: "));
+				const detail = (command?.slice(9) ?? body.join(" ")).replace(WHITESPACE_RUN_PATTERN, " ").trim();
 				choices.push(`${choices.length + 1} · ${record.tool} · ${detail.slice(0, 100)} · ${record.reason.slice(0, 60)}`);
 			}
 			const ui = this.createExtensionUIContext();
