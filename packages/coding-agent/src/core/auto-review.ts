@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import type { StreamFn } from "@super-pi/agent-core";
 import type { Api, Context, Model } from "@super-pi/ai";
 import type { ExtensionContext, ExtensionRuntime } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry } from "./session-manager.ts";
+import { raceWithAbortSignal } from "../utils/abort.ts";
 
 /**
  * R6 Auto review (host-auto): an action that host-restricted would ask the user about is
@@ -153,25 +155,37 @@ const MAX_FILE_SCAN_ENTRIES = 2000;
 const MAX_SESSION_FILES = 2;
 const MAX_SESSION_FILE_BYTES = 256 * 1024;
 const MAX_SESSION_FILE_CHARS = 48000;
-const NAME_CHARACTER = /[\p{L}\p{N}_./-]/u;
+const REFERENCE_WHITESPACE = /\s/u;
+const READ_FILE_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+
+function attachmentPath(value: string): string {
+  return process.platform === "win32" ? value.replaceAll("\\", "/") : value;
+}
 
 function mentions(text: string, needle: string): boolean {
   for (let at = text.indexOf(needle); at >= 0; at = text.indexOf(needle, at + 1)) {
-    // `./name` is the same file; `other/name`, `my-name` and `name2` are not.
+    // Literal quoted references or complete whitespace-delimited paths only.
+    // This selects optional context; it does not interpret command syntax.
     const start = text.startsWith("./", at - 2) ? at - 2 : at;
     const before = start > 0 ? text[start - 1]! : "", after = text[at + needle.length] ?? "";
-    if (!NAME_CHARACTER.test(before) && !NAME_CHARACTER.test(after)) return true;
+    if ((before === "'" || before === '"' || before === "`") && after === before) return true;
+    if ((!before || REFERENCE_WHITESPACE.test(before)) && (!after || REFERENCE_WHITESPACE.test(after))) return true;
   }
   return false;
 }
 
 /** Read at most the attachment limit plus one byte, even if the file grows while reading. */
-async function readSessionFile(target: string): Promise<Buffer | undefined> {
-  const file = await open(target, "r");
+async function readSessionFile(target: string, signal?: AbortSignal): Promise<Buffer | undefined> {
+  signal?.throwIfAborted();
+  // O_NONBLOCK prevents a replaced POSIX FIFO from waiting for a writer at open.
+  const file = await open(target, READ_FILE_FLAGS);
   try {
+    signal?.throwIfAborted();
+    if (!(await file.stat()).isFile()) throw new Error("Attachment is not a regular file");
     const bytes = Buffer.allocUnsafe(MAX_SESSION_FILE_BYTES + 1);
     let length = 0;
     while (length < bytes.length) {
+      signal?.throwIfAborted();
       const { bytesRead } = await file.read(bytes, length, bytes.length - length, null);
       if (bytesRead === 0) break;
       length += bytesRead;
@@ -186,25 +200,26 @@ async function readSessionFile(target: string): Promise<Buffer | undefined> {
  * that the request names. A file whose content no longer matches the session's last write
  * is named but not included. Edits include the complete post-edit file, not just added text.
  */
-export async function autoReviewSessionFiles(manager: ReadonlySessionManager, request: string, cwd: string): Promise<string> {
-  const text = request.replaceAll("\\\\", "\\").replaceAll("\\", "/").toLowerCase();
-  const root = cwd.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "") + "/";
+export async function autoReviewSessionFiles(manager: ReadonlySessionManager, request: string, cwd: string, signal?: AbortSignal): Promise<string> {
+  const text = attachmentPath(request.replaceAll('\\"', '"').replaceAll("\\\\", "\\"));
+  const root = attachmentPath(cwd).replace(/\/+$/, "") + "/";
   const seen = new Set<string>();
   let out = "", files = 0, budget = MAX_SESSION_FILE_CHARS;
   let entry = manager.getLeafEntry();
   for (let scanned = 0; entry && scanned < MAX_FILE_SCAN_ENTRIES && files < MAX_SESSION_FILES; scanned++) {
+    signal?.throwIfAborted();
     const data = entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
       ? entry.data as { phase?: unknown; status?: unknown; target?: unknown; sha256?: unknown } : undefined;
     if (data && data.phase === "result" && data.status === "succeeded" && typeof data.target === "string" && typeof data.sha256 === "string") {
-      const target = data.target, key = target.replaceAll("\\", "/").toLowerCase();
+      const target = data.target, key = attachmentPath(target);
       if (!seen.has(key)) {
         // The newest write of a path is the one whose hash can still be current.
         seen.add(key);
         if (mentions(text, key) || key.startsWith(root) && mentions(text, key.slice(root.length))) {
           files++;
-          let body = "(changed or removed since the session wrote it; content not shown)";
+          let body = "(changed or removed since the session wrote it, or unavailable; content not shown)";
           try {
-            const bytes = await readSessionFile(target);
+            const bytes = await readSessionFile(target, signal);
             if (bytes !== undefined) {
               if (createHash("sha256").update(bytes).digest("hex") === data.sha256) {
                 const content = bytes.toString("utf8");
@@ -212,7 +227,7 @@ export async function autoReviewSessionFiles(manager: ReadonlySessionManager, re
                 budget -= Math.min(budget, content.length);
               }
             } else body = "(too large to show)";
-          } catch { /* A missing file keeps the placeholder. */ }
+          } catch { signal?.throwIfAborted(); /* An unavailable file keeps the placeholder. */ }
           out += `${out ? "\n" : ""}<file path=${JSON.stringify(target)}>\n${body}\n</file>`;
         }
       }
@@ -240,7 +255,7 @@ export async function runAutoReview(runtime: ExtensionRuntime, ctx: ExtensionCon
     if (!auth.ok) return { approved: false, failed: true, reason: auth.error };
     const reviewModel: Model<Api> = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
     const context = reviewContext(autoReviewTranscript(ctx.sessionManager), request, retry,
-      await autoReviewSessionFiles(ctx.sessionManager, request, ctx.cwd));
+      await raceWithAbortSignal(autoReviewSessionFiles(ctx.sessionManager, request, ctx.cwd, scoped), scoped));
     const maxTokens = model.maxTokens > 0 ? Math.min(MAX_REVIEW_TOKENS, model.maxTokens) : MAX_REVIEW_TOKENS;
     const response = await host(scoped, async (stream: StreamFn) => (await stream(reviewModel, context,
       { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, maxTokens, signal: scoped })).result());
