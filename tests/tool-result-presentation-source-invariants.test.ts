@@ -94,8 +94,9 @@ test("SDK binds projection to full source before applying image policy without e
 	const session = readFileSync("packages/coding-agent/src/core/agent-session.ts", "utf8");
 	assert.equal(session.includes("owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, undefined, undefined, toolCalling, minimumOutputTokens)"), true);
 	assert.equal(session.includes("owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, sources, this._codemode, toolCalling, minimumOutputTokens)"), true);
-	assert.equal(source.includes("blockImages ? replaceBlockedImages : undefined"), true);
+	assert.equal(source.includes("blockImages ? replaceBlockedImages : imageBudget ? session.requestImages.apply : undefined"), true);
 	assert.equal(source.includes("replaceBlockedImagesInMessages(projected)"), true);
+	assert.equal(source.includes("session.requestImages.applyMessages(projected)"), true);
 	assert.equal(source.includes("enforcePostImagePolicyBudgets"), false);
 	assert.equal(source.includes("projectMessagesForModel(imageFiltered)"), false);
 	assert.equal(source.includes("toolResultPresentationOwner,"), true);

@@ -57,6 +57,14 @@ image acceptance passed both MXC modes, zero skips. Additional request tests
 cover shared identities, cache quotas, UTF-8, current-batch boundaries and
 lifecycle failures.
 
+The final boundary regressions also cover 300 selected views across the 128-entry
+cross-request cache (1,200 measured and projected bytes), all results from one
+assistant tool-call batch, release of the recovery upload ceiling after a clean
+response, and unchanged/modified context-hook clones. Schema and projection
+invariants passed 36/36; the actual serializer/source follow-up passed 12/12.
+The updated allocation sample was 100,701,865 -> 23,148,278 B/request, with zero
+warm encodes and zero tracked references after four controlled GC cycles.
+
 ## Rerun
 
 Use a native absolute child TMP/TEMP/TMPDIR under the task's .task-tmp root.

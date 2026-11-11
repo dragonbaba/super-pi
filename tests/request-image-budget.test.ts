@@ -4,7 +4,7 @@ import type { ImageContent, Message, ToolResultMessage } from "../packages/ai/sr
 import { RequestImageBudget, IMAGE_KEEP_BYTES, IMAGE_STEP_BYTES } from "../packages/coding-agent/src/core/request-image-budget.ts";
 import { isRequestBodyTooLarge } from "../packages/ai/src/utils/request-body-size.ts";
 import { observeRequestBody, requestBodyUtf8Bytes } from "../packages/ai/src/utils/request-body-observer.ts";
-import { processedImage } from "../packages/coding-agent/src/utils/processed-image.ts";
+import { processedImage, reuseUnchangedToolImages } from "../packages/coding-agent/src/utils/processed-image.ts";
 import { normalizeToolResultImages } from "../packages/coding-agent/src/utils/tool-result-images.ts";
 import { pngFixture } from "./helpers/image-acceptance-fixtures.ts";
 import { resizeImage } from "../packages/coding-agent/src/utils/image-resize.ts";
@@ -17,6 +17,37 @@ function tool(bytes: number, id = "tool"): ToolResultMessage {
 function imageBytes(messages: Message[]): number {
   let n = 0; for (const m of messages) if (m.role === "toolResult") for (const b of m.content) if (b.type === "image") n += b.data.length; return n;
 }
+test("all selected views survive cross-request cache eviction", async () => {
+  const owner = new RequestImageBudget(async () => ({ data:"AAAA",mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true }));
+  const source = tool(0); source.content = Array.from({length:300}, () => tool(100000).content[0]!);
+  await owner.prepare([source], {}, true);
+  assert.equal(imageBytes(owner.applyMessages([source])), owner.metrics.retainedImageBytes);
+  assert.equal(owner.metrics.retainedImageBytes,1200); owner.clear();
+});
+test("the complete originating assistant batch is protected", async () => {
+  const assistant: Message = {role:"assistant",api:"openai-completions",provider:"openai",model:"fixture",content:[],stopReason:"toolUse",timestamp:0,
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+  const owner = new RequestImageBudget(), messages = [assistant,tool(4*MiB,"one"),tool(4*MiB,"two"),tool(4*MiB,"three")];
+  await owner.prepare(messages,{},false); assert.equal(imageBytes(owner.applyMessages(messages)),12*MiB);
+  await assert.rejects(owner.prepare([assistant,tool(7*MiB,"one"),tool(7*MiB,"two")],{},false),/current tool images exceed/); owner.clear();
+});
+test("successful recovery releases the byte ceiling without permitting another recovery", async () => {
+  const owner = new RequestImageBudget(), messages = [tool(1024)];
+  await owner.prepare(messages,{},false); owner.observeWireBytes(2048); assert.equal(owner.tighten(),true);
+  owner.observeWireBytes(1800); owner.completeResponse(); owner.observeWireBytes(4096);
+  assert.equal(owner.tighten(),false); owner.clear();
+});
+test("unchanged context clones reuse admitted images and cached views; modified images do not", async () => {
+  let encodes=0;
+  const owner=new RequestImageBudget(async()=>{encodes++;return {data:"AAAA",mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true};});
+  const admitted=tool(0,"admitted"); admitted.content=[processedImage("AAAA","image/png")];
+  const sources=[admitted,tool(1024,"unprocessed")];
+  for(let i=0;i<3;i++) { const cloned=structuredClone(sources); reuseUnchangedToolImages(cloned,sources); await owner.prepare(cloned,{},true); owner.applyMessages(cloned); }
+  assert.equal(encodes,1);
+  const modified=structuredClone(sources); (modified[0]!.content[0] as ImageContent).data="BBBB";
+  reuseUnchangedToolImages(modified,sources); await owner.prepare(modified,{},true); assert.equal(encodes,2);
+  assert.equal((sources[0]!.content[0] as ImageContent).data,"AAAA"); owner.clear();
+});
 test("legacy images use bounded whole-image strides and retain a crossing current batch", async () => {
   for (const sizes of [[7*MiB,7*MiB],[7.9*MiB,8.3*MiB],[4*MiB,4*MiB,4*MiB],[0],[12*MiB]]) {
     const owner = new RequestImageBudget(), messages = sizes.map((s,i) => tool(Math.floor(s), String(i)));

@@ -15,6 +15,7 @@ import { CONTEXT_SAFETY_TOKENS, resolveRequestOutputFloor, requestThinkingTokens
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
+import { reuseUnchangedToolImages } from "../utils/processed-image.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
@@ -558,6 +559,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const runner = extensionRunnerRef.current;
 			const prepared = await session.prepareSubmittedImages(messages, signal);
 			const result = runner ? await runner.emitContext(prepared) : prepared;
+			reuseUnchangedToolImages(result as Message[], prepared as Message[]);
 			await session.prepareRequestImages(result as Message[], session.model);
 			session.assertImageRequestAllowed();
 			return result;

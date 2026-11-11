@@ -67,7 +67,7 @@ test("agent loop and SDK pass the request envelope without allocating a context 
 	let projections = 0;
 	function inspect(node: ts.Node): void {
 		if (ts.isCallExpression(node) && node.expression.getText(ast) === "session.projectToolResultMessagesForModel") {
-			assert.deepEqual(node.arguments.map(argument => argument.getText(ast)), ["converted", "blockImages ? replaceBlockedImages : undefined", "systemPrompt", "tools", "conversionModel?.contextWindow",
+			assert.deepEqual(node.arguments.map(argument => argument.getText(ast)), ["converted", "blockImages ? replaceBlockedImages : imageBudget ? session.requestImages.apply : undefined", "systemPrompt", "tools", "conversionModel?.contextWindow",
 				"output", "requestPlanning", "toolCalling", "outputFloor"]);
 			projections++;
 		}

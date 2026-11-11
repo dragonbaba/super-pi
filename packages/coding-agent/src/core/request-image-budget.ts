@@ -67,6 +67,8 @@ export class RequestImageBudget {
 		this.metrics.cacheSourceBytes = this.sources; this.metrics.cacheViewBytes = this.encoded;
 		this.recovery = false; this.wireLimit = 0;
 	}
+	/** Only the recovery upload must be smaller; later tool results may grow. */
+	completeResponse(): void { this.wireLimit = 0; }
 	tighten(): boolean {
 		if (this.recovery || this.lastBytes === 0 || this.metrics.uploads === 0) return false;
 		this.recovery = true; this.previousWireBytes = this.metrics.wireBytes;
@@ -116,9 +118,11 @@ export class RequestImageBudget {
 		if (policy !== this.policy) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; this.policy = policy; }
 		if (this.recovery) { keep = Math.max(1, Math.floor(keep / 2)); step = Math.max(1, Math.floor(step / 2)); }
 		const capacity = keep + step; generation = this.generation;
-		let total = 0, latestStart = 0, latest: ToolResultMessage | undefined;
+		let total = 0, latestStart = 0, latestIndex = -1, batchStart = 0, batchIndex = -1;
 		this.metrics.userImageBytes = 0;
-		for (const message of messages) {
+		for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+			const message = messages[messageIndex]!;
+			if (message.role === "assistant") { batchStart = total; batchIndex = messageIndex; }
 			if (message.role === "user" && Array.isArray(message.content)) {
 				for (const block of message.content) if (block.type === "image") this.metrics.userImageBytes += block.data.length;
 			}
@@ -129,9 +133,9 @@ export class RequestImageBudget {
 				if (weight === undefined || this.seenData.get(block) !== block.data) { this.metrics.imagesInspected++; weight = Buffer.byteLength(block.data); this.seen.set(block, weight); this.seenData.set(block, block.data); }
 				bytes += weight;
 			}
-			if (bytes) { latest = message; latestStart = total; total += bytes; }
+			if (bytes) { latestIndex = batchIndex >= 0 ? batchIndex : messageIndex; latestStart = batchIndex >= 0 ? batchStart : total; total += bytes; }
 		}
-		if (!latest) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; return; }
+		if (latestIndex < 0) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; return; }
 		let cutoff = Math.max(0, Math.floor((total - keep) / step) * step);
 		// A large current batch can straddle an ordinary stride. Keep that whole batch,
 		// remove older images, then enforce the actual encoded-byte bound below.
@@ -144,7 +148,8 @@ export class RequestImageBudget {
 		const resizeOptions = { maxWidth, maxHeight, maxBytes: this.recovery ? Math.max(1, Math.floor(maxBytes / 2)) : maxBytes, preservePng: true };
 		let completed = false;
 		try {
-			for (const message of messages) {
+			for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+				const message = messages[messageIndex]!;
 				if (message.role !== "toolResult") continue;
 				let omitUntil = 0;
 				for (let index = 0; index < message.content.length; index++) {
@@ -162,22 +167,24 @@ export class RequestImageBudget {
 							view = !this.recovery && settings.maxBytes === undefined && settings.maxWidth === undefined && settings.maxHeight === undefined && wasImageProcessed(block)
 								? undefined : await this.view(block, resizeOptions, generation, signal);
 						}
-						if (view && this.views.get(block) !== view) this.requestViews.set(block, view);
+						// Request ownership is independent of later cross-request LRU eviction.
+						if (view) this.requestViews.set(block, view);
 					}
 					const bytes = view?.bytes ?? this.seen.get(block)!;
-					retained += bytes; if (message === latest) latestBytes += bytes;
+					retained += bytes; if (messageIndex >= latestIndex) latestBytes += bytes;
 				}
 				if ((this.omittedUntil.get(message) ?? 0) !== omitUntil) this.forgetProjection(message);
 				this.omittedUntil.set(message, omitUntil);
 			}
 			if (latestBytes > capacity) throw new Error("Request preparation blocked: current tool images exceed the image budget. Reduce this image batch or explicitly adjust images.requestBudget; original history and completed tools are unchanged.");
 			// An encoding may be larger than its original. Drop only older images in order.
-			if (retained > capacity) for (const message of messages) {
-				if (message.role !== "toolResult" || message === latest) continue;
+			if (retained > capacity) for (let messageIndex = 0; messageIndex < latestIndex; messageIndex++) {
+				const message = messages[messageIndex]!;
+				if (message.role !== "toolResult") continue;
 				for (let index = 0; index < message.content.length; index++) {
 					const block = message.content[index]!;
 					if (block.type !== "image" || index < (this.omittedUntil.get(message) ?? 0) || retained <= capacity) continue;
-					retained -= (this.views.get(block) ?? this.requestViews.get(block))?.bytes ?? this.seen.get(block)!;
+					retained -= (this.requestViews.get(block) ?? this.views.get(block))?.bytes ?? this.seen.get(block)!;
 					this.omittedUntil.set(message, index + 1); this.forgetProjection(message);
 				}
 			}
@@ -208,7 +215,7 @@ export class RequestImageBudget {
 		for (let i = 0; i < message.content.length; i++) {
 			const block = message.content[i]!;
 			const omit = block.type === "image" && i < (this.omittedUntil.get(message) ?? 0);
-			const view = block.type === "image" ? this.views.get(block) ?? this.requestViews.get(block) : undefined;
+			const view = block.type === "image" ? this.requestViews.get(block) ?? this.views.get(block) : undefined;
 			if (!content && (omit || view && (view.image !== block || view.note))) content = message.content.slice(0, i);
 			if (content) {
 				let replacement: TextContent | ImageContent = view?.image ?? block;

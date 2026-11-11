@@ -157,7 +157,18 @@
 			"additionalProperties": false,
 			"properties": {
 				"autoResize": { "type": "boolean", "default": true, "description": "Resize images to fit within 2000 by 2000 pixels." },
-				"blockImages": { "type": "boolean", "default": false, "description": "Prevent images from being sent to providers." }
+				"blockImages": { "type": "boolean", "default": false, "description": "Prevent images from being sent to providers." },
+				"requestBudget": {
+					"type": "object", "additionalProperties": false,
+					"description": "Request views for full-history openai-completions; byte limits measure base64 bytes. Original history is preserved. Other protocols retain their current behavior.",
+					"properties": {
+						"keepBytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 8388608, "description": "Target retained historical tool image bytes; keepBytes + stepBytes must be a safe integer." },
+						"stepBytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 4194304, "description": "History eviction stride; keepBytes + stepBytes is the hard tool image capacity." },
+						"maxBytes": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 4718592, "description": "Per-image base64 view target when autoResize is enabled." },
+						"maxWidth": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 2000, "description": "Maximum request-view width when autoResize is enabled." },
+						"maxHeight": { "type": "integer", "minimum": 1, "maximum": 9007199254740991, "default": 2000, "description": "Maximum request-view height when autoResize is enabled." }
+					}
+				}
 			}
 		},
 		"toolResultPresentation": {

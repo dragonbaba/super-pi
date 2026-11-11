@@ -1541,6 +1541,7 @@ export class AgentSession {
 		// Final provider completion (including error/abort) releases its image guard
 		// before extension callbacks or compaction can issue unrelated requests.
 		if (event.type === "agent_end" || (event.type === "message_end" && event.message.role === "assistant")) { this._imageRequest = undefined; this._imagePreparationSignal = undefined; }
+		if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason !== "error" && event.message.stopReason !== "aborted") this.requestImages.completeResponse();
 		const mcpFinal = event.type === "message_end" && event.message.role === "toolResult" && event.message.toolName.startsWith("mcp__");
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
