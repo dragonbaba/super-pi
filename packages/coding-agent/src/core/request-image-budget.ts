@@ -32,10 +32,12 @@ export class RequestImageBudget {
 	private readonly views = new Map<ImageContent, View>();
 	private seen = new WeakMap<ImageContent, number>();
 	private seenData = new WeakMap<ImageContent, string>();
+	private seenMime = new WeakMap<ImageContent, string>();
 	private omittedUntil = new WeakMap<Message, number>();
 	private projected = new WeakMap<Message, Projection>();
 	private requestViews = new WeakMap<ImageContent, View>();
 	private active = new WeakMap<ImageContent, number>();
+	private updated = new WeakMap<ImageContent, number>();
 	private sources = 0;
 	private encoded = 0;
 	private total = 0;
@@ -58,7 +60,7 @@ export class RequestImageBudget {
 	constructor(encode: Encoder = resizeImage) { this.encode = encode; }
 	clear(): void {
 		this.generation++; this.views.clear(); this.sources = this.encoded = this.total = this.cutoff = 0;
-		this.seen = new WeakMap(); this.seenData = new WeakMap(); this.omittedUntil = new WeakMap(); this.resetProjections(); this.requestViews = new WeakMap(); this.active = new WeakMap();
+		this.seen = new WeakMap(); this.seenData = new WeakMap(); this.seenMime = new WeakMap(); this.omittedUntil = new WeakMap(); this.resetProjections(); this.requestViews = new WeakMap(); this.active = new WeakMap(); this.updated = new WeakMap();
 		this.policy = ""; this.recovery = false; this.lastBytes = this.previousWireBytes = this.wireLimit = 0;
 		this.metrics.cacheSourceBytes = this.metrics.cacheViewBytes = this.metrics.retainedImageBytes = 0;
 	}
@@ -119,6 +121,7 @@ export class RequestImageBudget {
 		if (this.recovery) { keep = Math.max(1, Math.floor(keep / 2)); step = Math.max(1, Math.floor(step / 2)); }
 		const capacity = keep + step; generation = this.generation;
 		let total = 0, latestStart = 0, latestIndex = -1, batchStart = 0, batchIndex = -1;
+		let metadataChanged = false;
 		this.metrics.userImageBytes = 0;
 		for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
 			const message = messages[messageIndex]!;
@@ -130,7 +133,9 @@ export class RequestImageBudget {
 			let bytes = 0;
 			for (const block of message.content) if (block.type === "image") {
 				let weight = this.seen.get(block);
+				if (weight !== undefined && (this.seenData.get(block) !== block.data || this.seenMime.get(block) !== block.mimeType)) metadataChanged = true;
 				if (weight === undefined || this.seenData.get(block) !== block.data) { this.metrics.imagesInspected++; weight = Buffer.byteLength(block.data); this.seen.set(block, weight); this.seenData.set(block, block.data); }
+				this.seenMime.set(block, block.mimeType);
 				bytes += weight;
 			}
 			if (bytes) { latestIndex = batchIndex >= 0 ? batchIndex : messageIndex; latestStart = batchIndex >= 0 ? batchStart : total; total += bytes; }
@@ -140,7 +145,7 @@ export class RequestImageBudget {
 		// A large current batch can straddle an ordinary stride. Keep that whole batch,
 		// remove older images, then enforce the actual encoded-byte bound below.
 		if (cutoff > latestStart) cutoff = latestStart;
-		if (total < this.total) this.resetProjections();
+		if (metadataChanged || total < this.total) this.resetProjections();
 		this.total = total; this.cutoff = cutoff;
 		let offset = 0, retained = 0, latestBytes = 0;
 		const cycle = ++this.epoch;
@@ -155,21 +160,24 @@ export class RequestImageBudget {
 				for (let index = 0; index < message.content.length; index++) {
 					const block = message.content[index]!;
 					if (block.type !== "image") continue;
+					if (this.seenData.get(block) !== block.data || this.seenMime.get(block) !== block.mimeType) throw new Error("Request preparation blocked: image changed during preparation");
 					const omit = offset < cutoff; offset += this.seen.get(block)!;
 					if (omit) { omitUntil = index + 1; continue; }
 					this.active.set(block, cycle);
 					let view: View | undefined;
 					if (autoResize) {
-						view = this.views.get(block);
+						view = this.requestViews.get(block) ?? this.views.get(block);
 						if (view?.data === block.data && view.mimeType === block.mimeType) this.metrics.cacheHits++;
 						else {
-							if (view) { this.evict(block, view); this.resetProjections(); }
+							if (view) this.evict(block, view);
 							view = !this.recovery && settings.maxBytes === undefined && settings.maxWidth === undefined && settings.maxHeight === undefined && wasImageProcessed(block)
 								? undefined : await this.view(block, resizeOptions, generation, signal);
+							this.updated.set(block, cycle);
 						}
 						// Request ownership is independent of later cross-request LRU eviction.
 						if (view) this.requestViews.set(block, view);
 					}
+					if (this.updated.get(block) === cycle) this.forgetProjection(message);
 					const bytes = view?.bytes ?? this.seen.get(block)!;
 					retained += bytes; if (messageIndex >= latestIndex) latestBytes += bytes;
 				}
@@ -209,7 +217,11 @@ export class RequestImageBudget {
 			let same = previous.toolCallId === message.toolCallId && previous.toolName === message.toolName && previous.isError === message.isError
 				&& previous.timestamp === message.timestamp && previous.details === message.details && previous.usage === message.usage
 				&& previous.addedToolNames === message.addedToolNames && previous.durationMs === message.durationMs;
-			for (let i = 0; i < cached.source.length; i++) if (cached.source[i] !== message.content[i]) { same = false; break; }
+			for (let i = 0; i < cached.source.length; i++) {
+				const block = message.content[i]!;
+				if (cached.source[i] !== block) { same = false; break; }
+				if (block.type === "image" && (this.seenData.get(block) !== block.data || this.seenMime.get(block) !== block.mimeType)) throw new Error("Request preparation blocked: image changed after preparation");
+			}
 			if (same) return cached.result;
 		}
 		if (cached) this.forgetProjection(message);
@@ -219,16 +231,25 @@ export class RequestImageBudget {
 		let sourceIndex = sourceImageIndex ?? 0;
 		for (let i = 0; i < message.content.length; i++) {
 			const block = message.content[i]!;
+			let selected = block;
 			let occurrence = i;
 			if (block.type === "image" && original !== message) {
-				while (sourceIndex < original.content.length && original.content[sourceIndex] !== block) sourceIndex++;
+				while (sourceIndex < original.content.length) {
+					const candidate = original.content[sourceIndex]!;
+					if (candidate === block || candidate.type === "image" && candidate.data === block.data && candidate.mimeType === block.mimeType) break;
+					sourceIndex++;
+				}
+				if (sourceIndex === original.content.length) throw new Error("Request preparation blocked: image projection no longer matches its prepared source");
 				occurrence = sourceIndex++;
+				selected = original.content[occurrence]!;
 			}
+			if (selected.type === "image" && this.seen.has(selected) && (this.seenData.get(selected) !== selected.data || this.seenMime.get(selected) !== selected.mimeType)) throw new Error("Request preparation blocked: image changed after preparation");
 			const omit = block.type === "image" && occurrence < omittedUntil;
-			const view = block.type === "image" ? this.requestViews.get(block) ?? this.views.get(block) : undefined;
-			if (!content && (omit || view && (view.image !== block || view.note))) content = message.content.slice(0, i);
+			const view = selected.type === "image" ? this.requestViews.get(selected) ?? this.views.get(selected) : undefined;
+			if (!content && (omit || view && (view.image !== selected || view.note))) content = message.content.slice(0, i);
 			if (content) {
-				let replacement: TextContent | ImageContent = view?.image ?? block;
+				// A sanitizer's plain image must not regain the canonical MCP sidecars.
+				let replacement: TextContent | ImageContent = view && view.image !== selected ? view.image : block;
 				if (omit && block.type === "image") {
 					replacement = { type: "text", text: `[Tool result ${message.toolCallId.slice(0,128)}, content block ${occurrence+1}] ${OMITTED.text}` };
 				}

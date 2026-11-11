@@ -23,7 +23,10 @@ test("all selected views survive cross-request cache eviction", async () => {
   const source = tool(0); source.content = Array.from({length:300}, () => tool(100000).content[0]!);
   await owner.prepare([source], {}, true);
   assert.equal(imageBytes(owner.applyMessages([source])), owner.metrics.retainedImageBytes);
-  assert.equal(owner.metrics.retainedImageBytes,1200); owner.clear();
+  assert.equal(owner.metrics.retainedImageBytes,1200);
+  const before=owner.metrics.encodes; source.content.push(source.content[0]!);
+  await owner.prepare([source],{},true); assert.equal(owner.metrics.encodes-before,300);
+  assert.equal(imageBytes(owner.applyMessages([source])),1204); owner.clear();
 });
 for(const contextual of [false,true]) test(`text presentation wrappers preserve prepared image occurrence omissions, contextual=${contextual}`, async () => {
   const owner=new RequestImageBudget(), messages=[tool(7*MiB,"old"),tool(7*MiB,"current")];
@@ -87,6 +90,39 @@ test("unchanged requests reuse views and projection; source mutations and policy
   await owner.prepare(messages, {}, true); assert.equal(encodes, 2); assert.notEqual(owner.applyMessages(messages)[0], first);
   await owner.prepare(messages, { maxWidth: 32 }, true); assert.equal(encodes, 3);
   owner.clear(); assert.equal(owner.metrics.cacheViewBytes, 0);
+});
+test("recreated evicted views invalidate projections after in-place source changes", async () => {
+  const owner=new RequestImageBudget(async bytes=>({data:bytes[0]===0?"AAAA":"BBBBBBBB",mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true}));
+  const messages=Array.from({length:129},(_,i)=>tool(1000,String(i)));
+  await owner.prepare(messages,{},true); const previous=owner.applyMessages(messages);
+  (messages[0]!.content[0] as ImageContent).data="B".repeat(1000);
+  await owner.prepare(messages,{},true); const next=owner.applyMessages(messages);
+  assert.notEqual(next[0],previous[0]); assert.equal(imageBytes(next),owner.metrics.retainedImageBytes);
+  assert.equal((next[0] as ToolResultMessage).content.find(b=>b.type==="image")?.data,"BBBBBBBB"); owner.clear();
+});
+test("newly generated cache-miss views replace old projections even for unchanged source bytes", async()=>{
+  let phase=0;
+  const owner=new RequestImageBudget(async()=>({data:phase?"BBBBBBBB":"AAAA",mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true}));
+  const messages=Array.from({length:129},(_,i)=>tool(1000,String(i)));
+  await owner.prepare(messages,{},true); owner.applyMessages(messages); phase=1;
+  await owner.prepare(messages,{},true); assert.equal(imageBytes(owner.applyMessages(messages)),owner.metrics.retainedImageBytes); owner.clear();
+});
+test("images changed after preparation cannot reuse a cached projected body", async()=>{
+  const owner=new RequestImageBudget(), messages=[tool(7*MiB,"old"),tool(7*MiB,"current")];
+  await owner.prepare(messages,{},false); owner.applyMessages(messages);
+  (messages[0]!.content[0] as ImageContent).data="changed";
+  assert.throws(()=>owner.applyMessages(messages),/image changed after preparation/); owner.clear();
+});
+for(const resize of [false,true]) test(`MCP sanitizer clones resolve source omissions and views, resize=${resize}`, async()=>{
+  const owner=new RequestImageBudget(async()=>({data:"AAAA",mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true}));
+  const messages=[tool(7*MiB,"old-mcp"),tool(7*MiB,"current-mcp")];
+  for(const message of messages) Object.assign(message.content[0]!,{mcpInput:true});
+  const presentation=createToolResultPresentationOwner({enabled:true,budgetTokens:4096},"mcp-clone-test")!;
+  try {
+    await owner.prepare(messages,{},resize); const projected=presentation.projectMessagesForModel(messages,owner.apply);
+    assert.equal(imageBytes(owner.applyMessages(projected)),owner.metrics.retainedImageBytes);
+    for(const message of projected) if(message.role==="toolResult") for(const block of message.content) assert.equal("mcpInput" in block,false);
+  } finally {owner.clear();presentation.dispose();}
 });
 test("unresized current images over budget are explicit; user images are counted without eviction", async () => {
   const owner = new RequestImageBudget(), messages: Message[] = [{ role: "user", content: [{ type: "image", data: "AAAA", mimeType: "image/png" }], timestamp:0 }, tool(13*MiB)];

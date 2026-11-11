@@ -72,6 +72,14 @@ retained zero coordinators, source references or entries after disposal; full
 result copies/serializations, envelope wrappers, Promises and controllers were
 zero. Native Windows full-suite execution passed with the documented platform
 skips; the RPC overlap fixture also passed independently (two applicable cases).
+Sanitized MCP images are matched to their ordered source occurrence by unchanged
+bytes/MIME; view selection uses that source without restoring private sidecars.
+Fresh cache-miss views invalidate each affected projection, source data/MIME
+changes invalidate prior decisions, and repeated occurrences reuse one active
+view even after LRU eviction. These regressions and the final request/schema/
+projection matrix passed 75/75. The updated request profile sampled 100,736,178
+-> 23,140,980 B/request (CPU p50 52.12 -> 21.82 ms), with zero warm encodes and
+zero tracked references after four GC cycles.
 
 ## Rerun
 
