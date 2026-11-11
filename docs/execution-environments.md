@@ -43,7 +43,7 @@
 
 成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。
 
-MXC `grep` 逐匹配行输出有界前缀，`observedRecords/returnedRecords` 以匹配行为单位。返回中没有全项目精确总量或搜索游标。缩小范围可以处理遍历或输出早停。过大、非 UTF-8 或含 NUL 的文件需要适合其容量和编码的读取方式。
+MXC `grep` 的 `outputMode` 为 `content`（默认，每条匹配行的有界前缀）、`files`（每个匹配文件一个路径）或 `count`（`路径:匹配行数`）。一行重复出现模式仍只计一行。files 在完整文件的 UTF-8/NUL 检查后确认首个匹配即可停止匹配扫描；count 完整统计该文件后才返回数值。`observedRecords/returnedRecords` 在 content 中以匹配行为单位，在 files/count 中以匹配文件为单位。没有完整项目总量或搜索游标；200 条上限按当前模式的记录单位计算。宿主 grep 的既有语义不变。缩小范围可以处理遍历或输出早停。过大、非 UTF-8 或含 NUL 的文件需要适合其容量和编码的读取方式。
 
 `visitedEntries` 沿用遍历计数：不计初始范围本身及受保护/链接排除项；`scannedFiles` 是 grep 实际检查资格的普通文件候选数，含容量/编码跳过项。`excludedProtected/excludedLinks` 只计实际遇到的排除项，不估计其子树。`outputUnits` 是正文预算占用，每条记录保守预留一个分隔符，不含状态前缀，也不是 JSON 字节数。
 

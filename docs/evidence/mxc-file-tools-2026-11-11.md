@@ -45,6 +45,21 @@ and zero component creations in the measurement window. Both renderer and
 result references were released after disposal and four GC cycles. The
 renderer source and frame scheduler are unchanged.
 
+## Grep output modes
+
+The optional files and count projections share the literal match and complete
+file eligibility rules. The worker returns one row per matching file. Count
+increments once per matching line. Tests cover LF-start and cross-line
+patterns, regex metacharacters, encoding suffixes and bounded partial output.
+The focused worker/transport/provider matrix passed 69/69. The provider
+capture covered all 16 direct/CodeMode cases. Its top-level schema was 12,002
+bytes and it ran entirely offline.
+
+Across 64 scans, files used 64 pattern searches and no LF searches or slices.
+Count used 64,064 pattern searches, 64,000 LF searches and no slices. Sampling
+including fixture instrumentation yielded 2,144 and 2,442 bytes/call. Both
+lanes released all tracked references after four controlled GC cycles.
+
 ## Rerun
 
 Set child TMP, TEMP and TMPDIR to an owned task directory.
@@ -52,7 +67,7 @@ Set child TMP, TEMP and TMPDIR to an owned task directory.
 ~~~powershell
 npm.cmd run check
 npm.cmd run build:offline
-node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/mxc-file-worker.test.ts tests/mxc-file-completeness.test.ts tests/mxc-file-facts-backend.test.ts tests/mxc-file-projection.test.ts tests/mxc-workspace-lifecycle.test.ts tests/sandbox-workspace-paths.test.ts tests/sandbox-image-read.test.ts
+node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/mxc-file-worker.test.ts tests/mxc-grep-output-modes.test.ts tests/mxc-file-completeness.test.ts tests/mxc-file-facts-backend.test.ts tests/mxc-file-projection.test.ts tests/mxc-workspace-lifecycle.test.ts tests/sandbox-workspace-paths.test.ts tests/sandbox-image-read.test.ts
 node --experimental-strip-types --test --test-name-pattern="sandbox literal search scans monotonically" tests/source-invariants.test.ts
 node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts
 ~~~

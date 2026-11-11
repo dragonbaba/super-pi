@@ -18,7 +18,7 @@ const references: WeakRef<object>[] = [];
 // Prepare corpus outside sampling; per-call instrumentation is not per-line work.
 const content = ("中".repeat(256) + "\n").repeat(1000), longName = "中文".repeat(105);
 let slices = 0, retainedRows = 0, maxCharacters = 0, lineScans = 0, patternScans = 0;
-function cycle(mode: "content" | "read") {
+function cycle(mode: "content" | "files" | "count" | "read") {
   const rows: string[] = [];
   const input = { length: content.length,
     indexOf(value: string, start?: number) { if (value === "\n") lineScans++; else patternScans++; return content.indexOf(value, start); },
@@ -33,10 +33,12 @@ function cycle(mode: "content" | "read") {
     references.push(new WeakRef(input), new WeakRef(reply), new WeakRef(reply.read!));
     return;
   }
-  const state = searchFacts("grep");
+  const state = searchFacts("grep", mode);
   try {
     scan(input, "中", longName, rows, state);
-    assert.equal(state.scanComplete, false);
+    assert.equal(state.scanComplete, mode !== "content");
+    if (mode === "files") assert.deepEqual(rows, [longName]);
+    if (mode === "count") assert.deepEqual(rows, [longName + ":1000"]);
     let characters = 0;
     for (let index = 0; index < rows.length; index++) characters += rows[index]!.length + 1;
     assert.ok(characters <= limits.TEXT_LIMIT); maxCharacters = Math.max(maxCharacters, characters);
@@ -44,7 +46,7 @@ function cycle(mode: "content" | "read") {
     references.push(new WeakRef(rows), new WeakRef(input), new WeakRef(state));
   } finally { rows.length = 0; } // Same ownership/release boundary as search().
 }
-async function measure(mode: "content" | "read") {
+async function measure(mode: "content" | "files" | "count" | "read") {
   references.length = 0; slices = 0; retainedRows = 0; maxCharacters = 0; lineScans = 0; patternScans = 0;
   global.gc!(); const initialHeap = process.memoryUsage().heapUsed;
   await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
@@ -63,14 +65,16 @@ async function measure(mode: "content" | "read") {
   }
   sites.sort((a, b) => b.sampledBytes - a.sampledBytes);
   assert.equal(retained, 0);
-  assert.equal(slices, mode === "content" ? retainedRows + 64 : 64, "at most one bounded rejected candidate per search");
+  assert.equal(slices, mode === "content" ? retainedRows + 64 : mode === "read" ? 64 : 0, "at most one bounded rejected candidate per search");
+  if (mode === "files") { assert.equal(lineScans, 0); assert.equal(patternScans, 64); }
+  if (mode === "count") { assert.equal(lineScans, 64_000); assert.equal(patternScans, 64_064); }
   if (mode === "read") { assert.equal(lineScans, 139 * 64); assert.equal(patternScans, 0); }
   return { mode, cycles: 64, slices, lineScans, patternScans, retainedRows, maxCharacters, sampledBytes,
     sampledBytesPerCall: sampledBytes / 64, topSites: sites.slice(0, 6), initialHeap, peakHeap, heapAfterGc,
     perRowArrays: 0, perRowObjects: 0, perRowClosures: 0, perRowPromises: 0, jsonMaterializationsDuringScan: 0, retainedAfterFourGC: retained };
 }
 try {
-  const measurements = [await measure("content"), await measure("read")];
+  const measurements = [await measure("content"), await measure("files"), await measure("count"), await measure("read")];
   console.log(JSON.stringify({ lane: "production-file-scan", corpusUtf16Units: content.length, measurements,
     note: "Sampling includes bounded call metadata and instrumentation." }));
 } finally { inspector.disconnect(); }
