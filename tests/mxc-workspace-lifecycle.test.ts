@@ -87,7 +87,11 @@ for (const stage of ["empty", "prepared", "cleanup-failure"]) test(`MXC startup 
   t.mock.method(internal.runner, "run", async () => {
     executions++;
     const request = JSON.parse(await fs.readFile(path.join(internal.tools, "request.json"), "utf8"));
-    return { code: 0, stdout: JSON.stringify({ id: request.id, ok: true, text: "fresh request" }), stderr: "", timedOut: false, truncated: false };
+    return { code: 0, stdout: JSON.stringify({ id: request.id, ok: true, text: "fresh request",
+      search: { version: 1, operation: "ls", outputMode: "files", scanComplete: true, coverageComplete: true,
+        outputTruncated: false, excerptTruncated: false, stopReason: "none", visitedEntries: 0, scannedFiles: 0,
+        observedRecords: 0, returnedRecords: 0, outputUnits: 0, skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0,
+        excludedProtected: 0, excludedLinks: 0 } }), stderr: "", timedOut: false, truncated: false };
   });
   const pending = backend.invoke("ls", {}, controller.signal);
   const observed = assert.rejects(pending, stage === "cleanup-failure" ? /fixture cleanup failed/ : { name: "AbortError" });

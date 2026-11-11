@@ -4,9 +4,9 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from './image-signature.mjs';
+import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK,
+  normalizeReadOffset, normalizeReadLimit } from './mxc-file-limits.mjs';
 
-const FILE_LIMIT = 2 * 1024 * 1024, IMAGE_LIMIT = 16 * 1024 * 1024;
-const SEARCH_ROWS = 200, SEARCH_ENTRIES = 20000, TEXT_LIMIT = 32768;
 const DIRECTORY_ENTRIES = Object.freeze({ withFileTypes: true });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -36,53 +36,122 @@ function readHandle(fd, limit) {
 }
 // At most six JSON bytes per UTF-16 code unit, leaving ample envelope space
 // in the 256 KiB protocol. Count paths, content and separators before retaining.
-function appendSearchRow(rows, row, remaining) {
-  if (rows.length === SEARCH_ROWS || row.length + 1 > remaining) return -1;
-  rows.push(row); return remaining - row.length - 1;
+function safeTextEnd(source, end) {
+  if (end > 0 && end < source.length && source.charCodeAt(end - 1) >= 0xd800 && source.charCodeAt(end - 1) <= 0xdbff
+    && source.charCodeAt(end) >= 0xdc00 && source.charCodeAt(end) <= 0xdfff) return end - 1;
+  return end;
 }
-function grepRows(source, pattern, name, rows, remaining) {
+function stopSearch(state, reason, omitted) {
+  state.scanComplete = false; state.coverageComplete = false;
+  state.stopReason = reason; state.outputTruncated = omitted;
+}
+function appendSearchRow(rows, row, state) {
+  if (rows.length === SEARCH_ROWS) { stopSearch(state, 'row-limit', true); return false; }
+  if (row.length + 1 > TEXT_LIMIT - state.outputUnits) { stopSearch(state, 'text-limit', true); return false; }
+  rows.push(row); state.returnedRecords++; state.outputUnits += row.length + 1; return true;
+}
+function grepRows(source, pattern, name, rows, state) {
   let match = source.indexOf(pattern), start = 0, line = 1;
   while (match >= 0 && start < source.length) {
     const next = source.indexOf('\n', start), end = next < 0 ? source.length : next;
     if (match >= start && match < end) {
-      if (rows.length === SEARCH_ROWS) return -1;
-      remaining = appendSearchRow(rows, name + ':' + line + ':' + source.slice(start, Math.min(end, start + 256)), remaining);
-      if (remaining < 0) return -1;
+      state.observedRecords++;
+      if (rows.length === SEARCH_ROWS) { stopSearch(state, 'row-limit', true); return; }
+      const clipped = end - start > SEARCH_EXCERPT;
+      const excerptEnd = clipped ? safeTextEnd(source, start + SEARCH_EXCERPT - SEARCH_CLIPPED_MARK.length) : end;
+      if (!appendSearchRow(rows, name + ':' + line + ':' + source.slice(start, excerptEnd)
+        + (clipped ? SEARCH_CLIPPED_MARK : ''), state)) return;
+      if (clipped) state.excerptTruncated = true;
     }
     start = end + 1; line++;
     if (match < start) match = source.indexOf(pattern, start);
   }
-  return remaining;
+}
+function searchFacts(operation) {
+  return { version: 1, operation, outputMode: operation === 'grep' ? 'content' : 'files', scanComplete: true,
+    coverageComplete: true, outputTruncated: false, excerptTruncated: false, stopReason: 'none',
+    visitedEntries: 0, scannedFiles: 0, observedRecords: 0, returnedRecords: 0, outputUnits: 0,
+    skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0, excludedProtected: 0, excludedLinks: 0 };
 }
 function search(root, operation, scope, pattern) {
   if (operation === 'grep') need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
-  const pending = [scope], rows = []; let visited = 0, truncated = false, remaining = TEXT_LIMIT;
+  // One call-owned record. Pending and output arrays are cleared on every exit.
+  const state = searchFacts(operation);
+  const pending = [scope], rows = [];
   try {
-    while (pending.length && !truncated) {
+    while (pending.length && state.scanComplete) {
       const name = pending.pop(), file = local(root, name), stat = fs.lstatSync(file);
-      if (stat.isSymbolicLink()) continue; // Do not traverse cycles or implicit search roots.
+      if (stat.isSymbolicLink()) { state.excludedLinks++; continue; }
       if (stat.isDirectory()) {
         for (const entry of fs.readdirSync(file, DIRECTORY_ENTRIES)) {
-          if (PROTECTED_NAMES.has(entry.name.toLowerCase()) || entry.isSymbolicLink()) continue;
-          if (++visited > SEARCH_ENTRIES) { truncated = true; break; }
+          if (PROTECTED_NAMES.has(entry.name.toLowerCase())) { state.excludedProtected++; continue; }
+          if (entry.isSymbolicLink()) { state.excludedLinks++; continue; }
+          if (state.visitedEntries === SEARCH_ENTRIES) { stopSearch(state, 'entry-limit', false); break; }
+          state.visitedEntries++;
           const child = name === '.' ? entry.name : path.join(name, entry.name);
           if (operation === 'ls') {
-            remaining = appendSearchRow(rows, child + (entry.isDirectory() ? '/' : ''), remaining);
-            if (remaining < 0) { truncated = true; break; }
+            state.observedRecords++;
+            if (!appendSearchRow(rows, child + (entry.isDirectory() ? '/' : ''), state)) break;
           } else pending.push(child);
         }
       } else if (stat.isFile()) {
         if (operation === 'find' && pattern && !name.includes(pattern)) continue;
         if (operation === 'grep') {
-          if (stat.size > FILE_LIMIT) continue;
-          const bytes = read(file); if (!isUtf8(bytes) || bytes.includes(0)) continue;
-          remaining = grepRows(bytes.toString('utf8'), pattern, name, rows, remaining);
-        } else remaining = appendSearchRow(rows, name, remaining);
-        truncated = remaining < 0;
+          state.scannedFiles++;
+          if (stat.size > FILE_LIMIT) { state.skippedTooLarge++; state.coverageComplete = false; continue; }
+          const bytes = read(file);
+          if (!isUtf8(bytes)) { state.skippedNonUtf8++; state.coverageComplete = false; continue; }
+          if (bytes.includes(0)) { state.skippedNul++; state.coverageComplete = false; continue; }
+          grepRows(bytes.toString('utf8'), pattern, name, rows, state);
+        } else { state.observedRecords++; appendSearchRow(rows, name, state); }
       }
     }
-    return (rows.join('\n') || '(no matches)') + (truncated ? '\n[Results truncated; narrow the search scope.]' : '');
+    const skippedFiles = state.skippedTooLarge + state.skippedNonUtf8 + state.skippedNul;
+    const summary = !state.coverageComplete || state.excerptTruncated
+      ? '[Search status: scanComplete=' + state.scanComplete + '; coverageComplete=' + state.coverageComplete
+        + '; outputTruncated=' + state.outputTruncated + '; excerptTruncated=' + state.excerptTruncated
+        + '; stop=' + state.stopReason + '; observedRecords=' + state.observedRecords + '; returnedRecords=' + state.returnedRecords
+        + '; skippedTooLarge=' + state.skippedTooLarge + '; skippedNonUtf8=' + state.skippedNonUtf8 + '; skippedNul=' + state.skippedNul
+         + (!state.coverageComplete ? '. Unchecked content remains.' : '')
+         + (!state.scanComplete ? ' Narrow the search scope to continue.' : '')
+         + (skippedFiles ? ' Inspect known skipped paths with a reader suited to their size or encoding.' : '')
+         + (state.outputTruncated ? ' Results truncated.' : '')
+         + (state.excerptTruncated ? ' […] marks a clipped line prefix; the match may follow it.' : '') + ']\n' : '';
+    return { text: summary + (rows.join('\n') || (state.coverageComplete ? '(no matches)' : '(no matches in scanned content; unchecked content remains)')), search: state };
   } finally { pending.length = 0; rows.length = 0; }
+}
+function readWindow(source, input, reply) {
+  const offset = normalizeReadOffset(input.offset), limit = normalizeReadLimit(input.limit);
+  let start = 0;
+  for (let line = 1; line < offset && start < source.length; line++) {
+    const next = source.indexOf('\n', start); start = next < 0 ? source.length : next + 1;
+  }
+  let end = start, nextUnread = start, returnedLines = 0, lineTruncated = false;
+  while (returnedLines < limit && end < source.length) {
+    const next = source.indexOf('\n', end), boundary = next < 0 ? source.length : next + 1;
+    if (boundary - start > TEXT_LIMIT) {
+      const clipped = safeTextEnd(source, start + TEXT_LIMIT);
+      // If only the line terminator falls outside the budget, the body can
+      // safely resume at the following physical line. Keep CRLF together.
+      const contentEnd = next < 0 ? boundary : next - Number(next > end && source.charCodeAt(next - 1) === 13);
+      if (clipped > end && clipped >= contentEnd) {
+        end = contentEnd; nextUnread = boundary; returnedLines++;
+      } else {
+        lineTruncated = clipped > end; end = nextUnread = clipped;
+      }
+      break;
+    }
+    end = nextUnread = boundary; returnedLines++;
+  }
+  const hasMore = nextUnread < source.length, windowComplete = !lineTruncated && (returnedLines === limit || !hasMore);
+  const nextOffset = hasMore && !lineTruncated && returnedLines > 0 ? offset + returnedLines : undefined;
+  reply.read = { version: 1, offset, limit, windowComplete, hasMore, lineTruncated, returnedLines,
+    incompleteLine: lineTruncated ? offset + returnedLines : undefined, nextOffset };
+  reply.text = (lineTruncated ? '[Read window incomplete: line ' + (offset + returnedLines)
+    + ' was truncated at the UTF-16 output budget; its suffix is unavailable through line offsets. No safe nextOffset.]\n'
+    : hasMore ? '[Read window ' + (windowComplete ? 'complete' : 'incomplete') + '; more lines available'
+      + (nextOffset === undefined ? '' : '; nextOffset=' + nextOffset) + '.]\n' : '')
+    + source.slice(start, end) + '\n[Snapshot: ' + reply.snapshot + ']';
 }
 function mutate(root, operation, input, maxWriteBytes) {
   const target = local(root, input.path, true);
@@ -135,7 +204,7 @@ try {
   const roots = request.workspaces, input = request.input, operation = request.operation;
   need(Array.isArray(roots) && roots.length > 0 && roots.length <= 17, 'Invalid workspace table');
   const root = roots[input.workspaceIndex ?? 0]; need(typeof root === 'string', 'Unknown workspace');
-  let text, snapshot, image;
+  const reply = { id: request.id, ok: true, text: undefined, snapshot: undefined, image: undefined, read: undefined, search: undefined };
   if (operation === 'read') {
     phase = 'read'; const file = local(root, input.path), stat = fs.statSync(file);
     need(stat.isFile(), 'Read requires an ordinary file');
@@ -144,31 +213,27 @@ try {
     const mimeType = detectSupportedImageMimeType(header.subarray(0, count));
     if (mimeType) {
       need(stat.size <= IMAGE_LIMIT, 'Image exceeds 16 MiB; resize it before read');
-      const bytes = read(file, IMAGE_LIMIT); snapshot = hash(bytes);
-      const artifact = { name: request.id + '-0.bin', bytes: bytes.length, sha256: snapshot };
+      const bytes = read(file, IMAGE_LIMIT); reply.snapshot = hash(bytes);
+      const artifact = { name: request.id + '-0.bin', bytes: bytes.length, sha256: reply.snapshot };
       fs.writeFileSync(path.join(request.exchange, artifact.name), bytes, { flag: 'wx' });
-      image = { mimeType, artifact }; text = 'Read image file [' + mimeType + ']';
+      reply.image = { mimeType, artifact }; reply.text = 'Read image file [' + mimeType + ']';
     } else {
-      const bytes = read(file); snapshot = hash(bytes);
+      const bytes = read(file); reply.snapshot = hash(bytes);
       need(isUtf8(bytes) && !bytes.includes(0), 'Unsupported binary file; read supports UTF-8 text and common image formats');
-      const source = bytes.toString('utf8'), offset = Math.max(0, (input.offset ?? 1) - 1), count = Math.min(2000, input.limit ?? 2000);
-      let start = 0, end = 0;
-      for (let line = 0; line < offset; line++) { const next = source.indexOf('\n', start); if (next < 0) { start = source.length; break; } start = next + 1; }
-      end = start;
-      for (let line = 0; line < count && end < source.length && end - start < TEXT_LIMIT; line++) { const next = source.indexOf('\n', end); end = next < 0 ? source.length : next + 1; }
-      text = source.slice(start, Math.min(end, start + TEXT_LIMIT)) + '\n[Snapshot: ' + snapshot + ']';
+      readWindow(bytes.toString('utf8'), input, reply);
     }
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
-    phase = 'read'; text = search(root, operation, input.path || '.', input.pattern);
+    phase = 'read'; const result = search(root, operation, input.path || '.', input.pattern);
+    reply.text = result.text; reply.search = result.search;
   } else {
     need(request.mode === 'sandbox-write', 'Read-only workspace'); phase = 'mutation';
     if (operation === 'file_batch') {
       need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid batch');
       for (const item of input.operations) mutate(roots[item.workspaceIndex ?? 0], item.operation, item, request.maxWriteBytes);
     } else mutate(root, operation, input, request.maxWriteBytes);
-    text = 'Workspace operation completed';
+    reply.text = 'Workspace operation completed';
   }
-  console.log(JSON.stringify({ id: request.id, ok: true, text, snapshot, image }));
+  console.log(JSON.stringify(reply));
 } catch (error) {
   console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;

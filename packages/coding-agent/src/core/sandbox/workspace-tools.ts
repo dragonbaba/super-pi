@@ -12,6 +12,7 @@ import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
 import { processImage } from "../../utils/image-process.ts";
 import { SubagentScheduler, type TaskWorkspace } from "../tasks/scheduler.ts";
 import { HARD_MAX_CONCURRENT } from "../tasks/limits.ts";
+import { READ_LINES, IMAGE_LIMIT } from "./mxc-file-limits.mjs";
 
 const names = WORKSPACE_TOOL_NAMES;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
@@ -68,13 +69,14 @@ export class WorkspaceSandboxTools {
         : name === "edit" ? Type.Object({ path: Type.String(), snapshot: Type.String(), edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })) })
         : name === "move" ? Type.Object({ path: Type.String(), destination: Type.String() })
         : name === "delete" ? Type.Object({ path: Type.String() })
-        : name === "read" ? Type.Object({ path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })) })
+        : name === "read" ? Type.Object({ path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: READ_LINES })) })
         : Type.Object({ path: Type.Optional(Type.String()), pattern: Type.Optional(Type.String()) });
       const owner = this;
       const definition: ToolDefinition = { name, label: name + " (Sandbox)", parameters, executionMode: "sequential", modelExposure: "nested",
         description: name === "powershell" ? "Run PowerShell 7 inside the session MXC sandbox. Tool installations are discovered from host PATH. Writes affect the authorized workspace immediately and are not rolled back on failure. No shell or host fallback; descendants stop when the command ends. Timeout at most 120 seconds." + workspace + commandEnvironment
-          : name === "find" || name === "grep" ? "Search sandbox workspace using a literal substring; at most 200 results." + workspace
-          : name === "read" ? "Read UTF-8 text (up to 2 MiB, 2000 lines/32 KiB per call) or JPEG, PNG, GIF, WebP, BMP images (up to 16 MiB) by file signature. Images return native image attachments, resized to inline limits; offset/limit apply only to text. In CodeMode use await show(result.ref) to display the image; do not print shell base64. For text writes/edits pass snapshot: result.details.snapshot (the SHA-256 hash); result.ref is only a display reference, never a file snapshot." + workspace
+          : name === "grep" ? "Search sandbox UTF-8 files using a literal substring. At most 200 matching lines and 32,768 UTF-16 code units of body. Status prefixes and details.search report scan stops, skipped files and clipped excerpts." + workspace
+          : name === "find" || name === "ls" ? "List sandbox paths; find filters file paths by a literal substring. At most 200 records and 32,768 UTF-16 code units of body. Check details.search and status prefixes for scan/output limits." + workspace
+          : name === "read" ? "Read UTF-8 text (files up to 2 MiB; at most 2000 lines and 32,768 UTF-16 code units of body per call) or JPEG, PNG, GIF, WebP, BMP images (up to 16 MiB) by file signature. details.read distinguishes windowComplete, hasMore and lineTruncated; nextOffset is safe only at a complete line boundary. A clipped line suffix cannot be recovered with line offsets. Images return native image attachments, resized to inline limits; offset/limit apply only to text. In CodeMode use await show(result.ref) to display the image; do not print shell base64. For text writes/edits pass snapshot: result.details.snapshot (the SHA-256 hash); result.ref is only a display reference, never a file snapshot." + workspace
           : "Operate directly inside the authorized sandbox workspace. Before overwriting or exact-text editing, use const r = await tools.read({path}); then pass snapshot: r.details.snapshot to write/edit, including inside file_batch. Never pass r.ref. New-file write needs no snapshot. A stale hash requires another read and reconciliation before retry. Protected .git and .sp metadata remain read-only. Batch failure can leave completed operations in place." + workspace,
         async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },
       };
@@ -127,7 +129,8 @@ export class WorkspaceSandboxTools {
     check();
     const note = reply.execution && reply.execution.exitCode !== 0 ? await this.failureNote(reply, ctx) : "";
     return { isError: !reply.ok, content: [{ type: "text" as const, text: (reply.text || "(no output)") + note }],
-      details: { sandbox: true, snapshot: reply.snapshot, execution: reply.execution, shellExecution: shellFacts(reply, cwd) } };
+      details: { sandbox: true, snapshot: reply.snapshot, read: reply.read, search: reply.search,
+        execution: reply.execution, shellExecution: shellFacts(reply, cwd) } };
   }
   /** One dialog per recognized network command while offline; consent lasts for the session. */
   private async requestNetwork(ctx: ExtensionContext, network: string, command: string, signal: AbortSignal): Promise<void> {
@@ -173,7 +176,7 @@ export class WorkspaceSandboxTools {
       const image = reply.image, artifact = image?.artifact;
       needImage(name === "read" && !reply.execution && artifact
         && typeof image.mimeType === "string" && typeof artifact.sha256 === "string" && BASELINE_PATTERN.test(artifact.sha256)
-        && Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= 16 * 1024 * 1024, "Invalid read image envelope");
+        && Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= IMAGE_LIMIT, "Invalid read image envelope");
       const bytes = (await this.backend.candidate(artifact))!; check();
       needImage(detectSupportedImageMimeType(bytes.subarray(0, IMAGE_TYPE_SNIFF_BYTES)) === image.mimeType, "Image signature mismatch");
       // Reuse native read processing over authenticated MXC output; never reopen the source path on the host.

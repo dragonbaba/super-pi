@@ -14,7 +14,7 @@ for (const name of ["windows-runtime", "session-sandbox.js", "session-sandbox.js
     if (path.dirname(target) !== sandbox) throw new Error("Unexpected retired runtime path");
     fs.rmSync(target, { recursive: true, force: true });
 }
-for (const relative of ["core/sandbox/mxc-file-worker.mjs", "core/sandbox/mxc-toolchains.mjs", "core/sandbox/mxc-toolchains.d.mts",
+for (const relative of ["core/sandbox/mxc-file-worker.mjs", "core/sandbox/mxc-file-limits.mjs", "core/sandbox/mxc-file-limits.d.mts", "core/sandbox/mxc-toolchains.mjs", "core/sandbox/mxc-toolchains.d.mts",
     "utils/image-signature.mjs", "utils/image-signature.d.mts"]) {
     const destination = path.join(root, "dist", relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
