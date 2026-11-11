@@ -106,7 +106,7 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
 }
 function validateMutationFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
   need(reply.requiresVerification === undefined || reply.requiresVerification === true && !reply.ok && reply.phase === "mutation"
-    && (operation === "edit" || operation === "write" || operation === "file_batch"), "Invalid publication verification fact");
+    && (operation === "edit" || operation === "write" || operation === "move" || operation === "file_batch"), "Invalid publication verification fact");
   if (operation === "edit" || operation === "write") {
     need(reply.ok ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid mutation snapshot");
   } else if (operation !== "read") need(reply.snapshot === undefined, "Unexpected mutation snapshot");

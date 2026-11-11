@@ -119,6 +119,13 @@ is not a source parser or Promise monkey patch, and adds no command restrictions
 After-result observation provenance preserves the original native mutation receipt.
 MXC post-publication verification failures carry requiresVerification and no new
 hash, so catching them cannot commit store writes.
+Uncertainty starts when an exclusive new-file open creates the destination, not
+after its write/stat/close succeeds. Rename publication, incomplete link-move and
+retained staged candidates retain verification requirements; pre-creation, stale
+hash and occupied-destination refusals remain recoverable. The controlled worker
+fault matrix covers partial ENOSPC writes, stat/close failures, partial batches
+with successful prefix hashes and cleanup failures (61 worker/backend/controller
+cases passed); it does not claim a real disk-exhaustion isolation experiment.
 Progress-drain observation failures keep the original execution outcome alongside
 their own cause. Mutation-call journal failures latch the invocation and exact
 child ID; native batches aggregate item verification requirements. Unobserved

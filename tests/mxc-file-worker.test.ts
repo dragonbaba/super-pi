@@ -47,6 +47,50 @@ for(const replacement of [false,true]) test(`MXC publication verification refuse
   assert.equal(fs.readFileSync(file,"utf8"),replacement?"new":"external");assert.deepEqual(fs.readdirSync(f.input),["source"]);
 });
 
+for(const stage of ["write","stat","close"] as const)test(`MXC new-file ${stage} failure retains uncertainty after creation`,t=>{
+  const f=mxcFileFixture(t),io=Object.create(fs);let written=false,closed=false;
+  io.writeFileSync=(fd:any,content:any)=>{if(stage==="write"){fs.writeSync(fd,"partial");throw Object.assign(new Error("disk full"),{code:"ENOSPC"});}fs.writeFileSync(fd,content);written=true;};
+  io.fstatSync=(fd:number,options:any)=>{if(stage==="stat"&&written)throw new Error("publication stat failed");return fs.fstatSync(fd,options);};
+  io.closeSync=(fd:number)=>{fs.closeSync(fd);if(stage==="close"&&written&&!closed){closed=true;throw new Error("publication close failed");}};
+  const reply=f.invoke("write",{path:"new",content:"complete"},"sandbox-write",io);
+  assert.equal(reply.ok,false);assert.equal(reply.requiresVerification,true);assert.equal(reply.snapshot,undefined);assert.equal(reply.noEffects,false);
+  assert.equal(fs.readFileSync(path.join(f.input,"new"),"utf8"),stage==="write"?"partial":"complete");
+});
+
+test("MXC pre-creation and stale-hash refusals stay recoverable",t=>{
+  const f=mxcFileFixture(t),io=Object.create(fs);
+  io.openSync=()=>{throw Object.assign(new Error("creation denied"),{code:"EACCES"});};
+  const denied=f.invoke("write",{path:"denied",content:"none"},"sandbox-write",io);
+  assert.equal(denied.ok,false);assert.equal(denied.requiresVerification,undefined);assert.equal(fs.existsSync(path.join(f.input,"denied")),false);
+  fs.writeFileSync(path.join(f.input,"existing"),"old");
+  const stale=f.invoke("write",{path:"existing",snapshot:"0".repeat(64),content:"bad"});
+  assert.equal(stale.ok,false);assert.equal(stale.requiresVerification,undefined);assert.equal(fs.readFileSync(path.join(f.input,"existing"),"utf8"),"old");
+  fs.writeFileSync(path.join(f.input,"occupied"),"destination");
+  const conflict=f.invoke("move",{path:"existing",destination:"occupied"});
+  assert.equal(conflict.ok,false);assert.equal(conflict.requiresVerification,undefined);assert.equal(fs.readFileSync(path.join(f.input,"occupied"),"utf8"),"destination");
+});
+
+test("MXC partial batch creation retains successful hashes and marks uncertain publication",t=>{
+  const f=mxcFileFixture(t),io=Object.create(fs);let writes=0;
+  io.writeFileSync=(fd:any,content:any)=>{if(++writes===2){fs.writeSync(fd,"partial");throw new Error("disk full");}fs.writeFileSync(fd,content);};
+  const reply=f.invoke("file_batch",{operations:[{operation:"write",path:"first",content:"one"},{operation:"write",path:"second",content:"two"},{operation:"write",path:"third",content:"three"}]},"sandbox-write",io);
+  assert.equal(reply.ok,false);assert.equal(reply.requiresVerification,true);
+  assert.deepEqual(reply.items.map((item:any)=>item.status),["succeeded","unknown","not_started"]);
+  assert.match(reply.items[0].snapshot,/^[a-f0-9]{64}$/);assert.equal(reply.items[1].snapshot,undefined);
+  assert.equal(fs.readFileSync(path.join(f.input,"first"),"utf8"),"one");assert.equal(fs.readFileSync(path.join(f.input,"second"),"utf8"),"partial");assert.equal(fs.existsSync(path.join(f.input,"third")),false);
+});
+
+test("MXC partial link-move and retained staged candidates require verification",t=>{
+  const f=mxcFileFixture(t);fs.writeFileSync(path.join(f.input,"source"),"old");
+  const moveIO=Object.create(fs);moveIO.unlinkSync=()=>{throw new Error("source removal failed");};
+  const moved=f.invoke("move",{path:"source",destination:"destination"},"sandbox-write",moveIO);
+  assert.equal(moved.ok,false);assert.equal(moved.requiresVerification,true);assert.equal(fs.readFileSync(path.join(f.input,"destination"),"utf8"),"old");
+  const snapshot=f.invoke("read",{path:"source"}).snapshot,stageIO=Object.create(fs);
+  stageIO.writeFileSync=()=>{throw new Error("staged write failed");};stageIO.unlinkSync=()=>{throw new Error("candidate cleanup failed");};
+  const staged=f.invoke("write",{path:"source",snapshot,content:"new"},"sandbox-write",stageIO);
+  assert.equal(staged.ok,false);assert.equal(staged.requiresVerification,true);assert.equal(fs.readFileSync(path.join(f.input,"source"),"utf8"),"old");
+});
+
 test("MXC files update the workspace, retain dependencies and reject stale snapshots", t => {
   const f = mxcFileFixture(t);
   for (const name of ["ordinary.txt", ".venv/installed.txt", "target/output.txt", "__pycache__/cache.txt", "node_modules/local.txt"]) {

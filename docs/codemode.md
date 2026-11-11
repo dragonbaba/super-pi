@@ -25,6 +25,8 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 新建文件的 MXC `write` 不带 snapshot，成功后同样返回新哈希。`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时读取并核对内容，不能忽略版本检查。MXC 跨调用按内容哈希表示版本，同内容的外部替换沿用既有语义；本次修改期间的固定身份和内容检查仍生效。`file_batch` 的 `details.items` 逐项返回 succeeded/unknown/not_started 与成功项的新哈希；成功项不回滚，失败或不确定项没有新哈希，不自动重放。
 
+目标已创建后的写入、stat、关闭或发布校验失败，move 已产生目标但未完成源删除，或临时候选未能清理时，MXC 返回 `requiresVerification:true`。这些不确定修改不能靠捕获异常变成可提交 store 的普通部分完成；先核对当前文件。创建前拒绝、旧哈希和目标冲突等明确未进入发布的失败仍可正常处理。
+
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
 
