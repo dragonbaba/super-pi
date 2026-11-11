@@ -28,6 +28,7 @@ const refs: WeakRef<object>[] = [], startupMs: number[] = [], firstMs: number[] 
 let workersStarted = 0, workersStopped = 0, childCalls = 0, progress = 0, ledgerPending = 0;
 const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 const browserRouting = process.argv.includes("--browser-routing");
+const handledFailures = process.argv.includes("--handled-failures");
 let registrationApi: any;
 let loader: DefaultResourceLoader | undefined = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noExtensions: true, noContextFiles: true,
   noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: browserRouting ? [toolClassification]
@@ -46,7 +47,8 @@ async function cycle() {
   assert.equal(owner.descriptors, initialDescriptors, "unchanged catalog reuses descriptor identity");
   let request = 0;
   session.agent.streamFunction = () => {
-    const code = request++ === 0 ? 'for(let i=0;i<10;i++) await tools.read({path:"read.txt"}); await show((await tools.read({path:"read.txt"})).ref);store("n",1)' : undefined;
+    const code = request++ === 0 ? 'for(let i=0;i<10;i++) await tools.read({path:"read.txt"}); await show((await tools.read({path:"read.txt"})).ref);store("n",1)'
+      + (handledFailures ? ';for(let i=0;i<8;i++){try{await tools.read({path:"missing-"+i})}catch{}}' : '') : undefined;
     const result: any = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage, timestamp: request,
       content: code ? [{ type: "toolCall", id: `script-${request}`, name: "codemode", arguments: { code } }] : [{ type: "text", text: "done" }], stopReason: code ? "toolUse" : "stop" };
     const stream = new AssistantMessageEventStream(); stream.push({ type: "done", reason: result.stopReason, message: result }); return stream;
@@ -58,7 +60,7 @@ async function cycle() {
   try {
     let begin = performance.now(); await session.prompt("Read bounded fixture"); firstMs.push(performance.now() - begin);
     request = 0; begin = performance.now(); await session.prompt("Read again"); warmMs.push(performance.now() - begin);
-    for (const result of session.messages) if (result.role === "toolResult") assert.equal(result.isError, false);
+    for (const result of session.messages) if (result.role === "toolResult") assert.equal(result.isError, false, JSON.stringify(result.content[0]));
     assert.equal(owner.current, undefined); assert.equal(owner.pendingStore, undefined);
     ledgerPending += (session as any)._evidenceCompletedReads?.size ?? 0;
     assert.equal(session.agent.state.pendingToolCalls.size, 0);
@@ -317,9 +319,9 @@ try {
   loader = undefined;
   for (let i = 0; i < 8; i++) { await nextTask(); gc(); }
   let retained = 0; for (const ref of refs) if (ref.deref()) retained++;
-  assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, 242); assert.equal(workersStarted, 11); assert.equal(workersStopped, 11);
+  assert.equal(retained, 0); assert.equal(ledgerPending, 0); assert.equal(childCalls, handledFailures ? 418 : 242); assert.equal(workersStarted, 11); assert.equal(workersStopped, 11);
   startupMs.sort(compare); firstMs.sort(compare); warmMs.sort(compare); sites.sort((a, b) => b.bytes - a.bytes);
-  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", browserRouting, node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
+  process.stdout.write(JSON.stringify({ benchmark: "codemode-session", browserRouting, handledFailures, node: process.version, platform: process.platform, sampledCycles: 10, excludedWarmupCycles: 1,
     startupMedianMs: startupMs[5], startupP95Ms: startupMs[9], firstBatchMedianMs: firstMs[5], firstBatchP95Ms: firstMs[9], warmBatchMedianMs: warmMs[5], warmBatchP95Ms: warmMs[9],
     childCalls, progress, workersStarted, workersStopped, trackedReferences: refs.length, retainedAfterGc: retained, pendingEvidenceAfterTurn: ledgerPending,
     sampledHostBytes: bytes, leadingSites: sites.slice(0, 5), coverage: "real SDK, built-in reads, AgentSession policy/hooks/results/store, Worker, projection and disposal; offline provider; excludes UI, worker heap and disk sessions" }) + "\n");

@@ -25,6 +25,10 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 新建文件的 MXC `write` 不带 snapshot，成功后同样返回新哈希。`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时读取并核对内容，不能忽略版本检查。MXC 跨调用按内容哈希表示版本，同内容的外部替换沿用既有语义；本次修改期间的固定身份和内容检查仍生效。`file_batch` 的 `details.items` 逐项返回 succeeded/unknown/not_started 与成功项的新哈希；成功项不回滚，失败或不确定项没有新哈希，不自动重放。
 
+目标已创建后的写入、stat、关闭或发布校验失败，move 已产生目标但未完成源删除，或临时候选未能清理时，MXC 返回 `requiresVerification:true`。这些不确定修改不能靠捕获异常变成可提交 store 的普通部分完成；先核对当前文件。创建前拒绝、旧哈希和目标冲突等明确未进入发布的失败仍可正常处理。
+
+文件修改派发后若回执传输丢失、JSON 损坏、身份不匹配或快照事实无效，也按需要核验处理：可能已经发生修改，不能当作“未执行”或自动重放。派发前的明确配置/校验失败，以及工作进程返回的有效拒绝事实保留原有处理方式。
+
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
 
@@ -36,7 +40,7 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 一张父卡片对应一次 Codemode 调用，树中每一行对应一次子工具调用。`Child calls: 2` 表示本脚本调用了两个子工具，并不表示同一命令执行了两遍。折叠时显示工具、路径或命令、状态和耗时；失败输出保留可见，展开后显示脚本和子结果。相同输出无法唯一归属某个调用时保留在脚本输出区。
 
-独立任务可以在同一脚本中安排；有依赖的操作按顺序 await。宿主只对可信读取允许最多 4 个并发，写入顺序执行。扩展覆盖的工具不因自己声称“只读”就自动得到并发权限。
+多个独立读取或搜索、且中途不需要模型判断时，适合一个脚本用 `Promise.allSettled` 发起并检查每项。单调用照常使用；有依赖的修改 → 运行 → 检查按顺序 await，失败先核对实际状态。同一文件的修改优先合成一次 `edits[]`。宿主只对可信读取允许最多 4 个并发，写入顺序执行；MXC 保持自己的串行 owner。扩展覆盖的工具不因自己声称“只读”就自动得到并发权限。
 
 ```js
 const results = await Promise.allSettled([
@@ -45,34 +49,37 @@ const results = await Promise.allSettled([
 ]);
 for (const result of results) {
   if (result.status === "fulfilled") await show(result.value.ref);
+  else text(String(result.reason));
 }
 ```
 
 ## 读取与修改
 
-受保护的编辑要求前一个**已完成轮次**里对模型可见的原生读取。先完成读取脚本，再依据实际结果提出修改：
+已有文件第一次编辑用 `read` 获取可靠原文和相应版本，可在同一个脚本内读取、计算并编辑，不要求 `show()` 或额外模型轮次。权限核验独立于文件版本：
 
 ```js
-// 第一轮：让模型看到将要修改的范围。
-await show((await tools.read({ path: "example.txt" })).ref);
-```
-
-```js
-// 后一轮：仅当此前读到的内容确实包含 oldText，且文件身份仍有效。
+const original = await tools.read({ path: "example.txt" });
+// 依据 original 的实际内容选择 oldText，提交时仍验证文件身份与哈希。
 await tools.edit({
   path: "example.txt",
   edits: [{ oldText: "old value", newText: "new value" }],
 });
-await show((await tools.read({ path: "example.txt" })).ref);
+// 自己干净提交的版本可继续精确文本修改；新行锚需要对应的 read。
 ```
 
-同一脚本里的首次 read→edit 不能替代前轮读取。隐藏读取、用 text() 打印的复制内容、伪造引用、旧分支引用以及被模型预算截断的范围也不能授权修改；需要重新显示足够小的范围。
+小文件可整份读，大文件读取足够的连续函数或段落，尊重实际窗口和长行边界。搜索、计数、同时看几个片段也可使用适当 shell 命令；shell 读取不自动签发原生文件修订。已有且无已知变更的内容、自己的干净提交版本无需预防性重读；冲突、淘汰或延续不可用时再读。伪造 ref、旧分支 ID 和未经读取的新行锚不能作为版本证据。
 
 脚本内允许再次调用已经结束的读取或检查，用于变更后验证；并行重叠的相同子调用仍受去重约束。失败循环、原生同批重复调用和变更保护不会因此关闭。
 
 ## 失败与结果记录
 
-子调用失败、被拒绝或被取消，会使父调用失败，即使脚本使用了 catch 或 Promise.allSettled。多步操作不构成事务，已经完成的副作用不会回滚。
+普通子失败默认抛出。`try/catch`、`Promise.allSettled` 正常处理失败并让脚本正常结束后，父调用为 `isError:false`，使用 `CODEMODE_PARTIAL`，逐项保留原始失败和 succeeded/failed/handledFailures/unhandled 计数。`callTool(name,args,{allowFailure:true})` 则直接返回真实 `isError`，仍需检查。全部子调用失败但已处理时，只表示脚本完成，不宣称子任务成功。
+
+未捕获/丢弃的失败 Promise、未结束子调用、取消、超时、记录或观察失败仍使脚本或运行失败；需要用户输入的暂停保留原控制效果。判断依据是 VM 拒绝通知与宿主调用身份，没有新增源码解析或 Promise 改写。未捕获错误终止依赖链，但已发出的兄弟调用和 `finally` 可能已经执行；以实际回执为准，不能笼统称“后续没有执行”。多步操作不构成事务，成功副作用不回滚、不自动重放。
+
+`describeTools`、`show` 等宿主辅助调用也返回 Promise；结束时仍未结算或未正常处理的辅助失败会阻止 store 提交，并报告具体调用。辅助调用中的 `callTool` 按原调用身份与子事实匹配，不重复计数。进度观察、变更调用日志和批次项目中的核验要求同样保留系统失败语义，不因脚本捕获而清除。
+
+store 只在结果 hook 和全部关键结果消息观察成功后提交。最终观察或持久化失败会停止运行，保留旧 store；工具已经完成的事实不被改写为未执行。持久化发生在已观察的结果之后，若此时失败，Agent 另行报告运行错误，下一次加载仍使用旧状态。树状卡片保留失败子行并显示“completed with failures”；父调用完成不清空子失败历史。
 
 Shell 保留真实进程状态。grep 退出 1 通常表示无匹配；只有在该具体查询的语义中明确处理这个状态，才能把空结果作为正常业务结果。不能统一忽略退出 1，也不能追加无条件成功命令来掩盖网络或写入错误。
 

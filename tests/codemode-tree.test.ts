@@ -22,6 +22,15 @@ function parent(calls: any[], text: string[], failed = false) {
 		details: { codemode: { version: 1, calls, summaryDigest: codemodeTextDigest(summary) } } };
 }
 
+test("handled parent completion keeps failed child rows and a partial completion title",()=>{
+	const tree=new CodemodeTreeComponent();
+	try {
+		const calls=[fact("p:1","read","read succeeded"),{...fact("p:2","read","missing file",true),failureHandled:true}];
+		tree.updateParent("await Promise.allSettled(reads)",parent(calls,[]),false,false,false);
+		assert.match(plain(tree),/completed with failures/);assert.match(plain(tree),/missing file/);
+	} finally {releaseComponentRenderCaches(tree);}
+});
+
 test("tree groups two calls, decodes exact content JSON and renders each output once", () => {
 	const tree = new CodemodeTreeComponent();
 	tree.startChild("p:1", "bash", { command: "echo first" });

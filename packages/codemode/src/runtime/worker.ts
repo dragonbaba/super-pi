@@ -46,6 +46,10 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 	const budget = new BridgeBudget();
 	let terminal: WorkerToHostMessage | undefined;
 	let timers: Map<number, ReturnType<typeof setTimeout>> | undefined;
+	// Error-path primitives only, bounded by the existing host-call limit. The
+	// private prelude owns errors until VM disposal, preventing identity reuse.
+	let origins: Map<number, { id: number; unhandled: number }> | undefined;
+	let unhandledRejections = 0, uncaughtCallId = 0;
 	const interrupt = new Int32Array(data.interrupt);
 	let memory: { readonly buffer: ArrayBufferLike } | undefined;
 	const captureMemory = (value: { readonly buffer: ArrayBufferLike }) => {
@@ -67,6 +71,11 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 	}
 	const vm = await QuickJS.create({
 		wasm: data.wasm,
+		onUnhandledRejection(_promise: JSValueHandle, reason: JSValueHandle, handled: boolean) {
+			unhandledRejections += handled ? -1 : 1;
+			const origin = origins?.get(reason.identity);
+			if (origin) origin.unhandled += handled ? -1 : 1;
+		},
 		memoryLimit: data.memoryLimitBytes,
 		// Without a guard, deep recursion overflows the wasm stack and traps instead of throwing a
 		// catchable RangeError.
@@ -77,11 +86,21 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 	let onMessage: ((message: unknown) => void) | undefined;
 	function finish(): void {
 		if (!terminal) return;
+		if (terminal.type === "done") {
+			if (terminal.ok && unhandledRejections > 0) terminal = { type: "done", ok: false,
+				error: JSON.stringify({ name: "Error", message: "Codemode ended with unhandled Promise rejections" }), reusable: false };
+			if (origins) {
+				const handledCallIds: number[] = [];
+				for (const origin of origins.values()) if (origin.unhandled === 0 && origin.id !== uncaughtCallId) handledCallIds.push(origin.id);
+				terminal.handledCallIds = handledCallIds;
+			}
+		}
 		if (onMessage) port.removeListener("message", onMessage);
 		onMessage = undefined;
 		if (timers) { for (const timer of timers.values()) clearTimeout(timer); timers.clear(); timers = undefined; }
 		// Never dispose from a VM callback: wait until run/delivery and its job drain unwind.
 		if (terminal.type === "done") terminal.reusable = memory!.buffer.byteLength <= 64 * 1024 * 1024;
+		if (origins) { origins.clear(); origins = undefined; }
 		vm.dispose();
 		memory = undefined;
 		port.postMessage(terminal);
@@ -89,9 +108,17 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 	}
 	try {
 
-		// Called from the prelude with primitives only.
+		// The private prelude supplies primitives and original host-rejection errors.
 		const bridge = vm.newFunction("bridge", (kind, a, b, c) => {
 			switch (kind.toString()) {
+				case "rejection": {
+					origins ??= new Map();
+					origins.set(b.identity, { id: a.toNumber(), unhandled: 0 });
+					break;
+				}
+				case "uncaught":
+					uncaughtCallId = origins?.get(a.identity)?.id ?? 0;
+					break;
 				case "timer":
 					timers ??= new Map();
 					timers.set(a.toNumber(), setTimeout(fireTimer, b.toNumber(), a.toNumber()));

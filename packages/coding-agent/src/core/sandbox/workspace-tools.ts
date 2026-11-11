@@ -126,7 +126,7 @@ export class WorkspaceSandboxTools {
     catch (error) {
       if (error instanceof WorkspaceOperationError) return { isError: true, content: [{ type: "text" as const,
         text: command !== undefined && error.reply.phase === "execution" ? error.message + await this.failureNote(error.reply, ctx) : error.message }],
-        details: { sandbox: true, phase: error.reply.phase, items: error.reply.items, execution: error.reply.execution,
+        details: { sandbox: true, phase: error.reply.phase, items: error.reply.items, requiresVerification: error.reply.requiresVerification, execution: error.reply.execution,
           shellExecution: shellFacts(error.reply, cwd, error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), noEffects: error.reply.noEffects } };
       throw error;
     }

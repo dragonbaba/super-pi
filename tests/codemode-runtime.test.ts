@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getEventListeners } from "node:events";
+import { Session as InspectorSession } from "node:inspector/promises";
+import { setImmediate as tick } from "node:timers/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { CodemodeSandbox } from "../packages/codemode/src/runtime/host.ts";
 import { WorkerPool } from "../packages/codemode/src/runtime/worker-pool.ts";
@@ -10,6 +12,82 @@ import { parseCodemodeSource } from "../packages/codemode/src/source.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
 import { assignCodemodeIdentifiers, renderToolSignature } from "../packages/codemode/src/declarations.ts";
+
+test("runtime retains unobserved global failures and pending helper cancellation without counting them as tools",async()=>{
+	let pendingSignal:AbortSignal|undefined;
+	const sandbox=new CodemodeSandbox({reuseWorker:true,globals:[
+		{name:"helperFailure",execute(){throw new Error("helper diagnostic");}},
+		{name:"helperPending",execute(_args,context){pendingSignal=context.signal;return new Promise(()=>{});}},
+	]});
+	try {
+		const ignored=await sandbox.execute('helperFailure({});store("notProof",true);');
+		assert.equal(ignored.calls.length,0);assert.deepEqual(ignored.unobservedGlobals,[{id:1,name:"helperFailure",status:"error",error:"helper diagnostic"}]);
+		const caught=await sandbox.execute('try{await helperFailure({})}catch{}');
+		assert.equal(caught.ok,true);assert.equal(caught.unobservedGlobals,undefined);
+		const pending=await sandbox.execute('helperPending({});');
+		assert.deepEqual(pending.unobservedGlobals,[{id:1,name:"helperPending",status:"cancelled"}]);assert.equal(pendingSignal?.aborted,true);
+	} finally {await sandbox.close();}
+	assert.equal(sandbox.stats.activeExecutions,0);assert.equal(sandbox.stats.workersStarted,sandbox.stats.workersStopped);
+});
+
+test("handled helper error metadata releases while its sandbox remains reusable",async t=>{
+	const inspector=new InspectorSession();inspector.connect();t.after(()=>inspector.disconnect());
+	async function exercise(){
+		let entered!:()=>void,release!:()=>void;
+		const started=new Promise<void>(resolve=>{entered=resolve;});
+		const gate=new Promise<void>(resolve=>{release=resolve;});
+		const refs:WeakRef<object>[]=[];
+		const sandbox=new CodemodeSandbox({reuseWorker:true,globals:[
+			{name:"failure",execute(){const error=new Error("metadata lifetime");refs.push(new WeakRef(error));throw error;}},
+			{name:"gate",execute(){entered();return gate;}},
+		]});
+		const pending=sandbox.execute('try{await failure()}catch{}await gate();');await started;
+		const execution=(sandbox as any).running.values().next().value;
+		assert.equal(execution.failedGlobals.length,1);
+		refs.push(new WeakRef(execution),new WeakRef(execution.failedGlobals),new WeakRef(execution.failedGlobals[0]));
+		release();const result=await pending;assert.equal(result.ok,true);assert.equal(result.unobservedGlobals,undefined);
+		assert.equal(execution.failedGlobals,undefined);assert.equal(sandbox.stats.activeExecutions,0);
+		return {sandbox,refs};
+	}
+	const {sandbox,refs}=await exercise();
+	try{
+		for(let index=0;index<4;index++){await tick();await inspector.post("HeapProfiler.collectGarbage");}
+		assert.equal(refs.filter(ref=>ref.deref()).length,0);
+		t.diagnostic(JSON.stringify({helperMetadataReferences:refs.length,retainedAfterCompletion:0,liveReusableSandbox:true}));
+	}finally{await sandbox.close();}
+});
+
+test("native VM rejection handling distinguishes caught, propagated and discarded host failures", async () => {
+	const ids: number[] = [];
+	const sandbox = new CodemodeSandbox({ reuseWorker: true, tools: [{ name: "fail", execute(_args, context) {
+		ids.push(context.callId); throw new Error("original child diagnostic");
+	} }] });
+	try {
+		for (const [code, ok, handled] of [
+			['try { await tools.fail({}) } catch {} store("ok",1)', true, true],
+			['await Promise.allSettled([tools.fail({})]); store("ok",1)', true, true],
+			['const p=tools.fail({}); await new Promise(r=>setTimeout(r,20)); await p.catch(()=>{});', true, true],
+			['try { await tools.fail({}) } catch(e) { throw e }', false, false],
+			['void tools.fail({}).then(()=>{}); await new Promise(r=>setTimeout(r,20));', false, false],
+			['try { await tools.fail({}) } catch {} throw new Error("different script error")', false, true],
+		] as const) {
+			const result = await sandbox.execute(code);
+			assert.equal(result.ok, ok, JSON.stringify(result));
+			assert.equal(result.calls.length, 1);
+			assert.equal(result.calls[0]!.id, 1);
+			assert.equal(result.calls[0]!.status, "error");
+			assert.equal(result.calls[0]!.failureHandled, handled, JSON.stringify(result));
+			assert.deepEqual(result.handledCallIds ?? [], handled ? [1] : []);
+		}
+		assert.deepEqual(ids, [1, 1, 1, 1, 1, 1]);
+		const repeated=await sandbox.execute('for(let i=0;i<256;i++){try{await tools.fail({})}catch{}}');
+		assert.equal(repeated.ok,true,JSON.stringify(repeated));assert.equal(repeated.calls.length,256);
+		assert.equal(repeated.handledCallIds?.length,256,"caught error identities must not collapse when delivery scopes unwind");
+		assert.ok(repeated.calls.every(call=>call.failureHandled));
+	} finally { await sandbox.close(); }
+	assert.equal(sandbox.stats.activeExecutions, 0);
+	assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped);
+});
 
 test("pooled scripts keep fresh VMs, catalogs, quotas and fenced late tool results", async () => {
 	let releaseLate!: (value: unknown) => void;

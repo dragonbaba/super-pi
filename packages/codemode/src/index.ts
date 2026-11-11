@@ -22,6 +22,7 @@ export {
 } from "./source.ts";
 export type {
 	CodemodeCall,
+	CodemodeUnobservedGlobal,
 	CodemodeCallStatus,
 	CodemodeError,
 	CodemodeErrorKind,

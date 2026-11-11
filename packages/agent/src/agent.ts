@@ -299,6 +299,8 @@ class AgentEventDeliveryDispatcher extends EventDeliveryDispatcher<AgentEvent, s
 export class Agent {
 	/** Ownership cleanup after failed critical tool observation; IDs only, no result retention. */
 	onToolObservationFailure?: (toolCallId: string, parentToolCallId?: string) => void;
+	/** Terminal tool-result boundary, after every critical subscriber has succeeded. */
+	onToolResultObserved?: (toolCallId: string, isError: boolean) => void;
 	private _state: MutableAgentState;
 	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
 	private readonly pendingChangedToolUpdates = new Map<string, PendingChangedToolUpdate>();
@@ -802,6 +804,7 @@ export class Agent {
 			}
 			await this.eventDelivery.publishCritical(event);
 			if (this.activeRun?.abortController.signal.aborted) this.revokeToolObservation(event);
+			if (event.type === "message_end" && event.message.role === "toolResult") this.onToolResultObserved?.(event.message.toolCallId, event.message.isError);
 		} catch (error) {
 			this.revokeToolObservation(event);
 			throw error;

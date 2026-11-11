@@ -1,5 +1,7 @@
 # Super Pi 默认 Codemode 实施方案
 
+历史实施方案：下方分支、提交状态和验收数字仅适用 2026-10 基线，不代表当前仓库状态。当前使用规则及后续交付见 [Codemode 使用说明](codemode.md)和 [A/B/C 实施记录](codemode-batch-revision-image-budget-plan.md)。
+
 本方案把 Codemode 作为 Super Pi 正式默认的工具调用方式，同时补齐官方 Pi 1.0.0 中适用的正确性、工具集成和性能改进。交付物是经过检查的本地代码、测试与 PR 分组材料。提交、推送、创建 PR 和合并由用户另行决定。
 
 ## 基准与范围

@@ -36,8 +36,8 @@ export type WorkerToHostMessage =
 	| { type: "idle"; received: number }
 	| { type: "output"; item: CodemodeOutputItem }
 	/** `writes` is a JSON array of `[key, json]` for `store()` and `[key]` for deletions. */
-	| { type: "done"; ok: true; value: string | undefined; writes: string; reusable?: boolean }
-	| { type: "done"; ok: false; error: ScriptErrorJson; reusable?: boolean }
+	| { type: "done"; ok: true; value: string | undefined; writes: string; reusable?: boolean; handledCallIds?: number[] }
+	| { type: "done"; ok: false; error: ScriptErrorJson; reusable?: boolean; handledCallIds?: number[] }
 	/** The VM failed outside the script's control, for example a wasm trap. */
 	| { type: "crash"; message: string };
 
@@ -60,6 +60,13 @@ export function isWorkerToHostMessage(value: unknown): value is WorkerToHostMess
 		}
 		case "done":
 			if (message.reusable !== undefined && typeof message.reusable !== "boolean") return false;
+			if (message.handledCallIds !== undefined) {
+				if (!Array.isArray(message.handledCallIds) || message.handledCallIds.length > MAX_CALLS) return false;
+				for (let index = 0; index < message.handledCallIds.length; index++) {
+					const id = message.handledCallIds[index];
+					if (!Number.isSafeInteger(id) || id < 1 || id > MAX_CALLS || message.handledCallIds.indexOf(id) !== index) return false;
+				}
+			}
 			return message.ok === true ? typeof message.writes === "string" &&
 			(message.value === undefined || typeof message.value === "string") : message.ok === false && typeof message.error === "string";
 		case "crash": return typeof message.message === "string";

@@ -10,6 +10,7 @@ import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARC
 const DIRECTORY_OPTIONS = Object.freeze({ bufferSize: DIRECTORY_READ_BUFFER });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
 const VERIFY_BYTES = 64 * 1024;
+let unverifiedPublication = false;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, message) { if (!value) throw new Error(message); }
 function local(root, name, mutation = false) {
@@ -202,15 +203,17 @@ function mutate(root, operation, input, maxWriteBytes) {
   if (operation === 'move') {
     const destination = local(root, input.destination, true);
     need(fs.lstatSync(target).isFile(), 'Only files may be moved');
-    fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination); fs.unlinkSync(target); return;
+    fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination);
+    unverifiedPublication = true; fs.unlinkSync(target); unverifiedPublication = false; return;
   }
   need(operation === 'write' || operation === 'edit', 'Unsupported file operation');
   if (operation === 'write' && !fs.existsSync(target)) {
     need(input.snapshot == null && typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Invalid new-file write');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const fd = fs.openSync(target, 'wx'); let identity;
+    unverifiedPublication = true; // The destination exists even if writing/stat/close subsequently fails.
     try { fs.writeFileSync(fd, input.content); identity = fs.fstatSync(fd, { bigint: true }); } finally { fs.closeSync(fd); }
-    return publishedSnapshot(target, identity, input.content);
+    return verifiedPublication(target, identity, input.content);
   }
   // Read a pinned version, then replace atomically; a failed temporary write leaves the original intact.
   let fd = fs.openSync(target, 'r'), temporary;
@@ -241,9 +244,19 @@ function mutate(root, operation, input, maxWriteBytes) {
     need(before.dev === named.dev && before.ino === named.ino && before.size === current.size
       && before.mtimeNs === current.mtimeNs && before.ctimeNs === current.ctimeNs && before.size === named.size
       && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs, 'File changed before write');
+    unverifiedPublication = true;
     fs.renameSync(temporary, target); temporary = undefined;
-    return publishedSnapshot(target, publication, text);
-  } finally { if (fd !== undefined) fs.closeSync(fd); if (temporary) fs.unlinkSync(temporary); }
+    return verifiedPublication(target, publication, text);
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd); }
+    finally { if (temporary) try { fs.unlinkSync(temporary); } catch (error) { unverifiedPublication = true; throw error; } }
+  }
+}
+function verifiedPublication(target, identity, text) {
+  unverifiedPublication = true;
+  const snapshot = publishedSnapshot(target, identity, text);
+  unverifiedPublication = false;
+  return snapshot;
 }
 let request, items, phase = 'request';
 try {
@@ -292,6 +305,7 @@ try {
   }
   console.log(JSON.stringify(reply));
 } catch (error) {
-  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items, error: String(error.message).slice(0, 32768) }));
+  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items,
+    requiresVerification: unverifiedPublication || undefined, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
 }

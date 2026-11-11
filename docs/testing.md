@@ -137,6 +137,19 @@ meaning; a skip is not an executed pass.
 
 ## On-demand performance work
 
+CodeMode handled-failure, revision and publication checks use the real VM/session:
+
+```sh
+node --experimental-strip-types --test tests/codemode-partial-results.test.ts tests/codemode-session.test.ts tests/codemode-runtime.test.ts tests/codemode-hot-paths.test.ts tests/committed-file-revisions.test.ts tests/committed-file-revision-hot-paths.test.ts tests/mxc-file-worker.test.ts tests/mxc-file-facts-backend.test.ts
+node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts --handled-failures
+node --expose-gc --experimental-strip-types scripts/bench/codemode-tree.ts --handled-failures
+```
+
+Point child TMP/TEMP/TMPDIR at an owned native absolute `.task-tmp` directory.
+The session benchmark includes 418 child calls and eight caught failures per
+script; the tree benchmark covers retained rendering after handled completion.
+Both report lifecycle release, and neither replaces provider or isolation acceptance.
+
 Existing commands remain available when their measurements are relevant:
 
 ```sh

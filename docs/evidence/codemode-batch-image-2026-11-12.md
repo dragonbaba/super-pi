@@ -101,6 +101,89 @@ The real InteractiveMode/ProcessTerminal synthetic-I/O lifecycle ran ten cycles:
 input-ready p50/p95 11.38/50.01 ms, mutation 15.41/36.33 ms, and zero remaining tool,
 input and resize owners. These are same-machine observations, not speedup claims.
 
+## C: handled child failures and final observation
+
+QuickJS rejection notifications and host-issued call IDs distinguish handled
+ordinary tool failures from propagated/discarded failures. Exact-text catch and
+allSettled flows can complete with CODEMODE_PARTIAL, original child errors and
+separate succeeded/failed/handled/unhandled counts. Preflight failures have one
+identity; dynamic callTool globals are not counted again as tools. Pending children,
+observer/recording faults, cancellation and required interaction pauses remain
+fatal or paused. Promise.all/finally receipts retain actual completed effects.
+
+The private VM retains at most the existing 256 host-rejection errors until VM
+disposal; the host retains primitive identities/counters only. This prevents caught
+error identities from being reused when delivery scopes unwind. A 256-sequential-
+failure regression verifies that no origins collapse. Native rejection handling
+is not a source parser or Promise monkey patch, and adds no command restrictions.
+After-result observation provenance preserves the original native mutation receipt.
+MXC post-publication verification failures carry requiresVerification and no new
+hash, so catching them cannot commit store writes.
+Uncertainty starts when an exclusive new-file open creates the destination, not
+after its write/stat/close succeeds. Rename publication, incomplete link-move and
+retained staged candidates retain verification requirements; pre-creation, stale
+hash and occupied-destination refusals remain recoverable. The controlled worker
+fault matrix covers partial ENOSPC writes, stat/close failures, partial batches
+with successful prefix hashes and cleanup failures (66 worker/backend/controller
+cases passed); it does not claim a real disk-exhaustion isolation experiment.
+Post-dispatch file RPC transport/JSON/identity/snapshot loss also carries verification
+requirements without inventing a successful receipt; known pre-dispatch errors and
+valid worker refusals keep their original semantics. Faults reproduce actual committed
+file bytes with a lost reply, not just a fabricated tool status.
+Progress-drain observation failures keep the original execution outcome alongside
+their own cause. Mutation-call journal failures latch the invocation and exact
+child ID; native batches aggregate item verification requirements. Unobserved
+helper failures/cancellation carry bounded metadata at completion, with dynamic
+callTool identities matched against existing child facts rather than counted twice.
+
+Store finalization follows every critical tool-result observer. Earlier result
+hooks/end/start failures discard pending writes. A persistence error after observed
+completion stops the Agent run with a separate error and restores the previous
+store; it does not rewrite completed tool execution or replay effects. Result-hook
+vetoes and required pauses retain their control effect. Child failure guards keep
+their ledger, and the TUI displays completed-with-failures without hiding child rows.
+Old mandatory previous-turn reads and caught-parent-failure instructions are retired.
+
+Audited chain: VM caller/settle/rejection notification -> worker bridge -> runtime
+host -> controller -> nested dispatch -> Agent result hooks/critical observers ->
+store/session persistence; Agent progress -> Session -> InteractiveMode -> tree/
+retained layout -> unchanged terminal frame queue. New IDs/booleans occupy existing
+call/fact records. Origin maps/handled-ID arrays are bounded execution/error metadata
+and are released with completion/disposal; no full result/image copy or pool is
+introduced on normal updates. Stable terminal callbacks add no per-progress Promise,
+closure, controller, wrapper, array or Promise tail.
+
+The dispatch/session/batch/event matrix passed 226 cases with one existing platform
+skip; helper error and reusable-owner GC checks released all four tracked error,
+execution and metadata references after four GC cycles. Actual dist MXC acceptance passed 2/2,
+zero skips. Type checking and the 12-package build passed. Real session allocation
+profiling ran 418 children across 22 scripts, eight caught failures per script:
+11 workers started/stopped, 55/55 references released after eight GC cycles, zero
+pending evidence. Ten sampled cycles allocated 37,886,680 host bytes, led by split,
+createContext and V8 API sites; warmed batch p50/p95 was 15.84/16.28 ms. Worker heap
+and disk-session storage are outside this profile.
+
+The 20,000-update delivery profile sampled 1.21 B/message update and
+0.366 B/tool update, with zero new inline closures, wrappers, Promise tails/arrays
+or built-in listener Promises. Coalescing yielded one delivery/snapshot, 503.8452
+B/raw update including existing dispatcher scheduling, controlled-GC heap delta
+714,904 B. The actual retained-tree fixture rendered 4,096 handled-completion frames
+at 1,569.17 sampled B/render (leading retained-item render/layout sites), creating one
+row and one output/failure projection. Disposal released both tracked owners and
+all rows, result references, text and timers; event Promises were zero. These are
+coverage-bounded same-machine measurements, not historical speedup claims.
+The unchanged 20,000-frame queue sampled 112.51 B/frame, with zero new frame
+closures/Promises/controllers/wrappers/string copies and zero active/pending bytes
+or references after flush.
+
+The same real SDK/Responses fixture (read/shell/edit/write, no extensions/context)
+changed promptChars 1,893 -> 2,204 and toolsChars 9,295 -> 9,698: +714 characters,
+estimated tokens 2,797 -> 2,976 using ceil(UTF-16 chars / 4), not a provider tokenizer.
+The replacement guidance covers independent batching, dependent sequences, single
+calls, source revisions and legitimate shell searches/counts/snippets. Automatic
+duplicate-read omission remains evaluation-only: version, window and actual model
+visibility must all agree before any later implementation can suppress source text.
+
 ## Rerun
 
 Use native absolute child TMP/TEMP/TMPDIR under the task's .task-tmp root.
@@ -118,4 +201,7 @@ node --expose-gc --experimental-strip-types scripts/bench/native-files-lifecycle
 node --expose-gc --experimental-strip-types scripts/bench/tui-session-event-allocations.ts --updates 20000 --warmup 2000
 # Actual MXC acceptance: set child SUPERPI_MXC_LIVE=1 and SUPERPI_SANDBOX_USE_DIST=1.
 node --experimental-strip-types --test tests/mxc-workspace-live.test.ts
+node --experimental-strip-types --test tests/codemode-partial-results.test.ts tests/codemode-session.test.ts tests/codemode-runtime.test.ts tests/codemode-hot-paths.test.ts tests/codemode-guardrails.test.ts tests/codemode-tree.test.ts
+node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts --handled-failures
+node --expose-gc --experimental-strip-types scripts/bench/codemode-tree.ts --handled-failures
 ```

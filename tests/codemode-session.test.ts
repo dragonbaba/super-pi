@@ -18,7 +18,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
 import type { InlineExtension, ExtensionFactory, ToolCatalogSnapshot } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
+import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { browserResultText, formatFailure } from "../packages/extensions/browser-use/index.ts";
@@ -110,6 +110,94 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	}
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
+
+test("allSettled native reads retain both successful bodies and commit handled statuses without rereads",async t=>{
+  const f=await fixture(t);
+  writeFileSync(join(f.cwd,"a.txt"),"FIRST_SUCCESS_BODY\n");writeFileSync(join(f.cwd,"b.txt"),"SECOND_SUCCESS_BODY\n");
+  const outcome=await f.run([
+    'const results=await Promise.allSettled([tools.read({path:"a.txt"}),tools.read({path:"missing.txt"}),tools.read({path:"b.txt"})]);for(const r of results){if(r.status==="fulfilled")await show(r.value.ref);else text(String(r.reason))}store("statuses",results.map(r=>r.status));',
+    'text(load("statuses"));',
+  ]);
+  const parent=outcome.results[0]!;assert.equal(parent.isError,false,JSON.stringify(parent));
+  const facts=(parent.details as any).codemode;
+  assert.deepEqual([facts.succeeded,facts.failed,facts.handledFailures,facts.unhandled],[2,1,1,0]);
+  assert.equal(facts.calls.length,3);assert.equal(facts.runtimeCalls.length,3);
+  const next=JSON.stringify(outcome.wires[1]);
+  assert.match(next,/FIRST_SUCCESS_BODY/);assert.match(next,/SECOND_SUCCESS_BODY/);assert.match(next,/missing.txt/);
+  assert.match(JSON.stringify(outcome.results[1]!.content),/fulfilled.*rejected.*fulfilled/);
+});
+
+test("Promise.all failure preserves completed sibling writes and a finally write without replay",async t=>{
+  const f=await fixture(t);
+  const outcome=await f.run(['try {await Promise.all([tools.write({path:"sibling.txt",content:"one"}),tools.read({path:"missing.txt"})]);} finally {await tools.write({path:"finally.txt",content:"two"});}']);
+  const parent=outcome.results[0]!;assert.equal(parent.isError,true);
+  const facts=(parent.details as any).codemode.calls;
+  assert.deepEqual(facts.map((fact:any)=>[fact.toolName,fact.isError]),[["write",false],["read",true],["write",false]]);
+  assert.equal(readFileSync(join(f.cwd,"sibling.txt"),"utf8"),"one");assert.equal(readFileSync(join(f.cwd,"finally.txt"),"utf8"),"two");
+  assert.doesNotMatch(JSON.stringify(parent.content),/subsequent calls (?:did not|were not)|later calls.*not executed/);
+});
+
+for(const boundary of ["tool_execution_end","message_start","message_end"] as const)test(`store waits for final ${boundary} observation`,async t=>{
+  const f=await fixture(t);let pending=true;
+  const unsubscribe=f.session.agent.subscribe(event=>{
+    if(!pending)return;
+    const target=event.type==="tool_execution_end"?event.toolName:(event.type==="message_start"||event.type==="message_end")&&event.message.role==="toolResult"?event.message.toolName:undefined;
+    if(event.type===boundary&&target==="codemode"){pending=false;throw new Error("late observation failure");}
+  });
+  try{await f.run(['store("unobserved",true);']);}finally{unsubscribe();}
+  assert.match(f.session.agent.state.errorMessage??"",/late observation failure/);
+  const next=await f.run(['text(load("unobserved")??null);']);
+  assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+  assert.equal(f.manager.getBranch().filter(e=>e.type==="custom"&&e.customType===CODEMODE_STORE_ENTRY).length,0);
+});
+
+test("a caught child result veto cannot commit store or erase the completed native receipt",async t=>{
+  const veto:InlineExtension=pi=>pi.on("tool_result",event=>event.toolName==="edit"?{isError:true}:undefined);
+  const f=await fixture(t,{},[veto]);
+  const first=await f.run(['await tools.read({path:"file.txt"});try{await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]})}catch{}store("bad",true);']);
+  assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const fact=(first.results[0]?.details as any).codemode.calls.at(-1);
+  assert.equal(fact.systemFailure,true);assert.equal(fact.failureHandled,false);
+  const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
+  assert.equal(saved.data.result.isError,false);assert.equal(saved.data.result.details.status,"succeeded");assert.ok(saved.data.observationError);
+  const next=await f.run(['text(load("bad")??null);']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught progress observer failure preserves execution receipt and rejects store",async t=>{
+  const extension:InlineExtension=pi=>pi.registerTool({name:"write",label:"write",description:"synthetic progress write",parameters:Type.Object({}),
+    async execute(_id,_args,_signal,onUpdate,ctx){
+      onUpdate?.({content:[{type:"text",text:"progress"}],details:{}});
+      const target=join(ctx.cwd,"progress.txt");writeFileSync(target,"committed");
+      return {content:[{type:"text",text:"written"}],details:{mutationReceiptVersion:2,operation:"write",target,ok:true,status:"succeeded",stateChanged:true}};
+    }});
+  const f=await fixture(t,{},[extension]);
+  const unsubscribe=f.session.agent.subscribe(event=>{if(event.type==="tool_execution_update"&&event.toolName==="write")throw new Error("progress observer failed");});
+  let first;
+  try{first=await f.run(['try{await tools.write({})}catch{}store("bad",true);']);}finally{unsubscribe();}
+  assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"progress.txt"),"utf8"),"committed");
+  assert.match(JSON.stringify(first.results[0]?.content),/progress observer failed/);
+  const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
+  assert.equal(saved.data.result.isError,false);assert.equal(saved.data.result.details.status,"succeeded");assert.match(saved.data.observationError,/progress observer failed/);
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught mutation invocation journal failure cannot commit store",async t=>{
+  const f=await fixture(t),append=f.manager.appendCustomEntry.bind(f.manager);
+  f.manager.appendCustomEntry=(kind,data)=>{if(kind===CODEMODE_CALL_ENTRY)throw new Error("invocation journal failed");return append(kind,data);};
+  const first=await f.run(['try{await tools.write({path:"never.txt",content:"bad"})}catch{}store("bad",true);']);
+  assert.equal(first.results[0]?.isError,true);assert.throws(()=>readFileSync(join(f.cwd,"never.txt")),{code:"ENOENT"});
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught native batch item journal failure keeps aggregate verification fatal",async t=>{
+  const f=await fixture(t),append=f.manager.appendCustomEntry.bind(f.manager);let fired=false;
+  f.manager.appendCustomEntry=(kind,data)=>{if(!fired&&kind==="file-mutation-progress-v2"&&(data as any)?.phase==="result"){fired=true;throw new Error("item journal failed");}return append(kind,data);};
+  const first=await f.run(['try{await tools.file_batch({operations:[{operation:"write",mode:"create",path:"batch.txt",content:"committed"}]})}catch{}store("bad",true);']);
+  assert.equal(fired,true);assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"batch.txt"),"utf8"),"committed");
+  const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
+  assert.equal(saved.data.result.details.items[0].requiresVerification,true);assert.equal(saved.data.result.details.requiresVerification,true);
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
 
 test("Codemode pre-execution edit failures suppress only the proven no-execution card warning", async t => {
   initTheme("dark");
@@ -207,7 +295,8 @@ test("Codemode missing snapshot is refused without entering execution or result 
   const result = results[0]!;
   const calls = (result.details as any).codemode.calls;
   assert.equal(calls.length, 3);
-  assert.equal(result.isError, true);
+  assert.equal(result.isError, false);
+  assert.equal((result.details as any).codemode.handledFailures, 3);
   for (const call of calls) assert.equal(call.executionStatus, "not_executed");
   assert.match(JSON.stringify(result.content), /SNAPSHOT_REQUIRED/);
   const tree = new CodemodeTreeComponent();
@@ -676,7 +765,7 @@ for(const target of ["edit","codemode"])test(`ordinary ${target} result hook err
   const broken:InlineExtension=pi=>pi.on("tool_result",event=>{if(pending&&event.toolName===target){pending=false;throw new Error("ordinary result observer failed");}});
   const f=await fixture(t,{},[broken]);
   const first=await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});']);
-  assert.equal(first.results.at(-1)?.isError,false,"ordinary extension exceptions retain their existing nonfatal behavior");
+  assert.equal(first.results.at(-1)?.isError,true,"CodeMode cannot commit state after a failed result observation");
   assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
   const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
   assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
@@ -716,7 +805,8 @@ test("SDK allowlist constrains children while adding the default transport; no-t
 	assert.ok(f.session.getToolCatalog().tools.every(tool => tool.description !== "caller-owned entry"));
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["codemode", "read"]);
 	const outcome = await f.run(['try { await callTool("write",{path:"forbidden.txt",content:"bad"}); } catch {} text("success")']);
-	assert.equal(outcome.results[0]?.isError, true);
+	assert.equal(outcome.results[0]?.isError, false);
+	assert.equal((outcome.results[0]?.details as any).codemode.calls[0].executionStatus,"not_executed");
 	assert.deepEqual(outcome.wires[0]!.tools?.map(tool => tool.name), ["codemode"]);
 	const empty = await fixture(t, { noTools: "all" });
 	assert.deepEqual(empty.session.getActiveToolNames(), []);
@@ -1229,19 +1319,18 @@ test("invalid saved store reports an explicit failure before executing tools", a
 	assert.equal(outcome.results[1]?.isError, false);
 });
 
-for (const truncated of [false, true]) test(`store persistence failure removes ${truncated ? "truncated" : "full"} OK summary and preserves previous snapshot`, async t => {
+for (const truncated of [false, true]) test(`store persistence failure after ${truncated ? "truncated" : "full"} observation fails the run and preserves previous snapshot`, async t => {
 	const f = await fixture(t);
 	await f.run(['store("n",7)']);
 	const original = f.manager.appendCustomEntry.bind(f.manager);
 	f.manager.appendCustomEntry = (kind, data) => { if (kind === CODEMODE_STORE_ENTRY) throw new Error("fixture storage failure"); return original(kind, data); };
 	const code = truncated ? '// @options: {"max_output_tokens":256}\nfor(let i=0;i<96;i++) await tools.read({path:"file.txt"}); store("n",9)' : 'store("n",9)';
-	const outcome = await f.run([code, 'text(load("n"))']);
-	const failed = outcome.results.at(-2)!;
-	assert.equal(failed.isError, true);
-	assert.doesNotMatch(JSON.stringify(failed.content), /CODEMODE_OK/);
-	assert.match(JSON.stringify(failed.content), /CODEMODE_FAILED.*storage failure/);
-	if (truncated) assert.match(JSON.stringify(failed.content), /Codemode output truncated/);
-	assert.match(JSON.stringify(outcome.results.at(-1)?.content), /"text":"7"/);
+	const outcome = await f.run([code]);
+	assert.match(f.session.agent.state.errorMessage??"",/fixture storage failure/);
+	assert.equal(outcome.wires.length,1,"persistence failure stops the run before another model request");
+	if (truncated) assert.match(JSON.stringify(outcome.results.at(-1)?.content), /Codemode output truncated/);
+	const next=await f.run(['text(load("n"))']);
+	assert.match(JSON.stringify(next.results.at(-1)?.content), /"text":"7"/);
 });
 
 test("mutation result serialization failure records the completed outcome without replay", async t => {
@@ -1327,7 +1416,8 @@ test("actual Plan mode retains Codemode with read-only child authorization", asy
 	assert.equal(catalog.activeTools.includes("write"), false, "catalog visibility does not override Plan selection");
 	const outcome = await f.run(['text((await tools.read({path:"file.txt"})).content)', 'try { await callTool("write",{path:"bad",content:"bad"}) } catch {}']);
 	assert.equal(outcome.results[0]?.isError, false);
-	assert.equal(outcome.results[1]?.isError, true);
+	assert.equal(outcome.results[1]?.isError, false);
+	assert.equal((outcome.results[1]?.details as any).codemode.calls[0].executionStatus,"not_executed");
 	f.session.agent.streamFunction = () => {
 		const message: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE,
 			content: [{ type: "text", text: "<proposed_plan>\nInspect the file, then verify the result.\n</proposed_plan>" }], stopReason: "stop", timestamp: 1 };
@@ -1361,7 +1451,8 @@ test("Goal/interaction controls remain model-only and cannot be called through a
 	const names = f.session.agent.state.modelTools!.map(tool => tool.name);
 	for (const name of ["goal_complete", "goal_blocked", "plan_mode_question"]) assert.ok(names.includes(name));
 	const outcome = await f.run(['try { await callTool("goal_complete",{}) } catch {}']);
-	assert.equal(outcome.results[0]?.isError, true);
+	assert.equal(outcome.results[0]?.isError, false);
+	assert.equal((outcome.results[0]?.details as any).codemode.calls[0].executionStatus,"not_executed");
 	assert.doesNotMatch(JSON.stringify(outcome.results[0]?.content), /control was invoked indirectly/);
 });
 
@@ -1867,9 +1958,9 @@ test("Codemode text and console boundaries survive actual provider message conve
 	const source = context.messages.filter(m => m.role === "toolResult");
 	assert.equal(source.length, 3);
 	const texts = source.map(m => m.content.filter(b => b.type === "text").map(b => b.text));
-	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
+	assert.deepEqual(texts[0], ["[CODEMODE_OK] Child calls: 0. Succeeded: 0; failed: 0; unhandled: 0.", "alpha", "", 'beta {"n":2}', "line1\nline2", "omega"]);
 	assert.deepEqual(source[1]!.content.slice(0, 5).map(b => b.type), ["text", "text", "image", "text", "text"]);
-	assert.ok(texts[1]![0]!.startsWith("[CODEMODE_OK] Child calls: 0.\n[Image files:"));
+	assert.ok(texts[1]![0]!.startsWith("[CODEMODE_OK] Child calls: 0. Succeeded: 0; failed: 0; unhandled: 0.\n[Image files:"));
 	assert.deepEqual(texts[1]!.slice(1), ["before-image", "after-image", ""]);
 	assert.deepEqual(texts[2]!.slice(1), ["before-error", "diagnostic", "[CODEMODE_SCRIPT] boundary-stop"]);
 	const before = structuredClone(context.messages);

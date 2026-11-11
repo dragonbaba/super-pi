@@ -3,6 +3,18 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
+test("rejection provenance owns bounded VM errors and releases primitive host metadata",()=>{
+  const worker=readFileSync("packages/codemode/src/runtime/worker.ts","utf8");
+  assert.match(worker,/onUnhandledRejection\(_promise: JSValueHandle, reason: JSValueHandle, handled: boolean\)/);
+  assert.match(worker,/if \(origins\) \{ origins\.clear\(\); origins = undefined; \}/);
+  assert.ok(worker.indexOf("origins.clear()")<worker.indexOf("vm.dispose()"));
+  assert.doesNotMatch(worker,/_promise\.(?:dup|dump|toString)/);
+  const prelude=readFileSync("packages/codemode/src/runtime/prelude-source.ts","utf8");
+  assert.match(prelude,/bridge\("rejection", id, error\)/);
+  assert.match(prelude,/\(rejectedErrors \?\?= new Map\(\)\)\.set\(id, error\)/);
+  assert.doesNotMatch(prelude,/Promise\.prototype\.(?:then|catch|finally)\s*=/);
+});
+
 test("Worker reuse and explicit catalog reads add no callbacks or async factories", () => {
 	const targets = new Map([
 		// Explicit directory reads own their result arrays/entries, never per-output callbacks or caches.
