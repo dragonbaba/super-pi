@@ -317,6 +317,7 @@ dsh-ops 的参考价值是将覆盖状态、分页/输出状态、观察值和�
 - `tests/codemode-session.test.ts` 中的下一轮消息及提供者请求捕获方式：断言模型实际看到的内容。
 - `tests/source-invariants.test.ts` 的搜索热路径约束。
 - `scripts/bench/mxc-search.ts`：生产搜索与 readWindow 的确定性计数、分配及释放证据。
+- `scripts/bench/mxc-native-compare.ts`：导出固定提交的基线 worker，构造相同语料，在同一 MXC transport 中交替测量并校验答案、资产哈希和 Job 释放。
 - `scripts/bench/mxc-result-render.ts`：实际 MXC 结果经 ToolExecutionComponent 和 TuiAltScreen 的可见状态、分配与释放验证。
 - `tests/mxc-workspace-live.test.ts`：最终构建产物的真实 MXC 验收。
 

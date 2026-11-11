@@ -14,6 +14,8 @@ const enabled = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE ===
 const distRoot = "../packages/coding-agent/dist/core/";
 const SandboxTools: typeof WorkspaceSandboxTools = process.env.SUPERPI_SANDBOX_USE_DIST === "1"
   ? (await import(distRoot + "sandbox/workspace-tools.js")).WorkspaceSandboxTools : WorkspaceSandboxTools;
+const jobDiagnostics = process.env.SUPERPI_SANDBOX_USE_DIST === "1"
+  ? (await import("../packages/coding-agent/dist/utils/windows-shell-job.js")).windowsShellJobDiagnostics : windowsShellJobDiagnostics;
 const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
 
 for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mode}: PowerShell, files, protection and release`, { skip: !enabled, timeout: 60000 }, async t => {
@@ -36,6 +38,7 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
   const definitions = owner.install({});
   for (const definition of Object.values(definitions)) policy.registerDefinition(definition);
   const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(project) };
+  const initialJobCount = jobDiagnostics().created;
   let id = 0;
   async function invoke(name: string, input: any) {
     const call = "live-" + ++id, authorization = await policy.authorize({ type: "tool_call", toolName: name, toolCallId: call, input }, ctx, definitions[name]);
@@ -108,7 +111,8 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
   } finally {
     await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose();
     assert.equal(owner.diagnostics.process.active, false); assert.equal(owner.diagnostics.process.retainedStreams, 0);
-    assert.equal(owner.diagnostics.root, undefined); assert.equal(windowsShellJobDiagnostics().handles, 0);
+    assert.equal(owner.diagnostics.root, undefined); assert.equal(jobDiagnostics().handles, 0); assert.equal(jobDiagnostics().processHandles, 0);
+    assert.ok(jobDiagnostics().created > initialJobCount, "Observe the same Job owner used by the selected backend");
     assert.equal(await fs.realpath(root), root); await fs.rm(root, { recursive: true });
   }
 });
