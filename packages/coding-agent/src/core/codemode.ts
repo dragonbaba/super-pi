@@ -46,6 +46,7 @@ interface Invocation {
 	reads: DisplayedRead[];
 	facts: ChildFact[];
 	failed: boolean;
+	failedRecordings: string[] | undefined;
 	displayLimited: boolean;
 	pending: number;
 	resolveIdle: (() => void) | undefined;
@@ -103,6 +104,10 @@ function scriptContent(content: readonly (TextContent | ImageContent)[]): (TextC
 	return copy;
 }
 function compareChildSequence(a: ChildFact, b: ChildFact): number { return (a.sequence ?? 0) - (b.sequence ?? 0); }
+function hasRuntimeFact(facts: readonly ChildFact[], id: number): boolean {
+	for (const fact of facts) if (fact.runtimeCallId === id) return true;
+	return false;
+}
 function requiredReadBlocks(content: readonly ToolResultPresentationContent[]): number {
 	let lines = false;
 	for (let index = 0; index < content.length; index++) {
@@ -175,10 +180,17 @@ export class CodemodeController {
 			execute: (_id, args, signal, _update, ctx, context) => this.execute((args as { code: string }).code, context, signal, ctx) };
 	}
 	recordInvocation(parent: string | undefined, id: string, name: string, args: unknown): void {
-		if (!parent || parent !== this.current?.context.parentToolCallId || !CODEMODE_MUTATION_NAMES.has(name)) return;
-		const json = this.serializer.stringify(args, 256 * 1024);
-		if (!json) throw new Error("Nested mutation arguments cannot be persisted");
-		this.saveCall?.({ version: 1, parentToolCallId: parent, call: { type: "toolCall", id, name, arguments: JSON.parse(json) } });
+		const invocation = this.current;
+		if (!parent || parent !== invocation?.context.parentToolCallId || !CODEMODE_MUTATION_NAMES.has(name)) return;
+		try {
+			const json = this.serializer.stringify(args, 256 * 1024);
+			if (!json) throw new Error("Nested mutation arguments cannot be persisted");
+			this.saveCall?.({ version: 1, parentToolCallId: parent, call: { type: "toolCall", id, name, arguments: JSON.parse(json) } });
+		} catch (error) {
+			invocation.failed = true;
+			(invocation.failedRecordings ??= []).push(id);
+			throw error;
+		}
 	}
 
 	setTools(tools: readonly AgentTool<any>[]): void {
@@ -346,9 +358,11 @@ export class CodemodeController {
 		this.serializer.stringify(input, 256 * 1024);
 		const startedAt = Date.now();
 		const raw = await invocation.context.callTool(name, input, allowFailure ? ALLOW_FAILURE : undefined);
-		const systemFailure = !!raw.observationFailure || invocation.signal?.aborted === true || raw.details?.requiresVerification === true;
+		const systemFailure = !!raw.observationFailure || invocation.signal?.aborted === true || raw.details?.requiresVerification === true
+			|| invocation.failedRecordings?.includes(raw.toolCallId) === true;
 		const failureHandled = raw.isError && allowFailure && !systemFailure;
-		const fact: ChildFact = { toolCallId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError, preview: preview(raw), inputSummary: codemodeInputSummary(input), sequence, runtimeCallId, systemFailure, durationMs: Date.now() - startedAt,
+		const fact: ChildFact = { toolCallId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError,
+			preview: raw.observationFailure ? codemodeFailureWindow(raw.observationFailure.error) : preview(raw), inputSummary: codemodeInputSummary(input), sequence, runtimeCallId, systemFailure, durationMs: Date.now() - startedAt,
 			executed: raw.executionStatus !== "not_executed", resultComplete: "unknown", displayLimited: false, failureHandled };
 		if (name === "bash" || name === "powershell") {
 			const execution = readShellExecution(raw.details);
@@ -622,13 +636,13 @@ export class CodemodeController {
 		const outputTokens = parsed.options.maxOutputTokens ?? 8000;
 		if (outputTokens < 256 || outputTokens > 16384) throw new Error("Codemode max_output_tokens must be 256..16384; no tools were executed");
 		const invocation: Invocation = { context, signal, extensionContext, prefix: randomUUID(), issued: 0, started: 0, records: new Map(), evicted: new Map(), recovering: new Map(), retainedChars: 0, retainedImageChars: 0,
-			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, displayLimited: false, pending: 0, resolveIdle: undefined };
+			shownChars: 0, shownImageChars: 0, shown: [], reads: [], facts: [], failed: false, failedRecordings: undefined, displayLimited: false, pending: 0, resolveIdle: undefined };
 		this.current = invocation;
 		let result: CodemodeResult;
 		try {
 			const sandbox = await this.ensureSandbox();
 			result = await sandbox.execute(parsed.code, { signal, timeoutMs: parsed.options.timeoutMs, store: this.store.snapshot });
-			let ordinaryFailuresHandled = result.ok;
+			let ordinaryFailuresHandled = result.ok && !result.unobservedGlobals?.length;
 			for (const call of result.calls) if (call.status !== "ok" && !(call.status === "error" && call.failureHandled)) ordinaryFailuresHandled = false;
 			const childFailed = await context.finish(ordinaryFailuresHandled);
 			if (invocation.pending) await new Promise<void>(resolve => { invocation.resolveIdle = resolve; });
@@ -642,12 +656,18 @@ export class CodemodeController {
 				if (fact.failureHandled) handledFailures++;
 			}
 			const unhandled = failedChildren - handledFailures;
-			let failed = invocation.failed || !result.ok || childFailed || unhandled > 0;
+			let unobservedHelpers = 0;
+			if (result.unobservedGlobals) for (const failure of result.unobservedGlobals) {
+				if (!hasRuntimeFact(invocation.facts, failure.id)) unobservedHelpers++;
+			}
+			let failed = invocation.failed || !result.ok || childFailed || unhandled > 0 || !!result.unobservedGlobals?.length;
 			for (const call of result.calls) if (call.status !== "ok" && !(call.status === "error" && call.failureHandled)) failed = true;
 			if (failed) this.documentationSnapshot = undefined;
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
 			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
+			if (result.unobservedGlobals) for (const failure of result.unobservedGlobals) if (!hasRuntimeFact(invocation.facts, failure.id)) content.push({ type: "text",
+				text: `[CODEMODE_UNOBSERVED_CALL] ${failure.name}: ${failure.status}${failure.error ? "; " + unicodePrefix(failure.error, 512) : "; not awaited before script completion"}` });
 			// Compact causes stay in the summary. A separate bounded tail preserves status
 			// and secondary diagnostics without changing collapsed UI cause selection.
 			if (result.ok) for (const fact of invocation.facts) if (fact.isError) content.push({ type: "text",
@@ -691,7 +711,7 @@ export class CodemodeController {
 				this.displayedReads.set(context.parentToolCallId, invocation.reads);
 			}
 			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok,
-				status: failed ? "failed" : failedChildren ? "partial" : "completed", succeeded, failed: failedChildren, unhandled,
+				status: failed ? "failed" : failedChildren ? "partial" : "completed", succeeded, failed: failedChildren, unhandled, unobservedHelpers,
 				handledFailures, displayLimited: invocation.displayLimited || projected !== content, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
 		} catch (error) {
 			this.documentationSnapshot = undefined;
@@ -705,6 +725,7 @@ export class CodemodeController {
 			invocation.records.clear();
 			invocation.evicted.clear();
 			invocation.recovering.clear();
+			invocation.failedRecordings = undefined;
 			invocation.shown.length = 0;
 			invocation.retainedChars = invocation.retainedImageChars = invocation.shownChars = invocation.shownImageChars = 0;
 			this.current = undefined;

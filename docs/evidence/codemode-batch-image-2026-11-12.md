@@ -119,6 +119,11 @@ is not a source parser or Promise monkey patch, and adds no command restrictions
 After-result observation provenance preserves the original native mutation receipt.
 MXC post-publication verification failures carry requiresVerification and no new
 hash, so catching them cannot commit store writes.
+Progress-drain observation failures keep the original execution outcome alongside
+their own cause. Mutation-call journal failures latch the invocation and exact
+child ID; native batches aggregate item verification requirements. Unobserved
+helper failures/cancellation carry bounded metadata at completion, with dynamic
+callTool identities matched against existing child facts rather than counted twice.
 
 Store finalization follows every critical tool-result observer. Earlier result
 hooks/end/start failures discard pending writes. A persistence error after observed
@@ -137,21 +142,21 @@ and are released with completion/disposal; no full result/image copy or pool is
 introduced on normal updates. Stable terminal callbacks add no per-progress Promise,
 closure, controller, wrapper, array or Promise tail.
 
-The targeted VM/session/MXC/guard/tree matrix passed 215/215; the final session and
-handled-failure suite passed 131/131, including a caught result-veto receipt. A separate
-48-case runtime/invariant matrix passing. Actual dist MXC acceptance passed 2/2,
+The dispatch/session/batch/event matrix passed 226 cases with one existing platform
+skip; helper error and reusable-owner GC checks released all four tracked error,
+execution and metadata references after four GC cycles. Actual dist MXC acceptance passed 2/2,
 zero skips. Type checking and the 12-package build passed. Real session allocation
 profiling ran 418 children across 22 scripts, eight caught failures per script:
 11 workers started/stopped, 55/55 references released after eight GC cycles, zero
-pending evidence. Ten sampled cycles allocated 38,037,376 host bytes, led by split,
-createContext and V8 API sites; warmed batch p50/p95 was 14.72/15.97 ms. Worker heap
+pending evidence. Ten sampled cycles allocated 37,886,680 host bytes, led by split,
+createContext and V8 API sites; warmed batch p50/p95 was 15.84/16.28 ms. Worker heap
 and disk-session storage are outside this profile.
 
-The 20,000-update delivery profile sampled 2.2056 B/message update and
-0.4776 B/tool update, with zero new inline closures, wrappers, Promise tails/arrays
-or built-in listener Promises. Coalescing yielded one delivery/snapshot, 517.6212
+The 20,000-update delivery profile sampled 1.21 B/message update and
+0.366 B/tool update, with zero new inline closures, wrappers, Promise tails/arrays
+or built-in listener Promises. Coalescing yielded one delivery/snapshot, 503.8452
 B/raw update including existing dispatcher scheduling, controlled-GC heap delta
-729,776 B. The actual retained-tree fixture rendered 4,096 handled-completion frames
+714,904 B. The actual retained-tree fixture rendered 4,096 handled-completion frames
 at 1,569.17 sampled B/render (leading retained-item render/layout sites), creating one
 row and one output/failure projection. Disposal released both tracked owners and
 all rows, result references, text and timers; event Promises were zero. These are

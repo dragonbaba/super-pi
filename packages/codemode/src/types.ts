@@ -58,6 +58,13 @@ export interface CodemodeCall {
 	status: CodemodeCallStatus;
 	durationMs: number;
 }
+/** Error/cancellation metadata only; successful globals stay outside result.calls. */
+export interface CodemodeUnobservedGlobal {
+	id: number;
+	name: string;
+	status: "error" | "cancelled";
+	error?: string;
+}
 
 export type CodemodeErrorKind =
 	/** The script threw or failed to parse. `name` and `stack` come from the script's error. */
@@ -92,8 +99,9 @@ export type CodemodeResult =
 			calls: CodemodeCall[];
 			storeWrites: CodemodeStoreWrites;
 			handledCallIds?: number[];
+			unobservedGlobals?: CodemodeUnobservedGlobal[];
 	  }
-	| { ok: false; error: CodemodeError; output: CodemodeOutputItem[]; calls: CodemodeCall[]; handledCallIds?: number[] };
+	| { ok: false; error: CodemodeError; output: CodemodeOutputItem[]; calls: CodemodeCall[]; handledCallIds?: number[]; unobservedGlobals?: CodemodeUnobservedGlobal[] };
 
 export interface CodemodeSandboxOptions {
 	tools?: CodemodeTool[];

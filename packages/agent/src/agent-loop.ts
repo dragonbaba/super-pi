@@ -794,6 +794,7 @@ type ImmediateToolCallOutcome = {
 type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
+	observationFailure?: NestedObservationFailure;
 	durationMs?: number;
 	/** Invocation was refused; retain the normal pre-execution block semantics. */
 	authorizationVeto?: true;
@@ -1014,6 +1015,8 @@ async function executePreparedToolCall(
 				isError: true, authorizationVeto: true };
 		}
 		let failedResult = completedResult ? undefined : toolResultFromError(error);
+		let observationFailure: NestedObservationFailure | undefined = completedResult
+			? { executionIsError: completedResult.isError === true, error: error instanceof Error ? error.message : String(error) } : undefined;
 		// A thrown parent skipped the nested block above; close first so lingering children are reported.
 		let abandoned = 0;
 		if (nested && !completedResult) {
@@ -1024,6 +1027,7 @@ async function executePreparedToolCall(
 			await progress.flush();
 		} catch (observationError) {
 			// Preserve the primary tool failure and record a separate drain failure.
+			observationFailure ??= { executionIsError: true, error: observationError instanceof Error ? observationError.message : String(observationError) };
 			if (failedResult) failedResult = resultWithObservationFailure(failedResult, observationError);
 		}
 		let result = failedResult ?? (completedResult ? resultWithObservationFailure(completedResult, error)
@@ -1033,7 +1037,7 @@ async function executePreparedToolCall(
 			preExecutionResults.add(result);
 			return { result, isError: true, inputRejected: true };
 		}
-		return { result, isError: true, durationMs };
+		return { result, isError: true, durationMs, observationFailure };
 	} finally {
 		acceptingUpdates = false;
 		if (nested) await nested.close();
@@ -1265,7 +1269,7 @@ async function finalizeExecutedToolCall(
 ): Promise<FinalizedToolCallOutcome> {
 	let result = executed.result;
 	let isError = executed.isError;
-	let observationFailure: NestedObservationFailure | undefined;
+	let observationFailure = executed.observationFailure;
 
 	if (config.afterToolCall && !executed.authorizationVeto) {
 		try {
@@ -1282,7 +1286,7 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
-				observationFailure = afterResult.observationFailure;
+				observationFailure ??= afterResult.observationFailure;
 				result = {
 					...result,
 					content: afterResult.content ?? result.content,
@@ -1291,10 +1295,10 @@ async function finalizeExecutedToolCall(
 					terminate: afterResult.terminate ?? result.terminate,
 				};
 				isError = (prepared.orchestration || prepared.parentDispatch) && executed.isError ? true : afterResult.isError ?? isError;
-				if (observationFailure) { result = resultWithObservationFailure(result, new Error(observationFailure.error), true); isError = true; }
+				if (afterResult.observationFailure) { result = resultWithObservationFailure(result, new Error(afterResult.observationFailure.error), true); isError = true; }
 			}
 		} catch (error) {
-			observationFailure = { executionIsError: executed.isError, error: error instanceof Error ? error.message : String(error) };
+			observationFailure ??= { executionIsError: executed.isError, error: error instanceof Error ? error.message : String(error) };
 			result = resultWithObservationFailure(result, error);
 			isError = true;
 		}

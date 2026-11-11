@@ -28,7 +28,7 @@ export function formatBatchResult(input: Pick<BatchInput, "dryRun">, results: It
       }
     }
     const expandedSummary = batchExpandedSummary(collapsedSummary, results, plannedDirectories);
-    return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, expandedSummary, plannedDirectories, succeeded, failed, notStarted, items: results }, isError: failed > 0 };
+    return { content: [{ type: "text" as const, text: summary }], details: { mutationReceiptVersion: 2, operation: "file_batch", preview, collapsedSummary, expandedSummary, plannedDirectories, succeeded, failed, notStarted, requiresVerification: requiresVerification || undefined, items: results }, isError: failed > 0 };
 }
 
 export const renderBatchResult: NonNullable<ToolDefinition<any, any>["renderResult"]> = function renderBatchResult(result, options, _theme, context) {

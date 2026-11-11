@@ -11,6 +11,14 @@ The coding agent loads this package on first script execution. Only injected too
 and helpers are available; scripts have no host filesystem, network or Node globals.
 Host tool policy remains the caller's responsibility.
 
+Low-level `result.ok` reports VM completion. Tool `result.calls` retain real
+`error`/`cancelled` statuses; `failureHandled` identifies rejection handling proved
+by the VM. `unobservedGlobals` carries failed or still-pending helper calls that
+the VM did not handle before completion, without counting successful globals as
+tools. Hosts must also settle their own tool/observation lifecycle before committing
+state. The Super Pi controller applies these checks and reports handled ordinary
+tool failures as partial completion; unobserved failures do not commit its store.
+
 `setTimeout(callback, ms, ...args)` returns a numeric ID for `clearTimeout(id)`.
 Use `await new Promise(resolve => setTimeout(resolve, 1000))` to wait. Each script
 may create at most 256 timers; delays must be finite numbers from 0 to 300000 ms.

@@ -11,6 +11,7 @@ import {
 import type {
 	CodemodeCall,
 	CodemodeCallStatus,
+	CodemodeUnobservedGlobal,
 	CodemodeError,
 	CodemodeExecuteOptions,
 	CodemodeOutputItem,
@@ -111,6 +112,8 @@ function defaultWorkerUrl(): URL {
 }
 
 interface PendingCall {
+	id: number;
+	name: string;
 	record: CodemodeCall | undefined;
 	startedAt: number;
 	controller: AbortController;
@@ -157,6 +160,8 @@ class Execution {
 	private readonly output: CodemodeOutputItem[] = [];
 	private readonly calls: CodemodeCall[] = [];
 	private readonly pending = new Map<number, PendingCall>();
+	/** At most MAX_CALLS, error paths only; payload strings already have MAX_ERROR_CHARS. */
+	private failedGlobals: CodemodeUnobservedGlobal[] | undefined;
 	private finished = false;
 	private readonly budget = new BridgeBudget();
 	private readonly serializer = new BoundedJson();
@@ -319,7 +324,7 @@ class Execution {
 		const isTool = message.target === "tool";
 		const record: CodemodeCall | undefined = isTool ? { id, name, status: "cancelled", durationMs: 0 } : undefined;
 		if (record) this.calls.push(record);
-		const pending: PendingCall = { record, startedAt: performance.now(), controller: new AbortController() };
+		const pending: PendingCall = { id, name, record, startedAt: performance.now(), controller: new AbortController() };
 		this.pending.set(id, pending);
 
 		let status: CodemodeCallStatus;
@@ -346,7 +351,7 @@ class Execution {
 		if (record) {
 			record.status = status;
 			record.durationMs = performance.now() - pending.startedAt;
-		}
+		} else if (status === "error") (this.failedGlobals ??= []).push({ id, name, status, error: reply.payload });
 		this.post(reply);
 	}
 
@@ -358,8 +363,12 @@ class Execution {
 		this.signal?.removeEventListener("abort", this.onAbort);
 
 		const now = performance.now();
+		let unobservedGlobals: CodemodeUnobservedGlobal[] | undefined;
+		if (this.failedGlobals) for (const failure of this.failedGlobals) if (!handledCallIds?.includes(failure.id)) (unobservedGlobals ??= []).push(failure);
+		this.failedGlobals = undefined;
 		for (const pending of this.pending.values()) {
 			if (pending.record) pending.record.durationMs = now - pending.startedAt;
+			else (unobservedGlobals ??= []).push({ id: pending.id, name: pending.name, status: "cancelled" });
 			pending.controller.abort();
 		}
 		this.pending.clear();
@@ -367,7 +376,7 @@ class Execution {
 		this.globals = undefined;
 
 		const result: CodemodeResult = error
-			? { ok: false, error, output: this.output, calls: this.calls, handledCallIds }
+			? { ok: false, error, output: this.output, calls: this.calls, handledCallIds, unobservedGlobals }
 			: {
 					ok: true,
 					value,
@@ -375,6 +384,7 @@ class Execution {
 					calls: this.calls,
 					storeWrites: writes ?? { set: Object.create(null), delete: [] },
 					handledCallIds,
+					unobservedGlobals,
 				};
 		if (!this.worker) {
 			this.resolveResult(result);

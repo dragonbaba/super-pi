@@ -18,7 +18,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
 import type { InlineExtension, ExtensionFactory, ToolCatalogSnapshot } from "../packages/coding-agent/src/core/extensions/types.ts";
-import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
+import { CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
 import { CodemodeController } from "../packages/coding-agent/src/core/codemode.ts";
 import { browserResultText, formatFailure } from "../packages/extensions/browser-use/index.ts";
@@ -161,6 +161,42 @@ test("a caught child result veto cannot commit store or erase the completed nati
   const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
   assert.equal(saved.data.result.isError,false);assert.equal(saved.data.result.details.status,"succeeded");assert.ok(saved.data.observationError);
   const next=await f.run(['text(load("bad")??null);']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught progress observer failure preserves execution receipt and rejects store",async t=>{
+  const extension:InlineExtension=pi=>pi.registerTool({name:"write",label:"write",description:"synthetic progress write",parameters:Type.Object({}),
+    async execute(_id,_args,_signal,onUpdate,ctx){
+      onUpdate?.({content:[{type:"text",text:"progress"}],details:{}});
+      const target=join(ctx.cwd,"progress.txt");writeFileSync(target,"committed");
+      return {content:[{type:"text",text:"written"}],details:{mutationReceiptVersion:2,operation:"write",target,ok:true,status:"succeeded",stateChanged:true}};
+    }});
+  const f=await fixture(t,{},[extension]);
+  const unsubscribe=f.session.agent.subscribe(event=>{if(event.type==="tool_execution_update"&&event.toolName==="write")throw new Error("progress observer failed");});
+  let first;
+  try{first=await f.run(['try{await tools.write({})}catch{}store("bad",true);']);}finally{unsubscribe();}
+  assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"progress.txt"),"utf8"),"committed");
+  assert.match(JSON.stringify(first.results[0]?.content),/progress observer failed/);
+  const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
+  assert.equal(saved.data.result.isError,false);assert.equal(saved.data.result.details.status,"succeeded");assert.match(saved.data.observationError,/progress observer failed/);
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught mutation invocation journal failure cannot commit store",async t=>{
+  const f=await fixture(t),append=f.manager.appendCustomEntry.bind(f.manager);
+  f.manager.appendCustomEntry=(kind,data)=>{if(kind===CODEMODE_CALL_ENTRY)throw new Error("invocation journal failed");return append(kind,data);};
+  const first=await f.run(['try{await tools.write({path:"never.txt",content:"bad"})}catch{}store("bad",true);']);
+  assert.equal(first.results[0]?.isError,true);assert.throws(()=>readFileSync(join(f.cwd,"never.txt")),{code:"ENOENT"});
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
+});
+
+test("caught native batch item journal failure keeps aggregate verification fatal",async t=>{
+  const f=await fixture(t),append=f.manager.appendCustomEntry.bind(f.manager);let fired=false;
+  f.manager.appendCustomEntry=(kind,data)=>{if(!fired&&kind==="file-mutation-progress-v2"&&(data as any)?.phase==="result"){fired=true;throw new Error("item journal failed");}return append(kind,data);};
+  const first=await f.run(['try{await tools.file_batch({operations:[{operation:"write",mode:"create",path:"batch.txt",content:"committed"}]})}catch{}store("bad",true);']);
+  assert.equal(fired,true);assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"batch.txt"),"utf8"),"committed");
+  const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
+  assert.equal(saved.data.result.details.items[0].requiresVerification,true);assert.equal(saved.data.result.details.requiresVerification,true);
+  const next=await f.run(['text(load("bad")??null)']);assert.match(JSON.stringify(next.results.at(-1)?.content),/"text":"null"/);
 });
 
 test("Codemode pre-execution edit failures suppress only the proven no-execution card warning", async t => {

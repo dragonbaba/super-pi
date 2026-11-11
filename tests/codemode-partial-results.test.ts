@@ -3,6 +3,17 @@ import test from "node:test";
 import { executionFixture } from "./codemode-recovery/execution-fixture.ts";
 import { body } from "./codemode-recovery/fixture.ts";
 
+test("ignored helper rejection cannot commit store, while an awaited catch still can",async t=>{
+  const f=await executionFixture(t);
+  const first=await f.run('describeTools("invalid");store("bad",true);');
+  assert.equal(first.result.isError,true,body(first.result.content));
+  assert.equal(first.result.details.codemode.calls.length,0);assert.equal(first.result.details.codemode.unobservedHelpers,1);
+  assert.match(body(first.result.content),/CODEMODE_UNOBSERVED_CALL.*describeTools.*expects up to 16 names/);
+  const second=await f.run('try{await describeTools("invalid")}catch{}store("good",true);text(load("bad")??null);');
+  assert.equal(second.result.isError,false,body(second.result.content));assert.match(body(second.result.content),/null/);
+  assert.match(body((await f.run('text(load("good"))')).result.content),/true/);
+});
+
 test("all handled failures complete the script without claiming a successful child",async t=>{
   const f=await executionFixture(t);
   const first=await f.run('await Promise.allSettled([tools.probe({kind:"failure"}),callTool("probe",{kind:"failure"})]);store("handled",2);');
