@@ -24,7 +24,7 @@ export interface WorkspaceRead {
   returnedLines: number; incompleteLine?: number; nextOffset?: number;
 }
 export interface WorkspaceSearch {
-  version: 1; operation: "ls" | "find" | "grep"; outputMode: "content" | "files";
+  version: 1; operation: "ls" | "find" | "grep"; outputMode: "content" | "files" | "count";
   scanComplete: boolean; coverageComplete: boolean; outputTruncated: boolean; excerptTruncated: boolean;
   stopReason: "none" | "row-limit" | "text-limit" | "entry-limit";
   visitedEntries: number; scannedFiles: number; observedRecords: number; returnedRecords: number; outputUnits: number;
@@ -80,7 +80,8 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
   if (operation === "ls" || operation === "find" || operation === "grep") {
     const s = reply.search;
     need(s && typeof s === "object" && s.version === 1 && s.operation === operation
-      && s.outputMode === (operation === "grep" ? "content" : "files")
+      && (s.outputMode === "content" || s.outputMode === "files" || s.outputMode === "count")
+      && s.outputMode === (operation === "grep" ? (input.outputMode ?? "content") : "files")
       && typeof s.scanComplete === "boolean" && typeof s.coverageComplete === "boolean"
       && typeof s.outputTruncated === "boolean" && typeof s.excerptTruncated === "boolean"
       && (s.stopReason === "none" || s.stopReason === "row-limit" || s.stopReason === "text-limit" || s.stopReason === "entry-limit")

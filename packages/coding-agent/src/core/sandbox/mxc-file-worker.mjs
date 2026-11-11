@@ -52,31 +52,48 @@ function appendSearchRow(rows, row, state) {
 }
 function grepRows(source, pattern, name, rows, state) {
   let match = source.indexOf(pattern), start = 0, line = 1;
+  const mode = state.outputMode;
+  if (mode === 'files') {
+    // Full-file eligibility is already checked. A match starting at LF
+    // has no corresponding row in the legacy content scan.
+    if (match >= 0 && source.charCodeAt(match) !== 10) {
+      state.observedRecords++; appendSearchRow(rows, name, state);
+    }
+    return;
+  }
+  let matchedLines = 0;
   while (match >= 0 && start < source.length) {
     const next = source.indexOf('\n', start), end = next < 0 ? source.length : next;
     if (match >= start && match < end) {
-      state.observedRecords++;
-      if (rows.length === SEARCH_ROWS) { stopSearch(state, 'row-limit', true); return; }
-      const clipped = end - start > SEARCH_EXCERPT;
-      const excerptEnd = clipped ? safeTextEnd(source, start + SEARCH_EXCERPT - SEARCH_CLIPPED_MARK.length) : end;
-      if (!appendSearchRow(rows, name + ':' + line + ':' + source.slice(start, excerptEnd)
-        + (clipped ? SEARCH_CLIPPED_MARK : ''), state)) return;
-      if (clipped) state.excerptTruncated = true;
+      if (mode === 'count') matchedLines++;
+      else {
+        state.observedRecords++;
+        if (rows.length === SEARCH_ROWS) { stopSearch(state, 'row-limit', true); return; }
+        const clipped = end - start > SEARCH_EXCERPT;
+        const excerptEnd = clipped ? safeTextEnd(source, start + SEARCH_EXCERPT - SEARCH_CLIPPED_MARK.length) : end;
+        if (!appendSearchRow(rows, name + ':' + line + ':' + source.slice(start, excerptEnd)
+          + (clipped ? SEARCH_CLIPPED_MARK : ''), state)) return;
+        if (clipped) state.excerptTruncated = true;
+      }
     }
     start = end + 1; line++;
     if (match < start) match = source.indexOf(pattern, start);
   }
+  if (mode === 'count' && matchedLines > 0) { state.observedRecords++; appendSearchRow(rows, name + ':' + matchedLines, state); }
 }
-function searchFacts(operation) {
-  return { version: 1, operation, outputMode: operation === 'grep' ? 'content' : 'files', scanComplete: true,
+function searchFacts(operation, outputMode = operation === 'grep' ? 'content' : 'files') {
+  return { version: 1, operation, outputMode, scanComplete: true,
     coverageComplete: true, outputTruncated: false, excerptTruncated: false, stopReason: 'none',
     visitedEntries: 0, scannedFiles: 0, observedRecords: 0, returnedRecords: 0, outputUnits: 0,
     skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0, excludedProtected: 0, excludedLinks: 0 };
 }
-function search(root, operation, scope, pattern) {
-  if (operation === 'grep') need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
+function search(root, operation, scope, pattern, outputMode) {
+  if (operation === 'grep') {
+    need(typeof pattern === 'string' && pattern.length > 0, 'Literal search pattern required');
+    need(outputMode === undefined || outputMode === 'content' || outputMode === 'files' || outputMode === 'count', 'Unknown grep outputMode');
+  }
   // One call-owned record. Pending and output arrays are cleared on every exit.
-  const state = searchFacts(operation);
+  const state = searchFacts(operation, operation === 'grep' ? outputMode : 'files');
   const pending = [scope], rows = [];
   try {
     while (pending.length && state.scanComplete) {
@@ -223,7 +240,7 @@ try {
       readWindow(bytes.toString('utf8'), input, reply);
     }
   } else if (operation === 'ls' || operation === 'find' || operation === 'grep') {
-    phase = 'read'; const result = search(root, operation, input.path || '.', input.pattern);
+    phase = 'read'; const result = search(root, operation, input.path || '.', input.pattern, input.outputMode);
     reply.text = result.text; reply.search = result.search;
   } else {
     need(request.mode === 'sandbox-write', 'Read-only workspace'); phase = 'mutation';

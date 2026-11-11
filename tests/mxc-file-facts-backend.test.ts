@@ -29,6 +29,7 @@ test("MXC backend parses and retains valid read/search facts on the real run pat
   const read = await backend.invoke("read", { path: "text", limit: 1 });
   assert.equal(read.read!.windowComplete, true); assert.equal(read.read!.hasMore, true); assert.equal(read.read!.nextOffset, 2);
   const grep = await backend.invoke("grep", { pattern: "needle" }); assert.equal(grep.search!.coverageComplete, true);
+  for (const outputMode of ["files", "count"]) assert.equal((await backend.invoke("grep", { pattern: "needle", outputMode })).search!.outputMode, outputMode);
   for (const offset of [Number.MAX_SAFE_INTEGER, Number.MAX_VALUE]) {
     const end = await backend.invoke("read", { path: "text", offset, limit: 1 });
     assert.equal(end.read!.offset, offset);
@@ -41,7 +42,7 @@ test("MXC backend parses and retains valid read/search facts on the real run pat
 const faults: [string, (reply: any) => void][] = [
   ["missing", r => { r.search = undefined; }], ["null", r => { r.search = null; }],
   ["version", r => { r.search.version = 2; }], ["operation", r => { r.search.operation = "read"; }],
-  ["mode", r => { r.search.outputMode = "files"; }], ["enum", r => { r.search.stopReason = "timeout"; }],
+  ["mode", r => { r.search.outputMode = "bogus"; }], ["enum", r => { r.search.stopReason = "timeout"; }],
   ["boolean", r => { r.search.scanComplete = "true"; }], ["negative", r => { r.search.scannedFiles = -1; }],
   ["fraction", r => { r.search.observedRecords = 0.5; }], ["unsafe", r => { r.search.excludedLinks = Number.MAX_SAFE_INTEGER + 1; }],
   ["entries", r => { r.search.visitedEntries = 20001; }], ["rows", r => { r.search.returnedRecords = 201; }],
