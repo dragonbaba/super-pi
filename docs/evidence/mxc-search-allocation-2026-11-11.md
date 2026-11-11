@@ -84,6 +84,20 @@ both arms. Actual candidate worker SHA-256 was
 Thirty Jobs were created and final Job/process handles and retained owners
 were zero. This small native sample establishes equivalence, not a speedup.
 
+## Progress integration gate
+
+The existing real-child progress test could observe the same integer elapsed
+second after a fixed 1.1-second sleep: the component interval and elapsed-time
+rounding have independent phases. It now waits up to three seconds for an
+actual screen change, then checks that the timer refreshed, terminal writes
+advanced and protocol updates stayed at one. The existing 15-second test
+deadline and success/failure/cancellation release checks remain. The subagent
+README now describes the component-owned timer and live compact usage/tool
+metadata. These test/documentation changes do not touch a production hot path.
+Type checking passed; management and source-invariant tests passed 50 cases
+with one POSIX-only skip on Windows. Three additional runs passed all nine
+real-child progress cases with controlled-GC and lifecycle assertions.
+
 ## Rerun
 
 Set child TMP, TEMP and TMPDIR to an owned `.task-tmp/<task-id>-<unique-id>/`.
@@ -100,4 +114,5 @@ $env:SUPERPI_MXC_LIVE='1'
 $env:SUPERPI_SANDBOX_USE_DIST='1'
 node --experimental-strip-types --test --test-concurrency=1 tests/mxc-workspace-live.test.ts tests/sandbox-image-read-live.test.ts tests/subagent-parent-execution.test.ts
 node --experimental-strip-types scripts/bench/mxc-native-compare.ts 583ea2679359bf051ccc7ba96d6d1fa2b5b90552
+node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/subagent-management.test.ts tests/subagent-hot-paths.test.ts
 ```

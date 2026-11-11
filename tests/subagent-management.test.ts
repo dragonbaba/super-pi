@@ -683,11 +683,15 @@ for (const outcome of ["success", "fail", "cancel"] as const) test(`real child n
   const screen = () => stripVTControlCharacters((ui as unknown as { previousScreen: string[] }).previousScreen.join("\n"));
   for (let i = 0; !screen().includes("1 turn ↑1 ↓2") && i < 120; i++) await delay(25);
   assert.match(screen(), /1 turn ↑1 ↓2.*\$0\.0100.*read/); assert.equal(updates, 1);
-  const firstScreen = screen(), writes = terminal.writes.length;
-  await delay(1100);
-  assert.notEqual(screen(), firstScreen, "elapsed time advances while child is waiting and no protocol events arrive");
-  assert.ok(terminal.writes.length > writes); assert.equal(updates, 1);
   const leaf = (component as any).resultRendererComponent;
+  const refreshes = leaf.getLifecycleCounts().timerRefreshes;
+  const firstScreen = screen(), writes = terminal.writes.length;
+  // The interval and the integer elapsed-second display have independent phases.
+  // Observe a real repaint rather than assuming a fixed sleep crosses both.
+  for (let i = 0; screen() === firstScreen && i < 120; i++) await delay(25);
+  assert.notEqual(screen(), firstScreen, "elapsed time advances while child is waiting and no protocol events arrive");
+  assert.ok(leaf.getLifecycleCounts().timerRefreshes > refreshes, "the component timer invalidates without protocol events");
+  assert.ok(terminal.writes.length > writes); assert.equal(updates, 1);
   const weak = new WeakRef((component as any).rendererState.live);
   assert.equal(leaf.getLifecycleCounts().timers, 1);
   if (outcome === "success") {

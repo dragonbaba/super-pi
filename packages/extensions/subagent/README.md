@@ -7,8 +7,8 @@ Delegate tasks to specialized subagents with isolated context windows.
 - **Isolated context**: Each subagent runs in a separate `pi` process
 - **Status-only progress**: See whether each subagent is waiting, working, completed, or failed without exposing delegated task text or child output
 - **Shared scheduling**: Foreground and background calls share one bounded FIFO per session runtime
-- **Elapsed-time tracking**: Shows final runtime and passively refreshes running elapsed time whenever the parent UI already renders, without owning a repaint timer
-- **Usage tracking**: Shows the resolved model while running and final turns, tokens, cost, and context usage on completion
+- **Elapsed-time tracking**: Shows final runtime and refreshes running elapsed time with one component-owned timer while live rows are attached; completion, cache release and disposal stop the timer
+- **Usage tracking**: Shows the resolved model, compact turns, tokens, cost, context usage and latest tool name while running, and retains the final summary on completion
 - **Explicit responsibilities**: Every task requires scope, a verifiable deliverable and a stop condition; no token or turn quotas
 - **Managed background work**: Task IDs, status/list/wait/cancel, one completion notification per batch, and session-owned cleanup
 - **Abort support**: Ctrl+C propagates to kill subagent processes
@@ -147,7 +147,7 @@ objective. See [checkpoint and handoff details](../../../docs/background-tasks.m
 - Batch completion counts plus waiting/working/failed counts
 - Per-agent status icon (○/⏳/✓/✗), role name, and elapsed runtime
 - Model and usage stats: `model: provider/model · 3 turns ↑input ↓output RcacheRead WcacheWrite $cost ctx:contextTokens`
-- No delegated task text, child tool calls, child output, or raw timeout/error body; Ctrl+O does not reveal them
+- The latest child tool name is compact status metadata; delegated task text, tool arguments/results, child output and raw timeout/error bodies stay hidden, including with Ctrl+O
 
 **Parallel mode streaming**:
 - Shows every agent with live status (○ waiting, ⏳ working, ✓ completed, ✗ failed)
@@ -156,7 +156,7 @@ objective. See [checkpoint and handoff details](../../../docs/background-tasks.m
 - Returns each completed task's final output to the parent model, capped at 50 KB per task
 - Bounds retained task/details data and throws structured Pi tool errors for validation, trust, cancellation, and child failures
 - Preserves bounded stderr/startup diagnostics internally for parent-model error handling, but never renders those bodies in the user-facing status card
-- Keeps repaint work bounded: result states are counted in one pass and status strings are built directly without per-repaint collection arrays; running elapsed text passively updates only during already-requested parent UI renders and never starts a periodic invalidation timer
+- Keeps repaint work bounded: result states are counted in one pass and status strings are built directly without per-repaint collection arrays; one stable timer callback refreshes attached live rows once per second without publishing protocol updates. Completion and cache release clear the timer, live owner and invalidator
 
 ## Agent Definitions
 
