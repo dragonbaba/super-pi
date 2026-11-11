@@ -12,15 +12,28 @@ import { parseSandboxNetwork, type SandboxNetwork, type SandboxNetworkSession } 
 import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
 import { SandboxToolchains } from "./mxc-toolchains.mjs";
 import { MxcProcess } from "./mxc-process.ts";
+import { IMAGE_LIMIT, READ_LINES, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, FILE_PROTOCOL_LIMIT, normalizeReadOffset, normalizeReadLimit } from "./mxc-file-limits.mjs";
 
 export interface WorkspaceSandboxOptions {
   settings?: { include?: string[]; exclude?: string[] }; powershellPath?: string;
   network?: SandboxNetwork; networkSession?: SandboxNetworkSession; directories?: readonly string[];
 }
 export interface WorkspaceArtifact { name: string; bytes: number; sha256: string; }
+export interface WorkspaceRead {
+  version: 1; offset: number; limit: number; windowComplete: boolean; hasMore: boolean; lineTruncated: boolean;
+  returnedLines: number; incompleteLine?: number; nextOffset?: number;
+}
+export interface WorkspaceSearch {
+  version: 1; operation: "ls" | "find" | "grep"; outputMode: "content" | "files";
+  scanComplete: boolean; coverageComplete: boolean; outputTruncated: boolean; excerptTruncated: boolean;
+  stopReason: "none" | "row-limit" | "text-limit" | "entry-limit";
+  visitedEntries: number; scannedFiles: number; observedRecords: number; returnedRecords: number; outputUnits: number;
+  skippedTooLarge: number; skippedNonUtf8: number; skippedNul: number; excludedProtected: number; excludedLinks: number;
+}
 export interface WorkspaceReply {
   id: string; ok: boolean; text?: string; snapshot?: string; error?: string; noEffects?: boolean; phase?: string;
   image?: { mimeType: string; artifact: WorkspaceArtifact };
+  read?: WorkspaceRead; search?: WorkspaceSearch;
   execution?: { exitCode: number; timedOut: boolean; closed: boolean; stdout: string; stderr: string; truncated?: boolean };
 }
 export class WorkspaceOperationError extends Error {
@@ -30,11 +43,61 @@ export class WorkspaceOperationError extends Error {
 export const HOST_PATH_WORKSPACE = 0, HOST_PATH_TOOL = 1, HOST_PATH_HOST_ONLY = 2;
 const EXECUTOR_SHA256 = "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a";
 const ARTIFACT_NAME = /^[a-f0-9]{32}-0\.bin$/;
+const COMMAND_OUTPUT_BYTES = 32768; // Byte-ring capacity, independent of the file body's UTF-16 budget.
+const READ_FACT_KEYS = new Set(["version", "offset", "limit", "windowComplete", "hasMore", "lineTruncated", "returnedLines", "incompleteLine", "nextOffset"]);
+const SEARCH_FACT_KEYS = new Set(["version", "operation", "outputMode", "scanComplete", "coverageComplete", "outputTruncated", "excerptTruncated", "stopReason",
+  "visitedEntries", "scannedFiles", "observedRecords", "returnedRecords", "outputUnits", "skippedTooLarge", "skippedNonUtf8", "skippedNul", "excludedProtected", "excludedLinks"]);
 // Fixed transport initialization; the caller's command body is neither parsed nor rewritten.
 const POWERSHELL_UTF8 = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding;\n";
 const require = createRequire(import.meta.url);
 let executorPath: Promise<string> | undefined;
 function need(value: unknown, reason: string): asserts value { if (!value) throw new Error("[SANDBOX_MXC] " + reason); }
+function integer(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= maximum;
+}
+function validateFactKeys(facts: object, allowed: ReadonlySet<string>, error: string): void {
+  // One key array per bounded JSON reply. The scan and per-line paths never allocate it.
+  const keys = Object.keys(facts);
+  need(keys.length <= allowed.size, error);
+  for (let index = 0; index < keys.length; index++) need(allowed.has(keys[index]!), error);
+}
+function validateFileFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
+  if (operation === "read" && !reply.image) {
+    const r = reply.read;
+    need(r && typeof r === "object" && r.version === 1 && r.offset === normalizeReadOffset(input.offset)
+      && Number.isInteger(r.offset) && r.offset >= 1
+      && r.limit === normalizeReadLimit(input.limit) && integer(r.limit, READ_LINES)
+      && typeof r.windowComplete === "boolean" && typeof r.hasMore === "boolean" && typeof r.lineTruncated === "boolean"
+      && integer(r.returnedLines, r.limit), "Invalid read facts");
+    validateFactKeys(r, READ_FACT_KEYS, "Unexpected read facts field");
+    need(r.incompleteLine === (r.lineTruncated ? r.offset + r.returnedLines : undefined)
+      && r.nextOffset === (r.hasMore && !r.lineTruncated && r.returnedLines > 0 ? r.offset + r.returnedLines : undefined)
+      && (!r.lineTruncated || r.hasMore && r.returnedLines < r.limit)
+      && (!r.hasMore || r.lineTruncated || r.returnedLines > 0 || r.limit === 0)
+      && (Number.isSafeInteger(r.offset) || !r.hasMore && r.returnedLines === 0)
+      && r.windowComplete === (!r.lineTruncated && (r.returnedLines === r.limit || !r.hasMore)), "Inconsistent read facts");
+  } else need(reply.read === undefined, "Unexpected read facts");
+  if (operation === "ls" || operation === "find" || operation === "grep") {
+    const s = reply.search;
+    need(s && typeof s === "object" && s.version === 1 && s.operation === operation
+      && s.outputMode === (operation === "grep" ? "content" : "files")
+      && typeof s.scanComplete === "boolean" && typeof s.coverageComplete === "boolean"
+      && typeof s.outputTruncated === "boolean" && typeof s.excerptTruncated === "boolean"
+      && (s.stopReason === "none" || s.stopReason === "row-limit" || s.stopReason === "text-limit" || s.stopReason === "entry-limit")
+      && integer(s.visitedEntries, SEARCH_ENTRIES) && integer(s.scannedFiles, SEARCH_ENTRIES + 1)
+      && integer(s.observedRecords, SEARCH_ROWS + 1) && integer(s.returnedRecords, SEARCH_ROWS) && integer(s.outputUnits, TEXT_LIMIT)
+      && integer(s.skippedTooLarge, s.scannedFiles) && integer(s.skippedNonUtf8, s.scannedFiles) && integer(s.skippedNul, s.scannedFiles)
+      && integer(s.excludedProtected) && integer(s.excludedLinks), "Invalid search facts");
+    validateFactKeys(s, SEARCH_FACT_KEYS, "Unexpected search facts field");
+    need(s.scanComplete === (s.stopReason === "none")
+      && s.coverageComplete === (s.scanComplete && s.skippedTooLarge + s.skippedNonUtf8 + s.skippedNul === 0)
+      && s.skippedTooLarge + s.skippedNonUtf8 + s.skippedNul <= s.scannedFiles
+      && s.observedRecords === s.returnedRecords + (s.outputTruncated ? 1 : 0)
+      && (s.stopReason !== "row-limit" || s.returnedRecords === SEARCH_ROWS) && s.outputUnits >= s.returnedRecords
+      && s.outputTruncated === (s.stopReason === "row-limit" || s.stopReason === "text-limit")
+      && (!s.excerptTruncated || operation === "grep" && s.outputMode === "content" && s.returnedRecords > 0), "Inconsistent search facts");
+  } else need(reply.search === undefined, "Unexpected search facts");
+}
 async function officialExecutor(): Promise<string> {
   need(process.platform === "win32" && process.arch === "x64", "MXC currently requires Windows x64; no host or VM fallback");
   let manifest: string;
@@ -97,6 +160,7 @@ export class WorkspaceSandboxBackend {
       need(stat.isDirectory(), "Workspace is not a directory"); this.roots.push(canonical); this.identities.push(stat.dev + ":" + stat.ino);
     }
     for (const [url, name] of [[new URL("./mxc-file-worker.mjs", import.meta.url), "worker.mjs"],
+      [new URL("./mxc-file-limits.mjs", import.meta.url), "mxc-file-limits.mjs"],
       [new URL("../../utils/image-signature.mjs", import.meta.url), "image-signature.mjs"]] as const)
       await fs.copyFile(fileURLToPath(url), path.join(this.tools, name), fs.constants.COPYFILE_EXCL);
     await fs.writeFile(path.join(this.tools, "package.json"), '{"type":"module"}', { flag: "wx" });
@@ -177,16 +241,17 @@ export class WorkspaceSandboxBackend {
       const file = path.join(this.tools!, "request.json"); await fs.writeFile(file, request); args = [process.execPath, path.join(this.tools!, "worker.mjs"), file];
     }
     this.calls++;
-    const result = await this.runner.run(this.executable!, [policy, "--", ...args], canonicalCwd, this.executorEnvironment(), signal, timeout, shell ? 32768 : 256 * 1024);
+    const result = await this.runner.run(this.executable!, [policy, "--", ...args], canonicalCwd, this.executorEnvironment(), signal, timeout, shell ? COMMAND_OUTPUT_BYTES : FILE_PROTOCOL_LIMIT);
     if (shell) return { id, ok: !result.timedOut, phase: "execution", error: result.timedOut ? "Command timed out; completed effects are not rolled back" : undefined,
       text: (result.stdout + (result.stderr ? "\n" + result.stderr : "") || "(no output)") + (result.truncated ? "\n[Output tail truncated]" : ""),
       execution: { exitCode: result.code, timedOut: result.timedOut, closed: true, stdout: result.stdout, stderr: result.stderr, truncated: result.truncated } };
     need(!result.timedOut && !result.truncated && !result.stderr, "File worker failed: " + result.stderr);
     let reply: WorkspaceReply;
     try { reply = JSON.parse(result.stdout); } catch { throw new Error("[SANDBOX_MXC] Incomplete file result: " + result.stdout.slice(0, 2000)); }
-    need(reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
+    need(reply && typeof reply === "object" && reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
     if (!reply.ok) throw new WorkspaceOperationError(reply);
     need(result.code === 0 && typeof reply.text === "string", "Invalid file result");
+    validateFileFacts(reply, operation, input);
     if (reply.image) { need(operation === "read" && reply.image.artifact.name === id + "-0.bin", "Unexpected image artifact"); this.artifacts.add(reply.image.artifact.name); }
     return reply;
   }
@@ -199,7 +264,7 @@ export class WorkspaceSandboxBackend {
   }
   async candidate(artifact: WorkspaceArtifact): Promise<Buffer> {
     need(this.exchange && this.artifacts.has(artifact.name) && ARTIFACT_NAME.test(artifact.name)
-      && Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= 16 * 1024 * 1024, "Invalid image artifact");
+      && Number.isSafeInteger(artifact.bytes) && artifact.bytes > 0 && artifact.bytes <= IMAGE_LIMIT, "Invalid image artifact");
     const file = path.join(this.exchange, artifact.name), stat = await fs.lstat(file, { bigint: true });
     need(stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1n && stat.size === BigInt(artifact.bytes) && await fs.realpath(file) === file, "Image artifact changed");
     const handle = await fs.open(file, "r");

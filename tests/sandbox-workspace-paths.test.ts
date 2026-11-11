@@ -17,7 +17,13 @@ test("production request translates in-workspace absolute paths without mutating
     const received: any[] = [];
     internal.runner.run = async () => {
         const request = JSON.parse(await fs.readFile(path.join(exchange, "request.json"), "utf8")); received.push(request);
-        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok"}),stderr:"",timedOut:false,truncated:false};
+        const read = request.operation === "read" ? { version: 1, offset: 1, limit: 2000, windowComplete: true,
+            hasMore: false, lineTruncated: false, returnedLines: 1 } : undefined;
+        const search = request.operation === "ls" ? { version: 1, operation: "ls", outputMode: "files", scanComplete: true, coverageComplete: true,
+            outputTruncated: false, excerptTruncated: false, stopReason: "none", visitedEntries: 0, scannedFiles: 0,
+            observedRecords: 0, returnedRecords: 0, outputUnits: 0, skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0,
+            excludedProtected: 0, excludedLinks: 0 } : undefined;
+        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok",read,search}),stderr:"",timedOut:false,truncated:false};
     };
     try {
         const input = Object.freeze({ path: path.join(root, "src", "example.txt") });

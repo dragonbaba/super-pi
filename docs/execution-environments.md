@@ -28,9 +28,9 @@
 
 | 边界 | 当前上限/行为 |
 | --- | --- |
-| 文本读取 | 单文件 2 MiB；单次至多 2,000 行和 32,768 字符，返回 SHA-256 snapshot |
+| 文本读取 | 单文件 2 MiB（字节）；单次至多 2,000 行和 32,768 UTF-16 code units 正文；返回完整文件字节的 SHA-256 snapshot |
 | 图片读取 | 按签名识别 JPEG、PNG、GIF、WebP、BMP；单图 16 MiB，独立字节附件，不放进 stdout/base64 文本窗口 |
-| 搜索 | `ls` / `find` / `grep`，字面子串；200 条结果、32,768 字符（含路径与分隔符）、单次 20,000 项遍历预算；完整 JSON 保持在 256 KiB 内，达到预算返回截断提示，不阻止其他读取或命令 |
+| 搜索 | `ls` 列路径，`find` / `grep` 为字面子串；200 条记录、32,768 UTF-16 code units 正文（含路径与分隔符）、20,000 遍历项；grep 单行前缀最多 256 UTF-16 code units；完整 JSON 加换行在 256 KiB 字节内；达到预算应缩小范围 |
 | 文本修改 | 单文件写入/编辑 1 MiB；覆盖和编辑需要当前 `read` snapshot；原子替换前校验版本 |
 | 文件移动/批量 | 文件移动不覆盖目标；每批最多 16 项，可含不同工作区；跨工作区 move 不隐式复制删除；失败可能已有部分操作完成 |
 | 命令 | 原样传入 PowerShell 7；默认 30 秒、最多 120 秒；串行执行；stdout/stderr 各保留末尾 32 KiB |
@@ -38,6 +38,18 @@
 | 网络和 UI | 默认禁网；按用户决定共享宿主剪贴板；独立 desktop，禁用输入注入；模型 provider 仍在宿主通信 |
 
 `target`、`.venv`、`__pycache__`、`node_modules` 都是普通工作区目录：已有内容可访问，新内容留在宿主项目。`sandboxPrivateDirectories` 和“仅 VM 保留、不写回”的规则已退役，旧字段不再生效。关闭会话只清理本次运行器的临时资源，不删除工作区依赖和产物。命令失败、超时或取消不回滚已发生的修改，也不自动重跑。
+
+### 文件结果的完整性
+
+成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。
+
+MXC `grep` 逐匹配行输出有界前缀，`observedRecords/returnedRecords` 以匹配行为单位。返回中没有全项目精确总量或搜索游标。缩小范围可以处理遍历或输出早停。过大、非 UTF-8 或含 NUL 的文件需要适合其容量和编码的读取方式。
+
+`visitedEntries` 沿用遍历计数：不计初始范围本身及受保护/链接排除项；`scannedFiles` 是 grep 实际检查资格的普通文件候选数，含容量/编码跳过项。`excludedProtected/excludedLinks` 只计实际遇到的排除项，不估计其子树。`outputUnits` 是正文预算占用，每条记录保守预留一个分隔符，不含状态前缀，也不是 JSON 字节数。
+
+`details.read` 的版本为 1；`offset/limit` 表示本次有效请求窗口，`returnedLines` 只计完整返回的物理行。`windowComplete` 与 `hasMore` 独立：完整返回请求的 10 行后，文件仍可有更多内容。输出预算在完整行边界停下时提供 `nextOffset`。只有 LF 或 CRLF 终止符未容纳时，已完整显示的行可以从下一行续读；切在行中时设置 `lineTruncated/incompleteLine`，不提供会跳过未显示后缀的续读位置。现有行号参数不能恢复这种长行后缀。Unicode 裁剪不切坏 surrogate pair。图片保留独立分支，不带文本行字段。
+
+覆盖缺口、扫描早停、输出省略及行内裁剪也会在正文前部提示；完整的小结果保持简洁。CodeMode 的 ref 和模型输出预算仍独立生效，不能用其 `resultComplete` 推断整个工作区已被搜索。
 
 原生文件覆盖/编辑使用内容 snapshot；直接命令遵循程序自身写入行为。PowerShell 启动只为本进程设置脚本执行策略和固定 UTF-8 输出初始化，不修改系统策略，不分析或改写用户命令主体。正文通过受控、沙箱内只读的临时脚本文件传入，避免 Windows 命令行长度限制；PowerShell 从该文件创建并执行 ScriptBlock，保留显式退出码。正常退出的命令保留真实退出码，即使非零也不抛成工具异常，编译或测试的非零仍表示未通过。启动、超时、协议或清理失败保留为执行错误。
 

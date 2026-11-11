@@ -1,0 +1,11 @@
+export const FILE_LIMIT: number;
+export const IMAGE_LIMIT: number;
+export const READ_LINES: number;
+export const SEARCH_ROWS: number;
+export const SEARCH_ENTRIES: number;
+export const TEXT_LIMIT: number;
+export const SEARCH_EXCERPT: number;
+export const FILE_PROTOCOL_LIMIT: number;
+export const SEARCH_CLIPPED_MARK: string;
+export function normalizeReadOffset(offset: unknown): number;
+export function normalizeReadLimit(limit: unknown): number;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { mxcFileFixture } from "./helpers/mxc-file-fixture.ts";
 
@@ -80,5 +81,21 @@ test("MXC search keeps the complete JSON response within the transport budget", 
   const reply = f.invoke("grep", { path: scope, pattern: "中" });
   assert.equal(reply.ok, true); assert.match(reply.text, /Results truncated/);
   assert.ok(Buffer.byteLength(JSON.stringify(reply)) + 1 <= 256 * 1024);
-  assert.ok(reply.text.startsWith(scope));
+  assert.ok(reply.text.startsWith("[Search status:")); assert.ok(reply.text.includes(scope));
+});
+
+test("packaged controlled worker loads its real module assets and emits facts (host process, not isolation)", t => {
+  const f = mxcFileFixture(t);
+  const dist = new URL("../packages/coding-agent/dist/", import.meta.url);
+  for (const [source, name] of [["core/sandbox/mxc-file-worker.mjs", "worker.mjs"],
+    ["core/sandbox/mxc-file-limits.mjs", "mxc-file-limits.mjs"], ["utils/image-signature.mjs", "image-signature.mjs"]])
+    fs.copyFileSync(new URL(source!, dist), path.join(f.runtime, name!));
+  fs.writeFileSync(path.join(f.input, "hits"), "needle needle\nneedle");
+  const request = path.join(f.runtime, "request.json");
+  fs.writeFileSync(request, JSON.stringify({ id: "dist", workspaces: [f.input], exchange: f.exchange, mode: "read-only", operation: "grep",
+    input: { pattern: "needle" } }));
+  const result = spawnSync(process.execPath, [path.join(f.runtime, "worker.mjs"), request], { encoding: "utf8", timeout: 5000,
+    env: { ...process.env, TMP: f.root, TEMP: f.root, TMPDIR: f.root } });
+  assert.equal(result.status, 0, result.stderr); const reply = JSON.parse(result.stdout);
+  assert.equal(reply.ok, true); assert.equal(reply.search.outputMode, "content"); assert.equal(reply.search.coverageComplete, true); assert.equal(reply.text, "hits:1:needle needle\nhits:2:needle");
 });

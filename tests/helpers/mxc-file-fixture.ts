@@ -10,11 +10,13 @@ import type { WorkspaceSandboxTools } from "../../packages/coding-agent/src/core
 import { workspaceInput } from "../../packages/coding-agent/src/core/sandbox/workspace-paths.ts";
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from "../../packages/coding-agent/src/utils/image-signature.mjs";
 import { removeOwnedFixture } from "./owned-fixture-cleanup.ts";
+import * as limits from "../../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 
 // Exercise the actual controlled worker without claiming this fixture proves OS isolation.
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
-const body = source.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText(source)).join("\n");
-const execute = new Function("fs", "path", "createHash", "randomUUID", "isUtf8", "process", "console", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", body);
+const body = "const { FILE_LIMIT, IMAGE_LIMIT, READ_LINES, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, normalizeReadOffset, normalizeReadLimit } = limits;\n"
+  + source.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText(source)).join("\n");
+const execute = new Function("fs", "path", "createHash", "randomUUID", "isUtf8", "process", "console", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "limits", body);
 
 export function mxcFileFixture(t: TestContext, temporary = os.tmpdir()) {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(temporary, "mxc-file-")));
@@ -29,7 +31,7 @@ export function mxcFileFixture(t: TestContext, temporary = os.tmpdir()) {
       exchange, mode, operation, input: inputArgs, maxWriteBytes: 1024 * 1024 }));
     let reply: any;
     execute(io, path, createHash, randomUUID, isUtf8, { argv: ["node", "worker", requestFile], exitCode: 0 },
-      { log(text: string) { reply = JSON.parse(text); } }, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES);
+      { log(text: string) { reply = JSON.parse(text); } }, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES, limits);
     return reply;
   }
   function attach(owner: WorkspaceSandboxTools, mode: string) {
@@ -45,5 +47,6 @@ export function mxcFileFixture(t: TestContext, temporary = os.tmpdir()) {
     };
     return backend;
   }
-  return { root, input, additional, runtime, exchange, invoke, attach };
+  return { root, input, additional, runtime, exchange, invoke, attach,
+    cleanupWith(close: () => Promise<void>) { cleanup = close; } };
 }

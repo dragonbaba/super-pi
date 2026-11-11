@@ -45,7 +45,8 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`sandbox ${mode
     assert.equal(fs.readdirSync(f.exchange).filter(name => name.endsWith(".bin")).length, 0);
   }
   const text = await f.read({ path: "notes.png", offset: 2, limit: 1 });
-  assert.equal(text.content.length, 1); assert.match((text.content[0] as any).text, /^second\n\n\[Snapshot: [a-f0-9]{64}\]$/);
+  assert.equal(text.content.length, 1); assert.match((text.content[0] as any).text, /^\[Read window complete; more lines available; nextOffset=3\.\]\nsecond\n\n\[Snapshot: [a-f0-9]{64}\]$/);
+  assert.equal((text.details as any).read.windowComplete, true); assert.equal((text.details as any).read.hasMore, true);
   assert.equal(f.discarded, 0);
 });
 

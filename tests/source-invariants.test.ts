@@ -5,6 +5,7 @@ import test from "node:test";
 import ts from "typescript";
 import { isUtf8 } from "node:buffer";
 import { MAX_WRITE_BYTES } from "../packages/coding-agent/src/core/files/write-limits.ts";
+import * as limits from "../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 
 test("permission history and Escape navigation avoid repeated branch arrays and callback creation", () => {
   const policy = ts.createSourceFile("execution-policy.ts", readFileSync("packages/coding-agent/src/core/execution-policy.ts", "utf8"), ts.ScriptTarget.Latest, true);
@@ -35,23 +36,32 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
   const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "grepRows") as ts.FunctionDeclaration;
   assert.ok(helper);
   function inspect(node: ts.Node): void {
-    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isArrayLiteralExpression(node)
-      || ts.isObjectLiteralExpression(node) || ts.isNewExpression(node) || ts.isAwaitExpression(node), false, node.getText(source));
-    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /\.split$/);
+    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
+      || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isNewExpression(node)
+      || ts.isAwaitExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
+    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /(?:\.(?:split|bind|then|catch|finally)|^RegExp)$/);
     ts.forEachChild(node, inspect);
   }
-  inspect(helper.body!);
-  const append = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "appendSearchRow") as ts.FunctionDeclaration;
-  inspect(append.body!);
+  const functions = source.statements.filter(node => ts.isFunctionDeclaration(node)
+    && ["grepRows", "appendSearchRow", "stopSearch", "safeTextEnd", "searchFacts"].includes(node.name?.text ?? "")) as ts.FunctionDeclaration[];
+  assert.equal(functions.length, 5);
+  for (const fn of functions) if (fn.name!.text !== "searchFacts") inspect(fn.body!);
+  const window = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "readWindow") as ts.FunctionDeclaration;
+  assert.ok(window);
+  for (const statement of window.body!.statements) if (ts.isWhileStatement(statement) || ts.isForStatement(statement)) inspect(statement);
+  const owner = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "search") as ts.FunctionDeclaration;
+  assert.match(owner.getText(source), /finally\s*\{\s*pending\.length = 0;\s*rows\.length = 0;/);
+  assert.doesNotMatch(owner.getText(source), /\.split\(|\.map\(|\.filter\(|JSON\.stringify|new (?:Map|Set|Promise|AbortController)/);
   // Execute the actual pure worker helpers without starting an isolated process.
-  const search = new Function("SEARCH_ROWS", append.getText(source) + "\n" + helper.getText(source) + "\nreturn grepRows;")(200);
+  const { grepRows: search, searchFacts } = new Function("limits", "const {SEARCH_ROWS,TEXT_LIMIT,SEARCH_EXCERPT,SEARCH_CLIPPED_MARK}=limits;\n"
+    + functions.map(node => node.getText(source)).join("\n") + "\nreturn {grepRows,searchFacts};")(limits);
   function measure(text: string, pattern: string) {
     let patternScans = 0, lineScans = 0, slices = 0; const rows: string[] = [];
     const input = { length: text.length, indexOf(value: string, start?: number) {
       if (value === "\n") lineScans++; else patternScans++;
       return text.indexOf(value, start);
-    }, slice(start: number, end: number) { slices++; return text.slice(start, end); } };
-    search(input, pattern, "file", rows, 32768); return { patternScans, lineScans, slices, rows };
+    }, charCodeAt(index: number) { return text.charCodeAt(index); }, slice(start: number, end: number) { slices++; return text.slice(start, end); } };
+    const state = searchFacts("grep"); search(input, pattern, "file", rows, state); return { patternScans, lineScans, slices, rows, state };
   }
   const absent = measure("plain\n".repeat(100000), "missing");
   assert.equal(absent.patternScans, 1); assert.equal(absent.lineScans, 0); assert.equal(absent.slices, 0);
@@ -59,6 +69,7 @@ test("sandbox literal search scans monotonically and bounds rows without line ar
   assert.equal(tail.patternScans, 2); assert.equal(tail.lineScans, 100001); assert.deepEqual(tail.rows, ["file:100001:needle"]);
   const dense = measure("hit\n".repeat(1000), "hit");
   assert.equal(dense.rows.length, 200); assert.equal(dense.slices, 200); assert.equal(dense.lineScans, 201);
+  assert.equal(dense.state.observedRecords, 201); assert.equal(dense.state.stopReason, "row-limit");
   t.diagnostic(JSON.stringify({ absentPatternScans: 1, tailPatternScans: 2, tailLineScans: 100001, maximumRows: 200, lineArrays: 0 }));
 });
 
