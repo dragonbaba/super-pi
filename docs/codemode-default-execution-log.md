@@ -1,5 +1,7 @@
 # 默认 Codemode 执行记录
 
+历史执行记录：下方分支、提交状态和验收数字仅适用 2026-10 基线，不代表当前仓库状态。当前文件修订、失败处理与交付状态见 [Codemode 使用说明](codemode.md)和 [A/B/C 实施记录](codemode-batch-revision-image-budget-plan.md)。
+
 本文件记录 [实施方案](codemode-default-execution-plan.md) 的实际进展和检查证据。目标是完成本地实现与审查后交由用户决定提交、推送及合并时间。
 
 ## 当前状态
