@@ -5,11 +5,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { WorkspaceSandboxBackend } from "../../packages/coding-agent/dist/core/sandbox/workspace-backend.js";
+type WorkspaceSandboxBackend = import("../../packages/coding-agent/src/core/sandbox/workspace-backend.ts").WorkspaceSandboxBackend;
 import type { MxcProcess } from "../../packages/coding-agent/src/core/sandbox/mxc-process.ts";
-import { windowsShellJobDiagnostics } from "../../packages/coding-agent/dist/utils/windows-shell-job.js";
+
 import { removeOwnedFixture } from "../../tests/helpers/owned-fixture-cleanup.ts";
 import { currentCommit } from "./benchmark.ts";
+
+const distRoot = "../../packages/coding-agent/dist/";
+const { WorkspaceSandboxBackend } = await import(distRoot + "core/sandbox/workspace-backend.js");
+const { windowsShellJobDiagnostics } = await import(distRoot + "utils/windows-shell-job.js");
 
 const BASELINE = "b9843f859441d9aa00a88c694cbd8f8a13f5ea56";
 const COMMIT_ID = /^[a-f0-9]{40}$/i;

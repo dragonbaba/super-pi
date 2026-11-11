@@ -62,7 +62,8 @@ lanes released all tracked references after four controlled GC cycles.
 
 ## Native acceptance and equivalent results
 
-The final 12-package build and type check passed. The final targeted run
+The final 12-package build and type check passed. Type checking also passed
+in a clean source archive with no generated dist files. The final targeted run
 passed 147/147 with zero skips. That includes all 17 tests in the native workspace, image and
 subagent files, with zero skips. In both permission modes the packaged MXC
 worker returned the expected status and projections. The workspace tests also

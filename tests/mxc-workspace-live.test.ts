@@ -15,7 +15,7 @@ const distRoot = "../packages/coding-agent/dist/core/";
 const SandboxTools: typeof WorkspaceSandboxTools = process.env.SUPERPI_SANDBOX_USE_DIST === "1"
   ? (await import(distRoot + "sandbox/workspace-tools.js")).WorkspaceSandboxTools : WorkspaceSandboxTools;
 const jobDiagnostics = process.env.SUPERPI_SANDBOX_USE_DIST === "1"
-  ? (await import("../packages/coding-agent/dist/utils/windows-shell-job.js")).windowsShellJobDiagnostics : windowsShellJobDiagnostics;
+  ? (await import(distRoot + "../utils/windows-shell-job.js")).windowsShellJobDiagnostics : windowsShellJobDiagnostics;
 const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
 
 for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mode}: PowerShell, files, protection and release`, { skip: !enabled, timeout: 60000 }, async t => {
