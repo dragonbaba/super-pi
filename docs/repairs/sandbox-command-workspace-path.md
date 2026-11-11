@@ -1,5 +1,7 @@
 # 沙箱命令与文件工具使用一致的项目路径
 
+> 历史记录。本文中的 Windows Sandbox VM 操作与验收命令已退役。当前 MXC 行为见[执行环境](../execution-environments.md)，旧脚本见[退役记录](../documentation-status.md#windows-sandbox-vm-retirement)。
+
 > 历史阶段记录：本文验收仅覆盖首次 cwd 修复。后续用户已修改会话恢复约定，并要求统一 Bash、多个工作区、持久 PATH 发现与二进制产物；当前实现与验收见[执行环境统一契约](execution-environment-contract.md)。下文未提供 Bash、不恢复手动权限、需新终端刷新 PATH 等结论描述该阶段旧实现，不再作为当前使用指令。
 
 日期：2026-11-05；基线：`db00e12a8e46513af91254e621cba205fed47a58`。接续 PR #227 后，用户要求继续核对同一 session，并明确要求解决 PowerShell 固定运行在 `C:\SuperPiWorkspace` 的问题。

@@ -63,7 +63,9 @@ and PowerShell 7. After `npm run build:offline`, set child `TMP`, `TEMP`, and
 `node --experimental-strip-types --test --test-concurrency=1 tests/mxc-workspace-live.test.ts`.
 Both read-only and sandbox-write must execute with zero skips. The tests cover
 PowerShell 7, direct workspace access, file protection and release of processes,
-streams, runtime roots and Job handles. Ordinary CI skips these live cases.
+streams, runtime roots and Job handles. The same live opt-in enables
+tests/sandbox-image-read-live.test.ts and the real MXC cases in
+tests/subagent-parent-execution.test.ts. Ordinary CI skips these live cases.
 The pre-MXC VM acceptance suite is archived in the [retirement record](documentation-status.md#windows-sandbox-vm-retirement).
 Relevant allocation measurements remain separate from ordinary CI:
 `node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts` and

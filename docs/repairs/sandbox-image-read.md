@@ -1,5 +1,7 @@
 # 沙箱图片读取契约
 
+> 历史记录。本文中的 Windows Sandbox VM 操作与验收命令已退役。当前 MXC 行为见[执行环境](../execution-environments.md)，旧脚本见[退役记录](../documentation-status.md#windows-sandbox-vm-retirement)。
+
 ## 证据与边界
 
 2026-11-05，同一问题会话核对至 824 行：PNG 产物写回成功，但 `read` 返回 `File is not UTF-8 text`。后续 shell base64 绕行返回 32,768 字符，且脚本把裸 base64 传给要求 data URI 的 `image()`，CodeMode 因参数格式报错；即使补上 URI，已截断的数据仍不可用。宿主预览 PNG 为 21,541 字节，contact PNG 为 52,102 字节；这里只记录必要事实，不保存私人会话或图片。

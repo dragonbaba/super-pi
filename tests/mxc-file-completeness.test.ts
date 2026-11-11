@@ -43,11 +43,13 @@ test("MXC entry budget stops without claiming an observed omitted match", t => {
 
 test("MXC marks long prefixes, preserves Unicode boundaries and budgets serialized JSON", t => {
   const f = mxcFileFixture(t);
-  fs.writeFileSync(path.join(f.input, "late"), "a".repeat(255) + "😀" + "needle");
-  const result = f.invoke("grep", { path: "late", pattern: "needle" });
-  assert.equal(result.search.excerptTruncated, true); assert.equal(result.search.scanComplete, true);
-  assert.equal(result.search.outputTruncated, false); assert.ok(result.text.split("\n")[1]?.endsWith(SEARCH_CLIPPED_MARK));
-  assert.equal(result.text.isWellFormed(), true);
+  for (const prefixLength of [251, 255]) {
+    fs.writeFileSync(path.join(f.input, "late"), "a".repeat(prefixLength) + "😀" + "needle");
+    const result = f.invoke("grep", { path: "late", pattern: "needle" });
+    assert.equal(result.search.excerptTruncated, true); assert.equal(result.search.scanComplete, true);
+    assert.equal(result.search.outputTruncated, false); assert.ok(result.text.split("\n")[1]?.endsWith(SEARCH_CLIPPED_MARK));
+    assert.equal(result.text.isWellFormed(), true);
+  }
   // Worst JSON escaping expands one UTF-16 unit to six bytes; no duplicate row payload.
   fs.writeFileSync(path.join(f.input, "escaped"), ("needle" + "\u0001\"\\😀".repeat(70) + "\n").repeat(200));
   const escaped = f.invoke("grep", { path: "escaped", pattern: "needle" });

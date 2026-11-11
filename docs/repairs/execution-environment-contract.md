@@ -1,5 +1,7 @@
 # 执行环境统一契约修复
 
+> 历史记录。本文中的 Windows Sandbox VM 操作与验收命令已退役。当前 MXC 行为见[执行环境](../execution-environments.md)，旧脚本见[退役记录](../documentation-status.md#windows-sandbox-vm-retirement)。
+
 ## 证据与约束
 
 - 基线：`db00e12a8e46513af91254e621cba205fed47a58`，加已有未提交的项目 cwd 修复；保留该改动并纳入整体验收。

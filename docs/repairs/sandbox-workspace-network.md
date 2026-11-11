@@ -1,5 +1,7 @@
 # Sandbox workspace paths and optional networking
 
+> Historical record. The Windows Sandbox VM procedures and acceptance commands below are retired. See [current MXC behavior](../execution-environments.md) and the [archive](../documentation-status.md#windows-sandbox-vm-retirement).
+
 ## Evidence and scope
 
 - Baseline: `24663237e2e1aebe403215c27f8e7fd9d89dc303` (PR #213).
@@ -23,7 +25,7 @@ Guest-installed `node_modules` stays private to the VM and is omitted from searc
 - A separate compiled-distribution probe used the reported real project, confirmed its empty host/guest contents, accepted its absolute `ls` path and resolved DNS. It made no project changes. Each VM closed with `pending=false`, `vm=false`, `sourceFiles=0`, `ownedArtifacts=0`.
 - An initial unrelated host-path fixture assumed TEMP and home shared a Windows drive. Its invalid `~/D:/...` spelling is now tested only where a home-relative path exists, with absolute-path coverage on every platform. Production host path rules did not change. A type annotation, fixture cleanup omission and scratch import typo were corrected before final acceptance; no failed run is counted as passing.
 
-Raw counters, hashes and compact receipts: [acceptance evidence](../evidence/sandbox-workspace-network-2026-11-04.json). Reproduction commands and live-test opt-in: [testing](../testing.md).
+Raw counters, hashes and compact receipts: [acceptance evidence](../evidence/sandbox-workspace-network-2026-11-04.json). The former VM acceptance entry points are in the [archive](../documentation-status.md#windows-sandbox-vm-retirement).
 
 ## Allocation and ownership audit
 

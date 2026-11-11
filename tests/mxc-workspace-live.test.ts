@@ -7,6 +7,7 @@ import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { FILE_LIMIT, TEXT_LIMIT } from "../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 import { windowsShellJobDiagnostics } from "../packages/coding-agent/src/utils/windows-shell-job.ts";
 
 const enabled = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
@@ -15,11 +16,17 @@ const SandboxTools: typeof WorkspaceSandboxTools = process.env.SUPERPI_SANDBOX_U
   ? (await import(distRoot + "sandbox/workspace-tools.js")).WorkspaceSandboxTools : WorkspaceSandboxTools;
 const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
 
-for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mode}: PowerShell, files, protection and release`, { skip: !enabled, timeout: 60000 }, async () => {
+for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mode}: PowerShell, files, protection and release`, { skip: !enabled, timeout: 60000 }, async t => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "mxc-live-")));
   const project = path.join(root, "项目 space"), additional = path.join(root, "Additional Space"), parent = path.join(root, "runtime");
   for (const directory of [project, additional, parent, path.join(project, ".git"), path.join(project, ".sp")]) await fs.mkdir(directory);
   await fs.writeFile(path.join(project, "input.txt"), "first\nsecond");
+  await fs.mkdir(path.join(project, "search")); await fs.mkdir(path.join(project, "gaps"));
+  await fs.writeFile(path.join(project, "search", "a.txt"), "needle needle\nneedle\n");
+  await fs.writeFile(path.join(project, "search", "b.txt"), "needle\n");
+  await fs.writeFile(path.join(project, "gaps", "large"), "x".repeat(FILE_LIMIT) + "needle");
+  await fs.writeFile(path.join(project, "long.txt"), "x".repeat(TEXT_LIMIT - 1) + "😀tail");
+  await fs.writeFile(path.join(project, "line-boundary.txt"), "x".repeat(TEXT_LIMIT) + "\r\nnext");
   await fs.writeFile(path.join(additional, "asset.txt"), "additional");
   for (const directory of [".git", ".sp"]) await fs.writeFile(path.join(project, directory, "protected"), "kept");
   const outside = path.join(root, "outside.txt"); await fs.writeFile(outside, "private");
@@ -37,13 +44,46 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
   }
   try {
     assert.equal(definitions.bash, undefined);
+    const firstStart = performance.now();
     const read = await invoke("read", { path: "input.txt", offset: 2, limit: 1 });
+    const firstReadMs = performance.now() - firstStart;
     assert.notEqual(read.isError, true, JSON.stringify(read)); assert.match(read.content[0].text, /^second/);
+    assert.equal(read.details.read.windowComplete, true); assert.equal(read.details.read.hasMore, false);
+    const warmStart = performance.now(), window = await invoke("read", { path: "input.txt", limit: 1 });
+    const reusedReadMs = performance.now() - warmStart;
+    assert.equal(window.details.read.windowComplete, true); assert.equal(window.details.read.hasMore, true); assert.equal(window.details.read.nextOffset, 2);
+    const clipped = await invoke("read", { path: "long.txt", limit: 1 });
+    assert.equal(clipped.details.read.lineTruncated, true); assert.equal(clipped.details.read.nextOffset, undefined);
+    assert.match(clipped.content[0].text, /^\[Read window incomplete:/); assert.equal(clipped.content[0].text.isWellFormed(), true);
+    const boundary = await invoke("read", { path: "line-boundary.txt", limit: 1 });
+    assert.equal(boundary.details.read.windowComplete, true); assert.equal(boundary.details.read.nextOffset, 2);
+    const continuation = await invoke("read", { path: "line-boundary.txt", offset: boundary.details.read.nextOffset });
+    assert.match(continuation.content[0].text, /^next/); assert.equal(continuation.details.snapshot, boundary.details.snapshot);
+    const eof = await invoke("read", { path: "input.txt", offset: Number.MAX_SAFE_INTEGER });
+    assert.equal(eof.isError, false); assert.equal(eof.details.read.returnedLines, 0); assert.equal(eof.details.read.hasMore, false);
+    const samples: { outputMode: string; milliseconds: number; resultBytes: number }[] = [];
+    for (const outputMode of ["content", "files", "count"]) {
+      const started = performance.now(), result = await invoke("grep", { path: "search", pattern: "needle", outputMode });
+      samples.push({ outputMode, milliseconds: performance.now() - started, resultBytes: Buffer.byteLength(JSON.stringify(result)) });
+      assert.equal(result.details.search.scanComplete, true); assert.equal(result.details.search.coverageComplete, true);
+      assert.equal(result.details.search.outputMode, outputMode);
+      const rows = result.content[0].text.split("\n");
+      if (outputMode === "files") assert.deepEqual(new Set(rows), new Set([path.join("search", "a.txt"), path.join("search", "b.txt")]));
+      if (outputMode === "count") assert.deepEqual(new Set(rows), new Set([path.join("search", "a.txt") + ":2", path.join("search", "b.txt") + ":1"]));
+      if (outputMode === "content") assert.equal(rows.length, 3);
+    }
+    const gap = await invoke("grep", { path: "gaps", pattern: "needle" });
+    assert.equal(gap.details.search.scanComplete, true); assert.equal(gap.details.search.coverageComplete, false);
+    assert.equal(gap.details.search.skippedTooLarge, 1); assert.match(gap.content[0].text, /Unchecked content remains/);
+    assert.match(gap.content[0].text, /Inspect known skipped paths/);
+    assert.doesNotMatch(gap.content[0].text, /Narrow the search scope/);
     const asset = await invoke("read", { path: path.join(additional.toUpperCase(), "asset.txt") });
     assert.notEqual(asset.isError, true, JSON.stringify(asset)); assert.match(asset.content[0].text, /additional/);
     const command = await invoke("powershell", { command: "[Console]::Write($PSVersionTable.PSVersion.Major); node --version; npm --version" });
     assert.equal(command.details.execution.exitCode, 0, JSON.stringify(command)); assert.match(command.details.execution.stdout, /^7v/);
     assert.equal(command.details.execution.stderr, "");
+    t.diagnostic(JSON.stringify({ mode, dist: process.env.SUPERPI_SANDBOX_USE_DIST === "1", windows: os.release(), node: process.version,
+      mxcSdk: "1.0.1 (validated by backend)", powershellMajor: 7, firstReadMs, reusedReadMs, samples }));
     const longScript = await invoke("powershell", { command: "#" + "中文".repeat(6500) + "\n[Console]::Write('long script 中文')" });
     assert.equal(longScript.details.execution.exitCode, 0, JSON.stringify(longScript));
     assert.equal(longScript.details.execution.stdout, "long script 中文");
