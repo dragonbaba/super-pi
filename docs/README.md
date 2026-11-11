@@ -2,6 +2,8 @@
 
 这里按读者要完成的任务组织 Super Pi 文档。根目录的 [README](../README.md) 是当前源码运行方式、能力状态和限制的入口；[English README](../README.md) 与 [中文 README](../README.zh-CN.md) 共享同一组事实。
 
+文档的当前、已交付历史、退役历史与待核对状态见[文档状态](documentation-status.md)。
+
 ## 开始使用
 
 - [项目首页（English）](../README.md)：定位、快速开始、认证、模型选择、目标项目启动方式和边界。

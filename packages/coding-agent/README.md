@@ -48,12 +48,14 @@ Exit restores the terminal as it was before Super Pi started and leaves only the
 
 ## PowerShell on Windows
 
-Start with `superpi`, then use `/permissions` to choose read-only in Sandbox,
-Sandbox read/write (default), or full host read/write. Switching preserves the
-conversation and drains the previous runtime; host access requires an explicit
-choice and is not inherited by a new session. See
+Start with `superpi`, then use `/permissions` to choose MXC read-only,
+MXC sandbox read/write (default), host restricted, host restricted with Auto
+approval, or full host access. Switching preserves the conversation and drains
+the previous runtime; host access requires an explicit choice and is not
+inherited by a new session. MXC directly accesses authorized workspaces and
+requires PowerShell 7, without shell or host fallback. See
 [execution environments and permissions](../../docs/execution-environments.md)
-for the PowerShell 5.1 workspace, guarded file publication, capacity limits,
+for workspace access, capacity limits,
 prerequisites, and migration from existing settings. The executable selection
 below applies to host PowerShell execution.
 

@@ -34,9 +34,8 @@ output never interleaves, and the runner does not hold child output in memory.
 focused work; they are not an additional validation chain before `npm test`.
 The root runner invokes the memory workspace's existing Node test directly
 against the preceding build. Its standalone workspace test still builds when
-that package is tested independently. The 16 frozen Windows Sandbox acceptance
-entries are explicitly excluded from ordinary discovery; real VM replays and
-allocation benchmarks are not extra CI steps. `--keep-going` is an explicit
+that package is tested independently. Native MXC acceptance and allocation
+benchmarks are opt-in and run separately from ordinary CI. `--keep-going` is an explicit
 diagnostic option; routine CI stays fail-fast.
 
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
@@ -57,22 +56,18 @@ elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
 
-Workspace Sandbox path/network acceptance is opt-in on the supported Windows host.
-After `npm run build:offline`, set child `TMP`, `TEMP`, and `TMPDIR` to an owned
-`.task-tmp/<task-id>/` directory, set `SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE=1` and
-`SUPERPI_SANDBOX_USE_DIST=1`, then run
-`node --expose-gc --experimental-strip-types --test tests/windows-sandbox-workspace-live.test.mjs`.
-It checks project-relative/absolute access, offline DNS/HTTPS failure, enabled
-DNS/HTTPS access, and installs the fixed public `is-number@7.0.0` fixture inside
-the VM with scripts disabled. It closes both VMs and verifies host files remain
-unchanged. A separate active case warms an offline VM, cancels a physically
-launched execution CLI, then joins repeated close calls. It verifies the owned VM
-is absent, every owned CLI has settled, and workspace references/artifacts are
-released. Physical CLI launch does not prove the guest command has entered.
-Ordinary CI skips these VM cases. Path allocation sampling is separate:
-`node --expose-gc scripts/bench/sandbox-workspace-paths.mjs`; the existing
-`scripts/bench/sandbox-session-allocations.mjs` measures output and permission
-lifecycles. Neither measurement is an extra default CI step.
+MXC acceptance is opt-in on Windows x64 with native ProcessContainer support
+and PowerShell 7. After `npm run build:offline`, set child `TMP`, `TEMP`, and
+`TMPDIR` to an owned `.task-tmp/<task-id>-<unique-id>/` directory, set
+`SUPERPI_MXC_LIVE=1` and `SUPERPI_SANDBOX_USE_DIST=1`, then run
+`node --experimental-strip-types --test --test-concurrency=1 tests/mxc-workspace-live.test.ts`.
+Both read-only and sandbox-write must execute with zero skips. The tests cover
+PowerShell 7, direct workspace access, file protection and release of processes,
+streams, runtime roots and Job handles. Ordinary CI skips these live cases.
+The pre-MXC VM acceptance suite is archived in the [retirement record](documentation-status.md#windows-sandbox-vm-retirement).
+Relevant allocation measurements remain separate from ordinary CI:
+`node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts` and
+`node --expose-gc --experimental-strip-types scripts/bench/mxc-output.ts`.
 
 - The parallel raw-result matrix contains 8 cases instead of 18: both renderers
   retain projection on/off with 8 concurrent calls, plus 129-call insufficient

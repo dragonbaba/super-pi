@@ -430,9 +430,8 @@ test("native worker actions and message dispatch use module functions with expli
   }
 });
 
-test("sandbox stream callbacks and repeated native permission checks allocate no application wrappers", () => {
+test("repeated native permission checks allocate no application wrappers", () => {
   const targets = [
-    ["scripts/acceptance/windows-sandbox-lifecycle.mjs", "CapturedProcess", ["onOut", "onErr"]],
     ["packages/coding-agent/src/core/execution-policy.ts", "SessionExecutionPolicy", ["assertWorkspace"]],
     ["packages/coding-agent/src/core/extensions/runner.ts", "OrdinaryToolEpoch", ["consume", "release"]],
   ] as const;

@@ -9,26 +9,6 @@ const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, "..");
 const DEFAULT_TEST_ROOT = resolve(REPOSITORY_ROOT, "tests");
 const TEST_FILE_PATTERN = /\.test\.(?:[cm]?[jt]s)$/;
-// Frozen, individually reviewed acceptance entries stay discoverable as evidence,
-// but must never be replayed by an ordinary suite (including preserved failures).
-// Exact paths only: new sandbox model regressions remain automatic by default.
-// See docs/Windows Sandbox 故障收尾组合接线交接.md §64.
-const MANUAL_ACCEPTANCE_TESTS = new Set([
-	"windows-sandbox-captured-host-write.test.mjs",
-	"windows-sandbox-explicit-write-snapshot.test.mjs",
-	"windows-sandbox-input-capture.test.mjs",
-	"windows-sandbox-input-read-preparation.test.mjs",
-	"windows-sandbox-input-revision-lease.test.mjs",
-	"windows-sandbox-input-session-source.test.mjs",
-	"windows-sandbox-input-workspace-grant.test.mjs",
-	"windows-sandbox-issued-workspace-source.test.mjs",
-	"windows-sandbox-source-reader.test.mjs",
-	"windows-sandbox-volume-candidate-cmd.test.mjs",
-	"windows-sandbox-volume-candidate-identity.test.mjs",
-	"windows-sandbox-workspace-grant-identity.test.mjs",
-	"windows-sandbox-workspace-input-capture.test.mjs",
-	"windows-sandbox-workspace-source-reader.test.mjs",
-]);
 const HOT_TEST_PATTERN = /(?:^|\/)(?:source-invariants|hot-source-invariants|[^/]*hot-paths)\.test\./;
 
 // These offline integration fixtures need an empty working directory as well as
@@ -47,7 +27,6 @@ const GC_TESTS = new Set([
 	"local-package-identity.test.ts",
 	"session-cwd-identity.test.ts",
 	"canonical-path-identity.test.ts",
-	"windows-sandbox-candidate-write-batch.test.mjs",
 	"alpha-assistant-update.test.ts", "alpha-markdown-ownership.test.ts",
 	"alpha-raw-parallel.test.ts", "alpha-startup-quit.test.ts",
 	"tui-transcript-selection-reset.test.ts",
@@ -78,7 +57,6 @@ export function normalizeTestPath(value) {
 
 export function classifyTestFile(file) {
 	const normalized = normalizeTestPath(file);
-	if (MANUAL_ACCEPTANCE_TESTS.has(normalized)) return "manual";
 	if (normalized.includes("/provider-contract/") || normalized.startsWith("provider-contract/") || normalized.includes(".contract.test.")) {
 		return "contract";
 	}
@@ -289,7 +267,7 @@ export async function run(options) {
 	const files = discoverTestFiles(options.root).filter(
 		(file) => {
 			const suite = classifyTestFile(file);
-			return suite !== "manual" && (options.suite === "all" || suite === options.suite);
+			return options.suite === "all" || suite === options.suite;
 		},
 	);
 	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
