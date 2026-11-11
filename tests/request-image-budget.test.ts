@@ -10,6 +10,7 @@ import { pngFixture } from "./helpers/image-acceptance-fixtures.ts";
 import { resizeImage } from "../packages/coding-agent/src/utils/image-resize.ts";
 import { retryProviderRequest } from "../packages/ai/src/utils/provider-retry.ts";
 import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
+import { setImmediate as tick } from "node:timers/promises";
 
 const MiB = 1024 * 1024;
 function tool(bytes: number, id = "tool"): ToolResultMessage {
@@ -44,6 +45,51 @@ test("presentation preserves distinct occurrences of a shared image inside one s
   const messages=[old,current], presentation=createToolResultPresentationOwner({enabled:true,budgetTokens:4096},"shared-wrapper-test")!;
   try { await owner.prepare(messages,{},false); const projected=presentation.projectMessagesForModel(messages,owner.apply); assert.equal(imageBytes(owner.applyMessages(projected)),8*MiB); }
   finally {owner.clear();presentation.dispose();}
+});
+for(const mcp of [false,true]) for(const shared of [false,true]) test(`projected suffix keeps the exact identical image occurrence, mcp=${mcp}, shared=${shared}`, async()=>{
+  const owner=new RequestImageBudget(), first=tool(4*MiB).content[0]!, second=shared?first:{...first};
+  if(mcp) {Object.assign(first,{mcpInput:true});Object.assign(second,{mcpInput:true});}
+  const old=tool(0,"old"), current=tool(4*MiB,"current"), tail={type:"text" as const,text:"retained tail"};
+  old.content=[{type:"text",text:"long beginning\n".repeat(10000)},first,{type:"text",text:"long middle\n".repeat(10000)},second,tail];
+  const messages=[old,current], presentation=createToolResultPresentationOwner({enabled:true,budgetTokens:1024},"exact-suffix-test")!;
+  try {
+    await owner.prepare(messages,{},false);
+    const suffix={...old,content:[{...second},tail]};
+    assert.equal(imageBytes([owner.apply(suffix,old,undefined,{start:{blockIndex:0},end:{blockIndex:3}})]),4*MiB);
+    if(!shared) assert.equal(imageBytes([owner.apply({...old,content:[second,tail]},old)]),4*MiB);
+    assert.equal(imageBytes(presentation.projectMessagesForModel(messages,owner.apply)),8*MiB);
+  } finally {owner.clear();presentation.dispose();}
+});
+test("expanded views release discarded payloads and transient request ownership, including shared survivors", async()=>{
+  const owner=new RequestImageBudget(async()=>({data:Buffer.alloc(3*MiB/4,65).toString("base64"),mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true}));
+  const refs:WeakRef<object>[]=[], internal=owner as any, originalView=internal.view;
+  internal.view=async(...args:any[])=>{const view=await originalView.apply(owner,args);refs.push(new WeakRef(view.image));return view;};
+  const messages=Array.from({length:100},(_,i)=>tool(1000,String(i)));
+  messages[99]!.content[0]=messages[0]!.content[0]!;
+  await owner.prepare(messages,{},true);
+  assert.equal(internal.requestViews.has(messages[1]!.content[0]),false);
+  assert.equal(internal.requestViews.has(messages[0]!.content[0]),true,"the shared current occurrence still owns its view");
+  assert.equal(owner.metrics.requestViewBytes,12*MiB);
+  assert.ok(owner.metrics.requestViewBytesHighWaterMark<=13*MiB,"expansion never accumulates the whole 99 MiB batch");
+  assert.equal(imageBytes(owner.applyMessages(messages)),12*MiB);
+  assert.ok(owner.metrics.projectionCacheBytes<=2*MiB);
+  owner.completeResponse(); assert.equal(owner.metrics.requestViewBytes,0);
+  if(global.gc) {
+    for(let i=0;i<4;i++){await tick();global.gc();}
+    assert.equal(refs.filter(ref=>ref.deref()).length,11,"only bounded cross-request cache views remain");
+  }
+  owner.clear();
+  if(global.gc) {for(let i=0;i<4;i++){await tick();global.gc();} assert.equal(refs.filter(ref=>ref.deref()).length,0);}
+});
+test("over-capacity current batches stop encoding as soon as their size is known", async()=>{
+  for(const shared of [false,true]) {
+    const owner=new RequestImageBudget(async()=>({data:"B".repeat(MiB),mimeType:"image/png",width:1,height:1,originalWidth:10,originalHeight:10,wasResized:true}));
+    const message=tool(0), first=tool(1000).content[0]!;
+    message.content=Array.from({length:100},()=>shared?first:tool(1000).content[0]!);
+    await assert.rejects(owner.prepare([message],{},true),/current tool images exceed/);
+    assert.equal(owner.metrics.encodes,shared?1:13);
+    assert.equal(owner.metrics.requestViewBytes,0); assert.equal(owner.metrics.cacheViewBytes,0); owner.clear();
+  }
 });
 test("the complete originating assistant batch is protected", async () => {
   const assistant: Message = {role:"assistant",api:"openai-completions",provider:"openai",model:"fixture",content:[],stopReason:"toolUse",timestamp:0,

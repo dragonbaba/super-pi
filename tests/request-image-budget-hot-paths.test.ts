@@ -32,6 +32,7 @@ test("presentation policy calls carry the original source without allocating con
     if(ts.isCallExpression(node)&&node.expression.getText(ast)==="imagePolicy") {
       calls++; assert.equal(node.arguments[1]?.getText(ast),"message");
       if(node.arguments[0]?.getText(ast)==="probe") assert.equal(node.arguments[2]?.getText(ast),"index");
+      else { assert.ok(node.arguments[3],"exact source range must survive sanitization"); assert.equal(ts.isObjectLiteralExpression(node.arguments[3]),false,"reuse the existing projection range"); }
     }
     ts.forEachChild(node,visit);
   }
