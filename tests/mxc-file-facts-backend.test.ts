@@ -7,8 +7,8 @@ import { mxcFileFixture } from "./helpers/mxc-file-fixture.ts";
 
 // Mock only native launch/policy. invoke(), run(), JSON parsing and validation
 // execute unchanged, unlike the higher-level fixture's attach() seam.
-function fixture(t: TestContext, change: (reply: any) => void = () => {}) {
-  const f = mxcFileFixture(t), backend = new WorkspaceSandboxBackend(f.input, f.root, "read-only"), internal = backend as any;
+function fixture(t: TestContext, change: (reply: any) => void = () => {}, mode: "read-only" | "sandbox-write" = "read-only") {
+  const f = mxcFileFixture(t), backend = new WorkspaceSandboxBackend(f.input, f.root, mode), internal = backend as any;
   fs.writeFileSync(path.join(f.input, "text"), "needle\nlast");
   const stat = fs.lstatSync(f.runtime, { bigint: true }), workspace = fs.lstatSync(f.input, { bigint: true });
   internal.root = f.runtime; internal.identity = stat.dev + ":" + stat.ino; internal.tools = f.runtime;
@@ -17,12 +17,27 @@ function fixture(t: TestContext, change: (reply: any) => void = () => {}) {
   t.mock.method(internal, "policy", async () => "fixture policy");
   t.mock.method(internal.runner, "run", async () => {
     const request = JSON.parse(fs.readFileSync(path.join(f.runtime, "request.json"), "utf8"));
-    const reply = f.invoke(request.operation, request.input); reply.id = request.id; change(reply);
+    const reply = f.invoke(request.operation, request.input, mode); reply.id = request.id; change(reply);
     return { code: reply.ok ? 0 : 1, stdout: JSON.stringify(reply) + "\n", stderr: "", timedOut: false, truncated: false };
   });
   f.cleanupWith(() => backend.close());
   return backend;
 }
+
+test("MXC backend validates mutation successors and preserves verified partial batch receipts",async t=>{
+  const backend=fixture(t,undefined,"sandbox-write");
+  const created=await backend.invoke("write",{path:"new",content:"one"});assert.match(created.snapshot!,/^[a-f0-9]{64}$/);
+  const edited=await backend.invoke("edit",{path:"new",snapshot:created.snapshot,edits:[{oldText:"one",newText:"two"}]});assert.notEqual(edited.snapshot,created.snapshot);
+  await assert.rejects(backend.invoke("file_batch",{operations:[{operation:"write",path:"kept",content:"kept"},{operation:"edit",path:"missing",snapshot:edited.snapshot,edits:[{oldText:"one",newText:"two"}]}]}),error=>{
+    assert.ok(error instanceof WorkspaceOperationError);assert.equal(error.reply.items?.[0]?.status,"succeeded");assert.match(error.reply.items![0]!.snapshot!,/^[a-f0-9]{64}$/);assert.equal(error.reply.items?.[1]?.snapshot,undefined);return true;
+  });
+});
+for(const [name,change] of [["missing",(r:any)=>{r.snapshot=undefined;}],["malformed",(r:any)=>{r.snapshot="not-a-hash";}],["wrong-type",(r:any)=>{r.snapshot=42;}]] as const) test(`MXC backend rejects ${name} mutation snapshot`,async t=>{
+  const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("write",{path:"new",content:"written"}),/Invalid mutation snapshot/);
+});
+for(const [name,change] of [["missing",(r:any)=>{r.items=undefined;}],["snapshot",(r:any)=>{r.items[0].snapshot="invalid";}],["index",(r:any)=>{r.items[0].index=1;}],["status",(r:any)=>{r.items[0].status="not_started";}]] as const) test(`MXC backend rejects ${name} batch continuation`,async t=>{
+  const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("file_batch",{operations:[{operation:"write",path:"new",content:"written"}]}),/(?:Invalid|Inconsistent) (?:mutation|completed|incomplete)/);
+});
 
 test("MXC backend parses and retains valid read/search facts on the real run path", async t => {
   const backend = fixture(t);

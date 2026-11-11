@@ -6,6 +6,46 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { mxcFileFixture } from "./helpers/mxc-file-fixture.ts";
 
+test("MXC write/edit/edit/edit returns verified successor hashes without an intervening read",t=>{
+  const f=mxcFileFixture(t), name="successor.txt";
+  const created=f.invoke("write",{path:name,content:"one\ntwo\nthree\n"});assert.equal(created.ok,true);
+  let snapshot=created.snapshot;
+  for(const edits of [[{oldText:"one",newText:"ONE"}],[{oldText:"two",newText:"TWO"},{oldText:"three",newText:"THREE"}],[{oldText:"ONE",newText:"first"}]]) {
+    const previous=snapshot, result=f.invoke("edit",{path:name,snapshot,edits});
+    assert.equal(result.ok,true,JSON.stringify(result));snapshot=result.snapshot;
+    assert.equal(snapshot,createHash("sha256").update(fs.readFileSync(path.join(f.input,name))).digest("hex"));
+    assert.equal(f.invoke("write",{path:name,snapshot:previous,content:"stale"}).ok,false);
+  }
+  assert.equal(fs.readFileSync(path.join(f.input,name),"utf8"),"first\nTWO\nTHREE\n");
+  assert.equal(f.invoke("write",{path:name,content:"missing hash"}).ok,false);
+  const replaced=path.join(f.input,"replacement");fs.writeFileSync(replaced,"first\nTWO\nTHREE\n");fs.renameSync(replaced,path.join(f.input,name));
+  const sameContent=f.invoke("edit",{path:name,snapshot,edits:[{oldText:"first",newText:"final"}]});assert.equal(sameContent.ok,true,"cross-call MXC versions retain content-hash semantics");
+});
+
+test("MXC read/edit successors and partial batches preserve individual verified effects",t=>{
+  const f=mxcFileFixture(t),file=path.join(f.input,"existing");fs.writeFileSync(file,"old");
+  const read=f.invoke("read",{path:"existing"}), edit=f.invoke("edit",{path:"existing",snapshot:read.snapshot,edits:[{oldText:"old",newText:"new"}]});
+  assert.equal(edit.ok,true);assert.equal(f.invoke("write",{path:"existing",snapshot:edit.snapshot,content:"complete"}).ok,true);
+  const batch=f.invoke("file_batch",{operations:[{operation:"write",path:"kept",content:"kept"},{operation:"edit",path:"missing",snapshot:read.snapshot,edits:[{oldText:"a",newText:"b"}]},{operation:"write",path:"not-started",content:"unused"}]});
+  assert.equal(batch.ok,false);assert.deepEqual(batch.items.map((item:any)=>item.status),["succeeded","unknown","not_started"]);
+  assert.equal(batch.items[0].snapshot,createHash("sha256").update("kept").digest("hex"));assert.equal(batch.items[1].snapshot,undefined);
+  assert.equal(fs.existsSync(path.join(f.input,"not-started")),false);
+  assert.equal(f.invoke("edit",{path:"kept",snapshot:batch.items[0].snapshot,edits:[{oldText:"kept",newText:"continued"}]}).ok,true);
+});
+
+for(const replacement of [false,true]) test(`MXC publication verification refuses changed postimages, replacement=${replacement}`,t=>{
+  const f=mxcFileFixture(t), file=path.join(f.input,"source");fs.writeFileSync(file,"old");const snapshot=f.invoke("read",{path:"source"}).snapshot;
+  const io=Object.create(fs);
+  io.renameSync=(temporary:string,target:string)=>{
+    fs.renameSync(temporary,target);
+    if(replacement){const other=path.join(f.input,"external");fs.writeFileSync(other,"new");fs.renameSync(other,target);}
+    else fs.writeFileSync(target,"external");
+  };
+  const result=f.invoke("write",{path:"source",snapshot,content:"new"},"sandbox-write",io);
+  assert.equal(result.ok,false);assert.equal(result.snapshot,undefined);assert.equal(result.noEffects,false);assert.match(result.error,/Published file/);
+  assert.equal(fs.readFileSync(file,"utf8"),replacement?"new":"external");assert.deepEqual(fs.readdirSync(f.input),["source"]);
+});
+
 test("MXC files update the workspace, retain dependencies and reject stale snapshots", t => {
   const f = mxcFileFixture(t);
   for (const name of ["ordinary.txt", ".venv/installed.txt", "target/output.txt", "__pycache__/cache.txt", "node_modules/local.txt"]) {

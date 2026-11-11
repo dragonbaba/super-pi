@@ -9,6 +9,7 @@ import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARC
 
 const DIRECTORY_OPTIONS = Object.freeze({ bufferSize: DIRECTORY_READ_BUFFER });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
+const VERIFY_BYTES = 64 * 1024;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, message) { if (!value) throw new Error(message); }
 function local(root, name, mutation = false) {
@@ -175,6 +176,26 @@ function readWindow(source, input, reply) {
       + (nextOffset === undefined ? '' : '; nextOffset=' + nextOffset) + '.]\n' : '')
     + source.slice(start, end) + '\n[Snapshot: ' + reply.snapshot + ']';
 }
+function publishedSnapshot(target, identity, text) {
+  const expected = hash(text), size = Buffer.byteLength(text), fd = fs.openSync(target, 'r');
+  try {
+    const before = fs.fstatSync(fd, { bigint: true });
+    need(before.isFile() && before.dev === identity.dev && before.ino === identity.ino && before.size === BigInt(size), 'Published file identity changed; verify current state');
+    const bytes = Buffer.allocUnsafe(Math.min(VERIFY_BYTES, Math.max(1, size))), actual = createHash('sha256');
+    let offset = 0;
+    while (offset < size) {
+      const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, size - offset), offset);
+      need(count > 0, 'Published file changed during verification');
+      actual.update(count === bytes.length ? bytes : bytes.subarray(0, count)); offset += count;
+    }
+    const after = fs.fstatSync(fd, { bigint: true }), named = fs.lstatSync(target, { bigint: true });
+    need(named.isFile() && before.dev === named.dev && before.ino === named.ino && before.size === after.size
+      && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && before.size === named.size
+      && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs && actual.digest('hex') === expected,
+      'Published file changed; verify current state');
+    return expected;
+  } finally { fs.closeSync(fd); }
+}
 function mutate(root, operation, input, maxWriteBytes) {
   const target = local(root, input.path, true);
   if (operation === 'delete') { need(fs.lstatSync(target).isFile(), 'Only files may be deleted'); fs.unlinkSync(target); return; }
@@ -186,7 +207,10 @@ function mutate(root, operation, input, maxWriteBytes) {
   need(operation === 'write' || operation === 'edit', 'Unsupported file operation');
   if (operation === 'write' && !fs.existsSync(target)) {
     need(input.snapshot == null && typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Invalid new-file write');
-    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, input.content, { flag: 'wx' }); return;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const fd = fs.openSync(target, 'wx'); let identity;
+    try { fs.writeFileSync(fd, input.content); identity = fs.fstatSync(fd, { bigint: true }); } finally { fs.closeSync(fd); }
+    return publishedSnapshot(target, identity, input.content);
   }
   // Read a pinned version, then replace atomically; a failed temporary write leaves the original intact.
   let fd = fs.openSync(target, 'r'), temporary;
@@ -208,7 +232,8 @@ function mutate(root, operation, input, maxWriteBytes) {
     need(typeof text === 'string' && Buffer.byteLength(text) <= maxWriteBytes, 'Write exceeds the native write limit');
     const candidate = path.join(path.dirname(target), '.superpi-write-' + randomUUID() + '.tmp');
     const temporaryFd = fs.openSync(candidate, 'wx'); temporary = candidate;
-    try { fs.writeFileSync(temporaryFd, text); } finally { fs.closeSync(temporaryFd); }
+    let publication;
+    try { fs.writeFileSync(temporaryFd, text); publication = fs.fstatSync(temporaryFd, { bigint: true }); } finally { fs.closeSync(temporaryFd); }
     const current = fs.fstatSync(fd, { bigint: true });
     // Windows cannot replace the destination while this read handle is open.
     fs.closeSync(fd); fd = undefined;
@@ -217,9 +242,10 @@ function mutate(root, operation, input, maxWriteBytes) {
       && before.mtimeNs === current.mtimeNs && before.ctimeNs === current.ctimeNs && before.size === named.size
       && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs, 'File changed before write');
     fs.renameSync(temporary, target); temporary = undefined;
+    return publishedSnapshot(target, publication, text);
   } finally { if (fd !== undefined) fs.closeSync(fd); if (temporary) fs.unlinkSync(temporary); }
 }
-let request, phase = 'request';
+let request, items, phase = 'request';
 try {
   const requestFile = process.argv[2]; need(fs.statSync(requestFile).size <= 4 * 1024 * 1024, 'Request too large');
   request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
@@ -251,12 +277,21 @@ try {
     need(request.mode === 'sandbox-write', 'Read-only workspace'); phase = 'mutation';
     if (operation === 'file_batch') {
       need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid batch');
-      for (const item of input.operations) mutate(roots[item.workspaceIndex ?? 0], item.operation, item, request.maxWriteBytes);
-    } else mutate(root, operation, input, request.maxWriteBytes);
+      items = reply.items = [];
+      for (let index = 0; index < input.operations.length; index++) {
+        const item = input.operations[index];
+        try { items.push({ index, operation: item.operation, status: 'succeeded', snapshot: mutate(roots[item.workspaceIndex ?? 0], item.operation, item, request.maxWriteBytes) }); }
+        catch (error) {
+          items.push({ index, operation: item.operation, status: 'unknown', error: String(error.message).slice(0,800) });
+          for (let next = index + 1; next < input.operations.length; next++) items.push({ index: next, operation: input.operations[next].operation, status: 'not_started' });
+          throw error;
+        }
+      }
+    } else reply.snapshot = mutate(root, operation, input, request.maxWriteBytes);
     reply.text = 'Workspace operation completed';
   }
   console.log(JSON.stringify(reply));
 } catch (error) {
-  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', error: String(error.message).slice(0, 32768) }));
+  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
 }

@@ -1817,11 +1817,12 @@ export class ExtensionRunner {
 		return modified ? currentMessage : undefined;
 	}
 
-	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
+	async emitToolResult(event: ToolResultEvent): Promise<(ToolResultEventResult & { observationFailed?: true }) | undefined> {
 		this.runtime.nativeFiles?.finish(event.toolCallId);
 		const ctx = this.createContext();
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
+		let observationFailed: true | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_result");
@@ -1856,6 +1857,7 @@ export class ExtensionRunner {
 					}
 				} catch (err) {
 					if (err instanceof ExtensionHookTimeoutError) throw err;
+					observationFailed = true;
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
 					this.emitError({
@@ -1868,11 +1870,12 @@ export class ExtensionRunner {
 			}
 		}
 
-		if (!modified) {
+		if (!modified && !observationFailed) {
 			return undefined;
 		}
 
 		return {
+			observationFailed,
 			content: currentEvent.content,
 			details: currentEvent.details,
 			isError: currentEvent.isError,

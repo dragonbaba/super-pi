@@ -600,11 +600,11 @@ test("native files have one owner and support same-script unshown read/edit in d
     assert.ok(files);
     assert.equal(f.session.extensionRunner.getAllRegisteredTools().filter(tool => ["read", "edit", "write", "delete", "move", "file_batch"].includes(tool.definition.name)).length, 0);
     assert.equal(f.session.extensionRunner.getRegisteredCommands().filter(command => command.name === "changes").length, 1);
-    const outcome = await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}); await tools.read({path:"file.txt"}); await tools.file_batch({operations:[{operation:"write",mode:"overwrite",path:"file.txt",content:"final\\n"},{operation:"write",mode:"create",path:"new/copy.txt",content:"copy"}]});']);
+    const outcome = await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}); await tools.file_batch({operations:[{operation:"write",mode:"overwrite",path:"file.txt",content:"final\\n"},{operation:"write",mode:"create",path:"new/copy.txt",content:"copy"}]});']);
     assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results[0]));
     assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "final\n");
     assert.equal(readFileSync(join(f.cwd, "new/copy.txt"), "utf8"), "copy");
-    assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 0, closed: false });
+    assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 2, closed: false });
     const changes = collectChanges(f.manager.getBranch(), f.cwd);
     assert.ok(changes.length >= 3); assert.ok(changes.every(change => !change.unavailable), JSON.stringify(changes));
     const factCount = f.manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2").length;
@@ -620,6 +620,88 @@ test("native files have one owner and support same-script unshown read/edit in d
     await f.session.reload();
     assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 0, closed: true });
   }
+});
+
+for(const bundle of [false,true]) test(`clean native continuations survive same-script and next-script edits without extra reads, bundle=${bundle}`,async t=>{
+  const f=await fixture(t,{},[],bundle);
+  const outcome=await f.run([
+    'await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"first"}]}); await tools.edit({path:"file.txt",edits:[{oldText:"world",newText:"WORLD"}]}); await tools.edit({path:"file.txt",edits:[{oldText:"first",newText:"final"}]}); await tools.write({path:"new.txt",content:"created"}); await tools.edit({path:"new.txt",edits:[{oldText:"created",newText:"continued"}]});',
+    'await tools.edit({path:"file.txt",edits:[{oldText:"final",newText:"last"}]});',
+  ]);
+  assert.ok(outcome.results.every(result=>!result.isError),JSON.stringify(outcome.results));
+  const calls=outcome.results.flatMap(result=>(result.details as any).codemode.calls);
+  assert.equal(calls.filter(call=>call.toolName==="read").length,1);
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"last\nWORLD\n");assert.equal(readFileSync(join(f.cwd,"new.txt"),"utf8"),"continued");
+});
+
+for(const kind of ["tool_result","tool_execution_end","message_start","message_end"] as const) test(`native continuation is revoked after a real ${kind} observation failure`,async t=>{
+  let pending=true;
+  const veto:InlineExtension=pi=>{pi.on("tool_result",event=>{if(kind==="tool_result"&&pending&&event.toolName==="edit"){pending=false;return {isError:true};}return undefined;});};
+  const f=await fixture(t,{},[veto]);
+  const unsubscribe=f.session.agent.subscribe(event=>{
+    if(!pending||kind==="tool_result")return;
+    if(kind==="tool_execution_end"&&event.type==="tool_execution_end"&&event.toolName==="edit"
+      ||(kind==="message_start"||kind==="message_end")&&event.type===kind&&event.message.role==="toolResult"&&event.message.toolName==="codemode"){
+      pending=false;throw new Error("synthetic final observation failure");
+    }
+  });
+  try {
+    const run=f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});']);
+    if(kind==="message_start"||kind==="message_end"){await run;assert.match(f.session.agent.state.errorMessage ?? "",/synthetic final observation failure/);}
+    else assert.equal((await run).results.at(-1)?.isError,true);
+  } finally {unsubscribe();}
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});',
+    'await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"verified"}]});']);
+  assert.match(JSON.stringify(next.results.at(-2)),/REVISION_REQUIRED/);assert.equal(next.results.at(-1)?.isError,false);
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"verified\nworld\n");
+});
+
+test("direct native result message_start failure revokes its committed revision",async t=>{
+  const f=await fixture(t);
+  await f.run(['await tools.read({path:"file.txt"});']);
+  const unsubscribe=f.session.agent.subscribe(event=>{
+    if(event.type==="message_start"&&event.message.role==="toolResult"&&event.message.toolName==="edit")throw new Error("direct result start failed");
+  });
+  try {
+    await assert.rejects(f.session.agent.dispatchHostTool({type:"toolCall",id:"direct-edit",name:"edit",arguments:{path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}}),/direct result start failed/);
+  } finally {unsubscribe();}
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
+});
+
+for(const target of ["edit","codemode"])test(`ordinary ${target} result hook errors revoke continuations without changing execution facts`,async t=>{
+  let pending=true;
+  const broken:InlineExtension=pi=>pi.on("tool_result",event=>{if(pending&&event.toolName===target){pending=false;throw new Error("ordinary result observer failed");}});
+  const f=await fixture(t,{},[broken]);
+  const first=await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});']);
+  assert.equal(first.results.at(-1)?.isError,false,"ordinary extension exceptions retain their existing nonfatal behavior");
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
+});
+
+for(const boundary of ["tool_result","tool_execution_end","message_start","message_end"] as const)test(`cancellation during ${boundary} revokes a direct committed revision`,async t=>{
+  let announce!:()=>void,finish!:()=>void;
+  const entered={promise:new Promise<void>(resolve=>{announce=resolve;}),resolve:()=>announce()};
+  const release={promise:new Promise<void>(resolve=>{finish=resolve;}),resolve:()=>finish()};
+  const delayed:InlineExtension=pi=>pi.on("tool_result",async event=>{if(boundary==="tool_result"&&event.toolName==="edit"){entered.resolve();await release.promise;}});
+  const f=await fixture(t,{},[delayed]);
+  await f.run(['await tools.read({path:"file.txt"});']);
+  const unsubscribe=f.session.agent.subscribe(async event=>{
+    const target=event.type==="tool_execution_end"?event.toolName:(event.type==="message_start"||event.type==="message_end")&&event.message.role==="toolResult"?event.message.toolName:undefined;
+    if(event.type===boundary&&target==="edit"){entered.resolve();await release.promise;}
+  });
+  try {
+    const pending=f.session.agent.dispatchHostTool({type:"toolCall",id:"cancel-observation",name:"edit",arguments:{path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}});
+    await entered.promise;f.session.agent.abort();release.resolve();
+    const actual=await pending;
+    assert.equal(actual.isError,false,"cancellation cannot rewrite a completed mutation's outcome");
+  }finally{release.resolve();unsubscribe();}
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
 });
 
 test("SDK allowlist constrains children while adding the default transport; no-tools stays empty", async t => {
@@ -2030,19 +2112,19 @@ test("identical side effects issued together in one script run once even though 
 	assert.equal(appended, 3);
 });
 
-test("a nested file_batch invalidates the previous revision and a fresh read permits overwrite", async t => {
+test("a nested file_batch invalidates the previous revision and retains its clean committed version", async t => {
 	const f = await fixture(t, {}, [], true);
 	const outcome = await f.run([
 		'await show((await tools.read({path:"file.txt"})).ref)',
 		'await tools.file_batch({operations:[{operation:"edit", path:"file.txt", edits:[{oldText:"hello", newText:"batched"}]}]})',
-		// A mutation receipt records effects; a fresh read supplies the next version precondition.
+		// The old ID is consumed; the clean committed version supplies the next precondition.
 		'await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
-		'await tools.read({path:"file.txt"}); await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
+		'await tools.edit({path:"file.txt",edits:[{oldText:"edited",newText:"continued"}]})',
 	]);
 	assert.equal(outcome.results[1]?.isError, false, JSON.stringify(outcome.results[1]?.content).slice(0, 1000));
-	assert.match(JSON.stringify(outcome.results[2]?.content), /REVISION_REQUIRED/);
+	assert.equal(outcome.results[2]?.isError,false,JSON.stringify(outcome.results[2]?.content));
 	assert.equal(outcome.results[3]?.isError, false, JSON.stringify(outcome.results[3]?.content).slice(0, 1000));
-	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "edited\nworld\n");
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "continued\nworld\n");
 });
 
 for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt remains a change fact after reload, not a read revision`, async t => {

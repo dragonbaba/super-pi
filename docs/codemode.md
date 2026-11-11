@@ -13,14 +13,17 @@ await show(result.ref);
 
 Bash / PowerShell 正常结束时返回原始输出和 `details.shellExecution.exitCode`，非零退出码本身不会抛工具异常，也不需要 `allowFailure`。例如搜索无匹配和编译失败都可能返回非零，含义由调用方根据结果判断；`isError: false`、`CODEMODE_OK` 或后台 `completed` 仅表示工具调用完成，不能作为编译或测试通过的证明。启动失败、超时、取消、输入/输出不完整等工具故障仍按错误返回。依赖命令成功的脚本须检查实际退出码，原有编译/测试验证检查仍要求退出 0。
 
-沙箱中覆盖已有文本文件或执行 `edit` 时，应传入本次读取返回的 SHA-256：
+原生模式中，第一次修改已有文件需要有效读取版本。自己干净成功的 `edit`/`write` 会在 `details.revisionContinuation="available"` 时自动保留新版本，下一次精确文本编辑或覆盖无需补读；新建文件也适用。旧 ID 失效，新行锚仍须通过相应 `read` 获取，不能把提交版本当作已经展示的 `LINE#ID`。外部变化、冲突、淘汰、超过 2 MiB 或延续不可用时再读取确切目标。缓存最多 128 份、合计 8 MiB；提交后的日志/观察失败、取消和生命周期切换不会保留可误用的新版本。单次写入的既有 1 MiB 上限保持不变。
+
+MXC 沙箱覆盖已有文本文件或执行 `edit` 时，显式传入读取或自己干净修改返回的 SHA-256：
 
 ```js
 const r = await tools.read({ path: "notes.txt" });
-await tools.write({ path: "notes.txt", content: "updated", snapshot: r.details.snapshot });
+const written = await tools.write({ path: "notes.txt", content: "updated", snapshot: r.details.snapshot });
+await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits: [{ oldText: "updated", newText: "continued" }] });
 ```
 
-`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时先重新读取并核对内容，不能忽略版本检查。
+新建文件的 MXC `write` 不带 snapshot，成功后同样返回新哈希。`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时读取并核对内容，不能忽略版本检查。MXC 跨调用按内容哈希表示版本，同内容的外部替换沿用既有语义；本次修改期间的固定身份和内容检查仍生效。`file_batch` 的 `details.items` 逐项返回 succeeded/unknown/not_started 与成功项的新哈希；成功项不回滚，失败或不确定项没有新哈希，不自动重放。
 
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。

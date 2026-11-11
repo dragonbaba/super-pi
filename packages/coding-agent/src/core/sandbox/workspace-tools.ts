@@ -82,7 +82,7 @@ export class WorkspaceSandboxTools {
           : name === "grep" ? "Search sandbox UTF-8 files using a literal substring. outputMode: content (default, matching line prefixes), files (one path per matching file), count (path:matching-line-count, one record per file). Repeated occurrences on one line count once. At most 200 records and 32,768 UTF-16 code units of body. Status prefixes and details.search report scan stops, skipped files and clipped excerpts." + workspace
           : name === "find" || name === "ls" ? "List sandbox paths; find filters file paths by a literal substring. At most 200 records and 32,768 UTF-16 code units of body. Check details.search and status prefixes for scan/output limits." + workspace
           : name === "read" ? "Read UTF-8 text (files up to 2 MiB; at most 2000 lines and 32,768 UTF-16 code units of body per call) or JPEG, PNG, GIF, WebP, BMP images (up to 16 MiB) by file signature. details.read distinguishes windowComplete, hasMore and lineTruncated; nextOffset is safe only at a complete line boundary. A clipped line suffix cannot be recovered with line offsets. Images return native image attachments, resized to inline limits; offset/limit apply only to text. In CodeMode use await show(result.ref) to display the image; do not print shell base64. For text writes/edits pass snapshot: result.details.snapshot (the SHA-256 hash); result.ref is only a display reference, never a file snapshot." + workspace
-          : "Operate directly inside the authorized sandbox workspace. Before overwriting or exact-text editing, use const r = await tools.read({path}); then pass snapshot: r.details.snapshot to write/edit, including inside file_batch. Never pass r.ref. New-file write needs no snapshot. A stale hash requires another read and reconciliation before retry. Protected .git and .sp metadata remain read-only. Batch failure can leave completed operations in place." + workspace,
+          : "Operate directly inside the authorized sandbox workspace. Existing-file write/edit requires snapshot: result.details.snapshot from a read or clean own write/edit; each successful mutation returns the next SHA-256 for continuation without a reread. New-file write omits snapshot and returns one. Never pass result.ref. A stale hash requires read and reconciliation. file_batch details.items preserves individual verified snapshots and partial effects; failed/unknown items have no successor. Protected .git and .sp metadata remain read-only." + workspace,
         async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },
       };
       this.definitions.set(name, definition);
@@ -126,7 +126,7 @@ export class WorkspaceSandboxTools {
     catch (error) {
       if (error instanceof WorkspaceOperationError) return { isError: true, content: [{ type: "text" as const,
         text: command !== undefined && error.reply.phase === "execution" ? error.message + await this.failureNote(error.reply, ctx) : error.message }],
-        details: { sandbox: true, phase: error.reply.phase, execution: error.reply.execution,
+        details: { sandbox: true, phase: error.reply.phase, items: error.reply.items, execution: error.reply.execution,
           shellExecution: shellFacts(error.reply, cwd, error.reply.phase === "execution" && error.reply.execution?.closed ? undefined : error.reply.error), noEffects: error.reply.noEffects } };
       throw error;
     }
@@ -134,7 +134,7 @@ export class WorkspaceSandboxTools {
     check();
     const note = reply.execution && reply.execution.exitCode !== 0 ? await this.failureNote(reply, ctx) : "";
     return { isError: !reply.ok, content: [{ type: "text" as const, text: (reply.text || "(no output)") + note }],
-      details: { sandbox: true, snapshot: reply.snapshot, read: reply.read, search: reply.search,
+      details: { sandbox: true, snapshot: reply.snapshot, items: reply.items, read: reply.read, search: reply.search,
         execution: reply.execution, shellExecution: shellFacts(reply, cwd) } };
   }
   /** One dialog per recognized network command while offline; consent lasts for the session. */

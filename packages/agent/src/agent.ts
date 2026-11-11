@@ -297,6 +297,8 @@ class AgentEventDeliveryDispatcher extends EventDeliveryDispatcher<AgentEvent, s
  * and exposes queueing APIs for steering and follow-up messages.
  */
 export class Agent {
+	/** Ownership cleanup after failed critical tool observation; IDs only, no result retention. */
+	onToolObservationFailure?: (toolCallId: string, parentToolCallId?: string) => void;
 	private _state: MutableAgentState;
 	private readonly eventDelivery: EventDeliveryDispatcher<AgentEvent, string>;
 	private readonly pendingChangedToolUpdates = new Map<string, PendingChangedToolUpdate>();
@@ -781,23 +783,35 @@ export class Agent {
 				break;
 		}
 
-		const latestKey = this.getLatestEventKey(event);
-		if (latestKey !== undefined) {
-			if (this.eventDelivery.hasAwaitedListeners(event)) {
-				await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
-			}
-			if (event.type === "message_update") {
-				if (this.eventDelivery.hasLatestListeners) {
-					this.eventDelivery.publishLatest(latestKey, this.prepareMessageUpdate(event));
-				} else {
-					this.clearPendingMessageUpdate();
+		try {
+			const latestKey = this.getLatestEventKey(event);
+			if (latestKey !== undefined) {
+				if (this.eventDelivery.hasAwaitedListeners(event)) {
+					await this.eventDelivery.publishAwaited(this.snapshotAwaitedEvent(event));
 				}
-			} else {
-				this.eventDelivery.publishLatest(latestKey, event);
+				if (event.type === "message_update") {
+					if (this.eventDelivery.hasLatestListeners) {
+						this.eventDelivery.publishLatest(latestKey, this.prepareMessageUpdate(event));
+					} else {
+						this.clearPendingMessageUpdate();
+					}
+				} else {
+					this.eventDelivery.publishLatest(latestKey, event);
+				}
+				return;
 			}
-			return;
+			await this.eventDelivery.publishCritical(event);
+			if (this.activeRun?.abortController.signal.aborted) this.revokeToolObservation(event);
+		} catch (error) {
+			this.revokeToolObservation(event);
+			throw error;
 		}
-		await this.eventDelivery.publishCritical(event);
+	}
+	private revokeToolObservation(event: AgentEvent): void {
+		try {
+			if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") this.onToolObservationFailure?.(event.message.toolCallId);
+			else if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") this.onToolObservationFailure?.(event.toolCallId, event.parentToolCallId);
+		} catch { /* Ownership cleanup never replaces the original critical failure. */ }
 	}
 
 	private requireActiveSignal(): AbortSignal {

@@ -23,7 +23,8 @@ test("production request translates in-workspace absolute paths without mutating
             outputTruncated: false, excerptTruncated: false, stopReason: "none", visitedEntries: 0, scannedFiles: 0,
             observedRecords: 0, returnedRecords: 0, outputUnits: 0, skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0,
             excludedProtected: 0, excludedLinks: 0 } : undefined;
-        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok",read,search}),stderr:"",timedOut:false,truncated:false};
+        const items=request.operation==="file_batch"?request.input.operations.map((item:any,index:number)=>({index,operation:item.operation,status:"succeeded"})):undefined;
+        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok",read,search,items}),stderr:"",timedOut:false,truncated:false};
     };
     try {
         const input = Object.freeze({ path: path.join(root, "src", "example.txt") });

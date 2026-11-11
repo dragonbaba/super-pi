@@ -12,7 +12,7 @@ import { mutationRequestHash } from "./file-invocation.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
   prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
-  type FileCreationPlan,
+  addedContentSummary, type FileCreationPlan, type CreationResult,
 } from "./file-creation.ts";
 import {
   prepareNativeOperation, executeNativePlan, validateNativeInput, revalidateNativePlan, capturePathIdentity, sameIdentity,
@@ -23,7 +23,7 @@ import { selectCommitMetadata } from "./file-commit-metadata.ts";
 import { PreviewBudget, addedPreview, type ChangePreview } from "./change-preview.ts";
 import {
   FileRevisions, prepareSnapshotLineMutation, executePreparedSnapshotMutation, readSnapshotSource,
-  type PreparedSnapshotMutation, type SnapshotLineEdit,
+  MAX_SNAPSHOT_FILE_BYTES, type PreparedSnapshotMutation, type SnapshotLineEdit,
 } from "./snapshot-line-edit.ts";
 import { prepareRevisionMutation, validateWriteContent, type ExactRevisionEdit } from "./revision-mutations.ts";
 
@@ -68,6 +68,7 @@ export interface FileExecutionHooks {
   sharedDirectories?: Map<string, PathIdentity>;
   /** Batch preparation owns origin; per-item commit selection has its own phase. */
   batch?: true;
+  continuationOwner?: string;
 }
 
 /** Copy only validated public fields; extension authorization observes the separate original input. */
@@ -104,6 +105,8 @@ class FileExecution {
   private readonly hooks: FileExecutionHooks;
   private readonly toolCallId: string;
   private readonly itemId: string;
+  private postimage: Buffer | undefined;
+  private publication: FileCommitReceipt | CreationResult | undefined;
   constructor(service: FileService, item: PreparedFileItem, toolCallId: string, itemId: string, hooks: FileExecutionHooks) {
     this.service = service; this.item = item; this.hooks = hooks; this.toolCallId = toolCallId; this.itemId = itemId;
   }
@@ -120,6 +123,7 @@ class FileExecution {
   readonly selected = (metadata: { strategy: string; reason?: string }): void => {
     this.record(this.hooks.batch ? "commit_prepared" : "intent", { strategy: metadata.strategy, compatibilityReason: metadata.reason });
   };
+  readonly committedBytes = (bytes: Buffer, commit: FileCommitReceipt): void => { this.postimage = bytes; this.publication = commit; };
   record(phase: string, extra?: Record<string, unknown>): void {
     const item = this.item;
     this.hooks.record({ toolCallId: this.toolCallId, itemId: this.itemId, phase, operation: item.operation,
@@ -145,13 +149,16 @@ class FileExecution {
           stateChanged: true, commit, creation, sha256: item.artifact.sha256, bytes: item.artifact.bytes.byteLength };
       } else if (item.native) receipt = { ...await executeNativePlan(item.native, this.assertCurrent, hooks.signal) };
       else if (item.creation) {
-        const creation = await executeFileCreation(item.creation, item.input.content!, this.assertPath,
+        const content = item.input.content!;
+        const bytes = Buffer.byteLength(content) <= MAX_SNAPSHOT_FILE_BYTES ? Buffer.from(content) : undefined;
+        const creation = await executeFileCreation(item.creation, bytes ?? content, this.assertPath,
           hooks.signal, undefined, hooks.sharedDirectories, this.assertCurrent);
+        if (bytes) { creation.addedLines = addedContentSummary(content).addedLines; this.postimage = bytes; this.publication = creation; }
         receipt = { mutationReceiptVersion: 2, operation: "write", target: item.target, ok: true, status: "succeeded",
           category: "success", stateChanged: true, created: true, creation, sha256: sha256(item.input.content!) };
       } else {
         const committed = await executePreparedSnapshotMutation(item.snapshot!, hooks.signal,
-          { assertPathAllowed: this.assertPath, assertCurrent: this.assertCurrent, commitSelected: this.selected });
+          { assertPathAllowed: this.assertPath, assertCurrent: this.assertCurrent, commitSelected: this.selected, committedBytes: this.committedBytes });
         receipt = { ...committed, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
           ok: true, category: "success", status: "succeeded", stateChanged: true,
           diff: item.preview?.diff ?? committed.diff, patch: item.preview?.diff ?? committed.patch };
@@ -186,6 +193,15 @@ class FileExecution {
         status: receipt.stateChanged === true ? "partial" : "state_unknown", requiresVerification: true,
         cause: `Operation may have completed but recording failed: ${error instanceof Error ? error.message : String(error)}` };
     }
+    try {
+      if (receipt.ok && receipt.status === "succeeded" && receipt.stateChanged === true && !receipt.requiresVerification
+        && !receipt.commit?.retainedTemporary && (!receipt.commit || receipt.commit.outcome === "committed")
+        && (item.operation === "edit" || item.operation === "write")) {
+        const revision = this.postimage && this.publication ? await this.service.revisions.continueCommitted(item.target,
+          this.postimage, this.publication, item.generation, hooks.continuationOwner ?? this.toolCallId, this.toolCallId, this.assertCurrent, hooks.signal) : undefined;
+        receipt.revision = revision; receipt.revisionContinuation = revision ? "available" : "unavailable";
+      }
+    } finally { this.postimage = undefined; this.publication = undefined; }
     return receipt;
   }
 }
