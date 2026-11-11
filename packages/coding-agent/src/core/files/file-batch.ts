@@ -97,7 +97,7 @@ class BatchExecution {
   private current = 0;
   constructor(batch: FileBatch, service: FileService, hooks: FileExecutionHooks) {
     this.batch = batch; this.service = service; this.hooks = hooks;
-    this.fileHooks = { assertCurrent: this.assertCurrent, record: this.record, signal: hooks.signal, sharedDirectories: this.sharedDirectories, batch: true };
+    this.fileHooks = { assertCurrent: this.assertCurrent, record: this.record, signal: hooks.signal, sharedDirectories: this.sharedDirectories, batch: true, continuationOwner: hooks.continuationOwner };
     const directories = new Set<string>();
     for (const item of batch.items) {
       this.results.push({ itemId: item.itemId, operation: item.operation, target: item.target,

@@ -20,6 +20,32 @@ import { createExtensionRuntime } from "../packages/coding-agent/src/core/extens
 import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import type { ExtensionContext, ToolDefinition, ToolCallEvent } from "../packages/coding-agent/src/core/extensions/types.ts";
 
+test("committed postimage buffers are released on clear, failed observation and disposal", async t => {
+  const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
+  async function exercise() {
+    const f = await fixture(t), references: WeakRef<Buffer>[] = [];
+    for (const mode of ["clear", "failed-observation", "dispose"]) {
+      const receipt = await f.service.execute(await f.service.prepare("write", {
+        path: mode, content: "x".repeat(128 * 1024),
+      }), mode, f.hooks);
+      assert.equal(receipt.revisionContinuation, "available");
+      const revision = f.service.revisions.get(receipt.revision as string)!;
+      assert.equal(revision.mode, "full");
+      if (revision.mode === "full") references.push(new WeakRef(revision.bytes));
+      if (mode === "clear") f.service.revisions.clear();
+      else if (mode === "failed-observation") f.service.revisions.forgetContinuations(mode);
+      else f.service.dispose();
+      assert.equal(f.service.revisions.size, 0);
+      assert.equal(f.service.revisions.residentBytes, 0);
+    }
+    return references;
+  }
+  const references = await exercise();
+  for (let index = 0; index < 4; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
+  assert.equal(references.filter(reference => reference.deref()).length, 0);
+  t.diagnostic(JSON.stringify({ ownedPostimages: references.length, liveAfterClearFailureDisposal: 0 }));
+});
+
 async function fixture(t: test.TestContext) {
   const parent = await realpath(tmpdir()), cwd = await mkdtemp(join(parent, "sp-file-service-"));
   const service = new FileService(cwd, "session");
@@ -86,7 +112,7 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
       attachPermissionPathApproval(revoked, { schemaVersion: 1, sequence: 1, toolCallId: "revoked", operation: "write", requestHash: mutationRequestHash("write", revoked), canonicalTarget: join(cwd, "revoked.txt"), protectedRoots: [], assertCurrent() { if (!valid) throw new Error("revoked boundary"); } });
       const approved = revokedCall.consume(revoked, "revoked", "write"); valid = false;
       await assert.rejects(tools.write.execute("revoked", approved, undefined, undefined, ctx), /revoked boundary/);
-      assert.deepEqual(owner.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 0, closed: false });
+      assert.deepEqual(owner.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 1, closed: false });
       let resume!: () => void;
       const gatedRead = createReadToolDefinition(cwd);
       gatedRead.execute = async () => { await new Promise<void>(resolve => { resume = resolve; }); return { content: [], details: undefined }; };
@@ -137,8 +163,7 @@ test("native file service uses one versioned commit path for create, exact, anch
   const create = await f.service.prepare("write", { path, content: "one\r\ntwo\r\n" });
   const created = await f.service.execute(create, "create", f.hooks);
   assert.equal(created.status, "succeeded"); assert.equal(created.created, true);
-  await assert.rejects(f.service.prepare("edit", { path, edits: [{ oldText: "one", newText: "ONE" }] }), /REVISION_REQUIRED/u);
-  await f.capture(path);
+  assert.equal(created.revisionContinuation, "available");
   const exact = await f.service.prepare("edit", { path, edits: [{ oldText: "one", newText: "ONE" }] });
   assert.equal((await f.service.execute(exact, "exact", f.hooks)).status, "succeeded");
   const source = await f.capture(path);

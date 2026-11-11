@@ -33,9 +33,11 @@ export interface WorkspaceSearch {
 export interface WorkspaceReply {
   id: string; ok: boolean; text?: string; snapshot?: string; error?: string; noEffects?: boolean; phase?: string;
   image?: { mimeType: string; artifact: WorkspaceArtifact };
+  items?: WorkspaceMutationItem[];
   read?: WorkspaceRead; search?: WorkspaceSearch;
   execution?: { exitCode: number; timedOut: boolean; closed: boolean; stdout: string; stderr: string; truncated?: boolean };
 }
+export interface WorkspaceMutationItem { index: number; operation: string; status: "succeeded" | "unknown" | "not_started"; snapshot?: string; error?: string; }
 export class WorkspaceOperationError extends Error {
   readonly reply: WorkspaceReply;
   constructor(reply: WorkspaceReply) { super("[SANDBOX_" + (reply.phase ?? "OPERATION").toUpperCase() + "] " + reply.error); this.reply = reply; }
@@ -47,6 +49,8 @@ const COMMAND_OUTPUT_BYTES = 32768; // Byte-ring capacity, independent of the fi
 const READ_FACT_KEYS = new Set(["version", "offset", "limit", "windowComplete", "hasMore", "lineTruncated", "returnedLines", "incompleteLine", "nextOffset"]);
 const SEARCH_FACT_KEYS = new Set(["version", "operation", "outputMode", "scanComplete", "coverageComplete", "outputTruncated", "excerptTruncated", "stopReason",
   "visitedEntries", "scannedFiles", "observedRecords", "returnedRecords", "outputUnits", "skippedTooLarge", "skippedNonUtf8", "skippedNul", "excludedProtected", "excludedLinks"]);
+const SNAPSHOT_HASH = /^[a-f0-9]{64}$/;
+const MUTATION_ITEM_KEYS = new Set(["index", "operation", "status", "snapshot", "error"]);
 // Fixed transport initialization; the caller's command body is neither parsed nor rewritten.
 const POWERSHELL_UTF8 = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding;\n";
 const require = createRequire(import.meta.url);
@@ -98,6 +102,30 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
       && s.outputTruncated === (s.stopReason === "row-limit" || s.stopReason === "text-limit")
       && (!s.excerptTruncated || operation === "grep" && s.outputMode === "content" && s.returnedRecords > 0), "Inconsistent search facts");
   } else need(reply.search === undefined, "Unexpected search facts");
+}
+function validateMutationFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
+  if (operation === "edit" || operation === "write") {
+    need(reply.ok ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid mutation snapshot");
+  } else if (operation !== "read") need(reply.snapshot === undefined, "Unexpected mutation snapshot");
+  if (operation !== "file_batch") { need(reply.items === undefined, "Unexpected mutation items"); return; }
+  const operations = input.operations as Record<string, unknown>[];
+  if (!reply.ok && reply.items === undefined) return; // Failure before batch execution.
+  need(Array.isArray(reply.items) && Array.isArray(operations) && reply.items.length === operations.length && operations.length <= 16, "Invalid mutation items");
+  let failed = false;
+  for (let index = 0; index < reply.items.length; index++) {
+    const item = reply.items[index]!;
+    need(item && typeof item === "object" && item.index === index && item.operation === operations[index]!.operation, "Invalid mutation item identity");
+    validateFactKeys(item, MUTATION_ITEM_KEYS, "Unexpected mutation item field");
+    if (item.status === "succeeded") {
+      need(!failed && item.error === undefined && (item.operation === "edit" || item.operation === "write"
+        ? typeof item.snapshot === "string" && SNAPSHOT_HASH.test(item.snapshot) : item.snapshot === undefined), "Invalid completed mutation item");
+    } else {
+      need(!reply.ok && item.snapshot === undefined && (failed ? item.status === "not_started" && item.error === undefined
+        : item.status === "unknown" && typeof item.error === "string" && item.error.length <= 800), "Invalid incomplete mutation item");
+      failed = true;
+    }
+  }
+  need(reply.ok !== failed, "Inconsistent mutation items");
 }
 async function officialExecutor(): Promise<string> {
   need(process.platform === "win32" && process.arch === "x64", "MXC currently requires Windows x64; no host or VM fallback");
@@ -250,6 +278,7 @@ export class WorkspaceSandboxBackend {
     let reply: WorkspaceReply;
     try { reply = JSON.parse(result.stdout); } catch { throw new Error("[SANDBOX_MXC] Incomplete file result: " + result.stdout.slice(0, 2000)); }
     need(reply && typeof reply === "object" && reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
+    validateMutationFacts(reply, operation, input);
     if (!reply.ok) throw new WorkspaceOperationError(reply);
     need(result.code === 0 && typeof reply.text === "string", "Invalid file result");
     validateFileFacts(reply, operation, input);

@@ -9,7 +9,7 @@ export const MAX_BATCH_ITEMS = 16;
 const ItemParameters = Type.Object({
   operation: Type.String({ enum: ["edit", "write", "delete", "move"] }),
   path: Type.String({ minLength: 1, maxLength: 4096 }),
-  mode: Type.Optional(Type.String({ enum: ["create", "overwrite"], description: "Required for write: create refuses any existing target; overwrite requires a current read revision." })),
+  mode: Type.Optional(Type.String({ enum: ["create", "overwrite"], description: "Required for write: create refuses any existing target; overwrite requires a current read or clean own committed version." })),
   destination: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   content: Type.Optional(Type.String()),
   snapshot: Type.Optional(Type.String()),

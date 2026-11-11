@@ -58,6 +58,47 @@ Promises and controllers were zero. The 20,000-frame queue profile sampled
 and zero active/pending references after flush. Type check and the 12-package
 offline build passed. Native MXC image acceptance passed both modes, zero skips.
 
+## B: committed file revisions
+
+Clean native edit/write/create results transfer the private written buffer into
+the existing 128-entry / 8-MiB revision owner (2 MiB per file). Original publication
+proof, pinned identity and a fresh streamed hash must agree after the result
+journal succeeds. Verification uses at most 64 KiB of scratch; no extra full
+postimage copy or public buffer is retained. New versions permit exact-text edits,
+not unobserved line anchors. External content/identity changes, partial commits,
+retained temporary files, cancellation and stale generations cannot mint a version.
+Unavailable caching never converts a completed mutation into a replayable failure.
+
+MXC verifies its actual published file and returns a successor SHA for edit/write,
+including new files. Ordered partial batch receipts preserve successful hashes;
+unknown/not-started items have none. Explicit input hashes, stop/no-rollback and
+cross-call content-hash semantics remain. No required identity token is added.
+Old blanket reread instructions are retired; C's parent-failure change is separate.
+
+Audited chains: native invocation -> prepare -> publication -> journal -> revision
+admission -> result hooks -> Agent critical delivery -> Session/interactive owners;
+MXC worker -> validated reply -> tool details -> script; all clear/dispose paths.
+Failed critical observations revoke only the originating new revisions. The Agent
+error cleanup uses stable owner callbacks and primitive IDs, with no new normal
+event closure, Promise, controller, wrapper, array or payload copy. No pool is used.
+
+Targeted native/MXC/commit/event checks passed 135 cases with one existing platform
+skip; the additional postimage GC case passed and released 3/3 buffers after clear,
+failed observation and disposal. Full CodeMode session tests passed 109/109, actual
+dist MXC workspace acceptance 2/2 (zero skips), type checking and the 12-package
+offline build passed. Native lifecycle profiles released all 275 revision and 98
+service/plan references, with cache limits unchanged and zero pending invocations.
+
+For 20,000 updates, Agent -> Session -> interactive-stub profiles sampled 1.598 B
+per message update and 0.5808 B per tool update; deterministic inline-closure,
+wrapper, Promise-tail/array and built-in listener Promise counts were zero. The
+coalesced real Agent path delivered one final snapshot from 20,000 raw updates,
+sampling 512.9012 B/raw update including existing dispatcher scheduling; controlled
+GC heap delta was 608,768 B. This fixture excludes full component/frame rendering.
+The real InteractiveMode/ProcessTerminal synthetic-I/O lifecycle ran ten cycles:
+input-ready p50/p95 11.38/50.01 ms, mutation 15.41/36.33 ms, and zero remaining tool,
+input and resize owners. These are same-machine observations, not speedup claims.
+
 ## Rerun
 
 Use native absolute child TMP/TEMP/TMPDIR under the task's .task-tmp root.
@@ -70,4 +111,9 @@ node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/re
 node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts
 node --expose-gc --experimental-strip-types scripts/bench/tool-result-contextual-budget.ts
 node --expose-gc --experimental-strip-types scripts/bench/tui-frame-queue-allocations.ts --frames 20000 --warmup 1000
+node --experimental-strip-types --test --test-concurrency=1 tests/committed-file-revisions.test.ts tests/committed-file-revision-hot-paths.test.ts tests/native-file-service.test.ts tests/mxc-file-worker.test.ts tests/mxc-file-facts-backend.test.ts tests/codemode-session.test.ts
+node --expose-gc --experimental-strip-types scripts/bench/native-files-lifecycle.ts
+node --expose-gc --experimental-strip-types scripts/bench/tui-session-event-allocations.ts --updates 20000 --warmup 2000
+# Actual MXC acceptance: set child SUPERPI_MXC_LIVE=1 and SUPERPI_SANDBOX_USE_DIST=1.
+node --experimental-strip-types --test tests/mxc-workspace-live.test.ts
 ```

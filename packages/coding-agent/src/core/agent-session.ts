@@ -1239,11 +1239,13 @@ export class AgentSession {
 			}
 		};
 
+		this.agent.onToolObservationFailure = this._handleToolObservationFailure;
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError, parentToolCallId }) => {
 			try {
 			const mcpTool = toolCall.name.startsWith("mcp__");
 			const mcpFailure = mcpTool && typeof result.details?.mcpError === "string";
 			const finalIsError = isError || mcpFailure;
+			if (toolCall.name === CODEMODE_NAME && finalIsError) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(toolCall.id);
 			const runner = this._extensionRunner;
 			const hasResultHook = runner.hasHandlers("tool_result");
 			if (mcpTool && hasResultHook) this._toolResultPresentation?.releaseMcpInputAdmission(toolCall.id);
@@ -1275,6 +1277,7 @@ export class AgentSession {
 			const normalizedContent = await normalizeToolResultImages(finalContent, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
+			if (hookResult?.isError === true) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
 			this._codemode.finalizeStore(toolCall.id, finalIsError || hookResult?.isError === true);
 			if (toolCall.name === CODEMODE_NAME && hookResult?.isError === true && !result.isError) {
 				const hookDetails = hookResult.details;
@@ -1303,6 +1306,7 @@ export class AgentSession {
 				usage: hookResult?.usage,
 			};
 			} catch (error) {
+				this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
 				this._codemode.finalizeStore(toolCall.id, true);
 				if (toolCall.name === CODEMODE_NAME) return this._codemode.observationFailed(result, error);
 				throw error;
@@ -1537,6 +1541,9 @@ export class AgentSession {
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
+	private readonly _handleToolObservationFailure = (toolCallId: string, parentToolCallId?: string): void => {
+		this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCallId, parentToolCallId ? toolCallId : undefined);
+	};
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
 		// Final provider completion (including error/abort) releases its image guard
 		// before extension callbacks or compaction can issue unrelated requests.
@@ -1965,6 +1972,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		if (this.agent.onToolObservationFailure === this._handleToolObservationFailure) this.agent.onToolObservationFailure = undefined;
 		if (this._operationDisposed) return;
 		this._operationDisposed = true;
 		if (this._prefixManifestOwner) this._prefixManifestRecorder?.releaseOwner(this._prefixManifestOwner);

@@ -98,9 +98,14 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
     for (const directory of [".git", ".sp"]) assert.equal(await fs.readFile(path.join(project, directory, "protected"), "utf8"), "kept");
     if (mode === "sandbox-write") {
       const created = await invoke("write", { path: ".venv/local.txt", content: "installed" }); assert.notEqual(created.isError, true, JSON.stringify(created));
+      const continued = await invoke("edit", { path: ".venv/local.txt", snapshot: created.details.snapshot, edits: [{oldText:"installed",newText:"continued"}] });
+      assert.notEqual(continued.isError,true,JSON.stringify(continued));assert.equal(await fs.readFile(path.join(project,".venv/local.txt"),"utf8"),"continued");
       const current = await invoke("read", { path: "input.txt" });
       const edited = await invoke("edit", { path: "input.txt", snapshot: current.details.snapshot, edits: [{ oldText: "first", newText: "changed" }] });
       assert.notEqual(edited.isError, true, JSON.stringify(edited)); assert.equal(await fs.readFile(path.join(project, "input.txt"), "utf8"), "changed\nsecond");
+      const secondEdit=await invoke("edit",{path:"input.txt",snapshot:edited.details.snapshot,edits:[{oldText:"second",newText:"SECOND"}]});assert.notEqual(secondEdit.isError,true,JSON.stringify(secondEdit));
+      const thirdEdit=await invoke("edit",{path:"input.txt",snapshot:secondEdit.details.snapshot,edits:[{oldText:"changed",newText:"final"}]});assert.notEqual(thirdEdit.isError,true,JSON.stringify(thirdEdit));
+      assert.equal(await fs.readFile(path.join(project,"input.txt"),"utf8"),"final\nSECOND");
       const other = await invoke("powershell", { cwd: additional, command: "[IO.File]::WriteAllText((Join-Path $PWD 'output.txt'),'direct')" });
       assert.equal(other.details.execution.exitCode, 0, JSON.stringify(other)); assert.equal(await fs.readFile(path.join(additional, "output.txt"), "utf8"), "direct");
     } else {

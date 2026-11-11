@@ -1,6 +1,7 @@
 import { MUTATION_READ_SOURCE, readFileGeneration, verifyMutationReadSource } from "../tools/read-window.ts";
 import { NATIVE_FILE_REVISION } from "./file-host.ts";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { TextDecoder } from "node:util";
@@ -20,7 +21,8 @@ import {
 import { assertNoNewSyntaxDiagnostics } from "./snapshot-syntax-guard.ts";
 import { snapshotPreview, type PreviewBudget, type ChangePreview } from "./change-preview.ts";
 import { capturePathIdentity, type PathIdentity } from "./native-file-core.ts";
-import { commitPreparedFile, FileCommitError, type FileCommitReceipt, type CommitMetadata } from "./file-commit.ts";
+import { commitPreparedFile, FileCommitError, originalCommittedFileIdentity, type FileCommitReceipt, type CommitMetadata } from "./file-commit.ts";
+import { directoryKey, originalCreatedFileIdentity, type CreationResult } from "./file-creation.ts";
 import { selectCommitMetadata } from "./file-commit-metadata.ts";
 import { SNAPSHOT_ID_REGEX as SNAPSHOT_ID_PATTERN } from "./regex.ts";
 import {
@@ -30,10 +32,11 @@ import {
 } from "./compact-snapshot-capture.ts";
 export const SNAPSHOT_EDIT_ANNOTATION_PREFIX = "[Snapshot edit]";
 export const MAX_SNAPSHOT_LINE_EDITS = 20;
-const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024;
+export const MAX_SNAPSHOT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_TOTAL_BYTES = 8 * 1024 * 1024;
 const MAX_SNAPSHOT_RECEIPTS = 128;
 const MAX_SNAPSHOT_EDIT_BYTES = 256 * 1024;
+const POSTIMAGE_VERIFY_BYTES = 64 * 1024;
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export type SnapshotLineEditKind = "replace" | "delete" | "insert_before" | "insert_after";
@@ -62,6 +65,8 @@ interface SnapshotReceiptBase {
   firstSeenLine: number;
   lastSeenLine: number;
   residentBytes: number;
+  continuationOwner?: string;
+  continuationCallId?: string;
 }
 
 interface FullSnapshotReceipt extends SnapshotReceiptBase {
@@ -124,6 +129,8 @@ export interface SnapshotLineEditHooks {
   preparedTarget?: PathIdentity;
   preparedParent?: PathIdentity;
   commitSelected?: (metadata: Pick<CommitMetadata, "strategy" | "reason">) => void;
+  /** Internal transfer of the private postimage, only after clean commit callbacks. */
+  committedBytes?: (bytes: Buffer, commit: FileCommitReceipt) => void;
 }
 /** One session owns at most 128 receipts / 8 MiB; clear/dispose drops all source references. */
 export class FileRevisions {
@@ -152,9 +159,58 @@ export class FileRevisions {
     for (const receipt of this.snapshots.values()) if (receipt.canonicalPath === canonicalPath) this.forget(receipt.id);
   }
 
+  /** Error/lifecycle boundary only; never invalidates unrelated read evidence. */
+  forgetContinuations(owner: string, callId?: string): void {
+    for (const receipt of this.snapshots.values()) if (receipt.continuationOwner === owner
+      && (callId === undefined || receipt.continuationCallId === callId)) this.forget(receipt.id);
+  }
+
+  /** Transfers one exclusively owned buffer, without claiming that new line anchors were shown. */
+  async continueCommitted(path: string, bytes: Buffer, proof: FileCommitReceipt | CreationResult, generation: number,
+    owner: string, callId: string, assertCurrent: () => void, signal?: AbortSignal): Promise<string | undefined> {
+    try {
+      if (!this.sessionId || bytes.length > MAX_SNAPSHOT_FILE_BYTES || !isUtf8(bytes) || bytes.includes(0)) return;
+      for (let index = 0; index < bytes.length; index++) if (bytes[index] === 13 && bytes[index + 1] !== 10) return;
+      const published = originalCommittedFileIdentity(proof as FileCommitReceipt) ?? originalCreatedFileIdentity(proof as CreationResult);
+      if (!published || directoryKey(published.path) !== directoryKey(path)) return;
+      assertCurrent(); signal?.throwIfAborted();
+      const canonicalPath = await realpath(path);
+      if (directoryKey(canonicalPath) !== directoryKey(path)) return;
+      const handle = await open(canonicalPath, "r");
+      let identity: FileIdentity;
+      const expected = sha256(bytes);
+      try {
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile() || before.size !== BigInt(bytes.length) || String(before.dev) !== published.device || String(before.ino) !== published.inode) return;
+        identity = identityFromStat(before);
+        const hash = createHash("sha256"), scratch = Buffer.allocUnsafe(Math.min(POSTIMAGE_VERIFY_BYTES, Math.max(1, bytes.length)));
+        let offset = 0;
+        while (offset < bytes.length) {
+          assertCurrent(); signal?.throwIfAborted();
+          const count = (await handle.read(scratch, 0, Math.min(scratch.length, bytes.length - offset), offset)).bytesRead;
+          if (!count) return;
+          hash.update(count === scratch.length ? scratch : scratch.subarray(0, count)); offset += count;
+        }
+        const after = await handle.stat({ bigint: true }), named = await lstat(canonicalPath, { bigint: true });
+        if (hash.digest("hex") !== expected || !named.isFile() || !sameCaptureState(identity, identityFromStat(after))
+          || !sameCaptureState(identity, identityFromStat(named))) return;
+      } finally { await handle.close(); }
+      assertCurrent(); signal?.throwIfAborted();
+      const id = `snap_${randomBytes(16).toString("base64url")}`;
+      if (this.remember({ mode: "full", id, sessionId: this.sessionId, canonicalPath, identity, bytes, sha256: expected,
+        firstSeenLine: 1, lastSeenLine: 0, residentBytes: bytes.length, continuationOwner: owner, continuationCallId: callId }, generation)) return id;
+    } catch { /* Cache availability cannot turn a completed mutation into a replayable failure. */ }
+    return undefined;
+  }
+
   remember(receipt: SnapshotReceipt, generation: number): boolean {
     if (this.closed || generation !== this.epoch || (this.sessionId !== undefined && this.sessionId !== receipt.sessionId)
       || receipt.residentBytes > MAX_SNAPSHOT_TOTAL_BYTES) return false;
+    // A fresh observed read supersedes the unobserved commit buffer for this path.
+    // Other read ranges keep their existing independent anchor receipts.
+    if (receipt.continuationOwner === undefined) for (const previous of this.snapshots.values()) {
+      if (previous.canonicalPath === receipt.canonicalPath && previous.continuationOwner !== undefined) this.forget(previous.id);
+    }
     this.forget(receipt.id);
     while (this.snapshots.size > 0 && (this.snapshots.size >= MAX_SNAPSHOT_RECEIPTS
       || this.bytes + receipt.residentBytes > MAX_SNAPSHOT_TOTAL_BYTES)) {
@@ -949,10 +1005,13 @@ export async function executePreparedSnapshotMutation(
     hooks.commitSelected?.(metadata);
     const commit = await commitPreparedFile({ target: plan.target, parent: plan.parent, previousSha256: receipt.sha256, metadata }, prepared.output, { ...hooks, signal, assertCurrent });
     revisions.forget(snapshotId);
+    const nextSha256 = sha256(prepared.output);
+    try { hooks.committedBytes?.(prepared.output, commit); }
+    catch (error) { throw new FileCommitError(error, commit, nextSha256); }
     return {
       commit,
       previousSha256: receipt.sha256,
-      sha256: sha256(prepared.output),
+      sha256: nextSha256,
       replacements: prepared.replacements,
       deduplicatedEdits: prepared.deduplicatedEdits,
       changedBytes: prepared.changedBytes,

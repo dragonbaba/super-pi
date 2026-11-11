@@ -43,9 +43,11 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
   private working = false;
   private revoked = false;
   private readonly generation: number;
+  private readonly continuationOwner: string;
   constructor(owner: SessionFiles, service: FileService, event: ToolCallEvent, ctx: ExtensionContext) {
     this.owner = owner; this.service = service; this.original = event.input; this.ctx = ctx;
     this.id = event.toolCallId; this.name = event.toolName as FileToolName; this.generation = service.revisions.generation;
+    this.continuationOwner = event.parentToolCallId ?? event.toolCallId;
   }
   readonly assertCurrent = (): void => {
     if (this.revoked || !this.owner || !this.service || !this.ctx) throw new Error(STALE);
@@ -128,7 +130,7 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
     this.working = true;
     try {
       this.assertCurrent();
-      const hooks: FileExecutionHooks = { assertCurrent: this.assertCurrent, record: this.record, signal };
+      const hooks: FileExecutionHooks = { assertCurrent: this.assertCurrent, record: this.record, signal, continuationOwner: this.continuationOwner };
       if (this.batch) return await this.batch.execute(hooks);
       const receipt = await this.service!.execute(this.item!, this.id, hooks);
       let text = `${receipt.operation} ${displayMetadata(receipt.target)}: ${receipt.status}`;
@@ -177,6 +179,7 @@ export class SessionFiles implements ObservationPermissions {
     const receipt = this.service.revisions.get(id);
     return receipt !== undefined && receipt.canonicalPath === canonicalPath;
   }
+  forgetContinuations(owner: string, callId?: string): void { this.service?.revisions.forgetContinuations(owner, callId); }
   hasHandlers(event: string): boolean { return event === "tool_call" || LIFECYCLE_EVENTS.has(event); }
   /** Low-frequency host input preparation only; never creates a service or grants path access. */
   pinReadRevisions(ctx: ExtensionContext): SessionFileRevisionSource {
@@ -298,12 +301,12 @@ export class SessionFiles implements ObservationPermissions {
       const definition: ToolDefinition<any, any> = {
         name, label: name, parameters, executionMode: "sequential", renderResult: name === "write" ? renderWriteResult : renderBatchResult,
         renderCall: base[name]?.renderCall, collapseCallOnResult: name === "write",
-        description: name === "edit" ? "Edit one current read revision by exact unique text or snapshot LINE#ID anchors. Same-script read then edit is supported. External changes invalidate the revision."
-          : name === "write" ? "Create a missing UTF-8 file exclusively, or replace an existing file using its current read revision. Existing targets require read first; missing parents may be created."
+        description: name === "edit" ? "Edit one current file version by exact unique text or observed snapshot LINE#ID anchors. A clean own edit/write retains its version for continued exact-text edits; external changes invalidate it."
+          : name === "write" ? "Create a missing UTF-8 file exclusively, or replace an existing file using a current read or clean own committed version. Missing parents may be created."
           : name === "delete" ? "Irreversibly delete one file or empty directory. No recursive deletion or backup."
           : name === "move" ? "Move one file without overwriting. Exclusive link then unlink may leave both names on partial failure."
           : "Prepare then apply up to 16 independent file operations in fixed order. Write requires create or overwrite mode. Stop on failure, retain each outcome; no rollback or automatic replay.",
-        promptGuidelines: name === "edit" || name === "write" ? ["A read revision is a file-version precondition. You may read, compute and edit in one CodeMode script without a separate model turn or show(). Read again after mutation or a version conflict. On REVISION_REQUIRED, read the exact existing target; never invent a snapshot or substitute result.ref. Copy an explicit snapshot ID from the read annotation when required by the active schema."] : undefined,
+        promptGuidelines: name === "edit" || name === "write" ? ["Read and edit may share one script without show(). After a clean own edit/write with details.revisionContinuation=available, exact-text edits continue automatically without a reread. New LINE#ID anchors still require read. On external change, conflict, eviction or unavailable continuation, read the exact target; never invent a snapshot or use result.ref as a version."] : undefined,
         async execute(id, input, signal) {
           const invocation = (input as { [EXECUTION]?: NativeFileInvocation } | undefined)?.[EXECUTION];
           if (!invocation || invocation.id !== id || invocation.name !== name || owner.calls.get(id) !== invocation) throw new Error("Native file operation requires its prepared invocation.");
