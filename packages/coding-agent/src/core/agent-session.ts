@@ -1240,7 +1240,7 @@ export class AgentSession {
 		};
 
 		this.agent.onToolObservationFailure = this._handleToolObservationFailure;
-		this.agent.afterToolCall = async ({ toolCall, args, result, isError, parentToolCallId }) => {
+		this.agent.afterToolCall = async ({ toolCall, args, result, isError, parentToolCallId }, signal) => {
 			try {
 			const mcpTool = toolCall.name.startsWith("mcp__");
 			const mcpFailure = mcpTool && typeof result.details?.mcpError === "string";
@@ -1277,7 +1277,7 @@ export class AgentSession {
 			const normalizedContent = await normalizeToolResultImages(finalContent, {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
-			if (hookResult?.isError === true) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
+			if (hookResult?.isError === true || hookResult?.observationFailed) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
 			this._codemode.finalizeStore(toolCall.id, finalIsError || hookResult?.isError === true);
 			if (toolCall.name === CODEMODE_NAME && hookResult?.isError === true && !result.isError) {
 				const hookDetails = hookResult.details;
@@ -1311,6 +1311,7 @@ export class AgentSession {
 				if (toolCall.name === CODEMODE_NAME) return this._codemode.observationFailed(result, error);
 				throw error;
 			} finally {
+				if (signal?.aborted) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
 				this._resourceLoader.getExtensions().runtime.nativeFiles?.finish(toolCall.id);
 				stabilizeToolArguments(toolCall.arguments);
 			}

@@ -671,6 +671,39 @@ test("direct native result message_start failure revokes its committed revision"
   assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
 });
 
+for(const target of ["edit","codemode"])test(`ordinary ${target} result hook errors revoke continuations without changing execution facts`,async t=>{
+  let pending=true;
+  const broken:InlineExtension=pi=>pi.on("tool_result",event=>{if(pending&&event.toolName===target){pending=false;throw new Error("ordinary result observer failed");}});
+  const f=await fixture(t,{},[broken]);
+  const first=await f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});']);
+  assert.equal(first.results.at(-1)?.isError,false,"ordinary extension exceptions retain their existing nonfatal behavior");
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
+});
+
+for(const boundary of ["tool_result","tool_execution_end","message_start","message_end"] as const)test(`cancellation during ${boundary} revokes a direct committed revision`,async t=>{
+  let announce!:()=>void,finish!:()=>void;
+  const entered={promise:new Promise<void>(resolve=>{announce=resolve;}),resolve:()=>announce()};
+  const release={promise:new Promise<void>(resolve=>{finish=resolve;}),resolve:()=>finish()};
+  const delayed:InlineExtension=pi=>pi.on("tool_result",async event=>{if(boundary==="tool_result"&&event.toolName==="edit"){entered.resolve();await release.promise;}});
+  const f=await fixture(t,{},[delayed]);
+  await f.run(['await tools.read({path:"file.txt"});']);
+  const unsubscribe=f.session.agent.subscribe(async event=>{
+    const target=event.type==="tool_execution_end"?event.toolName:(event.type==="message_start"||event.type==="message_end")&&event.message.role==="toolResult"?event.message.toolName:undefined;
+    if(event.type===boundary&&target==="edit"){entered.resolve();await release.promise;}
+  });
+  try {
+    const pending=f.session.agent.dispatchHostTool({type:"toolCall",id:"cancel-observation",name:"edit",arguments:{path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}});
+    await entered.promise;f.session.agent.abort();release.resolve();
+    const actual=await pending;
+    assert.equal(actual.isError,false,"cancellation cannot rewrite a completed mutation's outcome");
+  }finally{release.resolve();unsubscribe();}
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
+});
+
 test("SDK allowlist constrains children while adding the default transport; no-tools stays empty", async t => {
 	const f = await fixture(t, { tools: ["read"] });
 	const catalog = f.session.getToolCatalog();

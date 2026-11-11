@@ -13,6 +13,7 @@ function member(path:string,owner:string,name:string) {
 
 test("critical observation cleanup adds no per-delivery closure, Promise or payload wrapper",()=>{
   const functions=[member("packages/agent/src/agent.ts","Agent","processEvents"),
+    member("packages/agent/src/agent.ts","Agent","revokeToolObservation"),
     member("packages/coding-agent/src/core/files/snapshot-line-edit.ts","FileRevisions","forgetContinuations")];
   for(const {source,body} of functions) {
     function visit(node:ts.Node):void {

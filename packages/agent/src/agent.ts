@@ -801,13 +801,17 @@ export class Agent {
 				return;
 			}
 			await this.eventDelivery.publishCritical(event);
+			if (this.activeRun?.abortController.signal.aborted) this.revokeToolObservation(event);
 		} catch (error) {
-			try {
-				if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") this.onToolObservationFailure?.(event.message.toolCallId);
-				else if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") this.onToolObservationFailure?.(event.toolCallId, event.parentToolCallId);
-			} catch { /* Ownership cleanup never replaces the original critical failure. */ }
+			this.revokeToolObservation(event);
 			throw error;
 		}
+	}
+	private revokeToolObservation(event: AgentEvent): void {
+		try {
+			if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") this.onToolObservationFailure?.(event.message.toolCallId);
+			else if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") this.onToolObservationFailure?.(event.toolCallId, event.parentToolCallId);
+		} catch { /* Ownership cleanup never replaces the original critical failure. */ }
 	}
 
 	private requireActiveSignal(): AbortSignal {

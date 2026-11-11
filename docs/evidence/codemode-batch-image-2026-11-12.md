@@ -78,24 +78,25 @@ Old blanket reread instructions are retired; C's parent-failure change is separa
 Audited chains: native invocation -> prepare -> publication -> journal -> revision
 admission -> result hooks -> Agent critical delivery -> Session/interactive owners;
 MXC worker -> validated reply -> tool details -> script; all clear/dispose paths.
-Failed critical observations, including tool-result message start/end, revoke only
-the originating new revisions. The Agent
+Failed critical observations, ordinary result-hook exceptions and cancellation
+during result hooks or critical start/end delivery revoke only the originating
+new revisions, without rewriting completed execution facts. The Agent
 error cleanup uses stable owner callbacks and primitive IDs, with no new normal
 event closure, Promise, controller, wrapper, array or payload copy. No pool is used.
 
 Targeted native/MXC/commit/event checks passed 135 cases with one existing platform
 skip; the additional postimage GC case passed and released 3/3 buffers after clear,
-failed observation and disposal. Full CodeMode session tests passed 111/111, actual
+failed observation and disposal. Full CodeMode session tests passed 117/117, actual
 dist MXC workspace acceptance 2/2 (zero skips), complete Windows suite (exit 0), type checking and the 12-package
 offline build passed. Native lifecycle profiles released all 275 revision and 98
 service/plan references, with cache limits unchanged and zero pending invocations.
 
-For 20,000 updates, Agent -> Session -> interactive-stub profiles sampled 1.598 B
-per message update and 0.5808 B per tool update; deterministic inline-closure,
+For 20,000 updates, Agent -> Session -> interactive-stub profiles sampled 1.4696 B
+per message update and 0.474 B per tool update; deterministic inline-closure,
 wrapper, Promise-tail/array and built-in listener Promise counts were zero. The
 coalesced real Agent path delivered one final snapshot from 20,000 raw updates,
-sampling 512.9012 B/raw update including existing dispatcher scheduling; controlled
-GC heap delta was 608,768 B. This fixture excludes full component/frame rendering.
+sampling 514.7564 B/raw update including existing dispatcher scheduling; controlled
+GC heap delta was 611,096 B. This fixture excludes full component/frame rendering.
 The real InteractiveMode/ProcessTerminal synthetic-I/O lifecycle ran ten cycles:
 input-ready p50/p95 11.38/50.01 ms, mutation 15.41/36.33 ms, and zero remaining tool,
 input and resize owners. These are same-machine observations, not speedup claims.
