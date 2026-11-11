@@ -23,3 +23,11 @@ export function oversizedHeader(): Buffer {
 	const header = Buffer.alloc(13); header.writeUInt32BE(100000); header.writeUInt32BE(100000, 4); header[8] = 8; header[9] = 6;
 	return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IEND", Buffer.alloc(0))]);
 }
+
+/** Valid 1080p checker PNG with deterministic ancillary padding: reproduces wire size without private images. */
+export function paddedPngFixture(width = 1920, height = 1080, base64Bytes = 1_140_000): Buffer {
+	const png = pngFixture(width, height), padding = Math.ceil(base64Bytes / 4) * 3 - png.length - 12;
+	if (padding < 8) throw new Error("PNG fixture target is too small");
+	const text = Buffer.alloc(padding, 65); text.write("fixture\0");
+	return Buffer.concat([png.subarray(0, -12), chunk("tEXt", text), png.subarray(-12)]);
+}

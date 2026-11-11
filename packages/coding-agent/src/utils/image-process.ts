@@ -1,5 +1,6 @@
 import { convertImageBytesToPng } from "./image-convert.ts";
 import { formatDimensionNote, type ImageResizeOptions, resizeImage } from "./image-resize.ts";
+const DEFAULT_PNG_POLICY = Object.freeze({ preservePng: true });
 
 export interface ProcessImageOptions {
 	/** Whether to resize images to inline provider limits. Default: true */
@@ -84,7 +85,7 @@ export async function processImage(
 	}
 
 	if (autoResizeImages) {
-		const resized = await resizeImage(normalized.bytes, normalized.mimeType, options?.resizeOptions);
+		const resized = await resizeImage(normalized.bytes, normalized.mimeType, options?.resizeOptions ?? DEFAULT_PNG_POLICY);
 		if (!resized) {
 			return {
 				ok: false,

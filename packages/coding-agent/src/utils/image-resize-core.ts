@@ -6,6 +6,7 @@ export interface ImageResizeOptions {
 	maxHeight?: number; // Default: 2000
 	maxBytes?: number; // Default: 4.5MB of base64 payload (below Anthropic's 5MB limit)
 	jpegQuality?: number; // Default: 80
+	preservePng?: boolean; // Keep PNG sources lossless when creating a request view.
 }
 
 export interface ResizedImage {
@@ -26,6 +27,7 @@ const DEFAULT_OPTIONS: Required<ImageResizeOptions> = {
 	maxHeight: 2000,
 	maxBytes: DEFAULT_MAX_BYTES,
 	jpegQuality: 80,
+	preservePng: false,
 };
 
 interface EncodedCandidate {
@@ -43,11 +45,11 @@ function hasTransparency(image: PhotonImageType): boolean {
 	return false;
 }
 
-function selectEncoding(image: PhotonImageType, maxBytes: number, jpegQuality: number): EncodedCandidate | null {
+function selectEncoding(image: PhotonImageType, maxBytes: number, jpegQuality: number, preservePng: boolean): EncodedCandidate | null {
 	const transparent = hasTransparency(image);
 	let bytes = image.get_bytes();
 	let mimeType = "image/png";
-	if (!transparent) {
+	if (!transparent && !preservePng) {
 		const jpeg = image.get_bytes_jpeg(jpegQuality);
 		if (jpeg.length < bytes.length) {
 			bytes = jpeg;
@@ -55,7 +57,7 @@ function selectEncoding(image: PhotonImageType, maxBytes: number, jpegQuality: n
 		}
 	}
 	if (Math.ceil(bytes.length / 3) * 4 < maxBytes) return { bytes, mimeType };
-	if (transparent) return null;
+	if (transparent || preservePng) return null;
 
 	for (const quality of JPEG_QUALITY_STEPS) {
 		if (quality >= jpegQuality) continue;
@@ -133,7 +135,7 @@ export async function resizeImageInProcess(
 		while (true) {
 			const resized = photon.resize(image, currentWidth, currentHeight, photon.SamplingFilter.Lanczos3);
 			try {
-				const candidate = selectEncoding(resized, opts.maxBytes, opts.jpegQuality);
+				const candidate = selectEncoding(resized, opts.maxBytes, opts.jpegQuality, opts.preservePng && mimeType === "image/png");
 				if (candidate) {
 					return {
 						data: Buffer.from(candidate.bytes.buffer, candidate.bytes.byteOffset, candidate.bytes.byteLength).toString("base64"),

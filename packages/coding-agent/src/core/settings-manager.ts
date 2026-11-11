@@ -14,6 +14,8 @@ import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { parseSandboxNetwork, type SandboxNetwork } from "./sandbox/network-policy.ts";
 import { assertPermissionMode, isHostPermissionMode } from "./permission-mode.ts";
+import type { RequestImageSettings } from "./request-image-budget.ts";
+const EMPTY_IMAGE_REQUEST_SETTINGS: RequestImageSettings = Object.freeze({});
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -54,6 +56,7 @@ export interface TerminalSettings {
 export interface ImageSettings {
 	autoResize?: boolean; // default: true (resize images to 2000x2000 max for better model compatibility)
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
+	requestBudget?: RequestImageSettings; // Full-history openai-completions request views; base64 byte units.
 }
 
 export interface ToolResultPresentationSettings {
@@ -1388,6 +1391,7 @@ export class SettingsManager {
 	getImageAutoResize(): boolean {
 		return this.settings.images?.autoResize ?? true;
 	}
+	getRequestImageSettings(): RequestImageSettings { return this.settings.images?.requestBudget ?? EMPTY_IMAGE_REQUEST_SETTINGS; }
 
 	setImageAutoResize(enabled: boolean): void {
 		if (!this.globalSettings.images) {

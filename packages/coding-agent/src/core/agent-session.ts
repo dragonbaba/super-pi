@@ -1,6 +1,8 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
+import { RequestImageBudget } from "./request-image-budget.ts";
+import { isRequestBodyTooLarge } from "@super-pi/ai";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
@@ -185,6 +187,7 @@ import {
 import { MCP_INLINE_BYTES, prepareMcpHookContent } from "./tool-result-source.ts";
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
+function hasImageRecoveryToolCall(block: AssistantMessage["content"][number]): boolean { return block.type === "toolCall"; }
 function getBuiltinExecutionPath(name: string, cwd: string) {
 	switch (name) {
 		case "read": return { access: "read" as const, cwd, argument: "path" };
@@ -812,6 +815,9 @@ export class AgentSession {
 	private _queuedImageMessages = new Map<string, { text: string; images: ImageContent[]; submission: ImageSubmission; mode: "steer" | "followUp" }>();
 	// Values are small digests. Keys are verified/frozen canonical content; never paths or mutable provider objects.
 	private _imageDigests = new WeakMap<ImageContent, string>();
+	readonly requestImages = new RequestImageBudget();
+	private _imagePreparationSignal: AbortSignal | undefined;
+	private _imageBodyRecoveryAttempted = false;
 	private _imageRequest: { model: Model<any> | undefined; signal?: AbortSignal; sessionId: string; policyRevision: number } | undefined;
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
@@ -1050,7 +1056,7 @@ export class AgentSession {
 			const workspaceCwd = config.cwd, workspaceParent = resolveEvidencePath(config.agentDir ?? getAgentDir(), "sandbox-workspaces");
 			this._createWorkspaceSandbox = () => new WorkspaceSandboxTools(workspaceCwd, workspaceParent, permissionMode,
 				() => this._resourceLoader.getExtensions().runtime,
-				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), networkSession: this._sandboxNetwork, directories: this.settingsManager.getSessionDirectories() });
+				{ settings: this.settingsManager.getSandboxToolchains(), powershellPath: this.settingsManager.getPowerShellPath(), network: this.settingsManager.getSandboxNetwork(), networkSession: this._sandboxNetwork, directories: this.settingsManager.getSessionDirectories() }, () => this.settingsManager.getImageAutoResize());
 			this._workspaceSandbox = this._createWorkspaceSandbox();
 		} else if (!parentExecution && this.settingsManager.getExecutionEnvironment() === "sandbox") {
 			throw new Error("[SANDBOX_MIGRATION] The legacy inputs/writes VM backend has retired. Select permissionMode read-only or sandbox-write to use MXC.");
@@ -1534,7 +1540,7 @@ export class AgentSession {
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
 		// Final provider completion (including error/abort) releases its image guard
 		// before extension callbacks or compaction can issue unrelated requests.
-		if (event.type === "agent_end" || (event.type === "message_end" && event.message.role === "assistant")) this._imageRequest = undefined;
+		if (event.type === "agent_end" || (event.type === "message_end" && event.message.role === "assistant")) { this._imageRequest = undefined; this._imagePreparationSignal = undefined; }
 		const mcpFinal = event.type === "message_end" && event.message.role === "toolResult" && event.message.toolName.startsWith("mcp__");
 		const toolResultSourceContent = event.type === "message_end" && event.message.role === "toolResult"
 			? event.message.content
@@ -1554,6 +1560,8 @@ export class AgentSession {
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
+			this._imageBodyRecoveryAttempted = false;
+			this.requestImages.resetRecovery();
 			const submissionId = (event.message as AttachmentMessage).imageSubmission?.id;
 			const queued = submissionId ? this._queuedImageMessages.get(submissionId) : undefined;
 			const messageText = queued ? this._imageQueueLabel(queued.text, queued.submission) : contentText(event.message.content, "");
@@ -1978,6 +1986,7 @@ export class AgentSession {
 		this._pendingCustomContextMessages.length = 0;
 		this._pendingLengthRecovery = undefined;
 		this._imageDigests = new WeakMap();
+		this.requestImages.clear(); this._imagePreparationSignal = undefined;
 		this._imageRequest = undefined;
 		this._queuedImageMessages.clear();
 		this.agent.clearAllQueues();
@@ -2926,6 +2935,22 @@ export class AgentSession {
 		// A failed image submission needs an explicit user retry. Do not drain the
 		// next draft, compact, or automatically repeat a potentially billed request.
 		if (msg.errorMessage?.includes("Image submission blocked:")) return false;
+		if (this.model?.api === "openai-completions" && isRequestBodyTooLarge(msg)) {
+			if (!this._imageBodyRecoveryAttempted && !this.requiresUserInput && this._canResumeAgentRun()
+				&& msg.provider === this.model.provider && msg.model === this.model.id
+				&& !msg.content.some(hasImageRecoveryToolCall) && this.requestImages.tighten()) {
+				this._imageBodyRecoveryAttempted = true;
+				const messages = this.agent.state.messages;
+				if (messages[messages.length - 1] === msg) this.agent.state.messages = messages.slice(0, -1);
+				this._rebuildToolResultUiCanonicalIndex();
+				return true;
+			}
+			if (this._retryAttempt > 0) {
+				this._emit({ type: "auto_retry_end", success: false, attempt: this._retryAttempt, finalError: msg.errorMessage });
+				this._retryAttempt = 0;
+			}
+			return false;
+		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
@@ -3530,7 +3555,14 @@ export class AgentSession {
 		return this._imageQueueLabel(text, submission);
 	}
 	/** Runs only at an actual provider request boundary, after queue delivery. */
+	async prepareRequestImages(messages: Message[], model: Model<any> | undefined): Promise<boolean> {
+		if (model?.api !== "openai-completions" || this.settingsManager.getBlockImages()) { this.requestImages.clear(); return false; }
+		await this.requestImages.prepare(messages, this.settingsManager.getRequestImageSettings(), this.settingsManager.getImageAutoResize(), this._imagePreparationSignal);
+		this._imagePreparationSignal?.throwIfAborted();
+		return true;
+	}
 	async prepareSubmittedImages(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
+		this._imagePreparationSignal = signal;
 		this._imageRequest = undefined;
 		let projected: AgentMessage[] | undefined;
 		for (let i = 0; i < messages.length; i++) {
@@ -3613,7 +3645,8 @@ export class AgentSession {
 		if (this._isAgentRunActive) this._agentRunAbortRequested = true;
 		this.abortRetry();
 		this.agent.abort();
-		await this.waitForIdle();
+		try { await this.waitForIdle(); }
+		finally { this.requestImages.clear(); this._imagePreparationSignal = undefined; }
 	}
 
 	async waitForIdle(): Promise<void> {
@@ -3633,6 +3666,7 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
+		this.requestImages.clear(); this._imagePreparationSignal = undefined;
 		this._resourceLoader.getExtensions().runtime.codexDispatch.owner.reset();
 		await this._extensionRunner.emit({
 			type: "model_select",
@@ -4105,6 +4139,7 @@ export class AgentSession {
 		// A local preparation block is not provider overflow and never authorizes
 		// paid automatic compaction or replay of a completed tool.
 		if (isRequestBudgetBlock(assistantMessage.errorMessage)) return false;
+		if (this.model?.api === "openai-completions" && isRequestBodyTooLarge(assistantMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 
@@ -4749,6 +4784,7 @@ export class AgentSession {
 	}
 
 	private _clearEvidenceBranch(): void {
+		this.requestImages.clear(); this._imagePreparationSignal = undefined;
 		this._codemode.clearReadEvidence();
 		this._evidenceLedger?.changeBranch();
 		this._evidenceCompletedReads?.clear();
@@ -5318,6 +5354,7 @@ export class AgentSession {
 	 * Context overflow errors are NOT retryable (handled by compaction instead).
 	 */
 	private _isRetryableError(message: AssistantMessage): boolean {
+		if (isRequestBodyTooLarge(message)) return false;
 		if (message.errorMessage?.includes("Image submission blocked:")) return false;
 		if (isRequestBudgetBlock(message.errorMessage)) return false;
 		// Context overflow is handled by compaction, not retry.

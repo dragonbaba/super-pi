@@ -10,6 +10,7 @@ import { getReadmePath } from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/interactive/theme/theme.ts";
 import { processImage } from "../../utils/image-process.ts";
+import { processedImage } from "../../utils/processed-image.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -301,7 +302,7 @@ export function createReadToolDefinition(
 									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
 									content = [
 										{ type: "text", text: textNote },
-										{ type: "image", data: processed.data, mimeType: processed.mimeType },
+										processedImage(processed.data, processed.mimeType, autoResizeImages),
 									];
 								}
 							} else {

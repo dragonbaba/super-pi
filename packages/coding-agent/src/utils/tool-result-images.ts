@@ -1,5 +1,6 @@
 import type { ImageContent, TextContent } from "@super-pi/ai";
 import { processImage } from "./image-process.ts";
+import { processedImage, rememberProcessedImage, wasImageProcessed } from "./processed-image.ts";
 
 export type ToolResultContent = TextContent | ImageContent;
 
@@ -23,16 +24,16 @@ export async function normalizeToolResultImages(
 	content: ToolResultContent[],
 	options?: NormalizeToolResultImagesOptions,
 ): Promise<ToolResultContent[]> {
-	if (!content.some((block) => block.type === "image")) {
-		return content;
-	}
-
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	let needed = false;
+	for (const block of content) if (block.type === "image" && !wasImageProcessed(block, autoResizeImages)) { needed = true; break; }
+	if (!needed) return content;
+
 	const normalized: ToolResultContent[] = [];
 	let changed = false;
 
 	for (const block of content) {
-		if (block.type !== "image") {
+		if (block.type !== "image" || wasImageProcessed(block, autoResizeImages)) {
 			normalized.push(block);
 			continue;
 		}
@@ -47,11 +48,12 @@ export async function normalizeToolResultImages(
 		}
 
 		if (processed.data === block.data && processed.mimeType === block.mimeType && processed.hints.length === 0) {
+			rememberProcessedImage(block, autoResizeImages);
 			normalized.push(block);
 			continue;
 		}
 
-		normalized.push({ type: "image", data: processed.data, mimeType: processed.mimeType });
+		normalized.push(processedImage(processed.data, processed.mimeType, autoResizeImages));
 		if (processed.hints.length > 0) {
 			normalized.push({ type: "text", text: processed.hints.join("\n") });
 		}

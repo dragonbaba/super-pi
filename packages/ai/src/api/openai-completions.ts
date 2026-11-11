@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { observeRequestBody } from "../utils/request-body-observer.ts";
+import { isRequestBodyTooLarge } from "../utils/request-body-size.ts";
 import type {
 	ChatCompletionAssistantMessageParam,
 	ChatCompletionChunk,
@@ -254,7 +256,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
 			const baseUrl = model.provider === "azure-openai-responses" ? resolveAzureBaseUrl(model, options) : model.baseUrl;
-			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId, compat, baseUrl);
+			const client = createClient(model, context, apiKey, options?.headers, observeRequestBody(options?.fetch, options?.onRequestBodyBytes), cacheSessionId, compat, baseUrl);
 			let params = buildParams(model, context, options, compat, cacheRetention, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -628,6 +630,12 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
+			// The SDK wraps fetch preparation failures as connection errors. Preserve
+			// the host's explicit preparation block so generic retries cannot hide it.
+			const preparationCause = (error as { cause?: unknown } | undefined)?.cause;
+			if (preparationCause instanceof Error && preparationCause.message.startsWith("Request preparation blocked: image")) output.errorMessage = preparationCause.message;
+			if (isRequestBodyTooLarge(error, model.provider) && !isRequestBodyTooLarge(output)) output.errorMessage = "HTTP 413: " + output.errorMessage;
+			if (isRequestBodyTooLarge(output)) output.errorMessage += "\n[REQUEST_BODY_TOO_LARGE] If one image-budget recovery cannot reduce this request or also fails, reduce images/text or compact explicitly. Completed tools must not be repeated.";
 			// Some providers via OpenRouter give additional information in this field.
 			// normalizeProviderError already stringifies the parsed body (error.error)
 			// into errorMessage, so only append the raw metadata when it is not already

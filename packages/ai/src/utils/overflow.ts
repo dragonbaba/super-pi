@@ -63,6 +63,9 @@ const OVERFLOW_PATTERNS = [
 ];
 
 const CEREBRAS_BODYLESS_OVERFLOW_PATTERN = /^4(?:00|13)\s*(?:status code)?\s*\(no body\)/i;
+export function isCerebrasBodylessOverflow(provider: string | undefined, text: string): boolean {
+	return provider === "cerebras" && CEREBRAS_BODYLESS_OVERFLOW_PATTERN.test(text);
+}
 
 /**
  * Patterns that indicate non-overflow errors (e.g. rate limiting, server errors).

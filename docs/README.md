@@ -46,6 +46,7 @@
 ## 图片、终端和嵌入
 
 - [图片和终端体验](../README.zh-CN.md#图片和终端体验)：图片草稿、提交、终端模式和输入边界。
+- [请求图片预算](request-image-budget.md)：完整历史 OpenAI 兼容请求的工具图预算、质量设置和有限 413 恢复；[后续执行方案](codemode-batch-revision-image-budget-plan.md)记录文件修订与批量语义工作。
 - [Auxiliary Vision](../packages/extensions/auxiliary-vision/README.md)：文本模型的可选图像描述、配置和文件范围。
 - [TUI](../packages/tui/README.md)：终端组件和布局包参考。
 - [RPC protocol](../packages/protocol/README.md)：运行时协议、帧边界和验证。
