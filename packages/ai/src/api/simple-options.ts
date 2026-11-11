@@ -128,6 +128,7 @@ export function buildBaseOptions(
 		telemetryContext: options?.telemetryContext,
 		apiKey: apiKey || options?.apiKey,
 		fetch: options?.fetch,
+		onRequestBodyBytes: options?.onRequestBodyBytes,
 		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
 		codexRemoteCompaction: options?.codexRemoteCompaction,

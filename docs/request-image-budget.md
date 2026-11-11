@@ -1,0 +1,29 @@
+# 请求图片预算
+
+当前支持完整历史的 `openai-completions` 请求。历史工具图片在发送视图中按时间分段省略，原始会话记录保持不变；占位说明包含结果 ID、内容位置和恢复限制。用户图片计入上传统计，但不静默删除。工具图片预算不等于整个 HTTP body 的上限，正文、schema 和用户附件也占空间。
+
+默认保留目标为 8 MiB，步长 4 MiB，工具图片硬预算为 12 MiB，单位均为 **base64 编码后的字节**。跨界图片按完整块处理；最新一组需要另行保留时，仍须满足实际编码字节上限。当前图片本身无法容纳时，明确报告不足，不默默跳过需要检查的图。
+
+单图默认沿用 2000×2000、4.5 MiB 的兼容尺寸/字节设置，不默认采用尚未通过原始像素保真验收的 1568/600 KiB。PNG 保留 PNG 编码和透明度；缩放本身仍会改变像素。需要原始细节时可关闭自动缩放，原图过大则明确提示调整本次图片或预算。
+
+配置入口是现有设置的 `images`，不是自动刷新的 models-store.json：
+
+```json
+{
+  "images": {
+    "autoResize": true,
+    "requestBudget": {
+      "keepBytes": 8388608,
+      "stepBytes": 4194304
+    }
+  }
+}
+```
+
+requestBudget 还接受可选 maxWidth、maxHeight、maxBytes，用于明确选择更紧的模型图片视图；maxBytes 同样计 base64 字节。正整数设置替换默认值，PNG 不转 JPEG。autoResize=false 保持原表示；blockImages=true 优先屏蔽全部图片。正文 presentation 功能及 budgetTokens 没有启用时，图片预算仍生效。
+
+明确的请求体超限触发最多一次图片预算收紧，只有最终序列化 body 确实变小才再发送；同一内容不能缩小时直接说明原因。第二次仍超限不会循环，也不重放工具或已成功修改，不自动付费摘要。普通连接错误保留现有有限重试策略，不单凭 Connection error 判作请求体超限。
+
+Anthropic thinking 前缀、Google 签名、Responses 增量历史等尚未在此功能中交付，保持其既有行为，不能把本功能的客户端清图直接用于这些协议。临时 manifest 或原路径可能失效，不能保证所有历史图始终可 read。
+
+实现顺序和后续文件修订/CodeMode 工作见[执行方案](codemode-batch-revision-image-budget-plan.md)。分配与实际上传测量见任务证据；这不是远端接口极限的探测或承诺。

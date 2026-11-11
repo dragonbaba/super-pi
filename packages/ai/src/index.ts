@@ -47,6 +47,7 @@ export {
 	repairJson, parseJsonWithRepair, hasIncompleteToolArguments, parseStreamingJson,
 } from "./utils/json-parse.ts";
 export * from "./utils/overflow.ts";
+export * from "./utils/request-body-size.ts";
 export * from "./utils/policy-diagnostics.ts";
 export * from "./utils/record.ts";
 export * from "./utils/retry.ts";

@@ -15,6 +15,7 @@ import { CONTEXT_SAFETY_TOKENS, resolveRequestOutputFloor, requestThinkingTokens
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
+import { reuseUnchangedToolImages } from "../utils/processed-image.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
@@ -396,10 +397,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
+		const imageBudget = !blockImages && conversionModel?.api === "openai-completions" && conversionModel.input.includes("image");
 		try {
 		const projected = session.projectToolResultMessagesForModel(
 			converted,
-			blockImages ? replaceBlockedImages : undefined,
+			blockImages ? replaceBlockedImages : imageBudget ? session.requestImages.apply : undefined,
 			systemPrompt,
 			tools,
 			conversionModel?.contextWindow,
@@ -408,7 +410,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			toolCalling,
 			outputFloor,
 		);
-		return blockImages ? replaceBlockedImagesInMessages(projected) : projected;
+		return blockImages ? replaceBlockedImagesInMessages(projected) : imageBudget ? session.requestImages.applyMessages(projected) : projected;
 		} catch (error) {
 			if (error instanceof ToolResultContinuationError && error.code === "budget-too-small" && !error.message.startsWith("Request preparation blocked:")) {
 				const configuredBudget = options.toolResultPresentation?.budgetTokens;
@@ -496,6 +498,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
+				onRequestBodyBytes: model.api === "openai-completions" ? session.requestImages.observeWireBytes : options?.onRequestBodyBytes,
 				onEffectiveDispatch: recordEffectiveDispatch,
 				transformHeaders: async (requestHeaders) => {
 					const headers = mergeProviderAttributionHeaders(
@@ -554,8 +557,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages, signal) => {
 			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			const result = await runner.emitContext(await session.prepareSubmittedImages(messages, signal));
+			const prepared = await session.prepareSubmittedImages(messages, signal);
+			const result = runner ? await runner.emitContext(prepared) : prepared;
+			reuseUnchangedToolImages(result as Message[], prepared as Message[]);
+			await session.prepareRequestImages(result as Message[], session.model);
 			session.assertImageRequestAllowed();
 			return result;
 		},

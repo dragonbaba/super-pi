@@ -10,6 +10,7 @@ import { WORKSPACE_TOOL_NAMES } from "../session-execution-profile.ts";
 import { detectSupportedImageMimeType } from "../../utils/mime.ts";
 import { IMAGE_TYPE_SNIFF_BYTES } from "../../utils/image-signature.mjs";
 import { processImage } from "../../utils/image-process.ts";
+import { processedImage } from "../../utils/processed-image.ts";
 import { SubagentScheduler, type TaskWorkspace } from "../tasks/scheduler.ts";
 import { HARD_MAX_CONCURRENT } from "../tasks/limits.ts";
 import { READ_LINES, IMAGE_LIMIT } from "./mxc-file-limits.mjs";
@@ -53,7 +54,9 @@ export class WorkspaceSandboxTools {
   private readonly commandFacts: SandboxCommandFacts = { network: undefined, paths: [] };
   private readonly networkSession?: SandboxNetworkSession;
   private networkStatus = false;
-  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}) {
+  private readonly autoResizeImages?: () => boolean;
+  constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}, autoResizeImages?: () => boolean) {
+    this.autoResizeImages = autoResizeImages;
     this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
     this.networkSession = toolchainOptions.networkSession;
     const network = this.backend.networkEnabled ? "enabled" : this.networkSession
@@ -182,12 +185,13 @@ export class WorkspaceSandboxTools {
       const bytes = (await this.backend.candidate(artifact))!; check();
       needImage(detectSupportedImageMimeType(bytes.subarray(0, IMAGE_TYPE_SNIFF_BYTES)) === image.mimeType, "Image signature mismatch");
       // Reuse native read processing over authenticated MXC output; never reopen the source path on the host.
-      const processed = await processImage(bytes, image.mimeType); check();
+      const autoResizeImages = this.autoResizeImages?.() ?? true;
+      const processed = await processImage(bytes, image.mimeType, { autoResizeImages }); check();
       await this.backend.releaseArtifact(artifact); check();
       const note = ctx.model && !ctx.model.input.includes("image") ? "\n[Current model does not support images. The image will be omitted from this request.]" : "";
       const text = "Read image file [" + (processed.ok ? processed.mimeType : image.mimeType) + "]"
         + (processed.ok ? processed.hints.length ? "\n" + processed.hints.join("\n") : "" : "\n" + processed.message) + note;
-      return { content: processed.ok ? [{ type: "text" as const, text }, { type: "image" as const, data: processed.data, mimeType: processed.mimeType }]
+      return { content: processed.ok ? [{ type: "text" as const, text }, processedImage(processed.data, processed.mimeType, autoResizeImages)]
         : [{ type: "text" as const, text }], details: { sandbox: true, snapshot: reply.snapshot } };
     } catch (error) {
       const failure = new Error("[SANDBOX_IMAGE] " + (error instanceof Error ? error.message : String(error)), { cause: error });

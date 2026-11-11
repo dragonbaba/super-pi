@@ -218,6 +218,8 @@ export interface ProviderRequestOptions<TModel = Model<Api>> {
 	 * This does not affect WebSocket transports.
 	 */
 	fetch?: FetchFunction;
+	/** Numeric observation of the existing serialized HTTP body; never receives payload content. */
+	onRequestBodyBytes?: (bytes: number) => void;
 	/**
 	 * Provider-scoped environment values. These take precedence over process.env for
 	 * provider configuration such as regional settings, endpoint placeholders, and

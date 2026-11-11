@@ -56,6 +56,12 @@ elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
 
+Request-image projection uses the actual OpenAI chat serializer with offline fetch in
+`tests/request-image-budget-session.test.ts`, including 44 valid PNG history blocks,
+presentation enabled/disabled, body-size recovery, blocked images and unchanged-body
+rejection. Run `node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts`
+for same-machine allocation, CPU, byte counters and four-GC reference release.
+
 MXC acceptance is opt-in on Windows x64 with native ProcessContainer support
 and PowerShell 7. After `npm run build:offline`, set child `TMP`, `TEMP`, and
 `TMPDIR` to an owned `.task-tmp/<task-id>-<unique-id>/` directory, set
