@@ -9,6 +9,7 @@ import { normalizeToolResultImages } from "../packages/coding-agent/src/utils/to
 import { pngFixture } from "./helpers/image-acceptance-fixtures.ts";
 import { resizeImage } from "../packages/coding-agent/src/utils/image-resize.ts";
 import { retryProviderRequest } from "../packages/ai/src/utils/provider-retry.ts";
+import { createToolResultPresentationOwner } from "../packages/coding-agent/src/core/tool-result-presentation.ts";
 
 const MiB = 1024 * 1024;
 function tool(bytes: number, id = "tool"): ToolResultMessage {
@@ -23,6 +24,23 @@ test("all selected views survive cross-request cache eviction", async () => {
   await owner.prepare([source], {}, true);
   assert.equal(imageBytes(owner.applyMessages([source])), owner.metrics.retainedImageBytes);
   assert.equal(owner.metrics.retainedImageBytes,1200); owner.clear();
+});
+for(const contextual of [false,true]) test(`text presentation wrappers preserve prepared image occurrence omissions, contextual=${contextual}`, async () => {
+  const owner=new RequestImageBudget(), messages=[tool(7*MiB,"old"),tool(7*MiB,"current")];
+  for(const message of messages) message.content.unshift({type:"text",text:"long result line\n".repeat(10000)});
+  const presentation=createToolResultPresentationOwner({enabled:true,budgetTokens:1024},"budget-wrapper-test")!;
+  try {
+    await owner.prepare(messages,{},false);
+    const projected=presentation.projectMessagesForModel(messages,owner.apply,undefined,undefined,contextual?1000000:undefined,1024);
+    assert.equal(imageBytes(owner.applyMessages(projected)),owner.metrics.retainedImageBytes);
+  } finally {owner.clear();presentation.dispose();}
+});
+test("presentation preserves distinct occurrences of a shared image inside one source", async () => {
+  const owner=new RequestImageBudget(), image=tool(4*MiB).content[0]!, old=tool(0,"old"), current=tool(4*MiB,"current");
+  old.content=[{type:"text",text:"long result line\n".repeat(10000)},image,image,image];
+  const messages=[old,current], presentation=createToolResultPresentationOwner({enabled:true,budgetTokens:4096},"shared-wrapper-test")!;
+  try { await owner.prepare(messages,{},false); const projected=presentation.projectMessagesForModel(messages,owner.apply); assert.equal(imageBytes(owner.applyMessages(projected)),8*MiB); }
+  finally {owner.clear();presentation.dispose();}
 });
 test("the complete originating assistant batch is protected", async () => {
   const assistant: Message = {role:"assistant",api:"openai-completions",provider:"openai",model:"fixture",content:[],stopReason:"toolUse",timestamp:0,

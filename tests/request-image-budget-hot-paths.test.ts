@@ -25,3 +25,15 @@ test("image projection never encodes or copies payloads in apply/layout loops", 
   assert.doesNotMatch(prepare,/\.map\(|\.filter\(|Promise\.all|new Set|new Map/);
   assert.match(prepare,/generation === this\.generation/);
 });
+test("presentation policy calls carry the original source without allocating context wrappers", () => {
+  const file="packages/coding-agent/src/core/tool-result-presentation.ts", ast=ts.createSourceFile(file,fs.readFileSync(file,"utf8"),ts.ScriptTarget.Latest,true);
+  let calls=0;
+  function visit(node:ts.Node):void {
+    if(ts.isCallExpression(node)&&node.expression.getText(ast)==="imagePolicy") {
+      calls++; assert.equal(node.arguments[1]?.getText(ast),"message");
+      if(node.arguments[0]?.getText(ast)==="probe") assert.equal(node.arguments[2]?.getText(ast),"index");
+    }
+    ts.forEachChild(node,visit);
+  }
+  visit(ast); assert.equal(calls,11);
+});

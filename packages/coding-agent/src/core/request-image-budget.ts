@@ -199,9 +199,11 @@ export class RequestImageBudget {
 		}
 		} catch (error) { if (generation === this.generation) this.clear(); throw error; }
 	}
-	readonly apply = (message: Message): Message => {
+	readonly apply = (message: Message, source?: ToolResultMessage, sourceImageIndex?: number): Message => {
 		if (message.role !== "toolResult") return message;
-		const cached = this.projected.get(message);
+		// Presentation wrappers are transient and their source decision may change.
+		const cacheable = !source || source === message;
+		const cached = cacheable ? this.projected.get(message) : undefined;
 		if (cached && cached.source.length === message.content.length) {
 			const previous = cached.result;
 			let same = previous.toolCallId === message.toolCallId && previous.toolName === message.toolName && previous.isError === message.isError
@@ -212,22 +214,30 @@ export class RequestImageBudget {
 		}
 		if (cached) this.forgetProjection(message);
 		let content: (TextContent | ImageContent)[] | undefined;
+		const original = source ?? message;
+		const omittedUntil = this.omittedUntil.get(original) ?? 0;
+		let sourceIndex = sourceImageIndex ?? 0;
 		for (let i = 0; i < message.content.length; i++) {
 			const block = message.content[i]!;
-			const omit = block.type === "image" && i < (this.omittedUntil.get(message) ?? 0);
+			let occurrence = i;
+			if (block.type === "image" && original !== message) {
+				while (sourceIndex < original.content.length && original.content[sourceIndex] !== block) sourceIndex++;
+				occurrence = sourceIndex++;
+			}
+			const omit = block.type === "image" && occurrence < omittedUntil;
 			const view = block.type === "image" ? this.requestViews.get(block) ?? this.views.get(block) : undefined;
 			if (!content && (omit || view && (view.image !== block || view.note))) content = message.content.slice(0, i);
 			if (content) {
 				let replacement: TextContent | ImageContent = view?.image ?? block;
 				if (omit && block.type === "image") {
-					replacement = { type: "text", text: `[Tool result ${message.toolCallId.slice(0,128)}, content block ${i+1}] ${OMITTED.text}` };
+					replacement = { type: "text", text: `[Tool result ${message.toolCallId.slice(0,128)}, content block ${occurrence+1}] ${OMITTED.text}` };
 				}
 				content.push(replacement); if (!omit && view?.note) content.push(view.note);
 			}
 		}
 		const projected = content ? { ...message, content } : message;
 		if (content) this.metrics.projectedMessages++;
-		if (content) {
+		if (content && cacheable) {
 			let bytes = 256 + (message.content.length + content.length) * 16;
 			for (const block of content) if (block.type === "text") bytes += block.text.length * 2;
 			if (bytes <= PROJECTION_CACHE_BYTES - this.metrics.projectionCacheBytes) {

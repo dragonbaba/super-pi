@@ -3557,7 +3557,7 @@ export class AgentSession {
 	}
 	/** Runs only at an actual provider request boundary, after queue delivery. */
 	async prepareRequestImages(messages: Message[], model: Model<any> | undefined): Promise<boolean> {
-		if (model?.api !== "openai-completions" || this.settingsManager.getBlockImages()) { this.requestImages.clear(); return false; }
+		if (model?.api !== "openai-completions" || !model.input.includes("image") || this.settingsManager.getBlockImages()) { this.requestImages.clear(); return false; }
 		await this.requestImages.prepare(messages, this.settingsManager.getRequestImageSettings(), this.settingsManager.getImageAutoResize(), this._imagePreparationSignal);
 		this._imagePreparationSignal?.throwIfAborted();
 		return true;

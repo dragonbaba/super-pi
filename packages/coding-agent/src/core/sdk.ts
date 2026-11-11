@@ -397,7 +397,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
-		const imageBudget = !blockImages && conversionModel?.api === "openai-completions";
+		const imageBudget = !blockImages && conversionModel?.api === "openai-completions" && conversionModel.input.includes("image");
 		try {
 		const projected = session.projectToolResultMessagesForModel(
 			converted,

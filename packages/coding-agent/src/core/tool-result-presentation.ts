@@ -11,6 +11,8 @@ export const TOOL_RESULT_PRESENTATION_V2_VERSION = 2 as const;
 export const TOOL_RESULT_CONTINUATION_VERSION = 1 as const;
 export const TOOL_RESULT_ARTIFACT_VERSION = 1 as const;
 export const TOOL_RESULT_ARTIFACT_MEDIA_TYPE = "application/vnd.super-pi.tool-result-content" as const;
+// Source identity and probe index survive text projection without wrapper allocation.
+export type ToolResultImagePolicy = (message: Message, source?: ToolResultMessage, sourceImageIndex?: number) => Message;
 
 const MAX_PROJECTION_SHRINK_PASSES = 4;
 const MAX_CONTINUATION_SHRINK_PASSES = 8;
@@ -2144,7 +2146,7 @@ export class ToolResultPresentationOwner {
 		projection: ProjectionBuild,
 		filtered: ToolResultMessage,
 		transport: readonly ToolResultPresentationContent[],
-		imagePolicy: (message: Message) => Message,
+		imagePolicy: ToolResultImagePolicy,
 		budgetTokens = this.budgetTokens!,
 		capture?: ToolResultProjectedUiSource,
 		observer?: ToolResultProjectionObserver,
@@ -2179,7 +2181,7 @@ export class ToolResultPresentationOwner {
 				this.counters,
 			);
 			const candidateMessage = this.createModelMessage(message, candidateProjection.content);
-			const candidate = imagePolicy(candidateMessage) as ToolResultMessage;
+			const candidate = imagePolicy(candidateMessage, message) as ToolResultMessage;
 			this.counters.postImagePolicyShrinkPasses++;
 			this.counters.postImagePolicyEstimatorScans++;
 			estimate = estimateToolOutputTokens(candidate.content);
@@ -2191,14 +2193,14 @@ export class ToolResultPresentationOwner {
 		}
 		const omission = this.getImagePolicyProjection(record, budgetTokens);
 		const omissionMessage = this.createModelMessage(message, omission.content);
-		let candidate = imagePolicy(omissionMessage) as ToolResultMessage;
+		let candidate = imagePolicy(omissionMessage, message) as ToolResultMessage;
 		for (let index = 0; index < record.sourceContent.length; index++) {
 			const block = record.sourceContent[index]!;
 			if (block.type !== "image") continue;
 			const probeContent: ToolResultPresentationContent[] = [block];
 			this.counters.modelProjectionArraysCreated++;
 			const probe = this.createModelMessage(message, probeContent);
-			const filteredProbe = imagePolicy(probe) as ToolResultMessage;
+			const filteredProbe = imagePolicy(probe, message, index) as ToolResultMessage;
 			if (filteredProbe === probe) break;
 			let retainedImage = false;
 			for (let probeIndex = 0; probeIndex < filteredProbe.content.length; probeIndex++) {
@@ -2242,7 +2244,7 @@ export class ToolResultPresentationOwner {
 
 	private projectMessageForConfiguredBudget(
 		message: ToolResultMessage,
-		imagePolicy?: (message: Message) => Message,
+		imagePolicy?: ToolResultImagePolicy,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
 	): ToolResultMessage {
@@ -2256,7 +2258,7 @@ export class ToolResultPresentationOwner {
 		let projected = projection ? this.createModelMessage(message, projection.content) : record.sourceScan.mcpInput ? this.createModelMessage(message, message.content) : message;
 		let transport = projected.content;
 		if (imagePolicy) {
-			let filtered = imagePolicy(projected);
+			let filtered = imagePolicy(projected, message);
 			if (filtered !== projected && !projection) {
 				this.counters.postImagePolicyEstimatorScans++;
 				const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
@@ -2265,7 +2267,7 @@ export class ToolResultPresentationOwner {
 					if (capture) capture.projection = projection;
 					projected = this.createModelMessage(message, projection.content);
 					transport = projected.content;
-					filtered = imagePolicy(projected);
+					filtered = imagePolicy(projected, message);
 				}
 			}
 			if (filtered !== projected && projection) {
@@ -2293,7 +2295,7 @@ export class ToolResultPresentationOwner {
 		message: ToolResultMessage,
 		toolBudgetTokens: number,
 		contextBudgetTokens: number,
-		imagePolicy?: (message: Message) => Message,
+		imagePolicy?: ToolResultImagePolicy,
 		sources?: Map<object, ToolResultProjectedUiSource | null>,
 		observer?: ToolResultProjectionObserver,
 		preparedRecord?: ProjectionRecord,
@@ -2308,7 +2310,7 @@ export class ToolResultPresentationOwner {
 		candidateBudget = Math.max(candidateBudget, record.contextualMinimumToolTokens);
 		if (keepFull || record.contextualMinimumIsSource && candidateBudget >= record.contextualMinimumToolTokens && contextBudgetTokens >= record.contextualMinimumContextTokens) {
 			this.counters.contextualProjectionPasses++;
-			const projected = imagePolicy ? imagePolicy(message) as ToolResultMessage : message;
+			const projected = imagePolicy ? imagePolicy(message, message) as ToolResultMessage : message;
 			observer?.recordToolResultProjection(message, message.content, message.content, message.content, projected.content);
 			return projected;
 		}
@@ -2346,7 +2348,7 @@ export class ToolResultPresentationOwner {
 			let transport = projected.content;
 			try {
 				if (imagePolicy) {
-					let filtered = imagePolicy(projected);
+					let filtered = imagePolicy(projected, message);
 					if (filtered !== projected && !projection) {
 						this.counters.postImagePolicyEstimatorScans++;
 						const filteredEstimate = estimateToolOutputTokens((filtered as ToolResultMessage).content);
@@ -2355,7 +2357,7 @@ export class ToolResultPresentationOwner {
 							if (capture) capture.projection = omission;
 							projected = this.createModelMessage(message, omission.content);
 							transport = projected.content;
-							filtered = imagePolicy(projected);
+							filtered = imagePolicy(projected, message);
 							observer?.recordToolResultProjection(message, omission.content, record.sourceContent, transport, (filtered as ToolResultMessage).content);
 							projectionObserved = true;
 						}
@@ -2401,7 +2403,7 @@ export class ToolResultPresentationOwner {
 		// The first pass measured this exact envelope under the same image policy.
 		const minimum = this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER);
 		const transport = this.createModelMessage(message, minimum.content);
-		const fallback = imagePolicy ? imagePolicy(transport) as ToolResultMessage : transport;
+		const fallback = imagePolicy ? imagePolicy(transport, message) as ToolResultMessage : transport;
 		if (estimateToolOutputTokens(fallback.content).estimatedTokens <= toolBudgetTokens && estimateMessageTokens(fallback, toolCalling) <= contextBudgetTokens) {
 			this.ensureArtifactDescriptor(record);
 			if (capture) { capture.projection = minimum; this.recordProjectedUiSource(message, fallback, capture, sources!); }
@@ -2424,16 +2426,16 @@ export class ToolResultPresentationOwner {
 	}
 
 	/** Only scalar costs survive this call; no policy callback or model view is cached. */
-	private measureContextualMinimum(message: ToolResultMessage, record: ProjectionRecord, imagePolicy?: (message: Message) => Message, toolCalling = true): void {
+	private measureContextualMinimum(message: ToolResultMessage, record: ProjectionRecord, imagePolicy?: ToolResultImagePolicy, toolCalling = true): void {
 		if (!imagePolicy && record.contextualMinimumUnfiltered && record.contextualMinimumToolCalling === toolCalling) return;
 		this.counters.contextualMinimumMeasurements = (this.counters.contextualMinimumMeasurements ?? 0) + 1;
 		const omission = this.getImagePolicyProjection(record, Number.MAX_SAFE_INTEGER);
 		const transport = this.createModelMessage(message, omission.content);
-		const minimum = imagePolicy ? imagePolicy(transport) as ToolResultMessage : transport;
+		const minimum = imagePolicy ? imagePolicy(transport, message) as ToolResultMessage : transport;
 		let toolTokens = estimateToolOutputTokens(minimum.content).estimatedTokens;
 		let contextTokens = estimateMessageTokens(minimum, toolCalling);
 		let isSource = false;
-		const full = imagePolicy ? imagePolicy(message) as ToolResultMessage : message;
+		const full = imagePolicy ? imagePolicy(message, message) as ToolResultMessage : message;
 		record.contextualFullToolTokens = record.sourceScan.mcpInput ? Number.POSITIVE_INFINITY : full === message ? record.sourceScan.estimate.estimatedTokens : estimateToolOutputTokens(full.content).estimatedTokens;
 		record.contextualFullContextTokens = estimateMessageTokens(full, toolCalling);
 		if (!record.sourceScan.mcpInput && record.contextualFullToolTokens <= toolTokens) {
@@ -2505,7 +2507,7 @@ export class ToolResultPresentationOwner {
 
 	private projectMessagesWithinContextualBudget(
 		messages: Message[],
-		imagePolicy: ((message: Message) => Message) | undefined,
+		imagePolicy: ToolResultImagePolicy | undefined,
 		systemPrompt: string | undefined,
 		tools: readonly Tool[] | undefined,
 		contextWindow: number,
@@ -2752,7 +2754,7 @@ export class ToolResultPresentationOwner {
 	/** Mutates only the caller-owned outer array; legacy message objects remain untouched. */
 	projectMessagesForModel(
 		messages: Message[],
-		imagePolicy?: (message: Message) => Message,
+		imagePolicy?: ToolResultImagePolicy,
 		systemPrompt?: string,
 		tools?: readonly Tool[],
 		contextWindow?: number,

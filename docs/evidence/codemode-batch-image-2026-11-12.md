@@ -64,6 +64,14 @@ response, and unchanged/modified context-hook clones. Schema and projection
 invariants passed 36/36; the actual serializer/source follow-up passed 12/12.
 The updated allocation sample was 100,701,865 -> 23,148,278 B/request, with zero
 warm encodes and zero tracked references after four controlled GC cycles.
+Configured/contextual text wrappers now pass the original source and an exact
+image probe index through all 11 policy sites, retaining occurrence decisions
+even for shared image objects. Text-only actual serializers send no images and
+continue with a 13 MiB historical image. The contextual 1/2/4/8-result profile
+retained zero coordinators, source references or entries after disposal; full
+result copies/serializations, envelope wrappers, Promises and controllers were
+zero. Native Windows full-suite execution passed with the documented platform
+skips; the RPC overlap fixture also passed independently (two applicable cases).
 
 ## Rerun
 
