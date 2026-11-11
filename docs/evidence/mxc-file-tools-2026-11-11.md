@@ -28,7 +28,9 @@ and 16,384 tokens. No model API was contacted.
 The production path runs from AgentSession through the MXC owner, serial
 scheduler and isolated worker, then through backend JSON validation to
 CodeMode/provider projection and ToolExecutionComponent/TUI. File loops
-allocate no per-line objects, closures, promises or line arrays. The scan
+allocate no per-line objects, closures, promises or line arrays. The bounded
+backend reply validation enumerates one key array per read/search result.
+The scan
 retains at most 200 rows and 20,000 pending paths and clears both on exit.
 The source invariant passed. Over 64 calls the search fixture made 4,480
 excerpt slices including 64 rejected candidates. The read fixture made 8,896

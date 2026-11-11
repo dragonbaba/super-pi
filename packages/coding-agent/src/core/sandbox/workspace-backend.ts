@@ -55,6 +55,12 @@ function need(value: unknown, reason: string): asserts value { if (!value) throw
 function integer(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= maximum;
 }
+function validateFactKeys(facts: object, allowed: ReadonlySet<string>, error: string): void {
+  // One key array per bounded JSON reply. The scan and per-line paths never allocate it.
+  const keys = Object.keys(facts);
+  need(keys.length <= allowed.size, error);
+  for (let index = 0; index < keys.length; index++) need(allowed.has(keys[index]!), error);
+}
 function validateFileFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
   if (operation === "read" && !reply.image) {
     const r = reply.read;
@@ -63,7 +69,7 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
       && r.limit === normalizeReadLimit(input.limit) && integer(r.limit, READ_LINES)
       && typeof r.windowComplete === "boolean" && typeof r.hasMore === "boolean" && typeof r.lineTruncated === "boolean"
       && integer(r.returnedLines, r.limit), "Invalid read facts");
-    for (const key in r) need(READ_FACT_KEYS.has(key), "Unexpected read facts field");
+    validateFactKeys(r, READ_FACT_KEYS, "Unexpected read facts field");
     need(r.incompleteLine === (r.lineTruncated ? r.offset + r.returnedLines : undefined)
       && r.nextOffset === (r.hasMore && !r.lineTruncated && r.returnedLines > 0 ? r.offset + r.returnedLines : undefined)
       && (!r.lineTruncated || r.hasMore && r.returnedLines < r.limit)
@@ -82,7 +88,7 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
       && integer(s.observedRecords, SEARCH_ROWS + 1) && integer(s.returnedRecords, SEARCH_ROWS) && integer(s.outputUnits, TEXT_LIMIT)
       && integer(s.skippedTooLarge, s.scannedFiles) && integer(s.skippedNonUtf8, s.scannedFiles) && integer(s.skippedNul, s.scannedFiles)
       && integer(s.excludedProtected) && integer(s.excludedLinks), "Invalid search facts");
-    for (const key in s) need(SEARCH_FACT_KEYS.has(key), "Unexpected search facts field");
+    validateFactKeys(s, SEARCH_FACT_KEYS, "Unexpected search facts field");
     need(s.scanComplete === (s.stopReason === "none")
       && s.coverageComplete === (s.scanComplete && s.skippedTooLarge + s.skippedNonUtf8 + s.skippedNul === 0)
       && s.skippedTooLarge + s.skippedNonUtf8 + s.skippedNul <= s.scannedFiles
