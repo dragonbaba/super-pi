@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { mxcFileFixture } from "./helpers/mxc-file-fixture.ts";
-import { FILE_LIMIT, TEXT_LIMIT, SEARCH_CLIPPED_MARK, SEARCH_ENTRIES, FILE_PROTOCOL_LIMIT } from "../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
+import { DIRECTORY_READ_BUFFER, FILE_LIMIT, TEXT_LIMIT, SEARCH_CLIPPED_MARK, SEARCH_ENTRIES, FILE_PROTOCOL_LIMIT } from "../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 
 test("MXC reports size/encoding gaps separately from a naturally completed scan", t => {
   const f = mxcFileFixture(t);
@@ -34,11 +34,16 @@ for (const count of [200, 201]) test(`MXC content observes the ${count} row boun
 test("MXC entry budget stops without claiming an observed omitted match", t => {
   const f = mxcFileFixture(t), io = Object.create(fs);
   const entry = { name: "empty", isSymbolicLink: () => false, isDirectory: () => false };
-  io.readdirSync = () => Array(SEARCH_ENTRIES + 1).fill(entry);
+  let consumed = 0, closed = 0;
+  io.opendirSync = (_file: string, options: fs.OpenDirOptions) => {
+    assert.equal(options.bufferSize, DIRECTORY_READ_BUFFER);
+    return { readSync() { return consumed++ < 80_000 ? entry : null; }, closeSync() { closed++; } };
+  };
   const result = f.invoke("grep", { pattern: "needle" }, "read-only", io), s = result.search;
   assert.equal(s.visitedEntries, SEARCH_ENTRIES); assert.equal(s.stopReason, "entry-limit");
   assert.equal(s.scanComplete, false); assert.equal(s.coverageComplete, false);
   assert.equal(s.observedRecords, 0); assert.equal(s.outputTruncated, false); assert.match(result.text, /Unchecked content remains/);
+  assert.equal(consumed, SEARCH_ENTRIES + 1); assert.equal(closed, 1);
 });
 
 test("MXC marks long prefixes, preserves Unicode boundaries and budgets serialized JSON", t => {
@@ -65,6 +70,7 @@ test("MXC clipped rows keep the existing per-row output budget", t => {
   const result = f.invoke("grep", { path: "long.txt", pattern: "needle" });
   assert.equal(result.search.returnedRecords, 121);
   assert.equal(result.search.stopReason, "text-limit");
+  assert.match(result.text, /^[\x00-\x7f]*$/);
   for (const row of result.text.split("\n").slice(1)) assert.ok(row.endsWith(SEARCH_CLIPPED_MARK));
 });
 
@@ -94,7 +100,7 @@ test("MXC policy exclusions do not become coverage gaps or block explicit reads"
   assert.equal(result.text, "(no matches)"); assert.equal(result.search.coverageComplete, true); assert.equal(result.search.excludedProtected, 2);
 });
 
-for (const method of ["lstatSync", "readdirSync", "openSync"] as const) test(`MXC preserves ${method} failure as a read error`, t => {
+for (const method of ["lstatSync", "opendirSync", "openSync"] as const) test(`MXC preserves ${method} failure as a read error`, t => {
   const f = mxcFileFixture(t); fs.writeFileSync(path.join(f.input, "hit"), "needle");
   const io = Object.create(fs), original = fs[method];
   io[method] = (...args: any[]) => {
@@ -103,6 +109,42 @@ for (const method of ["lstatSync", "readdirSync", "openSync"] as const) test(`MX
   };
   const result = f.invoke("grep", { pattern: "needle" }, "read-only", io);
   assert.equal(result.ok, false); assert.equal(result.noEffects, true); assert.equal(result.phase, "read"); assert.match(result.error, /fixture I\/O failure/);
+});
+
+for (const exit of ["eof", "row-limit", "text-limit", "read-error", "close-error"] as const) test(`MXC closes its directory on ${exit}`, t => {
+  const f = mxcFileFixture(t), io = Object.create(fs);
+  const count = exit === "row-limit" ? 201 : exit === "text-limit" ? 200 : 1;
+  const name = exit === "text-limit" ? "x".repeat(255) : "entry";
+  let consumed = 0, closed = 0;
+  io.opendirSync = () => ({
+    readSync() {
+      if (exit === "read-error") throw new Error("directory read failed");
+      return consumed++ < count ? { name, isSymbolicLink: () => false, isDirectory: () => false } : null;
+    },
+    closeSync() { closed++; if (exit === "close-error") throw new Error("directory close failed"); },
+  });
+  const result = f.invoke("ls", {}, "read-only", io);
+  assert.equal(closed, 1);
+  if (exit.endsWith("error")) {
+    assert.equal(result.ok, false); assert.equal(result.noEffects, true); assert.equal(result.phase, "read");
+    assert.match(result.error, /directory (read|close) failed/);
+  } else {
+    assert.equal(result.ok, true); assert.equal(result.search.stopReason, exit === "eof" ? "none" : exit);
+    assert.equal(result.search.scanComplete, exit === "eof");
+  }
+});
+
+test("MXC releases real directory handles after EOF and row-limit exits", t => {
+  const f = mxcFileFixture(t), io = Object.create(fs);
+  const handles: fs.Dir[] = [];
+  io.opendirSync = (file: string, options: fs.OpenDirOptions) => {
+    const handle = fs.opendirSync(file, options); handles.push(handle); return handle;
+  };
+  assert.equal(f.invoke("ls", {}, "read-only", io).search.scanComplete, true);
+  for (let index = 0; index < 201; index++) fs.writeFileSync(path.join(f.input, "file-" + index), "");
+  assert.equal(f.invoke("ls", {}, "read-only", io).search.stopReason, "row-limit");
+  assert.equal(handles.length, 2);
+  for (const handle of handles) assert.throws(() => handle.readSync(), { code: "ERR_DIR_CLOSED" });
 });
 
 for (const text of ["", "one", "one\ntwo\nthree", "one\r\ntwo\r\nthree"]) test(`MXC read window/EOF facts: ${JSON.stringify(text)}`, t => {

@@ -65,8 +65,8 @@ test("MXC reads detect growth without expanding the admitted buffer", t => {
 test("MXC search scopes files and directories, bounds rows and preserves no-match results", t => {
   const f = mxcFileFixture(t); fs.mkdirSync(path.join(f.input, "search")); fs.mkdirSync(path.join(f.input, "unrelated"));
   for (let i = 0; i < 201; i++) fs.writeFileSync(path.join(f.input, "search", i + ".txt"), "needle\n");
-  const io = Object.create(fs); io.readdirSync = (name: string, ...args: any[]) => {
-    assert.notEqual(name, path.join(f.input, "unrelated")); return (fs.readdirSync as any)(name, ...args);
+  const io = Object.create(fs); io.opendirSync = (name: string, ...args: any[]) => {
+    assert.notEqual(name, path.join(f.input, "unrelated")); return (fs.opendirSync as any)(name, ...args);
   };
   const grep = f.invoke("grep", { path: "search", pattern: "needle" }, "read-only", io);
   assert.equal(grep.ok, true); assert.match(grep.text, /Results truncated/); assert.equal(grep.text.split("\n").length, 201);

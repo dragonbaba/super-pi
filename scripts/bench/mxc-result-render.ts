@@ -8,7 +8,7 @@ import { stripVTControlCharacters } from "node:util";
 import { TuiAltScreen } from "@super-pi/tui";
 import { createExtensionRuntime } from "../../packages/coding-agent/src/core/extensions/loader.ts";
 import type { ExtensionContext } from "../../packages/coding-agent/src/core/extensions/types.ts";
-import { FILE_LIMIT, TEXT_LIMIT } from "../../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
+import { FILE_LIMIT, SEARCH_CLIPPED_MARK, TEXT_LIMIT } from "../../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 import { WorkspaceSandboxTools } from "../../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
 import { ToolExecutionComponent, type ToolExecutionAllocationMetrics } from "../../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { createInteractiveTuiReference } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
@@ -20,16 +20,21 @@ const ITERATIONS = 100;
 assert.ok(global.gc, "Run with --expose-gc");
 initTheme("dark");
 
-for (const name of ["read", "grep"] as const) test("render MXC " + name + " status through the production tool component", async t => {
+const scenarios = ["read", "grep-gap", "clipped-expanded", "clipped-collapsed"];
+if (process.env.MXC_RENDER_COMPARE_MARKERS === "1") scenarios.push("legacy-expanded", "legacy-collapsed");
+for (const scenario of scenarios) test("render MXC " + scenario + " through the production tool component", async t => {
+  const name = scenario === "read" ? "read" : "grep";
+  const clipped = scenario.startsWith("clipped") || scenario.startsWith("legacy");
   const fixture = mxcFileFixture(t);
   fs.writeFileSync(path.join(fixture.input, "long"), "x".repeat(TEXT_LIMIT + 100));
   fs.writeFileSync(path.join(fixture.input, "large"), "x".repeat(FILE_LIMIT) + "needle");
+  fs.writeFileSync(path.join(fixture.input, "long.txt"), ("x".repeat(400) + "needle\n").repeat(150));
   const runtime = createExtensionRuntime();
   const owner = new WorkspaceSandboxTools(fixture.input, fixture.root, "read-only", () => runtime);
   fixture.attach(owner, "read-only");
   fixture.cleanupWith(async () => { await owner.close(); await runtime.executionBoundary.dispose(); });
   const definition = owner.definition(name)!;
-  const args = name === "read" ? { path: "long", limit: 1 } : { path: "large", pattern: "needle" };
+  const args = name === "read" ? { path: "long", limit: 1 } : { path: clipped ? "long.txt" : "large", pattern: "needle" };
   const signal = runtime.executionBoundary.signal;
   const ctx = { cwd: fixture.input, hasUI: false, signal } as ExtensionContext;
   const terminal = new FakeTerminal(120, 40);
@@ -43,15 +48,24 @@ for (const name of ["read", "grep"] as const) test("render MXC " + name + " stat
     toolArgsGenerationUpdates: 0, toolArgsReplacementUpdates: 0, toolArgsSemanticFallbackComparisons: 0,
     toolArgsMissingGenerationUpdates: 0, toolArgsFinalizations: 0,
   };
-  async function measure(): Promise<number> {
+  async function measure() {
     const result = await definition.execute("mxc-render", args, signal, undefined, ctx);
     assert.ok(result);
+    if (clipped) {
+      const text = result.content.find(block => block.type === "text");
+      assert.ok(text?.type === "text");
+      assert.equal(text.text.split("\n").length - 1, 121);
+      assert.match(text.text, /^[\x00-\x7f]*$/);
+      assert.ok(text.text.endsWith(SEARCH_CLIPPED_MARK));
+      // Reproduce the former equal-length marker outside sampling, using identical rows.
+      if (scenario.startsWith("legacy")) text.text = text.text.replaceAll(SEARCH_CLIPPED_MARK, " […]");
+    }
     const component = new ToolExecutionComponent(name, "mxc-render", args, { showImages: false, allocationMetrics: metrics }, definition, reference, fixture.input);
     refs.push(new WeakRef(component), new WeakRef(result));
     renderer.addChild(component);
     try {
       component.setArgsComplete();
-      component.setExpanded(true);
+      component.setExpanded(!scenario.endsWith("collapsed"));
       component.updateResult(result);
       const rendered = stripVTControlCharacters(component.render(120).join("\n"));
       assert.match(rendered, name === "read" ? /Read window incomplete/ : /coverageComplete=false/);
@@ -69,19 +83,22 @@ for (const name of ["read", "grep"] as const) test("render MXC " + name + " stat
       const { profile } = await inspector.post("HeapProfiler.stopSampling");
       const pending = [profile.head];
       let bytes = 0;
+      const sites: { functionName: string; sampledBytes: number }[] = [];
       while (pending.length) {
         const node = pending.pop()!;
         bytes += node.selfSize;
+        if (node.selfSize) sites.push({ functionName: node.callFrame.functionName, sampledBytes: node.selfSize });
         for (const child of node.children) pending.push(child);
       }
-      return bytes;
+      sites.sort((a, b) => b.sampledBytes - a.sampledBytes);
+      return { bytes, topSites: sites.slice(0, 6) };
     } finally { renderer.removeChild(component); }
   }
   inspector.connect();
-  let sampledBytes: number;
+  let measurement: Awaited<ReturnType<typeof measure>>;
   try {
     renderer.start();
-    sampledBytes = await measure();
+    measurement = await measure();
   } finally {
     inspector.disconnect();
     await renderer.dispose({ preserveScreen: true });
@@ -91,5 +108,6 @@ for (const name of ["read", "grep"] as const) test("render MXC " + name + " stat
   assert.equal(terminal.started, false);
   assert.equal(metrics.resultRendererCalls, ITERATIONS);
   assert.equal(metrics.componentCreations, 0);
-  t.diagnostic(JSON.stringify({ name, updates: ITERATIONS, sampledBytesPerUpdate: sampledBytes / ITERATIONS, metrics, retained: 0 }));
+  t.diagnostic(JSON.stringify({ scenario, updates: ITERATIONS, sampledBytesPerUpdate: measurement.bytes / ITERATIONS,
+    topSites: measurement.topSites, metrics, retainedAfterFourGC: 0 }));
 });
