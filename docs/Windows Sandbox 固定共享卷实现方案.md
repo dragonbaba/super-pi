@@ -1,3 +1,5 @@
+> **已退役的 Windows Sandbox VM 资料。** 当前运行与验收入口见[执行环境](execution-environments.md)和[测试](testing.md)。历史脚本可从[退役记录](documentation-status.md#windows-sandbox-vm-retirement)定位。
+
 # Windows Sandbox 任务专属固定 VHD 实现方案
 
 **当前状态（2026-11-03）：本轮 Windows/Node 整合交付范围已完成。四项剩余任务、P0 真实桌面回放及性能检查均已闭合；结果、支持范围与兼容条件见本文件末尾 §70。以下旧状态均为历史记录。**

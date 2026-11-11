@@ -10,7 +10,7 @@ import { encodingFixture } from "./helpers/image-encoding-fixtures.ts";
 const distRoot = "../packages/coding-agent/dist/core/";
 const SandboxTools: typeof WorkspaceSandboxTools = process.env.SUPERPI_SANDBOX_USE_DIST === "1"
   ? (await import(distRoot + "sandbox/workspace-tools.js")).WorkspaceSandboxTools : WorkspaceSandboxTools;
-const enabled = process.platform === "win32" && process.env.SUPERPI_SANDBOX_LIVE === "1";
+const enabled = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
 for (const mode of ["read-only", "sandbox-write"] as const) test(`live image read: ${mode}, primary + additional workspace, complete bytes and release`, { skip: !enabled, timeout: 180000 }, async () => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sandbox-image-live-")));
   const project = path.join(root, "项目 space"), assets = path.join(root, "素材"), artifacts = path.join(root, "owner");

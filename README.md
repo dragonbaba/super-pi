@@ -26,9 +26,9 @@ For a single prompt and a single text response, a direct model API call may be s
 | The application owns the UI and streaming state | Fullscreen TUI, selectors, progress, and result presentation |
 | Provider integrations are separate | Multiple provider catalogs, stored authentication, extensions, Skills, MCP, and RPC |
 
-These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. The selected execution mode determines whether supported tools use Windows Sandbox; application permissions do not guarantee model output or external-service behavior.
+These capabilities still depend on the provider, model capabilities, project configuration, and active tool policy. The selected execution mode determines whether supported tools use Windows MXC ProcessContainer; application permissions do not guarantee model output or external-service behavior.
 
-Windows Sandbox supports **Bash and PowerShell 7**, sharing one process-family supervisor; Windows PowerShell 5.1 is never a fallback. Tool installations are discovered from the process and persistent host PATH when the VM starts or reloads. Use `/add-dir <directory>`, `/remove-dir <directory>`, and `/dirs` to manage additional working directories. Commands and file tools use the same absolute paths in isolated copies, and successful text or binary outputs publish to their respective host workspaces after authorization and version checks. Networking remains explicitly configured through global `sandboxNetwork`. See [execution environments](docs/execution-environments.md).
+The MXC sandbox uses **PowerShell 7**, without shell or host fallback. Tool installations are discovered from host PATH. Use `/add-dir <directory>`, `/remove-dir <directory>`, and `/dirs` to manage additional working directories. Commands and file tools directly access the authorized original workspaces; writes take effect immediately, including effects before a failure. Networking defaults to disabled; global `sandboxNetwork` or explicit session consent can enable it. See [execution environments](docs/execution-environments.md).
 
 Sandbox `read` supports text and JPEG, PNG, GIF, WebP, and BMP images, detected by file contents. Images up to 16 MiB use a separate byte attachment and the normal inline image resizing pipeline. In CodeMode, use `await show((await tools.read({path: "preview.png"})).ref)` to display one. Shell output is capped and is unsuitable for transporting base64 image data.
 
@@ -38,7 +38,7 @@ Sandbox `read` supports text and JPEG, PNG, GIF, WebP, and BMP images, detected 
 
 - Node.js 22.19 or newer according to package `engines`; current [CI](.github/workflows/ci.yml) tests Node.js 26.13.x on Linux and Windows.
 - npm.
-- Default Sandbox permissions require Windows Sandbox and a supported CLI; see [execution environments](docs/execution-environments.md). Select host read/write explicitly through `/permissions`.
+- Default sandbox permissions require Windows x64, native MXC ProcessContainer support and PowerShell 7; see [execution environments](docs/execution-environments.md). Select host access explicitly through `/permissions`.
 - A configured model provider. The word offline in the build script describes the build step; it does not mean model inference is offline.
 
 ### Build from source
@@ -178,7 +178,7 @@ MCP is an explicit integration. Configure a trusted server in `~/.sp/agent/confi
 
 When the model needs a decision about material ambiguity, conflicting requirements, or a preference that cannot be inferred, it should call `ask_user`. The tool displays the question and waits for an explicit option or text answer; dependent business calls do not start before the answer. A prose question such as “please confirm” does not create the same boundary, and a disabled tool or unavailable UI does not count as an answer. An answer is not file, Shell, or external-service permission.
 
-Start with `superpi` and use `/permissions` to select read-only in Windows Sandbox, Sandbox read/write (default), or full host read/write. Both of the first two modes execute file and command tools inside the VM; only the third uses host tools, after explicit confirmation. Switching preserves the conversation and drains the previous runtime. See [permissions and execution limits](docs/execution-environments.md) for workspace snapshots, writeback, supported tools and migration. Project extensions and provider code still run in the host application.
+Start with `superpi` and use `/permissions` to select read-only or sandbox read/write (default) in MXC, or one of three host modes: restricted, restricted with Auto approval, and full access. Host access requires an explicit choice. Switching preserves the conversation and drains the previous runtime. See [permissions and execution limits](docs/execution-environments.md) for workspace access, supported tools and migration. Project extensions and provider code still run in the host application.
 
 Resuming the same session on the same machine restores its explicitly selected permission mode and working directories. New, forked, imported, and copied sessions do not inherit that authority. Legacy transcripts alone cannot authorize host execution; select the mode once after upgrading to establish the local record. The former `add_workspace` / `remove_workspace` commands and old `/permissions` subcommands are retired in the interactive native runtime; use the commands above.
 
@@ -240,7 +240,7 @@ Prefix diagnostics reuse identical work within one manifest build while observin
 
 Configuration, sessions, and some memory are stored locally, but that does not mean input always stays on the machine. Prompts, tool schemas, file excerpts, tool results, and images may be sent to the selected provider; configured MCP servers receive the calls and data sent to them. Review provider, MCP, extension, and environment trust before use.
 
-Permission rules and project trust are application controls. The first two permission modes additionally isolate supported file and command tools in Windows Sandbox. Host read/write retains explicit denials, file-version checks and protected metadata checks; it does not restore old `full-access` grants. “Not executed” means a trusted pre-execution refusal; a backend failure after start must be understood from its actual result.
+Permission rules and project trust are application controls. The first two permission modes additionally isolate supported file and command tools in MXC ProcessContainer. Full host access retains explicit denials, file-version checks and protected metadata checks; it does not restore old `full-access` grants. “Not executed” means a trusted pre-execution refusal; a backend failure after start must be understood from its actual result.
 
 Compaction reduces direct visibility of some older history. Memory, Project Context, and CodeGraph each have their own bounds and activation conditions; none promises to understand an entire repository automatically or remember every session forever. Auxiliary Vision needs separate configuration. Provider-native compaction follows the extension's configuration and compatibility conditions, with `enabled` defaulting to `true` as described above. Both can create extra service calls and cost.
 

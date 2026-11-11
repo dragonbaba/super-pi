@@ -23,7 +23,7 @@ npm run superpi -- --offline --help
 
 `--jobs N` 接受 1–32 的整数；实际并发还受依赖关系和包数限制。默认值为 CPU 可用并行度与 2 的较小值。无需再写外层 `npm --offline`，原命令仍兼容。构建离线模式与 CLI 的 `--offline` 独立，均不意味着模型推理离线。
 
-统一入口是 `scripts/build.mjs`。构建目标仍是原来的 12 个包；执行顺序来自这些包的 `dependencies`、`devDependencies` 和 `peerDependencies`。包必须等其依赖成功结束后才能开始，循环依赖或缺失构建脚本会在启动子进程前报错。各包继续负责自己的编译、资源复制、SQLite migration 和 Windows Sandbox 打包。
+统一入口是 `scripts/build.mjs`。构建目标仍是原来的 12 个包；执行顺序来自这些包的 `dependencies`、`devDependencies` 和 `peerDependencies`。包必须等其依赖成功结束后才能开始，循环依赖或缺失构建脚本会在启动子进程前报错。各包继续负责自己的编译、资源复制、SQLite migration 和 MXC 运行时资源打包。
 
 每次调用仍会构建全部目标，没有引入增量缓存或跳过产物检查的捷径。启动器也不会自动重建源码。更新源码后应显式构建，再检查 `--version` 和 `--help`。
 

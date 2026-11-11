@@ -82,7 +82,7 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
     async observations(path = cwd) { return (await fs.readFile(join(path, "child-observation.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)); } };
 }
 
-const liveSandbox = process.platform === "win32" && process.env.SUPERPI_SANDBOX_WORKSPACE_ACCEPTANCE === "1";
+const liveSandbox = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
 test("PowerShell-only MXC roles keep writer admission and never expose Bash", async () => {
   const { assertSubagentBatchPreflight, effectiveTools } = await import("../packages/extensions/subagent/index.ts");
   const agent: any = { name: "shell", source: "user", tools: ["powershell"] };

@@ -26,9 +26,9 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 | 应用自己维护 UI 和流式状态 | 全屏 TUI、选择器、进度与结果展示 |
 | Provider 集成各自实现 | 多 provider 目录、认证存储、扩展、Skills、MCP 和 RPC |
 
-这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows Sandbox；应用权限不保证模型输出或外部服务行为。
+这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows MXC ProcessContainer；应用权限不保证模型输出或外部服务行为。
 
-Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShell 5.1。默认从宿主 PATH 自动发现工具安装目录，连同安装目录内的依赖只读映射，无需逐个配置普通工具。文件工具接受相对路径和会话工作区内的宿主绝对路径；命令使用沙箱工作目录。网络默认关闭，可通过全局 `sandboxNetwork: "enabled"` 开启。宿主 `node_modules` 不进入快照，沙箱内安装的依赖留在 VM 中。详见[工作区路径与网络配置](docs/execution-environments.md#工作区路径与网络配置)。
+MXC 沙箱命令严格使用 **PowerShell 7**，不回退其他 shell 或宿主执行。默认从宿主 PATH 发现工具安装目录。通过 `/add-dir <directory>`、`/remove-dir <directory>` 和 `/dirs` 管理附加工作目录。文件与命令工具直接访问授权的原工作区；修改即时生效，失败前已发生的修改也会保留。网络默认关闭，可通过全局 `sandboxNetwork` 或明确的会话同意开启。详见[工作区路径与网络配置](docs/execution-environments.md#工作区路径与网络配置)。
 
 ## 快速开始
 
@@ -36,7 +36,7 @@ Windows Sandbox 命令严格使用 **PowerShell 7**，不回退 Windows PowerShe
 
 - 包的 `engines` 声明要求 Node.js 22.19 或更高版本；当前 [CI](.github/workflows/ci.yml) 在 Linux 和 Windows 上验证 Node.js 26.13.x。
 - npm。
-- 使用默认沙箱权限需要 Windows Sandbox 及受支持的 CLI；具体要求见[执行环境](docs/execution-environments.md)。宿主读写通过 `/permissions` 明确选择。
+- 使用默认沙箱权限需要 Windows x64、原生 MXC ProcessContainer 支持和 PowerShell 7；具体要求见[执行环境](docs/execution-environments.md)。宿主访问通过 `/permissions` 明确选择。
 - 已配置的模型 provider。构建脚本中的 offline 只描述构建阶段，不代表模型推理离线。
 
 ### 从源码构建
@@ -176,7 +176,7 @@ MCP 是显式配置的集成。需要在 `~/.sp/agent/config/mcp.json` 中配置
 
 当模型需要决定重大歧义、冲突需求或无法推导的偏好时，应调用 `ask_user`。工具会显示问题并等待明确的选项或文字回答；回答前，依赖该答案的业务调用不会开始。正文中的“请确认”不会自动形成同样的边界，工具禁用或没有可用 UI 时也不算已回答。回答本身不等于文件、Shell 或外部服务权限。
 
-直接运行 `superpi`，通过 `/permissions` 选择“只读（沙箱）”“沙箱读写（默认）”或“全部读写（宿主机）”。前两档的文件与命令工具都在 Windows Sandbox 内执行，只有第三档在明确确认后使用宿主工具。切换保留对话并等待旧任务关闭；新会话不继承宿主授权。工作区快照、写回、工具限制与迁移规则见[会话权限与沙箱](docs/execution-environments.md)。项目扩展初始化和 provider 代码仍在宿主应用运行。
+直接运行 `superpi`，通过 `/permissions` 选择 MXC 的“只读（沙箱）”“沙箱读写（默认）”，或三个宿主模式：“宿主机受限”“宿主机受限 + Auto 审批”“宿主机完全权限”。宿主访问需要明确选择。切换保留对话并等待旧任务关闭；新会话不继承宿主授权。工作区访问、工具限制与迁移规则见[会话权限与沙箱](docs/execution-environments.md)。项目扩展初始化和 provider 代码仍在宿主应用运行。
 
 长 `node -e` 脚本不会仅因长度而一律拒绝。能够可靠传参的一次性脚本可以直接运行；复杂引号、多段维护或需要重复运行时，可以选择明确文件或受支持的 stdin。写文件不是绕过授权的方式，写入和执行仍分别经过检查。
 
@@ -236,7 +236,7 @@ Super Pi 的性能工作围绕明确边界：
 
 配置、会话和部分记忆保存在本地，但这不表示输入永远不离开本机。提示、工具 schema、文件片段、工具结果和图片可能发送给选定 provider；配置的 MCP server 会收到发给它的调用和数据。使用前请检查 provider、MCP、扩展和环境变量的信任关系。
 
-权限规则和项目可信度属于应用层控制；选择前两档时，已接入的文件与命令工具另有 Windows Sandbox 隔离。宿主读写仍保留显式拒绝、版本与受保护元数据检查；它不会恢复旧 `full-access` 授权。“未执行”只表示可信的执行前拒绝；后端启动后的失败需要按实际结果判断。
+权限规则和项目可信度属于应用层控制；选择前两档时，已接入的文件与命令工具另有 MXC ProcessContainer 隔离。宿主完全权限仍保留显式拒绝、版本与受保护元数据检查；它不会恢复旧 `full-access` 授权。“未执行”只表示可信的执行前拒绝；后端启动后的失败需要按实际结果判断。
 
 Compaction 会减少部分旧历史的直接可见性。Memory、Project Context 和 CodeGraph 各有自己的范围、上限和启用条件，不保证自动理解完整仓库或永久记住全部会话。辅助视觉需要单独配置；provider-native compaction 按扩展配置和兼容条件工作，`enabled` 如上所述默认回退为 `true`。两者均可能产生额外服务调用和费用。
 
