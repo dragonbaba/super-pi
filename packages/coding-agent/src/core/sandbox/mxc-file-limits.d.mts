@@ -7,5 +7,6 @@ export const TEXT_LIMIT: number;
 export const SEARCH_EXCERPT: number;
 export const FILE_PROTOCOL_LIMIT: number;
 export const SEARCH_CLIPPED_MARK: string;
+export const DIRECTORY_READ_BUFFER: number;
 export function normalizeReadOffset(offset: unknown): number;
 export function normalizeReadLimit(limit: unknown): number;

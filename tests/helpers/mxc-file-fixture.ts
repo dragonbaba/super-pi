@@ -14,7 +14,7 @@ import * as limits from "../../packages/coding-agent/src/core/sandbox/mxc-file-l
 
 // Exercise the actual controlled worker without claiming this fixture proves OS isolation.
 const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
-const body = "const { FILE_LIMIT, IMAGE_LIMIT, READ_LINES, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, normalizeReadOffset, normalizeReadLimit } = limits;\n"
+const body = "const { FILE_LIMIT, IMAGE_LIMIT, READ_LINES, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, DIRECTORY_READ_BUFFER, normalizeReadOffset, normalizeReadLimit } = limits;\n"
   + source.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText(source)).join("\n");
 const execute = new Function("fs", "path", "createHash", "randomUUID", "isUtf8", "process", "console", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "limits", body);
 

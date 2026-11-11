@@ -31,27 +31,53 @@ test("permission history and Escape navigation avoid repeated branch arrays and 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
 const EXCLUDED_DIRECTORIES = new Set(["dist", "node_modules", "vendor"]);
 
+function inspectFileScan(node: ts.Node): void {
+  assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
+    || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isNewExpression(node)
+    || ts.isAwaitExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText());
+  if (ts.isCallExpression(node)) {
+    assert.doesNotMatch(node.expression.getText(), /(?:\.(?:split|bind|then|catch|finally|map|filter|flatMap|flat|concat|toSorted|toReversed|toSpliced)|^RegExp|^Array\.(?:from|of)|^Object\.(?:keys|values|entries|getOwnPropertyNames)|^Promise\.)/);
+    if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice") {
+      assert.equal(node.expression.expression.getText(), "source", "Only the bounded source-string slice is permitted");
+    }
+  }
+  ts.forEachChild(node, inspectFileScan);
+}
+
+test("file scan allocation guard rejects implicit array and Promise factories", () => {
+  const worker = readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8");
+  for (const expression of ["rows.filter(Boolean)", "rows.map(String)", "rows.flatMap(String)", "rows.slice()",
+    "Array.from(rows)", "Array.of(rows)", "Object.keys(state)", "Promise.resolve(state)"]) {
+    const mutated = worker.replace("while (match >= 0 && start < source.length) {", "while (match >= 0 && start < source.length) { " + expression + ";");
+    assert.notEqual(mutated, worker);
+    const source = ts.createSourceFile("mutated.mjs", mutated, ts.ScriptTarget.Latest, true);
+    const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "grepRows") as ts.FunctionDeclaration;
+    assert.throws(() => inspectFileScan(helper.body!), { name: "AssertionError" }, expression);
+  }
+});
+
 test("sandbox literal search scans monotonically and bounds rows without line arrays", t => {
   const source = ts.createSourceFile("workspace-worker.mjs", readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
   const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "grepRows") as ts.FunctionDeclaration;
   assert.ok(helper);
-  function inspect(node: ts.Node): void {
-    assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isFunctionDeclaration(node)
-      || ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node) || ts.isNewExpression(node)
-      || ts.isAwaitExpression(node) || ts.isRegularExpressionLiteral(node), false, node.getText(source));
-    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /(?:\.(?:split|bind|then|catch|finally)|^RegExp)$/);
-    ts.forEachChild(node, inspect);
-  }
   const functions = source.statements.filter(node => ts.isFunctionDeclaration(node)
     && ["grepRows", "appendSearchRow", "stopSearch", "safeTextEnd", "searchFacts"].includes(node.name?.text ?? "")) as ts.FunctionDeclaration[];
   assert.equal(functions.length, 5);
-  for (const fn of functions) if (fn.name!.text !== "searchFacts") inspect(fn.body!);
+  for (const fn of functions) if (fn.name!.text !== "searchFacts") inspectFileScan(fn.body!);
   const window = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "readWindow") as ts.FunctionDeclaration;
   assert.ok(window);
-  for (const statement of window.body!.statements) if (ts.isWhileStatement(statement) || ts.isForStatement(statement)) inspect(statement);
+  for (const statement of window.body!.statements) if (ts.isWhileStatement(statement) || ts.isForStatement(statement)) inspectFileScan(statement);
   const owner = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "search") as ts.FunctionDeclaration;
   assert.match(owner.getText(source), /finally\s*\{\s*pending\.length = 0;\s*rows\.length = 0;/);
-  assert.doesNotMatch(owner.getText(source), /\.split\(|\.map\(|\.filter\(|JSON\.stringify|new (?:Map|Set|Promise|AbortController)/);
+  assert.doesNotMatch(owner.getText(source), /\.readdirSync\(|\.split\(|\.map\(|\.filter\(|JSON\.stringify|new (?:Map|Set|Promise|AbortController)/);
+  assert.match(owner.getText(source), /finally\s*\{\s*directory\.closeSync\(\);/);
+  let directoryLoops = 0;
+  function inspectDirectory(node: ts.Node): void {
+    if (ts.isWhileStatement(node) && node.expression.getText(source).includes("directory.readSync()")) {
+      directoryLoops++; inspectFileScan(node.statement);
+    } else ts.forEachChild(node, inspectDirectory);
+  }
+  inspectDirectory(owner); assert.equal(directoryLoops, 1);
   // Execute the actual pure worker helpers without starting an isolated process.
   const { grepRows: search, searchFacts } = new Function("limits", "const {SEARCH_ROWS,TEXT_LIMIT,SEARCH_EXCERPT,SEARCH_CLIPPED_MARK}=limits;\n"
     + functions.map(node => node.getText(source)).join("\n") + "\nreturn {grepRows,searchFacts};")(limits);

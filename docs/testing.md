@@ -70,6 +70,16 @@ The pre-MXC VM acceptance suite is archived in the [retirement record](documenta
 Relevant allocation measurements remain separate from ordinary CI:
 `node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts` and
 `node --expose-gc --experimental-strip-types scripts/bench/mxc-output.ts`.
+For read/search status and clipped ASCII excerpts, run
+`node --expose-gc --experimental-strip-types --test scripts/bench/mxc-result-render.ts`.
+Set child `MXC_RENDER_COMPARE_MARKERS=1` to add the equal-length former Unicode
+marker comparison in expanded and collapsed result updates. Sampling includes
+the real tool component and alt-screen renderer; tracked results/components
+must be released after disposal and four controlled GC cycles. The search
+benchmark also profiles the production directory consumer with a controlled
+lazy producer, checks 20,001 reads at the 20,000-entry limit, and verifies that
+every directory cursor closes and is released. Native Dirent allocations are
+outside that controlled fixture; native workspace acceptance exercises real I/O.
 
 - The parallel raw-result matrix contains 8 cases instead of 18: both renderers
   retain projection on/off with 8 concurrent calls, plus 129-call insufficient

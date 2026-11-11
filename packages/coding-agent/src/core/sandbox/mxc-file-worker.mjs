@@ -4,10 +4,10 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from './image-signature.mjs';
-import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK,
+import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, DIRECTORY_READ_BUFFER,
   normalizeReadOffset, normalizeReadLimit } from './mxc-file-limits.mjs';
 
-const DIRECTORY_ENTRIES = Object.freeze({ withFileTypes: true });
+const DIRECTORY_OPTIONS = Object.freeze({ bufferSize: DIRECTORY_READ_BUFFER });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, message) { if (!value) throw new Error(message); }
@@ -100,17 +100,22 @@ function search(root, operation, scope, pattern, outputMode) {
       const name = pending.pop(), file = local(root, name), stat = fs.lstatSync(file);
       if (stat.isSymbolicLink()) { state.excludedLinks++; continue; }
       if (stat.isDirectory()) {
-        for (const entry of fs.readdirSync(file, DIRECTORY_ENTRIES)) {
-          if (PROTECTED_NAMES.has(entry.name.toLowerCase())) { state.excludedProtected++; continue; }
-          if (entry.isSymbolicLink()) { state.excludedLinks++; continue; }
-          if (state.visitedEntries === SEARCH_ENTRIES) { stopSearch(state, 'entry-limit', false); break; }
-          state.visitedEntries++;
-          const child = name === '.' ? entry.name : path.join(name, entry.name);
-          if (operation === 'ls') {
-            state.observedRecords++;
-            if (!appendSearchRow(rows, child + (entry.isDirectory() ? '/' : ''), state)) break;
-          } else pending.push(child);
-        }
+        // The native iterator owns at most one fixed batch, even for a huge directory.
+        const directory = fs.opendirSync(file, DIRECTORY_OPTIONS);
+        try {
+          let entry;
+          while ((entry = directory.readSync()) !== null) {
+            if (PROTECTED_NAMES.has(entry.name.toLowerCase())) { state.excludedProtected++; continue; }
+            if (entry.isSymbolicLink()) { state.excludedLinks++; continue; }
+            if (state.visitedEntries === SEARCH_ENTRIES) { stopSearch(state, 'entry-limit', false); break; }
+            state.visitedEntries++;
+            const child = name === '.' ? entry.name : path.join(name, entry.name);
+            if (operation === 'ls') {
+              state.observedRecords++;
+              if (!appendSearchRow(rows, child + (entry.isDirectory() ? '/' : ''), state)) break;
+            } else pending.push(child);
+          }
+        } finally { directory.closeSync(); }
       } else if (stat.isFile()) {
         if (operation === 'find' && pattern && !name.includes(pattern)) continue;
         if (operation === 'grep') {
@@ -133,7 +138,7 @@ function search(root, operation, scope, pattern, outputMode) {
          + (!state.scanComplete ? ' Narrow the search scope to continue.' : '')
          + (skippedFiles ? ' Inspect known skipped paths with a reader suited to their size or encoding.' : '')
          + (state.outputTruncated ? ' Results truncated.' : '')
-         + (state.excerptTruncated ? ' […] marks a clipped line prefix; the match may follow it.' : '') + ']\n' : '';
+         + (state.excerptTruncated ? SEARCH_CLIPPED_MARK + ' marks a clipped line prefix; the match may follow it.' : '') + ']\n' : '';
     return { text: summary + (rows.join('\n') || (state.coverageComplete ? '(no matches)' : '(no matches in scanned content; unchecked content remains)')), search: state };
   } finally { pending.length = 0; rows.length = 0; }
 }
