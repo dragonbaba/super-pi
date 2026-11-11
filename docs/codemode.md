@@ -27,6 +27,8 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 目标已创建后的写入、stat、关闭或发布校验失败，move 已产生目标但未完成源删除，或临时候选未能清理时，MXC 返回 `requiresVerification:true`。这些不确定修改不能靠捕获异常变成可提交 store 的普通部分完成；先核对当前文件。创建前拒绝、旧哈希和目标冲突等明确未进入发布的失败仍可正常处理。
 
+文件修改派发后若回执传输丢失、JSON 损坏、身份不匹配或快照事实无效，也按需要核验处理：可能已经发生修改，不能当作“未执行”或自动重放。派发前的明确配置/校验失败，以及工作进程返回的有效拒绝事实保留原有处理方式。
+
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
 

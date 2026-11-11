@@ -124,8 +124,12 @@ after its write/stat/close succeeds. Rename publication, incomplete link-move an
 retained staged candidates retain verification requirements; pre-creation, stale
 hash and occupied-destination refusals remain recoverable. The controlled worker
 fault matrix covers partial ENOSPC writes, stat/close failures, partial batches
-with successful prefix hashes and cleanup failures (61 worker/backend/controller
+with successful prefix hashes and cleanup failures (66 worker/backend/controller
 cases passed); it does not claim a real disk-exhaustion isolation experiment.
+Post-dispatch file RPC transport/JSON/identity/snapshot loss also carries verification
+requirements without inventing a successful receipt; known pre-dispatch errors and
+valid worker refusals keep their original semantics. Faults reproduce actual committed
+file bytes with a lost reply, not just a fabricated tool status.
 Progress-drain observation failures keep the original execution outcome alongside
 their own cause. Mutation-call journal failures latch the invocation and exact
 child ID; native batches aggregate item verification requirements. Unobserved

@@ -40,6 +40,30 @@ test("MXC backend retains failed publication verification and rejects a success 
   const forged=fixture(t,reply=>{reply.requiresVerification=true;},"sandbox-write");
   await assert.rejects(forged.invoke("write",{path:"new",content:"written"}),/Invalid publication verification fact/);
 });
+
+for(const failure of ["transport","missing-json","identity","snapshot"] as const)test(`MXC ${failure} loss after a completed write requires verification`,async t=>{
+  const backend=fixture(t,reply=>{
+    if(failure==="transport")throw new Error("file result transport lost");
+    if(failure==="missing-json")reply.toJSON=()=>undefined;
+    if(failure==="identity")reply.id="wrong";
+    if(failure==="snapshot")reply.snapshot="invalid";
+  },"sandbox-write");
+  await assert.rejects(backend.invoke("write",{path:"published",content:"committed"}),error=>{
+    assert.ok(error instanceof WorkspaceOperationError);
+    assert.equal(error.reply.requiresVerification,true);assert.equal(error.reply.noEffects,false);assert.equal(error.reply.snapshot,undefined);return true;
+  });
+  assert.equal(fs.readFileSync(path.join(backend.workspace(),"published"),"utf8"),"committed");
+});
+
+test("MXC known pre-dispatch configuration failure remains an ordinary refusal",async t=>{
+  const backend=fixture(t,undefined,"sandbox-write");let launched=false;
+  t.mock.method((backend as any).runner,"run",async()=>{launched=true;throw new Error("must not launch");});
+  t.mock.method(backend as any,"executorEnvironment",()=>{throw new Error("pre-dispatch configuration failed");});
+  await assert.rejects(backend.invoke("write",{path:"never",content:"none"}),error=>{
+    assert.ok(error instanceof Error);assert.equal(error instanceof WorkspaceOperationError,false);assert.match(error.message,/pre-dispatch configuration failed/);return true;
+  });
+  assert.equal(launched,false);assert.equal(fs.existsSync(path.join(backend.workspace(),"never")),false);
+});
 for(const [name,change] of [["missing",(r:any)=>{r.snapshot=undefined;}],["malformed",(r:any)=>{r.snapshot="not-a-hash";}],["wrong-type",(r:any)=>{r.snapshot=42;}]] as const) test(`MXC backend rejects ${name} mutation snapshot`,async t=>{
   const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("write",{path:"new",content:"written"}),/Invalid mutation snapshot/);
 });

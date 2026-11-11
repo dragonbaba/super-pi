@@ -47,6 +47,7 @@ export const HOST_PATH_WORKSPACE = 0, HOST_PATH_TOOL = 1, HOST_PATH_HOST_ONLY = 
 const EXECUTOR_SHA256 = "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a";
 const ARTIFACT_NAME = /^[a-f0-9]{32}-0\.bin$/;
 const COMMAND_OUTPUT_BYTES = 32768; // Byte-ring capacity, independent of the file body's UTF-16 budget.
+const MAX_WORKSPACE_ERROR_CHARS = 32768;
 const READ_FACT_KEYS = new Set(["version", "offset", "limit", "windowComplete", "hasMore", "lineTruncated", "returnedLines", "incompleteLine", "nextOffset"]);
 const SEARCH_FACT_KEYS = new Set(["version", "operation", "outputMode", "scanComplete", "coverageComplete", "outputTruncated", "excerptTruncated", "stopReason",
   "visitedEntries", "scannedFiles", "observedRecords", "returnedRecords", "outputUnits", "skippedTooLarge", "skippedNonUtf8", "skippedNul", "excludedProtected", "excludedLinks"]);
@@ -104,9 +105,12 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
       && (!s.excerptTruncated || operation === "grep" && s.outputMode === "content" && s.returnedRecords > 0), "Inconsistent search facts");
   } else need(reply.search === undefined, "Unexpected search facts");
 }
+function isFileMutation(operation: string): boolean {
+  return operation === "edit" || operation === "write" || operation === "delete" || operation === "move" || operation === "file_batch";
+}
 function validateMutationFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
   need(reply.requiresVerification === undefined || reply.requiresVerification === true && !reply.ok && reply.phase === "mutation"
-    && (operation === "edit" || operation === "write" || operation === "move" || operation === "file_batch"), "Invalid publication verification fact");
+    && isFileMutation(operation), "Invalid publication verification fact");
   if (operation === "edit" || operation === "write") {
     need(reply.ok ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid mutation snapshot");
   } else if (operation !== "read") need(reply.snapshot === undefined, "Unexpected mutation snapshot");
@@ -272,21 +276,32 @@ export class WorkspaceSandboxBackend {
       need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
       const file = path.join(this.tools!, "request.json"); await fs.writeFile(file, request); args = [process.execPath, path.join(this.tools!, "worker.mjs"), file];
     }
+    const environment = this.executorEnvironment();
     this.calls++;
-    const result = await this.runner.run(this.executable!, [policy, "--", ...args], canonicalCwd, this.executorEnvironment(), signal, timeout, shell ? COMMAND_OUTPUT_BYTES : FILE_PROTOCOL_LIMIT);
-    if (shell) return { id, ok: !result.timedOut, phase: "execution", error: result.timedOut ? "Command timed out; completed effects are not rolled back" : undefined,
-      text: (result.stdout + (result.stderr ? "\n" + result.stderr : "") || "(no output)") + (result.truncated ? "\n[Output tail truncated]" : ""),
-      execution: { exitCode: result.code, timedOut: result.timedOut, closed: true, stdout: result.stdout, stderr: result.stderr, truncated: result.truncated } };
-    need(!result.timedOut && !result.truncated && !result.stderr, "File worker failed: " + result.stderr);
-    let reply: WorkspaceReply;
-    try { reply = JSON.parse(result.stdout); } catch { throw new Error("[SANDBOX_MXC] Incomplete file result: " + result.stdout.slice(0, 2000)); }
-    need(reply && typeof reply === "object" && reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
-    validateMutationFacts(reply, operation, input);
-    if (!reply.ok) throw new WorkspaceOperationError(reply);
-    need(result.code === 0 && typeof reply.text === "string", "Invalid file result");
-    validateFileFacts(reply, operation, input);
-    if (reply.image) { need(operation === "read" && reply.image.artifact.name === id + "-0.bin", "Unexpected image artifact"); this.artifacts.add(reply.image.artifact.name); }
-    return reply;
+    try {
+      const result = await this.runner.run(this.executable!, [policy, "--", ...args], canonicalCwd, environment, signal, timeout, shell ? COMMAND_OUTPUT_BYTES : FILE_PROTOCOL_LIMIT);
+      if (shell) return { id, ok: !result.timedOut, phase: "execution", error: result.timedOut ? "Command timed out; completed effects are not rolled back" : undefined,
+        text: (result.stdout + (result.stderr ? "\n" + result.stderr : "") || "(no output)") + (result.truncated ? "\n[Output tail truncated]" : ""),
+        execution: { exitCode: result.code, timedOut: result.timedOut, closed: true, stdout: result.stdout, stderr: result.stderr, truncated: result.truncated } };
+      need(!result.timedOut && !result.truncated && !result.stderr, "File worker failed: " + result.stderr);
+      let reply: WorkspaceReply;
+      try { reply = JSON.parse(result.stdout); } catch { throw new Error("[SANDBOX_MXC] Incomplete file result: " + result.stdout.slice(0, 2000)); }
+      need(reply && typeof reply === "object" && reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
+      validateMutationFacts(reply, operation, input);
+      if (!reply.ok) throw new WorkspaceOperationError(reply);
+      need(result.code === 0 && typeof reply.text === "string", "Invalid file result");
+      validateFileFacts(reply, operation, input);
+      if (reply.image) { need(operation === "read" && reply.image.artifact.name === id + "-0.bin", "Unexpected image artifact"); this.artifacts.add(reply.image.artifact.name); }
+      return reply;
+    } catch (error) {
+      // The controlled file RPC may already have changed the workspace. A missing
+      // or invalid reply is observation loss, never a fresh no-effect receipt.
+      if (isFileMutation(operation) && !(error instanceof WorkspaceOperationError)) throw new WorkspaceOperationError({
+        id, ok: false, phase: "mutation", noEffects: false, requiresVerification: true,
+        error: (error instanceof Error ? error.message : String(error)).slice(0, MAX_WORKSPACE_ERROR_CHARS),
+      });
+      throw error;
+    }
   }
   async assertWorkspaceCurrent(): Promise<void> {
     for (let index = 0; index < this.roots.length; index++) {
