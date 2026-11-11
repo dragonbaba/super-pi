@@ -60,6 +60,47 @@ Count used 64,064 pattern searches, 64,000 LF searches and no slices. Sampling
 including fixture instrumentation yielded 2,144 and 2,442 bytes/call. Both
 lanes released all tracked references after four controlled GC cycles.
 
+## Native acceptance and equivalent results
+
+The final 12-package build and type check passed. Type checking also passed
+in a clean source archive with no generated dist files. The final targeted run
+passed 147/147 with zero skips. That includes all 17 tests in the native workspace, image and
+subagent files, with zero skips. In both permission modes the packaged MXC
+worker returned the expected status and projections. The workspace tests also
+verified CRLF continuation, huge-offset EOF, an oversized-file gap, PowerShell
+7, permission enforcement and release of the process, streams, root and Job
+handles. Child cancellation left zero queued backend calls and zero subsequent
+writes. Candidate first-read and reused-owner read samples were 728/187 ms in
+read-only and 610/165 ms in sandbox-write.
+
+For the equivalent-work probe, the b9843f859 worker and packaged candidate
+worker ran in the same MXC transport with the same process limits and one
+reused owner per arm. The synthetic corpus (SHA-256 987cb52e922df8880816e2e542aa01819d026149556d5fdc30546960a715200e)
+is file-0.txt through file-5.txt,
+each with 20 copies of "needle needle: fixture <index>\n". Both content arms
+returned the same 120 rows. Each permission mode used four alternating pairs
+and also verified six file paths and count 20 for each file. Raw wire sizes,
+including the newline, were 4,806 B for baseline content, 5,177 B for
+candidate content, 495 B for files and 513 B for count. Observed medians in
+read-only were 181.26/156.50 ms and in sandbox-write 177.43/194.69 ms.
+These warmed native-worker measurements exclude startup and provider work.
+The small timing sample establishes no speedup. The repository probe
+scripts/bench/mxc-native-compare.ts exports the fixed baseline worker, hashes
+both worker arms and the generated corpus, prepares both production MXC
+owners, and asserts all equivalent rows before recording samples. The
+packaged Job diagnostics observed 30 actual job creations and zero final job
+or process handles. The native dist live tests read the diagnostics from the
+same packaged module as their selected backend.
+
+The targeted renderer benchmark delivered 100 identical completed results
+per case through ToolExecutionComponent and TuiAltScreen. The read/grep status
+was visible. Sampled bytes/update were 667,470 and 29,958, with one existing
+render context and two existing wrappers per result, zero component creations,
+and zero retained component/result references after four GC cycles. Separately,
+the 20,000-frame queue benchmark sampled 110.20 B/frame, led by its clock,
+with zero frame closures, promises, AbortControllers, wrappers or full-frame
+copies and zero active/pending references and bytes after flush.
+
 ## Rerun
 
 Set child TMP, TEMP and TMPDIR to an owned task directory.
@@ -69,8 +110,12 @@ npm.cmd run check
 npm.cmd run build:offline
 node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/mxc-file-worker.test.ts tests/mxc-grep-output-modes.test.ts tests/mxc-file-completeness.test.ts tests/mxc-file-facts-backend.test.ts tests/mxc-file-projection.test.ts tests/mxc-workspace-lifecycle.test.ts tests/sandbox-workspace-paths.test.ts tests/sandbox-image-read.test.ts
 node --experimental-strip-types --test --test-name-pattern="sandbox literal search scans monotonically" tests/source-invariants.test.ts
+node --experimental-strip-types scripts/bench/mxc-native-compare.ts b9843f859441d9aa00a88c694cbd8f8a13f5ea56
 node --expose-gc --experimental-strip-types scripts/bench/mxc-search.ts
+node --expose-gc --experimental-strip-types --test scripts/bench/mxc-result-render.ts
+node --expose-gc --experimental-strip-types scripts/bench/tui-frame-queue-allocations.ts --frames 20000 --warmup 1000
 ~~~
 
 Set SUPERPI_MXC_LIVE=1 and SUPERPI_SANDBOX_USE_DIST=1 in the live-test child
-and run tests/mxc-workspace-live.test.ts with Node's test runner.
+and run tests/mxc-workspace-live.test.ts, tests/sandbox-image-read-live.test.ts
+and tests/subagent-parent-execution.test.ts with Node's test runner.

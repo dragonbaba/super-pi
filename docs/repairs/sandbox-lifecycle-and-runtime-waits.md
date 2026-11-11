@@ -1,5 +1,7 @@
 # Sandbox lifecycle and CodeMode waits
 
+> Historical record. The Windows Sandbox VM procedures and acceptance commands below are retired. See [current MXC behavior](../execution-environments.md) and the [archive](../documentation-status.md#windows-sandbox-vm-retirement).
+
 ## Evidence and acceptance plan
 
 Baseline: `fd5bbf4858735e3146107e92db06a3c853968a83` on Windows, Node 26.13.0,

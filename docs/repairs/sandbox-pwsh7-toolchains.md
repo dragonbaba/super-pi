@@ -1,5 +1,7 @@
 # Sandbox PowerShell 7 and host PATH toolchains
 
+> Historical record. The Windows Sandbox VM procedures and acceptance commands below are retired. See [current MXC behavior](../execution-environments.md) and the [archive](../documentation-status.md#windows-sandbox-vm-retirement).
+
 ## Evidence before implementation (2026-11-04)
 
 - User constraint: sandbox execution must use PowerShell 7, never Windows PowerShell 5.1 or a host fallback. Discover tools from the host PATH by default; configuration is for exceptions, not a per-tool prerequisite.
