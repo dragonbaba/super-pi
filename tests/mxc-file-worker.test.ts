@@ -43,6 +43,7 @@ for(const replacement of [false,true]) test(`MXC publication verification refuse
   };
   const result=f.invoke("write",{path:"source",snapshot,content:"new"},"sandbox-write",io);
   assert.equal(result.ok,false);assert.equal(result.snapshot,undefined);assert.equal(result.noEffects,false);assert.match(result.error,/Published file/);
+  assert.equal(result.requiresVerification,true,"a failed post-publication observation cannot become an ordinary handled error");
   assert.equal(fs.readFileSync(file,"utf8"),replacement?"new":"external");assert.deepEqual(fs.readdirSync(f.input),["source"]);
 });
 

@@ -31,7 +31,7 @@ const readSchema = Type.Object({
 
 export const readToolSystemPromptContribution = {
 	snippet: "Read file contents",
-	guidelines: ["Use read to examine files instead of cat or sed."],
+	guidelines: ["Use read for reliable source text and the file revision needed by edits. Read small files whole and enough contiguous context in large files. Shell is suitable for searches, counts or several snippets; it does not issue native revisions. Reuse unchanged reads and your own clean committed versions; reread after conflict, eviction or unavailable continuation."],
 } as const;
 
 export type ReadToolInput = Static<typeof readSchema>;

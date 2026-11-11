@@ -32,6 +32,7 @@ export interface WorkspaceSearch {
 }
 export interface WorkspaceReply {
   id: string; ok: boolean; text?: string; snapshot?: string; error?: string; noEffects?: boolean; phase?: string;
+  requiresVerification?: true;
   image?: { mimeType: string; artifact: WorkspaceArtifact };
   items?: WorkspaceMutationItem[];
   read?: WorkspaceRead; search?: WorkspaceSearch;
@@ -104,6 +105,8 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
   } else need(reply.search === undefined, "Unexpected search facts");
 }
 function validateMutationFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
+  need(reply.requiresVerification === undefined || reply.requiresVerification === true && !reply.ok && reply.phase === "mutation"
+    && (operation === "edit" || operation === "write" || operation === "file_batch"), "Invalid publication verification fact");
   if (operation === "edit" || operation === "write") {
     need(reply.ok ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid mutation snapshot");
   } else if (operation !== "read") need(reply.snapshot === undefined, "Unexpected mutation snapshot");

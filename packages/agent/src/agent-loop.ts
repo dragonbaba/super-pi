@@ -805,6 +805,7 @@ type FinalizedToolCallOutcome = {
 	toolCall: AgentToolCall;
 	result: AgentToolResult<any>;
 	isError: boolean;
+	observationFailure?: NestedObservationFailure;
 	durationMs?: number;
 };
 
@@ -1107,7 +1108,7 @@ async function runNestedToolCall(
 			finalized = await finalizeExecutedToolCall(context, scope.assistantMessage, prepared, executed, scope.config, signal);
 		}
 	}
-	let observationFailure: NestedObservationFailure | undefined;
+	let observationFailure = finalized.observationFailure;
 	try {
 		await emitToolExecutionEnd(finalized, emit);
 	} catch (error) {
@@ -1115,7 +1116,7 @@ async function runNestedToolCall(
 		// report the end-event delivery failure first, so its summary is not mistaken for a tool failure.
 		const result = resultWithObservationFailure(finalized.result, error, true);
 		// Receipts need the tool's own outcome, kept apart from the folded isError.
-		observationFailure = { executionIsError: finalized.isError, error: (result.content[0] as TextContent).text };
+		observationFailure ??= { executionIsError: finalized.isError, error: (result.content[0] as TextContent).text };
 		finalized = { ...finalized, result, isError: true };
 	}
 	// Only the parent is a protocol tool result. Child facts travel via hooks and events.
@@ -1264,6 +1265,7 @@ async function finalizeExecutedToolCall(
 ): Promise<FinalizedToolCallOutcome> {
 	let result = executed.result;
 	let isError = executed.isError;
+	let observationFailure: NestedObservationFailure | undefined;
 
 	if (config.afterToolCall && !executed.authorizationVeto) {
 		try {
@@ -1280,6 +1282,7 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
+				observationFailure = afterResult.observationFailure;
 				result = {
 					...result,
 					content: afterResult.content ?? result.content,
@@ -1288,8 +1291,10 @@ async function finalizeExecutedToolCall(
 					terminate: afterResult.terminate ?? result.terminate,
 				};
 				isError = (prepared.orchestration || prepared.parentDispatch) && executed.isError ? true : afterResult.isError ?? isError;
+				if (observationFailure) { result = resultWithObservationFailure(result, new Error(observationFailure.error), true); isError = true; }
 			}
 		} catch (error) {
+			observationFailure = { executionIsError: executed.isError, error: error instanceof Error ? error.message : String(error) };
 			result = resultWithObservationFailure(result, error);
 			isError = true;
 		}
@@ -1299,6 +1304,7 @@ async function finalizeExecutedToolCall(
 		toolCall: prepared.toolCall,
 		result,
 		isError,
+		observationFailure,
 		durationMs: executed.durationMs,
 	};
 }

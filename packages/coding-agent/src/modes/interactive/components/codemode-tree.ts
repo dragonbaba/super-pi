@@ -200,7 +200,7 @@ export class CodemodeTreeComponent extends Container {
 		super.invalidate(); this.titleText = this.sourceText = this.outputText = this.hintText = ""; this.refreshHeader();
 	}
 	private refreshHeader(): void {
-		const title = `• Codemode (${this.rows.size} child ${this.rows.size === 1 ? "call" : "calls"})${!this.expanded && this.failed && !this.partial && (this.hasFailedChild || this.scriptPreview) ? "" : " — " + (this.partial ? "running" : this.failed ? "failed" : "completed")}`;
+		const title = `• Codemode (${this.rows.size} child ${this.rows.size === 1 ? "call" : "calls"})${!this.expanded && this.failed && !this.partial && (this.hasFailedChild || this.scriptPreview) ? "" : " — " + (this.partial ? "running" : this.failed ? "failed" : this.hasFailedChild ? "completed with failures" : "completed")}`;
 		if (title !== this.titleText) { this.titleText = title; this.title.setText(theme.fg("toolTitle", theme.bold(title))); }
 		const source = this.expanded && this.script ? "Script\n" + this.script : "";
 		if (source !== this.sourceText) { this.sourceText = source; this.source.setText(source ? theme.fg("muted", source) : ""); }

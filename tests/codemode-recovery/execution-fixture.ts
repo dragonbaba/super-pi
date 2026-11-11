@@ -32,7 +32,7 @@ export async function executionFixture(t: TestContext, approvalDelay = 0) {
       });
       return { content: args.kind === "blocks" ? Array.from({ length: 100 }, (_, i) => ({ type: "text" as const, text: `block-${i}` }))
         : [{ type: "text" as const, text: args.kind === "diagnostic" ? diagnostic : args.kind === "failure" ? "expected fixture failure" : `ok ${args.id ?? ""}` }],
-        details: {}, isError: args.kind === "failure" || args.kind === "diagnostic" };
+        details: args.kind === "verification" ? {requiresVerification:true} : {}, isError: args.kind === "failure" || args.kind === "diagnostic" || args.kind === "verification" };
     },
   }] });
   let dialogs = 0;

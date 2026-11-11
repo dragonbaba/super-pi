@@ -11,6 +11,8 @@ export interface CodemodeChildDisplay {
 	toolCallId: string;
 	toolName: string;
 	sequence?: number;
+	runtimeCallId?: number;
+	systemFailure?: boolean;
 	durationMs?: number;
 	isError: boolean;
 	preview: string;

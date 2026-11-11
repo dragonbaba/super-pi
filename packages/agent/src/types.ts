@@ -107,6 +107,8 @@ export interface ToolInvocationAuthorization {
  * There is no deep merge for `content`, `details`, or `usage`.
  */
 export interface AfterToolCallResult {
+	/** Trusted host observation provenance; separate from the tool's execution receipt. */
+	observationFailure?: NestedObservationFailure;
 	content?: (TextContent | ImageContent)[];
 	details?: unknown;
 	isError?: boolean;
@@ -495,7 +497,7 @@ export interface AgentToolExecutionContext {
 	/** The tool a nested call to this name would run now, or undefined; never allocates. */
 	findTool(name: string): AgentTool<any> | undefined;
 	/** Stop admitting children, cancel unawaited work and wait for final facts. Returns whether any unhandled child failed. */
-	finish(): Promise<boolean>;
+	finish(ordinaryFailuresHandled?: boolean): Promise<boolean>;
 }
 
 /** Tool definition used by the agent runtime. */

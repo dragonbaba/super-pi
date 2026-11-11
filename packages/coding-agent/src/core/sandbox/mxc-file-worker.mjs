@@ -10,6 +10,7 @@ import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARC
 const DIRECTORY_OPTIONS = Object.freeze({ bufferSize: DIRECTORY_READ_BUFFER });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
 const VERIFY_BYTES = 64 * 1024;
+let unverifiedPublication = false;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, message) { if (!value) throw new Error(message); }
 function local(root, name, mutation = false) {
@@ -210,7 +211,7 @@ function mutate(root, operation, input, maxWriteBytes) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const fd = fs.openSync(target, 'wx'); let identity;
     try { fs.writeFileSync(fd, input.content); identity = fs.fstatSync(fd, { bigint: true }); } finally { fs.closeSync(fd); }
-    return publishedSnapshot(target, identity, input.content);
+    return verifiedPublication(target, identity, input.content);
   }
   // Read a pinned version, then replace atomically; a failed temporary write leaves the original intact.
   let fd = fs.openSync(target, 'r'), temporary;
@@ -242,8 +243,14 @@ function mutate(root, operation, input, maxWriteBytes) {
       && before.mtimeNs === current.mtimeNs && before.ctimeNs === current.ctimeNs && before.size === named.size
       && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs, 'File changed before write');
     fs.renameSync(temporary, target); temporary = undefined;
-    return publishedSnapshot(target, publication, text);
+    return verifiedPublication(target, publication, text);
   } finally { if (fd !== undefined) fs.closeSync(fd); if (temporary) fs.unlinkSync(temporary); }
+}
+function verifiedPublication(target, identity, text) {
+  unverifiedPublication = true;
+  const snapshot = publishedSnapshot(target, identity, text);
+  unverifiedPublication = false;
+  return snapshot;
 }
 let request, items, phase = 'request';
 try {
@@ -292,6 +299,7 @@ try {
   }
   console.log(JSON.stringify(reply));
 } catch (error) {
-  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items, error: String(error.message).slice(0, 32768) }));
+  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items,
+    requiresVerification: unverifiedPublication || undefined, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
 }

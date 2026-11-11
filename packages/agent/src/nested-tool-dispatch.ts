@@ -54,7 +54,10 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	private accepting = true;
 	private idle: Promise<void> | undefined;
 	private resolveIdle: (() => void) | undefined;
-	hasErrors = false;
+	private errors = false;
+	private hardErrors = false;
+	private ordinaryFailuresHandled = false;
+	get hasErrors(): boolean { return this.hardErrors || this.errors && !this.ordinaryFailuresHandled; }
 	completedCalls = 0;
 	/** Children that ignored cancellation past the grace period; they may still change state. */
 	abandonedCalls = 0;
@@ -115,7 +118,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 
 	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean }): Promise<NestedToolResultMessage> {
 		if (!this.accepting || this.signal.aborted || this.issued >= MAX_NESTED_TOOL_CALLS) {
-			this.hasErrors = true;
+			this.hardErrors = this.errors = true;
 			const rejected = Promise.reject<NestedToolResultMessage>(new Error("Nested tool dispatch is closed, cancelled, or at its 256-call limit"));
 			void rejected.catch(observeRejection);
 			return rejected;
@@ -159,10 +162,12 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 			const result = await this.invoke!(entry.call, tool, this.signal);
 			// Opt-in handles both execution and admission failures, without rewriting the
 			// observed result. Cancellation and observer failures still poison the parent.
-			this.hasErrors ||= result.isError && (!entry.allowFailure || !!result.observationFailure || this.signal.aborted);
+			const hardFailure = !!result.observationFailure || this.signal.aborted || result.details?.requiresVerification === true;
+			this.hardErrors ||= hardFailure;
+			this.errors ||= result.isError && (!entry.allowFailure || hardFailure);
 			entry.resolve(result);
 		} catch (error) {
-			this.hasErrors = true;
+			this.hardErrors = this.errors = true;
 			entry.reject(error);
 		} finally {
 			this.running.delete(entry);
@@ -183,11 +188,15 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 	}
 
 	/** Wait for children, including calls whose promises the script did not await. */
-	async finish(): Promise<boolean> { await this.close(); return this.hasErrors; }
+	async finish(ordinaryFailuresHandled = false): Promise<boolean> {
+		await this.close();
+		this.ordinaryFailuresHandled ||= ordinaryFailuresHandled;
+		return this.hasErrors;
+	}
 
 	/** A child that ignores its abort signal must not wedge the parent past its deadline. */
 	private abandon(): void {
-		this.hasErrors = true;
+		this.hardErrors = this.errors = true;
 		const error = new Error(`Nested tool ignored cancellation for ${this.cancelGraceMs} ms; it may still be running or changing state`);
 		for (const entry of this.running) { this.abandonedCalls++; entry.reject(error); }
 		this.running.clear();
@@ -196,6 +205,7 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 
 	async close(): Promise<void> {
 		this.accepting = false;
+		if (this.active > 0 || this.pendingIndex < this.pending.length) this.hardErrors = this.errors = true;
 		this.controller.abort();
 		try {
 			// An abandoned child is never awaited again; later closes return at once.

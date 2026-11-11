@@ -422,6 +422,8 @@ export function recordResult(
   reservedRetryOperation?: RetryOperation,
   isLeaf = true,
 ): string | undefined {
+	// Child results already update the ledger. A handled parent cannot erase them.
+	if (toolName === "codemode" && !isError) return undefined;
   if (isError) {
     const execution = readShellExecution(details);
     if (!execution && GUARD_BLOCK_CATEGORY_RE.test(failureText)) return undefined;

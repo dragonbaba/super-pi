@@ -32,6 +32,14 @@ test("MXC backend validates mutation successors and preserves verified partial b
     assert.ok(error instanceof WorkspaceOperationError);assert.equal(error.reply.items?.[0]?.status,"succeeded");assert.match(error.reply.items![0]!.snapshot!,/^[a-f0-9]{64}$/);assert.equal(error.reply.items?.[1]?.snapshot,undefined);return true;
   });
 });
+test("MXC backend retains failed publication verification and rejects a success carrying it",async t=>{
+  const failed=fixture(t,reply=>{reply.ok=false;reply.phase="mutation";reply.noEffects=false;reply.error="publication observation failed";reply.snapshot=undefined;reply.requiresVerification=true;},"sandbox-write");
+  await assert.rejects(failed.invoke("write",{path:"new",content:"written"}),error=>{
+    assert.ok(error instanceof WorkspaceOperationError);assert.equal(error.reply.requiresVerification,true);return true;
+  });
+  const forged=fixture(t,reply=>{reply.requiresVerification=true;},"sandbox-write");
+  await assert.rejects(forged.invoke("write",{path:"new",content:"written"}),/Invalid publication verification fact/);
+});
 for(const [name,change] of [["missing",(r:any)=>{r.snapshot=undefined;}],["malformed",(r:any)=>{r.snapshot="not-a-hash";}],["wrong-type",(r:any)=>{r.snapshot=42;}]] as const) test(`MXC backend rejects ${name} mutation snapshot`,async t=>{
   const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("write",{path:"new",content:"written"}),/Invalid mutation snapshot/);
 });

@@ -4,6 +4,16 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
 const { default: guard } = await jiti.import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
+const { createGuardState, recordResult } = await jiti.import<typeof import("../packages/extensions/tool-loop-guardrails/core.ts")>("../packages/extensions/tool-loop-guardrails/core.ts");
+
+test("completed CodeMode parents preserve the actual child failure ledger",()=>{
+  const state=createGuardState();
+  recordResult(state,"probe",{},true,"expected failure");
+  recordResult(state,"probe",{},true,"expected failure");
+  assert.equal(state.activeFailureCount,2);
+  recordResult(state,"codemode",{},false,"",undefined,{codemode:{status:"partial",failed:2,handledFailures:2}},undefined,false);
+  assert.equal(state.activeFailureCount,2);assert.equal(state.failuresByTool.get("probe"),2);assert.equal(state.failuresBySignature.size,1);
+});
 
 function fixture() {
 	const hooks = new Map<string, (...args: any[]) => any>();

@@ -13,7 +13,8 @@ const VERSIONLESS_NPM = process.argv.includes("--npm-versionless");
 const QUOTED_ERRORS = process.argv.includes("--quoted-errors");
 const TERMINAL_EXCEPTION = process.argv.includes("--terminal-exception");
 const PREFLIGHT = process.argv.includes("--powershell-refusal");
-const FAILED = PREFLIGHT || COMPILER || VERSIONLESS_NPM || QUOTED_ERRORS || TERMINAL_EXCEPTION || process.argv.includes("--failed");
+const HANDLED = process.argv.includes("--handled-failures");
+const FAILED = HANDLED || PREFLIGHT || COMPILER || VERSIONLESS_NPM || QUOTED_ERRORS || TERMINAL_EXCEPTION || process.argv.includes("--failed");
 function sites(node: any, entries: any[]): number {
 	let bytes = node.selfSize;
 	if (node.selfSize) entries.push({ bytes: node.selfSize, function: node.callFrame.functionName, url: node.callFrame.url, line: node.callFrame.lineNumber + 1 });
@@ -39,7 +40,7 @@ async function sample(grouped: boolean) {
 		f.internal.handleEvent({ type: "tool_execution_end", toolName, toolCallId: child, parentToolCallId: grouped ? parent : undefined,
 			result: { content: [{ type: "text", text: error }] }, isError: true });
 		f.internal.handleEvent({ type: "tool_execution_end", toolName: "codemode", toolCallId: parent,
-			result: { content: [{ type: "text", text: `[CODEMODE_SCRIPT] [${child}] ${error}` }], isError: true }, isError: true });
+			result: { content: [{ type: "text", text: `[CODEMODE_SCRIPT] [${child}] ${error}` }], isError: !HANDLED }, isError: !HANDLED });
 	}
 	if (EXPANDED) for (const component of f.internal.chatContainer.children) if (component instanceof ToolExecutionComponent) component.setExpanded(true);
 	const events: any[] = [];
@@ -75,6 +76,7 @@ async function sample(grouped: boolean) {
 	}
 	const view = stripVTControlCharacters(cards[0].render(120).join("\n")); assert.match(view, FAILED ? /Codemode/ : /completed/);
 	if (FAILED && grouped) {
+		if (HANDLED) assert.match(view,/completed with failures/);
 		assert.match(view, EXPANDED ? PREFLIGHT ? /SHELL_BACKGROUND/ : /SHELL_RUNTIME_FAILED/ : PREFLIGHT ? /fixture reason/ : TERMINAL_EXCEPTION ? /Error: spawnSync C:\/path\/tool.exe UNKNOWN/ : COMPILER ? /TS2657/ : VERSIONLESS_NPM ? /sh: missing-command: not found/ : QUOTED_ERRORS ? /> authentication failed > token expired/ : /Path does not exist/);
 		assert.equal(counters.failureProjections, 1); assert.equal(counters.outputProjections, 1);
 	}
@@ -83,7 +85,7 @@ async function sample(grouped: boolean) {
 	assert.equal(released.timers, 0); assert.equal(released.rows, 0); assert.equal(released.resultReferences, 0); assert.equal(released.textChars, 0);
 	cards = undefined; tree = undefined; f = undefined;
 	assert.equal(eventPromises, 0);
-	return { refs, metrics: { mode: grouped ? "grouped" : "ungrouped-control", expanded: EXPANDED, failed: FAILED, updates: UPDATES, warmup: WARMUP, cardCount,
+	return { refs, metrics: { mode: grouped ? "grouped" : "ungrouped-control", expanded: EXPANDED, failed: FAILED, handled: HANDLED, updates: UPDATES, warmup: WARMUP, cardCount,
 		medianMs: durations[UPDATES / 2], p95Ms: durations[Math.floor(UPDATES * .95)], sampledBytesPerUpdate: sampledBytes / UPDATES,
 		heapStart, peakHeap, eventPromises, counters, released, top: top.slice(0, 8) } };
 }

@@ -7,7 +7,7 @@ import { parseCodemodeSource } from "@super-pi/codemode/source";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolDefinition, CodemodeReadEvent, ExtensionContext } from "./extensions/types.ts";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
-import { CODEMODE_DESCRIPTION, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
+import { CODEMODE_DESCRIPTION, CODEMODE_FAILURE_GUIDANCE, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
 	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
@@ -69,6 +69,8 @@ const MAX_DESCRIBE_TOOLS = 16;
 const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. If tools.tool_search is available, search the exact name, then read describeTools again. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 const ALLOW_FAILURE = Object.freeze({ allowFailure: true });
+/** Host-local distinction only; ordinary rejection handling is proved by the VM. */
+class ChildToolFailure extends Error {}
 
 function nestedAllowed(tool: AgentTool<any>): boolean {
 	return !tool.orchestration && !tool.modelOnly && !tool.interactionBoundary;
@@ -193,7 +195,7 @@ export class CodemodeController {
 			const fullDescription = tool.fullDescription ?? tool.description;
 			const summary = fullDescription.length <= 1024 ? fullDescription : unicodePrefix(fullDescription, 900) + "\n[Summary only; await describeTools([name]) for full instructions.]";
 			descriptors.push({ name, description: summary, inputSchema: tool.parameters as never,
-				execute: args => this.invoke(name, args) });
+				execute: (args, context) => this.invoke(name, args, undefined, context.callId) });
 		}
 		const identifiers = assignCodemodeIdentifiers(descriptors.map(descriptorName));
 		for (const descriptor of descriptors) {
@@ -240,14 +242,14 @@ export class CodemodeController {
 		const display = result.details?.codemode;
 		let digest = display?.summaryDigest;
 		for (const block of result.content) {
-			if (block.type === "text" && block.text.startsWith("[CODEMODE_OK]") && codemodeTextDigest(block.text) === digest) {
-				const text = "[CODEMODE_FAILED]" + block.text.slice("[CODEMODE_OK]".length);
+			if (block.type === "text" && (block.text.startsWith("[CODEMODE_OK]") || block.text.startsWith("[CODEMODE_PARTIAL]")) && codemodeTextDigest(block.text) === digest) {
+				const text = "[CODEMODE_FAILED]" + block.text.slice(block.text.indexOf("]") + 1);
 				digest = codemodeTextDigest(text);
 				content.push({ type: "text", text });
 			} else content.push(block);
 		}
 		content.push({ type: "text", text: `[CODEMODE_OBSERVATION_FAILED] ${message(error).slice(0, 1000)}. Completed side effects are not rolled back; do not repeat mutations.` });
-		return { ...result, content, isError: true, details: display ? { ...result.details, codemode: { ...display, summaryDigest: digest } } : result.details };
+		return { ...result, content, isError: true, details: display ? { ...result.details, codemode: { ...display, status: "failed", summaryDigest: digest } } : result.details };
 	}
 	clearReadEvidence(): void { this.displayedReads.clear(); this.visibleReads.length = 0; this.readsProjected = false; }
 	discardVisibleReads(): void { this.visibleReads.length = 0; }
@@ -307,8 +309,9 @@ export class CodemodeController {
 		if (!this.current || this.current.signal?.aborted) throw new Error("Codemode invocation ended or was cancelled");
 		return this.current;
 	}
-	private async invoke(name: string, args: unknown, options?: unknown): Promise<unknown> {
+	private async invoke(name: string, args: unknown, options?: unknown, runtimeCallId?: number): Promise<unknown> {
 		const invocation = this.requireInvocation();
+		const sequence = ++invocation.started;
 		invocation.pending++;
 		try {
 			if (options !== undefined && (!options || typeof options !== "object" || Array.isArray(options)
@@ -316,23 +319,36 @@ export class CodemodeController {
 				throw new Error("callTool options must be an object with an optional boolean allowFailure");
 			}
 			const allowFailure = (options as { allowFailure?: boolean } | undefined)?.allowFailure === true;
-			return await this.runChild(invocation, name, args, allowFailure);
+			return await this.runChild(invocation, name, args, allowFailure, sequence, runtimeCallId);
 		}
-		catch (error) { invocation.failed = true; throw error; }
+		catch (error) {
+			const systemFailure = !(error instanceof ChildToolFailure);
+			invocation.failed ||= systemFailure;
+			let fact: ChildFact | undefined;
+			for (const candidate of invocation.facts) if (candidate.sequence === sequence) { fact = candidate; break; }
+			if (!fact) {
+				fact = { toolCallId: `${invocation.context.parentToolCallId}:runtime:${runtimeCallId ?? sequence}`, toolName: name,
+					sequence, runtimeCallId, isError: true, preview: message(error).slice(0, CODEMODE_DISPLAY_PREVIEW_CHARS),
+					executed: systemFailure ? "unknown" : false, executionStatus: systemFailure ? undefined : "not_executed", failureHandled: false };
+				invocation.facts.push(fact);
+			}
+			fact.systemFailure = systemFailure || fact.systemFailure === true;
+			throw error;
+		}
 		finally {
 			if (--invocation.pending === 0) { invocation.resolveIdle?.(); invocation.resolveIdle = undefined; }
 		}
 	}
-	private async runChild(invocation: Invocation, name: string, args: unknown, allowFailure: boolean): Promise<unknown> {
-		if (!args || typeof args !== "object" || Array.isArray(args)) { invocation.failed = true; throw new Error("Tool arguments must be an object"); }
+	private async runChild(invocation: Invocation, name: string, args: unknown, allowFailure: boolean, sequence: number, runtimeCallId?: number): Promise<unknown> {
+		if (!args || typeof args !== "object" || Array.isArray(args)) throw new ChildToolFailure("Tool arguments must be an object");
 		const input = args as Record<string, unknown>;
 		// Validate before effects; argument objects are never retained by the ref cache.
 		this.serializer.stringify(input, 256 * 1024);
-		const sequence = ++invocation.started;
 		const startedAt = Date.now();
 		const raw = await invocation.context.callTool(name, input, allowFailure ? ALLOW_FAILURE : undefined);
-		const failureHandled = raw.isError && allowFailure && !raw.observationFailure && !invocation.signal?.aborted;
-		const fact: ChildFact = { toolCallId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError, preview: preview(raw), inputSummary: codemodeInputSummary(input), sequence, durationMs: Date.now() - startedAt,
+		const systemFailure = !!raw.observationFailure || invocation.signal?.aborted === true || raw.details?.requiresVerification === true;
+		const failureHandled = raw.isError && allowFailure && !systemFailure;
+		const fact: ChildFact = { toolCallId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError, preview: preview(raw), inputSummary: codemodeInputSummary(input), sequence, runtimeCallId, systemFailure, durationMs: Date.now() - startedAt,
 			executed: raw.executionStatus !== "not_executed", resultComplete: "unknown", displayLimited: false, failureHandled };
 		if (name === "bash" || name === "powershell") {
 			const execution = readShellExecution(raw.details);
@@ -340,7 +356,7 @@ export class CodemodeController {
 		}
 		if (raw.executionStatus === "not_executed") { fact.executionStatus = "not_executed"; fact.executed = false; }
 		invocation.facts.push(fact);
-		invocation.failed ||= raw.isError && !failureHandled;
+		invocation.failed ||= systemFailure;
 		if (CODEMODE_MUTATION_NAMES.has(name) && this.saveResult) {
 			// Receipts carry the tool's own outcome. An end-event observation failure, set only by the
 			// agent loop, still fails this script but is recorded beside the receipt, not inside it.
@@ -432,7 +448,7 @@ export class CodemodeController {
 			// to recognize a child exception. Long output needs cause plus bounded tail.
 			const diagnostic = fact.preview.length <= 512 ? fact.preview
 				: codemodeFailureReason(fact.preview, "model") + "\n" + truncateTail(fact.preview.slice(-1024), FAILURE_TAIL_OPTIONS).content;
-			throw new Error(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
+			throw new ChildToolFailure(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
 		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
@@ -556,7 +572,8 @@ export class CodemodeController {
 			if (format === "json") parts.push("Input JSON Schema:\n", snapshot.schemas[index]!, "\nResult: ToolResult\n");
 			else parts.push(snapshot.schemas[index]!, "\n");
 		}
-		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. Child failures throw by default and keep the parent failed even if caught. callTool(name,args,{allowFailure:true}) returns the true isError outcome, including tool_call refusals; inspect it and select an alternative. Ref values belong only to this script; show(ref) reports eviction with a saved path. Display limits do not change execution status.\n");
+		parts.push("\nTypeScript is a summary; use format:'json' for exact input constraints, long defaults/patterns, or unknown types. ", CODEMODE_FAILURE_GUIDANCE,
+			" Ref values belong only to this script; show(ref) reports eviction with a saved path. Display limits do not change execution status.\n");
 		let position = 0, pageOffset = offset, text = "", pageComplete = false;
 		for (const part of parts) {
 			let start = Math.max(0, pageOffset - position);
@@ -581,10 +598,10 @@ export class CodemodeController {
 		const { CodemodeSandbox } = await import("@super-pi/codemode");
 		if (this.closed) throw new Error("Codemode session is disposed");
 		this.sandbox = new CodemodeSandbox({ reuseWorker: true, timeoutMode: "active", tools: this.descriptors, globals: [
-			{ name: "callTool", spread: true, execute: args => {
+			{ name: "callTool", spread: true, execute: (args, context) => {
 				const [name, input, options] = args as unknown[];
 				if (typeof name !== "string") { this.requireInvocation().failed = true; throw new Error("callTool requires a tool name"); }
-				return this.invoke(name, input, options);
+				return this.invoke(name, input, options, context.callId);
 			} },
 			{ name: "show", execute: ref => this.show(ref) },
 			{ name: "describeTools", spread: true, execute: args => {
@@ -611,11 +628,22 @@ export class CodemodeController {
 		try {
 			const sandbox = await this.ensureSandbox();
 			result = await sandbox.execute(parsed.code, { signal, timeoutMs: parsed.options.timeoutMs, store: this.store.snapshot });
-			const childFailed = await context.finish();
+			let ordinaryFailuresHandled = result.ok;
+			for (const call of result.calls) if (call.status !== "ok" && !(call.status === "error" && call.failureHandled)) ordinaryFailuresHandled = false;
+			const childFailed = await context.finish(ordinaryFailuresHandled);
 			if (invocation.pending) await new Promise<void>(resolve => { invocation.resolveIdle = resolve; });
 			invocation.facts.sort(compareChildSequence);
-			let failed = invocation.failed || !result.ok || childFailed;
-			for (const call of result.calls) if (call.status !== "ok") failed = true;
+			let succeeded = 0, failedChildren = 0, handledFailures = 0;
+			for (const fact of invocation.facts) {
+				if (!fact.isError && !fact.systemFailure) { succeeded++; continue; }
+				failedChildren++;
+				fact.failureHandled = !fact.systemFailure && (fact.failureHandled === true
+					|| fact.runtimeCallId !== undefined && result.handledCallIds?.includes(fact.runtimeCallId) === true);
+				if (fact.failureHandled) handledFailures++;
+			}
+			const unhandled = failedChildren - handledFailures;
+			let failed = invocation.failed || !result.ok || childFailed || unhandled > 0;
+			for (const call of result.calls) if (call.status !== "ok" && !(call.status === "error" && call.failureHandled)) failed = true;
 			if (failed) this.documentationSnapshot = undefined;
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
@@ -628,10 +656,9 @@ export class CodemodeController {
 			// after it), so retained text blocks keep these positions.
 			const shownOffset = content.length + 1;
 			for (const block of invocation.shown) content.push(block);
-			let summary = `[CODEMODE_${failed ? "FAILED" : "OK"}] Child calls: ${invocation.facts.length}.`;
-			let handledFailures = 0;
-			for (const fact of invocation.facts) if (fact.failureHandled) handledFailures++;
+			let summary = `[CODEMODE_${failed ? "FAILED" : failedChildren ? "PARTIAL" : "OK"}] Child calls: ${invocation.facts.length}. Succeeded: ${succeeded}; failed: ${failedChildren}; unhandled: ${unhandled}.`;
 			if (handledFailures) summary += ` Handled failures: ${handledFailures}.`;
+			if (!failed && failedChildren && !succeeded) summary += " Script completed with handled failures; no child succeeded.";
 			if (invocation.displayLimited) summary += "\n[CODEMODE_DISPLAY_LIMITED] Display budget reached; output omitted/truncated. Use read on the saved Output paths below; do not repeat completed tools. Each saved result is capped at 5 MiB, with an explicit marker if later bytes were not saved.";
 			const imageSave = saveCodemodeImages(content);
 			const imageFiles = imageSave ? await imageSave : undefined;
@@ -642,7 +669,7 @@ export class CodemodeController {
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			for (const fact of invocation.facts) if (fact.evicted && fact.displayLimited) summary += `\n[CODEMODE_REF_EVICTED] ${fact.ref}: result left the memory cache.${fact.outputPath ? " Recover with read: " + fact.outputPath : " Recovery unavailable."}`;
-			if (failed) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
+			if (failed || failedChildren) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
 			content.unshift(summaryBlock);
 			let projected: (TextContent | ImageContent)[];
@@ -663,7 +690,9 @@ export class CodemodeController {
 				if (this.displayedReads.size >= MAX_PENDING_READ_PARENTS) this.displayedReads.delete(this.displayedReads.keys().next().value!);
 				this.displayedReads.set(context.parentToolCallId, invocation.reads);
 			}
-			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok, handledFailures, displayLimited: invocation.displayLimited || projected !== content, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
+			return { content: projected, isError: failed, details: { codemode: { version: 1, scriptOk: result.ok,
+				status: failed ? "failed" : failedChildren ? "partial" : "completed", succeeded, failed: failedChildren, unhandled,
+				handledFailures, displayLimited: invocation.displayLimited || projected !== content, summaryDigest: codemodeTextDigest(displayedSummary), calls: invocation.facts, runtimeCalls: result.calls, imageFiles } } };
 		} catch (error) {
 			this.documentationSnapshot = undefined;
 			await context.finish();

@@ -4,7 +4,7 @@ import { NestedToolDispatch } from "../packages/agent/src/nested-tool-dispatch.t
 import { executionFixture } from "./codemode-recovery/execution-fixture.ts";
 import { body } from "./codemode-recovery/fixture.ts";
 
-test("R2.2 explicit handling leaves true child errors and default caught failures still fail store", async t => {
+test("handled failures preserve true child errors and caught alternatives commit the store", async t => {
   const f = await executionFixture(t);
   const handled = await f.run('const r=await callTool("probe",{kind:"failure"},{allowFailure:true});text(r.isError);await tools.probe({kind:"ok"});store("saved",1);');
   assert.equal(handled.result.isError, false);
@@ -16,11 +16,14 @@ test("R2.2 explicit handling leaves true child errors and default caught failure
   assert.match(body(caught.result.content), /alternative completed/);
   assert.equal(caught.result.details.codemode.scriptOk, true);
   assert.deepEqual(caught.result.details.codemode.calls.map((fact: any) => fact.isError), [true, false]);
-  assert.equal(caught.result.isError, true);
+  assert.equal(caught.result.isError, false);
+  assert.match(body(caught.result.content), /CODEMODE_PARTIAL/);
+  assert.deepEqual([caught.result.details.codemode.succeeded, caught.result.details.codemode.failed,
+    caught.result.details.codemode.handledFailures,caught.result.details.codemode.unhandled],[1,1,1,0]);
   assert.deepEqual(f.calls, ["failure", "ok", "failure", "ok"]);
   const loaded = await f.run('text({saved:load("saved"),caughtOnly:load("caughtOnly") ?? null});');
-  assert.match(body(loaded.result.content), /"saved":1/);
-  assert.match(body(loaded.result.content), /"caughtOnly":null/);
+  assert.match(body(loaded.result.content), /"saved":2/);
+  assert.match(body(loaded.result.content), /"caughtOnly":true/);
 });
 
 test("R2.2 handled failure never clears a concurrent unhandled failure or masks observation failure", async () => {

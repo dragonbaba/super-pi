@@ -1,6 +1,8 @@
 import type { CodemodeWasmModule } from "./wasm.ts";
 
 export interface CodemodeToolContext {
+	/** Host-issued identity within this execution, shared by tools and globals. */
+	callId: number;
 	/**
 	 * Aborted when the script finishes (including unawaited calls), the
 	 * execution times out, the caller aborts, or the sandbox is closed.
@@ -50,6 +52,8 @@ export type CodemodeOutputItem = { type: "text"; text: string } | { type: "image
 export type CodemodeCallStatus = "ok" | "error" | "cancelled";
 
 export interface CodemodeCall {
+	id?: number;
+	failureHandled?: boolean;
 	name: string;
 	status: CodemodeCallStatus;
 	durationMs: number;
@@ -87,8 +91,9 @@ export type CodemodeResult =
 			output: CodemodeOutputItem[];
 			calls: CodemodeCall[];
 			storeWrites: CodemodeStoreWrites;
+			handledCallIds?: number[];
 	  }
-	| { ok: false; error: CodemodeError; output: CodemodeOutputItem[]; calls: CodemodeCall[] };
+	| { ok: false; error: CodemodeError; output: CodemodeOutputItem[]; calls: CodemodeCall[]; handledCallIds?: number[] };
 
 export interface CodemodeSandboxOptions {
 	tools?: CodemodeTool[];

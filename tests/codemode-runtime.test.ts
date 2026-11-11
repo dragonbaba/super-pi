@@ -11,6 +11,38 @@ import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
 import { assignCodemodeIdentifiers, renderToolSignature } from "../packages/codemode/src/declarations.ts";
 
+test("native VM rejection handling distinguishes caught, propagated and discarded host failures", async () => {
+	const ids: number[] = [];
+	const sandbox = new CodemodeSandbox({ reuseWorker: true, tools: [{ name: "fail", execute(_args, context) {
+		ids.push(context.callId); throw new Error("original child diagnostic");
+	} }] });
+	try {
+		for (const [code, ok, handled] of [
+			['try { await tools.fail({}) } catch {} store("ok",1)', true, true],
+			['await Promise.allSettled([tools.fail({})]); store("ok",1)', true, true],
+			['const p=tools.fail({}); await new Promise(r=>setTimeout(r,20)); await p.catch(()=>{});', true, true],
+			['try { await tools.fail({}) } catch(e) { throw e }', false, false],
+			['void tools.fail({}).then(()=>{}); await new Promise(r=>setTimeout(r,20));', false, false],
+			['try { await tools.fail({}) } catch {} throw new Error("different script error")', false, true],
+		] as const) {
+			const result = await sandbox.execute(code);
+			assert.equal(result.ok, ok, JSON.stringify(result));
+			assert.equal(result.calls.length, 1);
+			assert.equal(result.calls[0]!.id, 1);
+			assert.equal(result.calls[0]!.status, "error");
+			assert.equal(result.calls[0]!.failureHandled, handled, JSON.stringify(result));
+			assert.deepEqual(result.handledCallIds ?? [], handled ? [1] : []);
+		}
+		assert.deepEqual(ids, [1, 1, 1, 1, 1, 1]);
+		const repeated=await sandbox.execute('for(let i=0;i<256;i++){try{await tools.fail({})}catch{}}');
+		assert.equal(repeated.ok,true,JSON.stringify(repeated));assert.equal(repeated.calls.length,256);
+		assert.equal(repeated.handledCallIds?.length,256,"caught error identities must not collapse when delivery scopes unwind");
+		assert.ok(repeated.calls.every(call=>call.failureHandled));
+	} finally { await sandbox.close(); }
+	assert.equal(sandbox.stats.activeExecutions, 0);
+	assert.equal(sandbox.stats.workersStarted, sandbox.stats.workersStopped);
+});
+
 test("pooled scripts keep fresh VMs, catalogs, quotas and fenced late tool results", async () => {
 	let releaseLate!: (value: unknown) => void;
 	let lateSignal: AbortSignal | undefined;

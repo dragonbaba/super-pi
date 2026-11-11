@@ -104,6 +104,9 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	const ErrorCtor = Error;
 	const TypeErrorCtor = TypeError;
 	const pending = new Map();
+	// Host rejections stay alive only within this VM, at most MAX_CALLS entries.
+	// Otherwise caught errors can be freed and their engine identities reused.
+	let rejectedErrors;
 	let timers;
 	let nextTimerId = 1;
 	let nextId = 1;
@@ -171,6 +174,11 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		} catch {
 			return '{"message":"The script threw a value that cannot be described"}';
 		}
+	}
+	function fail(error) {
+		if (finished) return;
+		bridge("uncaught", error);
+		done(false, describeError(error));
 	}
 
 	function caller(kind, name, spread) {
@@ -401,7 +409,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		try {
 			writesJson = serializeWrites();
 		} catch (error) {
-			done(false, describeError(error));
+			fail(error);
 			throw EXIT;
 		}
 		done(true, undefined, writesJson);
@@ -453,14 +461,17 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 			if (finished || !entry) return;
 			timers.delete(id);
 			try { Reflect.apply(entry.callback, undefined, entry.args); }
-			catch (error) { done(false, describeError(error)); }
+			catch (error) { fail(error); }
 		},
 		settle(id, ok, payload) {
 			const entry = pending.get(id);
 			if (!entry) return;
 			pending.delete(id);
 			if (!ok) {
-				entry.reject(new ErrorCtor(payload));
+				const error = new ErrorCtor(payload);
+				(rejectedErrors ??= new Map()).set(id, error);
+				bridge("rejection", id, error);
+				entry.reject(error);
 				return;
 			}
 			let value;
@@ -477,7 +488,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 			try {
 				promise = fn(toolsProxy, console);
 			} catch (error) {
-				done(false, describeError(error));
+				fail(error);
 				return;
 			}
 			promiseThen.call(
@@ -487,13 +498,13 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 					try {
 						json = serialize(value);
 					} catch (error) {
-						done(false, describeError(error));
+						fail(error);
 						return;
 					}
 					done(true, json, serializeWrites());
 				},
 				(error) => {
-					done(false, describeError(error));
+					fail(error);
 				},
 			);
 		},

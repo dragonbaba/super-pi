@@ -1,6 +1,6 @@
 # CodeMode 批量、文件修订与多图请求预算修改方案
 
-状态：A 已通过审查/CI 并合并 [PR #289](https://github.com/dragonbaba/super-pi/pull/289)；B 候选已实现，待当前提交审查和 CI；C 待实施，D 仅评估（2026-11-12）。初始源码基线 `main` = `1b8f5de167512ac716edc2cd19e8c129f4872b64`。
+状态：A/B 已通过审查与 CI 并合并 [PR #289](https://github.com/dragonbaba/super-pi/pull/289)、[PR #290](https://github.com/dragonbaba/super-pi/pull/290)；C 候选已实现，待完整验收/审查/CI；D 仅评估（2026-11-12）。初始源码基线 `main` = `1b8f5de167512ac716edc2cd19e8c129f4872b64`。
 
 本文是实施交接，候选不代表已经合并交付。A 的行为与设置见[请求图片预算](request-image-budget.md)。单图默认保留 2000×2000/4.5 MiB 与 PNG；1568/600 KiB 仅作为显式可配的紧缩视图，避免未经像素保真验收就改变默认细节。按 A → B → C 交付三个可独立审查的 PR；C 的提示必须与已交付的 B 一致，“独立审查”不等于完全没有语义依赖。
 
@@ -171,7 +171,7 @@ cutoff = max(0, floor((T - KEEP) / STEP) * STEP)
 - 守卫/TUI 读实际子结果/结构化计数；父成功不清空子失败历史，也不通过新计数把所有正常处理的父调用又统一判错。既有重复失败、取消、权限控制保持职责，不新增限制。
 - store 不在脚本结束时提前提交，保留 afterToolCall、结果 hook、观察失败、分支代次和 finalizeStore 最终确认。
 
-这拟议推翻 [recovery repair plan](codemode-recovery-repair-plan.md) 的 F-C2“仅 try/catch 父仍失败、store 不提交”对照。该对照仍是基线事实；C 交付时标记旧决定退役、替换测试并同步 codemode.md，不提前写成已支持。
+C 候选已替换 [recovery repair plan](codemode-recovery-repair-plan.md) 的 F-C2“仅 try/catch 父仍失败、store 不提交”旧验收，并同步 codemode.md；历史事实保留适用版本，不再作为执行要求。候选仍须当前提交审查和 CI 后才合并交付。
 
 ### C2. 失败后的执行事实与展示
 

@@ -1240,11 +1240,12 @@ export class AgentSession {
 		};
 
 		this.agent.onToolObservationFailure = this._handleToolObservationFailure;
+		this.agent.onToolResultObserved = this._handleToolResultObserved;
 		this.agent.afterToolCall = async ({ toolCall, args, result, isError, parentToolCallId }, signal) => {
 			try {
 			const mcpTool = toolCall.name.startsWith("mcp__");
 			const mcpFailure = mcpTool && typeof result.details?.mcpError === "string";
-			const finalIsError = isError || mcpFailure;
+			const finalIsError = isError || mcpFailure || toolCall.name === CODEMODE_NAME && this.requiresUserInput;
 			if (toolCall.name === CODEMODE_NAME && finalIsError) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(toolCall.id);
 			const runner = this._extensionRunner;
 			const hasResultHook = runner.hasHandlers("tool_result");
@@ -1278,7 +1279,20 @@ export class AgentSession {
 				autoResizeImages: this.settingsManager.getImageAutoResize(),
 			});
 			if (hookResult?.isError === true || hookResult?.observationFailed) this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCall.id, parentToolCallId ? toolCall.id : undefined);
-			this._codemode.finalizeStore(toolCall.id, finalIsError || hookResult?.isError === true);
+			if (finalIsError || hookResult?.isError === true || hookResult?.observationFailed) this._codemode.finalizeStore(toolCall.id, true);
+			if (hookResult?.observationFailed && (parentToolCallId || toolCall.name === CODEMODE_NAME)) {
+				const error = new Error("A result observer failed; store writes were not committed");
+				const observed = toolCall.name === CODEMODE_NAME
+					? this._codemode.observationFailed({ ...result, content: normalizedContent, details: hookResult.details }, error)
+					: { content: normalizedContent, details: hookResult.details, isError: true };
+				return { ...observed, observationFailure: { executionIsError: isError, error: error.message } };
+			}
+			if (parentToolCallId && hookResult?.isError === true && !isError) return {
+				content: normalizedContent, details: hookResult.details, isError: true,
+				observationFailure: { executionIsError: isError, error: "A result hook rejected child completion" },
+			};
+			if (toolCall.name === CODEMODE_NAME && this.requiresUserInput && !result.isError) return this._codemode.observationFailed(
+				{ ...result, content: normalizedContent }, new Error("Execution paused for user input; store writes were not committed"));
 			if (toolCall.name === CODEMODE_NAME && hookResult?.isError === true && !result.isError) {
 				const hookDetails = hookResult.details;
 				return this._codemode.observationFailed(
@@ -1544,6 +1558,10 @@ export class AgentSession {
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private readonly _handleToolObservationFailure = (toolCallId: string, parentToolCallId?: string): void => {
 		this._resourceLoader.getExtensions().runtime.nativeFiles?.forgetContinuations(parentToolCallId ?? toolCallId, parentToolCallId ? toolCallId : undefined);
+		this._codemode.finalizeStore(parentToolCallId ?? toolCallId, true);
+	};
+	private readonly _handleToolResultObserved = (toolCallId: string, isError: boolean): void => {
+		this._codemode.finalizeStore(toolCallId, isError || this._operationDisposed || this.requiresUserInput);
 	};
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
 		// Final provider completion (including error/abort) releases its image guard
@@ -1974,6 +1992,7 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		if (this.agent.onToolObservationFailure === this._handleToolObservationFailure) this.agent.onToolObservationFailure = undefined;
+		if (this.agent.onToolResultObserved === this._handleToolResultObserved) this.agent.onToolResultObserved = undefined;
 		if (this._operationDisposed) return;
 		this._operationDisposed = true;
 		if (this._prefixManifestOwner) this._prefixManifestRecorder?.releaseOwner(this._prefixManifestOwner);
