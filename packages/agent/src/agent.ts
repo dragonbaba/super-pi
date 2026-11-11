@@ -803,7 +803,7 @@ export class Agent {
 			await this.eventDelivery.publishCritical(event);
 		} catch (error) {
 			try {
-				if (event.type === "message_end" && event.message.role === "toolResult") this.onToolObservationFailure?.(event.message.toolCallId);
+				if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "toolResult") this.onToolObservationFailure?.(event.message.toolCallId);
 				else if (event.type === "tool_execution_start" || event.type === "tool_execution_update" || event.type === "tool_execution_end") this.onToolObservationFailure?.(event.toolCallId, event.parentToolCallId);
 			} catch { /* Ownership cleanup never replaces the original critical failure. */ }
 			throw error;

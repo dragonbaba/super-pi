@@ -634,20 +634,20 @@ for(const bundle of [false,true]) test(`clean native continuations survive same-
   assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"last\nWORLD\n");assert.equal(readFileSync(join(f.cwd,"new.txt"),"utf8"),"continued");
 });
 
-for(const kind of ["tool_result","tool_execution_end","message_end"] as const) test(`native continuation is revoked after a real ${kind} observation failure`,async t=>{
+for(const kind of ["tool_result","tool_execution_end","message_start","message_end"] as const) test(`native continuation is revoked after a real ${kind} observation failure`,async t=>{
   let pending=true;
   const veto:InlineExtension=pi=>{pi.on("tool_result",event=>{if(kind==="tool_result"&&pending&&event.toolName==="edit"){pending=false;return {isError:true};}return undefined;});};
   const f=await fixture(t,{},[veto]);
   const unsubscribe=f.session.agent.subscribe(event=>{
     if(!pending||kind==="tool_result")return;
     if(kind==="tool_execution_end"&&event.type==="tool_execution_end"&&event.toolName==="edit"
-      ||kind==="message_end"&&event.type==="message_end"&&event.message.role==="toolResult"&&event.message.toolName==="codemode"){
+      ||(kind==="message_start"||kind==="message_end")&&event.type===kind&&event.message.role==="toolResult"&&event.message.toolName==="codemode"){
       pending=false;throw new Error("synthetic final observation failure");
     }
   });
   try {
     const run=f.run(['await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});']);
-    if(kind==="message_end"){await run;assert.match(f.session.agent.state.errorMessage ?? "",/synthetic final observation failure/);}
+    if(kind==="message_start"||kind==="message_end"){await run;assert.match(f.session.agent.state.errorMessage ?? "",/synthetic final observation failure/);}
     else assert.equal((await run).results.at(-1)?.isError,true);
   } finally {unsubscribe();}
   assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
@@ -655,6 +655,20 @@ for(const kind of ["tool_result","tool_execution_end","message_end"] as const) t
     'await tools.read({path:"file.txt"}); await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"verified"}]});']);
   assert.match(JSON.stringify(next.results.at(-2)),/REVISION_REQUIRED/);assert.equal(next.results.at(-1)?.isError,false);
   assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"verified\nworld\n");
+});
+
+test("direct native result message_start failure revokes its committed revision",async t=>{
+  const f=await fixture(t);
+  await f.run(['await tools.read({path:"file.txt"});']);
+  const unsubscribe=f.session.agent.subscribe(event=>{
+    if(event.type==="message_start"&&event.message.role==="toolResult"&&event.message.toolName==="edit")throw new Error("direct result start failed");
+  });
+  try {
+    await assert.rejects(f.session.agent.dispatchHostTool({type:"toolCall",id:"direct-edit",name:"edit",arguments:{path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}}),/direct result start failed/);
+  } finally {unsubscribe();}
+  assert.equal(readFileSync(join(f.cwd,"file.txt"),"utf8"),"changed\nworld\n");
+  const next=await f.run(['await tools.edit({path:"file.txt",edits:[{oldText:"changed",newText:"unsafe"}]});']);
+  assert.match(JSON.stringify(next.results.at(-1)),/REVISION_REQUIRED/);
 });
 
 test("SDK allowlist constrains children while adding the default transport; no-tools stays empty", async t => {

@@ -78,14 +78,15 @@ Old blanket reread instructions are retired; C's parent-failure change is separa
 Audited chains: native invocation -> prepare -> publication -> journal -> revision
 admission -> result hooks -> Agent critical delivery -> Session/interactive owners;
 MXC worker -> validated reply -> tool details -> script; all clear/dispose paths.
-Failed critical observations revoke only the originating new revisions. The Agent
+Failed critical observations, including tool-result message start/end, revoke only
+the originating new revisions. The Agent
 error cleanup uses stable owner callbacks and primitive IDs, with no new normal
 event closure, Promise, controller, wrapper, array or payload copy. No pool is used.
 
 Targeted native/MXC/commit/event checks passed 135 cases with one existing platform
 skip; the additional postimage GC case passed and released 3/3 buffers after clear,
-failed observation and disposal. Full CodeMode session tests passed 109/109, actual
-dist MXC workspace acceptance 2/2 (zero skips), type checking and the 12-package
+failed observation and disposal. Full CodeMode session tests passed 111/111, actual
+dist MXC workspace acceptance 2/2 (zero skips), complete Windows suite (exit 0), type checking and the 12-package
 offline build passed. Native lifecycle profiles released all 275 revision and 98
 service/plan references, with cache limits unchanged and zero pending invocations.
 
