@@ -36,7 +36,6 @@ import {
   VERIFICATION_TYPECHECK_RE,
   VERIFICATION_BUILD_RE,
   VERIFICATION_LINT_RE,
-  REQUIRED_CODEGRAPH_ARGUMENT_RE,
 } from "./failure-classification-regex.ts";
 
 const MAX_RAW_ERROR_CHARACTERS = 12_000;
@@ -206,9 +205,6 @@ export function classifyError(tool: string, text: string, family?: VerificationF
   if (tool === "structured_readonly_command") {
     const structuredReadonly = classifyStructuredReadonlyError(structuredPayload);
     if (structuredReadonly) return structuredReadonly;
-  }
-  if (tool === "codegraph" && REQUIRED_CODEGRAPH_ARGUMENT_RE.test(text)) {
-    return { category: "input_validation", cause: "CodeGraph 调用缺少当前 action 要求的参数。" };
   }
   if (tool === "edit") {
     if (text.startsWith("[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable")) return { category: "runtime_error", cause: "宿主 TypeScript 解析器不可用；候选未检查，本次未写入。恢复宿主依赖后使用仍有效的快照重新提交。" };

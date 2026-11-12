@@ -146,7 +146,6 @@ The coding agent includes `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`,
 Project understanding is layered:
 
 - Project Context uses `/project-status`, `/project-init`, and `/project-refresh` for project rules, a lightweight repository index, and context state.
-- CodeGraph uses `/codegraph-status`, `/codegraph-init`, and `/codegraph-sync` explicitly. It requires a trusted project and does not fully scan every repository at startup.
 - LSP tools need configured servers and provide targeted diagnostics, source-fix previews, and symbol navigation. The repository's own typecheck, build, and test remain the final authority.
 
 File editing uses scoped reads and identity checks. Snapshots, line anchors, and batch edits help keep a change bounded; they are not arbitrary multi-file transactions or a semantic-correctness guarantee. Every write still goes through the normal permission and result checks.
@@ -242,7 +241,7 @@ Configuration, sessions, and some memory are stored locally, but that does not m
 
 Permission rules and project trust are application controls. The first two permission modes additionally isolate supported file and command tools in MXC ProcessContainer. Full host access retains explicit denials, file-version checks and protected metadata checks; it does not restore old `full-access` grants. “Not executed” means a trusted pre-execution refusal; a backend failure after start must be understood from its actual result.
 
-Compaction reduces direct visibility of some older history. Memory, Project Context, and CodeGraph each have their own bounds and activation conditions; none promises to understand an entire repository automatically or remember every session forever. Auxiliary Vision needs separate configuration. Provider-native compaction follows the extension's configuration and compatibility conditions, with `enabled` defaulting to `true` as described above. Both can create extra service calls and cost.
+Compaction reduces direct visibility of some older history. Memory and Project Context each have their own bounds and activation conditions; neither promises to understand an entire repository automatically or remember every session forever. Auxiliary Vision needs separate configuration. Provider-native compaction follows the extension's configuration and compatibility conditions, with `enabled` defaulting to `true` as described above. Both can create extra service calls and cost.
 
 ## Documentation, development, and contribution
 
