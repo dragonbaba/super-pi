@@ -218,15 +218,16 @@ test("stream copy detects mid-read source mutation and cancellation with source 
 test("large binary overwrite streams through the real metadata commit owner", async t => {
   const f = await fixture(t), bytes = Buffer.alloc(3 * 1024 * 1024 + 17, 0xa7);
   await writeFile(f.source, bytes); await writeFile(f.destination, "old");
-  const source = await capturePathIdentity(f.source), destination = await capturePathIdentity(f.destination);
+  const alias = join(f.root, "alias"); await symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  const source = await capturePathIdentity(f.source), destination = await capturePathIdentity(join(alias, "destination"));
   const digest = await hashIdentity(source), before = createHash("sha256").update("old").digest("hex");
   const stream: FileCommitStream = { byteLength: bytes.length, sha256: digest,
     async writeTo(handle, hooks) { assert.equal(await writeIdentityTo(source, handle, hooks.assertCurrent, hooks.signal), digest); } };
   const plan = { target: destination, parent: await capturePathIdentity(f.root), previousSha256: before, metadata: await selectCommitMetadata(destination) };
-  const result = await commitPreparedFile(plan, stream, { assertPathAllowed: async () => f.destination, assertCurrent: current });
+  const result = await commitPreparedFile(plan, stream, { assertPathAllowed: async () => destination.canonical, assertCurrent: current });
   assert.equal(result.outcome, "committed"); assert.equal(result.fileSynced, true);
   assert.deepEqual(await readFile(f.destination), bytes); assert.deepEqual(await readFile(f.source), bytes);
-  assert.deepEqual((await readdir(f.root)).sort(), ["destination", "source"]);
+  assert.deepEqual((await readdir(f.root)).sort(), ["alias", "destination", "source"]);
 });
 
 test("a lying stream cannot publish a staged candidate and reports in-place writes conservatively", async t => {
@@ -234,7 +235,7 @@ test("a lying stream cannot publish a staged candidate and reports in-place writ
   const destination = await capturePathIdentity(f.destination), metadata = await selectCommitMetadata(destination);
   const stream: FileCommitStream = { byteLength: 3, sha256: createHash("sha256").update("new").digest("hex"), async writeTo(handle) { await handle.writeFile("bad"); } };
   const plan = { target: destination, parent: await capturePathIdentity(f.root), previousSha256: createHash("sha256").update("old").digest("hex"), metadata };
-  await assert.rejects(commitPreparedFile(plan, stream, { assertPathAllowed: async () => f.destination }), error => {
+  await assert.rejects(commitPreparedFile(plan, stream, { assertPathAllowed: async () => destination.canonical }), error => {
     assert(error instanceof FileCommitError); assert.equal(error.receipt.outcome, metadata.strategy === "staged_replace" ? "not_committed" : "committed"); return true;
   });
   assert.equal(await readFile(f.destination, "utf8"), metadata.strategy === "staged_replace" ? "old" : "bad");

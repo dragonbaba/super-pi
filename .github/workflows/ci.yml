@@ -43,7 +43,7 @@ jobs:
       - run: npm run check
         if: matrix.shard == 1
       - run: npm run build:offline
-      - run: npm test
+      - run: npm test -- --keep-going
         env:
           SP_TEST_SHARD: ${{ matrix.shard }}/2
           SP_TEST_JOBS: 1
@@ -74,7 +74,7 @@ jobs:
         run: Set-MpPreference -DisableRealtimeMonitoring $true
       - run: npm ci
       - run: npm run build:offline
-      - run: npm test
+      - run: npm test -- --keep-going
         env:
           SP_TEST_SHARD: ${{ matrix.shard }}/4
           SP_TEST_JOBS: 1

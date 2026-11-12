@@ -1,7 +1,7 @@
 # Regression tests and optional measurements
 
 Default Linux and Windows CI runs `npm ci`, `npm run build:offline`, then
-`npm test`, within the unchanged 30-minute job limit. The shared TypeScript
+`npm test -- --keep-going`, within the unchanged 30-minute job limit. The shared TypeScript
 check runs once, on Linux shard 1. Both operating systems still compile and
 exercise their actual runtime paths. Use `npm.cmd` on PowerShell 7 when
 required by execution policy.
@@ -13,14 +13,9 @@ provides a serial build for diagnosis.
 
 `node scripts/test.mjs --suite all --list` lists the deterministic
 execution-unit order (of the selected shard, if any), including the memory
-workspace, without executing tests. Each file is discovered once. The default
-is one child process at a time, including the memory workspace's test files.
-`--jobs N` or `SP_TEST_JOBS=N` is an explicit parallel override. Each ordinary
-Node test process has a 768 MiB old-generation heap limit; native allocations
-and buffers are separate from that V8 limit. Large allocation samplers and
-filesystem stress workloads run only through the explicit commands below.
-The same heap option is passed through the child environment to ordinary nested
-Node processes; no global Node or system setting is changed.
+workspace, without executing tests. Each file is discovered once and runs in a
+bounded pool of `min(available CPUs, 8)` child processes; `--jobs N` or
+`SP_TEST_JOBS=N` overrides the width, and `--jobs 1` restores serial execution.
 Files with wall-clock pass conditions (`bash-running-responsiveness`,
 `tool-lifecycle-postmerge`) run alone before the pool starts. In the pool,
 known slow files start first so they do not extend the tail. `--shard i/n` or
@@ -40,14 +35,13 @@ focused work; they are not an additional validation chain before `npm test`.
 The root runner invokes the memory workspace's existing Node test directly
 against the preceding build. Its standalone workspace test still builds when
 that package is tested independently. Native MXC acceptance and allocation
-benchmarks are opt-in and run separately from ordinary CI. `--keep-going` is an explicit
-diagnostic option; routine CI stays fail-fast.
+benchmarks are opt-in and run separately from ordinary CI. The CI workflow uses
+`--keep-going` to collect failures across the complete shard; local runs without
+that option stop scheduling after the first failing file.
 
-For a local change, select exact files rather than running unrelated suites:
-`npm test -- --file file-mutation-v3.test.ts --file file-result-v3.test.ts`.
-Paths are relative to `tests/` (or `--root`), duplicates run once, unknown files
-fail before execution, and selecting files does not add the memory workspace.
-Sharding and suite filters still apply. Do not automatically run unit, hot,
+For a local change, use Node's existing exact-file test entry point, for example
+`node --experimental-strip-types --test tests/file-mutation-v3.test.ts`.
+Do not automatically run unit, hot,
 contract and the full suite in succession, or repeat full suites just to wait
 for remote CI/review. Start with the relevant small regression and expand only
 for changed behavior or a diagnosed failure. Do not overlap local benchmarks

@@ -1,6 +1,6 @@
 import { closeSync, createReadStream, openSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -37,15 +37,14 @@ const GC_TESTS = new Set([
 const TEST_WEIGHTS = new Map([
 	["alpha-raw-parallel.test.ts", 190], ["alpha-cli.test.ts", 78], ["shell-incident-launcher.test.mjs", 56],
 	["alpha-startup-faults.test.ts", 41], ["bash-running-responsiveness.test.ts", 41], ["alpha-raw-session.test.ts", 36],
-	["tui-frame-queue.test.ts", 35], ["image-review-boundaries.test.ts", 26],
+	["tui-frame-queue.test.ts", 35], ["image-review-boundaries.test.ts", 26], ["next-phase-task-matrix.test.ts", 25],
 	["codemode-session.test.ts", 25],
 ]);
 const DEFAULT_TEST_WEIGHT = 6;
 // Wall-clock gated files run alone, before the pool starts: paired p50/p95 deltas
 // and frames that must land while a 3s child shell is still running.
 const EXCLUSIVE_TESTS = new Set(["bash-running-responsiveness.test.ts", "tool-lifecycle-postmerge.test.ts"]);
-const TEST_HEAP_MIB = 768;
-const TEST_HEAP_OPTION = `--max-old-space-size=${TEST_HEAP_MIB}`;
+const MAX_DEFAULT_JOBS = 8;
 const MEMORY_LABEL = "@super-pi/memory workspace";
 
 function compareCodeUnits(left, right) {
@@ -96,21 +95,17 @@ function parseJobs(value, source) {
 
 export function defaultJobs(env = process.env) {
 	if (env.SP_TEST_JOBS !== undefined && env.SP_TEST_JOBS !== "") return parseJobs(env.SP_TEST_JOBS, "SP_TEST_JOBS");
-	return 1;
+	return Math.max(1, Math.min(availableParallelism(), MAX_DEFAULT_JOBS));
 }
 
 function parseArguments(argv) {
-	const options = { suite: "all", root: DEFAULT_TEST_ROOT, files: [], skipMemory: false, list: false, jobs: undefined, shard: undefined, keepGoing: false };
+	const options = { suite: "all", root: DEFAULT_TEST_ROOT, skipMemory: false, list: false, jobs: undefined, shard: undefined, keepGoing: false };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		if (argument === "--suite") {
 			options.suite = argv[++index];
 		} else if (argument === "--root") {
 			options.root = resolve(argv[++index]);
-		} else if (argument === "--file") {
-			const file = argv[++index];
-			if (!file) throw new Error("--file requires a test path relative to --root");
-			options.files.push(normalizeTestPath(file));
 		} else if (argument === "--skip-memory") {
 			options.skipMemory = true;
 		} else if (argument === "--list") {
@@ -193,7 +188,6 @@ async function runChild(unit, logFile, temporary, print, recordFailure) {
 		const child = spawn(unit.command, unit.args, {
 			cwd: unit.cwd ?? root, stdio: ["ignore", log, log],
 			env: { ...process.env, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: root,
-				NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} ${TEST_HEAP_OPTION}`.trim(),
 				TMPDIR: temporary, TMP: temporary, TEMP: temporary,
 				SP_CODING_AGENT_DIR: resolve(root, "agent"), SP_CODING_AGENT_SESSION_DIR: resolve(root, "sessions"),
 				SP_OFFLINE: "1", SP_TUI_WRITE_LOG: "" },
@@ -254,7 +248,7 @@ function memoryCommand() {
 	// Root verification already builds every workspace. Run the same memory tests
 	// against those artifacts instead of compiling the package again inside CI.
 	// The standalone workspace npm test retains its build for local package work.
-	return { command: process.execPath, args: [TEST_HEAP_OPTION, "--test", "--test-concurrency=1",
+	return { command: process.execPath, args: ["--test",
 		resolve(REPOSITORY_ROOT, "packages/memory/tests/session-anchor-search.test.mjs"),
 		resolve(REPOSITORY_ROOT, "packages/memory/tests/memory-digest.test.mjs"),
 		resolve(REPOSITORY_ROOT, "packages/memory/tests/memory-management.test.mjs"),
@@ -262,7 +256,7 @@ function memoryCommand() {
 }
 
 export function testFileArguments(file, root) {
-	const args = [TEST_HEAP_OPTION, "--experimental-strip-types", "--test", "--test-concurrency=1", resolve(root, file)];
+	const args = ["--experimental-strip-types", "--test", resolve(root, file)];
 	if (GC_TESTS.has(file)) args.unshift("--expose-gc");
 	return args;
 }
@@ -270,19 +264,13 @@ export function testFileArguments(file, root) {
 export async function run(options) {
 	const jobs = parseJobs(options.jobs ?? defaultJobs(), "jobs");
 	const shard = options.shard === undefined ? defaultShard() : parseShard(`${options.shard.index}/${options.shard.count}`);
-	const discovered = discoverTestFiles(options.root);
-	const requested = options.files?.length ? new Set(options.files) : undefined;
-	if (requested) for (const file of requested) {
-		if (!discovered.includes(file)) throw new Error(`Unknown test file: ${file}`);
-		if (options.suite !== "all" && classifyTestFile(file) !== options.suite) throw new Error(`Test file does not belong to ${options.suite}: ${file}`);
-	}
-	const files = discovered.filter(
+	const files = discoverTestFiles(options.root).filter(
 		(file) => {
 			const suite = classifyTestFile(file);
-			return (!requested || requested.has(file)) && (options.suite === "all" || suite === options.suite);
+			return options.suite === "all" || suite === options.suite;
 		},
 	);
-	const includeMemory = !requested && !options.skipMemory && (options.suite === "all" || options.suite === "unit");
+	const includeMemory = !options.skipMemory && (options.suite === "all" || options.suite === "unit");
 	const labels = includeMemory ? [...files, MEMORY_LABEL] : files;
 	const { exclusive, pooled } = scheduleTestFiles(labels, shard);
 	if (options.list) {
