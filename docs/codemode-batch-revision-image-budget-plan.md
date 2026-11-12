@@ -7,7 +7,7 @@ A、B、C 三个 PR 均已合并；本文保留方案决策和验收标准，并
 ### 交付后核验与未完成项（2026-11-12）
 
 - 已确认单批 6×约 2.2 MiB 超过 12 MiB 后持续阻塞的缺陷：旧实现永久保护最后一个含图批次。补充修正把保护限定为尚待模型接收的当前工具批；后续模型消息或新的用户提交后，该批按历史偏移淘汰。首次仍无法容纳时明确告知“发送新文本继续但部分历史图会省略”或显式调预算，不重放工具。实际 session/serializer 回归和计量见[补充证据](evidence/image-budget-followup-2026-11-12.md)。
-- **跨协议预算仍未交付。** SDK 准备、投影、body 观察和自动图片恢复都只接入 full-history `openai-completions`。Anthropic、Google、Responses/Codex Responses 仍可能遇到原有 413；不能用本轮修正宣称已解决。后续须逐 adapter 验证签名/历史连续性、实际序列化字节、首次旧会话恢复、追加调用和一次更小的恢复请求；不得通过删除 thinking、失效远端状态或扩大限制来绕过。
+- **跨协议交付边界。** A 起初仅覆盖 full-history `openai-completions`；R1 补充完整历史的 `openai-responses`、`azure-openai-responses`，包括准备、投影、body 观察和一次更小恢复。Anthropic、Google、Codex Responses 仍可能遇到原有 413，不能据此宣称已解决。后续须逐 adapter 验证签名/历史连续性、实际序列化字节、首次旧会话恢复和追加调用；不得通过删除 thinking、失效远端状态或扩大限制来绕过。
 - **真实模型批量行为仍未验证。** 原证据的 +714 字符是提示成本，不是批量比例。按用户选择暂不调用真实模型；可重复对照步骤见[真实模型测量方案](#真实模型批量对照待执行)。D 仍仅评估，不算已交付自动去重。
 - A 验收 5 补充实际默认摘要 serializer 用例：图片块/base64 不进入摘要，单条工具正文沿用已有 2000 字符截断。用户正文、思考和总摘要输入没有统一字节硬上限；合成 16 MiB 用户正文的 413 明确失败，两层重试均不重发，不提交摘要。这是有限失败处理，**不表示任意文本都能自动压缩成功**。
 - A 验收 3 补充棋盘、细字、透明斜边和渐变的合成像素对照。默认限内及 autoResize=false 保留原字节；紧缩 PNG 保留格式/alpha，但棋盘与细字明显改变，细字为满足 600 KiB 进一步缩到 1176×78。该证据支持继续保留兼容默认；真实 HD-2D/照片的主观质量验收仍待进行，不能把合成对照当作通过。
@@ -266,23 +266,23 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 | 部分成功父 isError | 正常处理的普通失败为 false，保留真实计数；系统失败和最终观察/store 规则保留 |
 | 裁剪、大文件延续、自动读去重 | 不在本轮实现，提示不承诺已有接口 |
 
-## 9. Responses 请求体与 Claude 兼容补充审计（2026-11-12，待实现）
+## 9. Responses 请求体与 Claude 兼容补充审计（2026-11-12，分阶段实施）
 
-本节是交付后补充的实施边界。R0 已补全 Responses 族的 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界；图片预算及传输计量仍按 R1/R2 后续交付。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
+本节是交付后补充的实施边界。R0 [PR #293](https://github.com/dragonbaba/super-pi/pull/293) 已合并，补全 Responses 族 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界。R1 接入普通/Azure 完整历史图片预算、实际 body 观察和有限恢复；Codex transport 仍按 R2 单独实施。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
 
 ### 9.1 DeepSeek 的协议选择与已发现缺口
 
 [DeepSeek 官方 Responses 文档](https://api-docs.deepseek.com/guides/responses_api/)现已提供 `/responses`，可作为独立接入路线；这不表示仓库内置 provider 已经切换。当前 deepseek.ts 仍选 openai-completions，目录为 deepseek-v4-flash/pro 且 input 为 text；官方当前 Responses 示例使用 deepseek-flash，并声明其图片输入与工具图片输出。不能只替换 api 字符串而沿用旧目录、能力和请求选项，也不能把官方能力套给其他中转商的同名模型。
 
 - DeepSeek Responses 是无状态协议：不支持 previous_response_id、conversation、服务端 store；完整历史仍须上传。reasoning 的正文 content 可回传，encrypted_content/summary 不支持；不支持的顶层选项按官方说明会忽略。原生 OpenAI 的加密 reasoning 和 DeepSeek 明文 reasoning 必须分别验证，不能互相伪造。
-- 现有流解析器已经处理 response.reasoning_text.delta，结束时把完整 reasoning item 放入 thinkingSignature；但默认能力派生未为 Responses 族启用 thoughtSignatureRoundTrip，transformMessages 下一次会清掉这个回放字段。合成请求确认 reasoning item 在下一包消失；显式设置正确能力后同模型可完整保留。这是先于图片预算的修复项，不能通过丢弃 thinking 规避。
-- 普通 openai-responses 目前使用 store:false 和完整 input，没有自动 previous_response_id。请求入口尚未消费 onRequestBodyBytes，传入 observer 不会得到计量。OpenAI 官方允许手动管理完整历史并回传原始 reasoning/phase 等 item，参见[会话状态](https://developers.openai.com/api/docs/guides/conversation-state)与[reasoning](https://developers.openai.com/api/docs/guides/reasoning)。
+- 现有流解析器处理 response.reasoning_text.delta，结束时把完整 reasoning item 放入 thinkingSignature。R0 已修复默认能力缺项导致下一包丢失回放字段的问题，保留显式关闭和跨目标边界，不以丢弃 thinking 规避。
+- 普通 openai-responses 使用 store:false 和完整 input，没有自动 previous_response_id。R1 在普通/Azure 的既有 SDK fetch 边界消费 onRequestBodyBytes，使用已有序列化字符串计量，不另做全包副本。OpenAI 官方允许手动管理完整历史并回传原始 reasoning/phase 等 item，参见[会话状态](https://developers.openai.com/api/docs/guides/conversation-state)与[reasoning](https://developers.openai.com/api/docs/guides/reasoning)。
 
 ### 9.2 按实际传输接入，不只按 Responses 名称判断
 
 | 路径 | 当前行为 | 后续实现边界 |
 | --- | --- | --- |
-| 普通 openai-responses 完整历史 HTTP | SDK 生成最终 JSON，store:false | 先修 reasoning 同模型回放，再在已有 fetch 序列化边界接 observeRequestBody，复用预算/投影与一次更小请求恢复；保留 call_id 配对、reasoning 原 item、assistant phase；原始历史不改 |
+| 普通/Azure Responses 完整历史 HTTP | SDK 生成最终 JSON，store:false；R1 已接入投影、计量和恢复 | 复用 RequestImageBudget，保留 call_id 配对、reasoning 原 item、assistant phase；原始历史不改。API/provider/model 归属改变时不继续旧请求的图片恢复 |
 | DeepSeek Responses | 官方无状态；仓库尚无专用 Responses provider 配置 | 验证真实模型 ID、视觉能力、明文 reasoning 接收→回放、function/custom 工具输出、终止事件与缓存统计；作为独立兼容配置，不靠 previous_response_id 缩小请求 |
 | Codex Responses SSE | 完整 JSON 已序列化一次，支持 zstd 后发送二进制 body | 在既有字符串/压缩结果上分别记录 serializedJsonBytes 与 wireBodyBytes；使用 byteLength，不新增 TextEncoder.encode 的整包副本；不能拿 JSON 大小冒充压缩后的上传大小 |
 | Codex Responses WebSocket | transport owner 维护 response-id、前缀匹配、增量帧和远端压缩边界 | 在最终 socket.send 帧计量；已提交前缀不在上层随意改写。新图在首次提交前准备，delta、full、SSE fallback 分别验收；投影改变时由 owner 明确处理 continuation/compaction 代次，不能把旧 ID 配给改过的前缀 |

@@ -1,7 +1,7 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
-import { RequestImageBudget } from "./request-image-budget.ts";
+import { RequestImageBudget, supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { isRequestBodyTooLarge } from "@super-pi/ai";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
@@ -2964,9 +2964,9 @@ export class AgentSession {
 		// A failed image submission needs an explicit user retry. Do not drain the
 		// next draft, compact, or automatically repeat a potentially billed request.
 		if (msg.errorMessage?.includes("Image submission blocked:")) return false;
-		if (this.model?.api === "openai-completions" && isRequestBodyTooLarge(msg)) {
+		if (this.model && supportsRequestImageBudgetApi(this.model.api) && isRequestBodyTooLarge(msg)) {
 			if (!this._imageBodyRecoveryAttempted && !this.requiresUserInput && this._canResumeAgentRun()
-				&& msg.provider === this.model.provider && msg.model === this.model.id
+				&& msg.provider === this.model.provider && msg.model === this.model.id && msg.api === this.model.api
 				&& !msg.content.some(hasImageRecoveryToolCall) && this.requestImages.tighten()) {
 				this._imageBodyRecoveryAttempted = true;
 				const messages = this.agent.state.messages;
@@ -3585,7 +3585,7 @@ export class AgentSession {
 	}
 	/** Runs only at an actual provider request boundary, after queue delivery. */
 	async prepareRequestImages(messages: Message[], model: Model<any> | undefined): Promise<boolean> {
-		if (model?.api !== "openai-completions" || !model.input.includes("image") || this.settingsManager.getBlockImages()) { this.requestImages.clear(); return false; }
+		if (!model || !supportsRequestImageBudgetApi(model.api) || !model.input.includes("image") || this.settingsManager.getBlockImages()) { this.requestImages.clear(); return false; }
 		await this.requestImages.prepare(messages, this.settingsManager.getRequestImageSettings(), this.settingsManager.getImageAutoResize(), this._imagePreparationSignal);
 		this._imagePreparationSignal?.throwIfAborted();
 		return true;
@@ -4168,7 +4168,7 @@ export class AgentSession {
 		// A local preparation block is not provider overflow and never authorizes
 		// paid automatic compaction or replay of a completed tool.
 		if (isRequestBudgetBlock(assistantMessage.errorMessage)) return false;
-		if (this.model?.api === "openai-completions" && isRequestBodyTooLarge(assistantMessage)) return false;
+		if (supportsRequestImageBudgetApi(this.model?.api) && isRequestBodyTooLarge(assistantMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 

@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai";
+import type { Api, ImageContent, Message, TextContent, ToolResultMessage } from "@super-pi/ai";
 import { resizeImage, type ImageResizeOptions } from "../utils/image-resize.ts";
 import { wasImageProcessed } from "../utils/processed-image.ts";
 import type { ToolResultImageRange } from "./tool-result-presentation.ts";
@@ -12,6 +12,11 @@ const CACHE_ENTRIES = 128;
 const PROJECTION_CACHE_BYTES = 2 * 1024 * 1024;
 const CURRENT_BATCH_TOO_LARGE = "Request preparation blocked: current tool images exceed the image budget. Send a new text message to continue with this batch treated as history (some images may be omitted), or explicitly adjust images.requestBudget to inspect the whole batch. Original history and completed tools are unchanged; do not repeat completed tools.";
 const OMITTED: TextContent = Object.freeze({ type: "text", text: "[Historical tool image omitted from this request. The original remains in session history; use its recorded source or manifest if still available. Do not repeat completed mutations.]" });
+
+/** These adapters send complete history. Stateful Codex transports own a separate policy. */
+export function supportsRequestImageBudgetApi(api: Api | undefined): boolean {
+	return api === "openai-completions" || api === "openai-responses" || api === "azure-openai-responses";
+}
 
 export interface RequestImageSettings {
 	keepBytes?: number;
