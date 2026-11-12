@@ -1,4 +1,6 @@
 import { AzureOpenAI } from "openai";
+import { observeRequestBody } from "../utils/request-body-observer.ts";
+import { annotateRequestBodyFailure } from "../utils/request-body-size.ts";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, mergeSamplingParams, sanitizeCapabilityRequest } from "../model-capabilities.ts";
@@ -124,6 +126,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatAzureOpenAIError(error);
+			annotateRequestBodyFailure(error, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -195,7 +198,7 @@ function createClient(model: Model<"azure-openai-responses">, apiKey: string, op
 		apiKey,
 		apiVersion,
 		dangerouslyAllowBrowser: true,
-		fetch: options?.fetch,
+		fetch: observeRequestBody(options?.fetch, options?.onRequestBodyBytes),
 		defaultHeaders: headers,
 		baseURL: baseUrl,
 	});

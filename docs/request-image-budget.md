@@ -1,6 +1,6 @@
 # 请求图片预算
 
-当前支持完整历史的 `openai-completions` 请求。历史工具图片在发送视图中按时间分段省略，原始会话记录保持不变；占位说明包含结果 ID、内容位置和恢复限制。用户图片计入上传统计，但不静默删除。工具图片预算不等于整个 HTTP body 的上限，正文、schema 和用户附件也占空间。
+当前支持发送完整历史的 `openai-completions`、`openai-responses` 和 `azure-openai-responses` 请求。后两者沿用当前 adapter 的完整 input/store:false 行为；历史工具图片在发送视图中按时间分段省略，原始会话记录保持不变，占位说明包含结果 ID、内容位置和恢复限制。reasoning 原 item、assistant phase 和工具配对保持完整。用户图片计入上传统计，但不静默删除。工具图片预算不等于整个 HTTP body 的上限，正文、schema 和用户附件也占空间。
 
 默认保留目标为 8 MiB，步长 4 MiB，工具图片硬预算为 12 MiB，单位均为 **base64 编码后的字节**。跨界图片按完整块处理；最新一组需要另行保留时，仍须满足实际编码字节上限。当前图片本身无法容纳时，明确报告不足，不默默跳过需要检查的图。
 
@@ -26,7 +26,7 @@ requestBudget 还接受可选 maxWidth、maxHeight、maxBytes，用于明确选�
 
 明确的请求体超限触发最多一次图片预算收紧，只有最终序列化 body 确实变小才再发送；同一内容不能缩小时直接说明原因。第二次仍超限不会循环，也不重放工具或已成功修改，不自动付费摘要。普通连接错误保留现有有限重试策略，不单凭 Connection error 判作请求体超限。
 
-Anthropic thinking 前缀、Google 签名、Responses 增量历史等尚未在此功能中交付，保持其既有行为，不能把本功能的客户端清图直接用于这些协议。临时 manifest 或原路径可能失效，不能保证所有历史图始终可 read。
+Anthropic thinking 前缀、Google 签名、`openai-codex-responses` 的 SSE/WS 续接及压缩传输尚未在此预算中交付，保持其既有行为。普通 Responses 的支持不代表 Codex 增量链路也已接入，不能把完整历史投影直接用于有远端状态的协议。临时 manifest 或原路径可能失效，不能保证所有历史图始终可 read。
 
 默认摘要仅序列化文本，不携带图片块/base64；已有每条工具正文截断不等于总输入受字节预算保护。超长用户正文仍可能触发 413，摘要会报错并停止，不自动重复相同请求；历史和摘要检查点保持原状。实际用例与合成像素对照见[补充证据](evidence/image-budget-followup-2026-11-12.md)。
 

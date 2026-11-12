@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
 import { Session } from "node:inspector/promises";
 import { setImmediate as tick } from "node:timers/promises";
-import { stream } from "../../packages/ai/src/api/openai-completions.ts";
+import { stream as chat } from "../../packages/ai/src/api/openai-completions.ts";
+import { stream as responses } from "../../packages/ai/src/api/openai-responses.ts";
+import { stream as azure } from "../../packages/ai/src/api/azure-openai-responses.ts";
 import { RequestImageBudget } from "../../packages/coding-agent/src/core/request-image-budget.ts";
 import { paddedPngFixture } from "../../tests/helpers/image-acceptance-fixtures.ts";
-import type { Context, Message, Model } from "../../packages/ai/src/types.ts";
+import type { Context, Message, Model, StreamFunction } from "../../packages/ai/src/types.ts";
+import { sseFrames, textEvents } from "../../tests/helpers/responses-sse-fixture.ts";
 
 assert.ok(global.gc,"Run with --expose-gc");
 const ITERATIONS=8, refs:WeakRef<object>[]=[];
 const inspector=new Session(); inspector.connect();
-const model:Model<"openai-completions">={id:"fixture",name:"fixture",api:"openai-completions",provider:"fixture",baseUrl:"https://fixture.invalid",reasoning:false,input:["text","image"],contextWindow:1000000,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
-const response='data: {"id":"f","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"id":"f","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+const adapter=process.argv.includes("--azure")?{api:"azure-openai-responses",run:azure}:process.argv.includes("--responses")?{api:"openai-responses",run:responses}:{api:"openai-completions",run:chat};
+const stream=adapter.run as StreamFunction<any,any>;
+const model:Model<any>={id:"fixture",name:"fixture",api:adapter.api,provider:"fixture",baseUrl:adapter.api==="azure-openai-responses"?"https://fixture.openai.azure.com/openai/deployments/fixture":"https://fixture.invalid",reasoning:false,input:["text","image"],contextWindow:1000000,maxTokens:1024,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}};
+const response=adapter.api==="openai-completions"?'data: {"id":"f","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"id":"f","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n':sseFrames(textEvents());
 let wireBytes=0;
 async function transport(_url:unknown,init?:RequestInit):Promise<Response>{wireBytes=Buffer.byteLength(String(init?.body));return new Response(response,{headers:{"content-type":"text/event-stream"}});}
 function corpus():Message[]{
@@ -45,7 +50,7 @@ async function measure(project:boolean){
   assert.equal(owner.metrics.encodes,coldEncodes,"no image encoding in warmed requests");
   if(project)assert.equal(owner.metrics.imagesInspected,44,"unchanged images reuse numeric metadata");
   if(project){assert.equal(owner.metrics.wireBytes,wireBytes);assert.equal(owner.metrics.uploads,ITERATIONS+1);}
-  const result={project,iterations:ITERATIONS,wireBytes,sampledBytesPerRequest:sampledBytes/ITERATIONS,cpuP50:timings[4],cpuP95:timings[7],coldPrepareMs,coldEncodes,initialHeap,peakHeap,topSites:sites.slice(0,5),metadataImages:owner.metrics.imagesInspected,warmEncodes:0,fullPayloadCopiesForCounting:0};
+  const result={api:adapter.api,project,iterations:ITERATIONS,wireBytes,sampledBytesPerRequest:sampledBytes/ITERATIONS,cpuP50:timings[4],cpuP95:timings[7],coldPrepareMs,coldEncodes,initialHeap,peakHeap,topSites:sites.slice(0,5),metadataImages:owner.metrics.imagesInspected,warmEncodes:0,fullPayloadCopiesForCounting:0};
   owner.clear();assert.equal(owner.metrics.cacheSourceBytes,0);assert.equal(owner.metrics.cacheViewBytes,0);return result;
 }
 async function blockedBatchRecovery(){
@@ -75,5 +80,5 @@ try{
   const heapAfterGc:number[]=[];
   for(let i=0;i<4;i++){await tick();global.gc!();heapAfterGc.push(process.memoryUsage().heapUsed);}
   assert.equal(refs.filter(r=>r.deref()).length,0);
-  console.log(JSON.stringify({baseline,candidate,oversizedBatch,heapAfterGc,retainedAfterFourGC:0,note:"Actual OpenAI chat serializer + SDK with offline fetch; corpus includes valid 1920x1080 PNG ancillary padding. Sampling includes request harness."}));
+  console.log(JSON.stringify({baseline,candidate,oversizedBatch,heapAfterGc,retainedAfterFourGC:0,note:"Selected native adapter serializer + SDK with offline fetch; corpus includes valid 1920x1080 PNG ancillary padding. Sampling includes request harness."}));
 }finally{inspector.disconnect();}

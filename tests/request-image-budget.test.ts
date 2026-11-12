@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ImageContent, Message, ToolResultMessage } from "../packages/ai/src/types.ts";
-import { RequestImageBudget, IMAGE_KEEP_BYTES, IMAGE_STEP_BYTES } from "../packages/coding-agent/src/core/request-image-budget.ts";
+import { RequestImageBudget, IMAGE_KEEP_BYTES, IMAGE_STEP_BYTES, supportsRequestImageBudgetApi } from "../packages/coding-agent/src/core/request-image-budget.ts";
 import { isRequestBodyTooLarge } from "../packages/ai/src/utils/request-body-size.ts";
 import { observeRequestBody, requestBodyUtf8Bytes } from "../packages/ai/src/utils/request-body-observer.ts";
 import { processedImage, reuseUnchangedToolImages } from "../packages/coding-agent/src/utils/processed-image.ts";
@@ -13,6 +13,10 @@ import { createToolResultPresentationOwner } from "../packages/coding-agent/src/
 import { setImmediate as tick } from "node:timers/promises";
 
 const MiB = 1024 * 1024;
+test("only the complete-history adapters share image projection and recovery",()=>{
+  for(const api of ["openai-completions","openai-responses","azure-openai-responses"])assert.equal(supportsRequestImageBudgetApi(api),true);
+  for(const api of [undefined,"openai-codex-responses","anthropic-messages","google-generative-ai"])assert.equal(supportsRequestImageBudgetApi(api),false);
+});
 function tool(bytes: number, id = "tool"): ToolResultMessage {
   return { role: "toolResult", toolCallId: id, toolName: "read", content: [{ type: "image", data: "A".repeat(bytes), mimeType: "image/png" }], isError: false, timestamp: 0 };
 }

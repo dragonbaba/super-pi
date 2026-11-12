@@ -14,6 +14,7 @@ import { clampThinkingLevel, type Context, type Message, type Model, type Simple
 import { CONTEXT_SAFETY_TOKENS, resolveRequestOutputFloor, requestThinkingTokens, resolveRequestOutputTokens, usesAdaptiveRequestBudget } from "@super-pi/ai/api/simple-options";
 import { buildOpenAIResponsesRequestBody } from "@super-pi/ai/api/openai-responses";
 import { getAgentDir, getConfigDir } from "../config.ts";
+import { supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { reuseUnchangedToolImages } from "../utils/processed-image.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -397,7 +398,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const converted = convertToLlm(messages);
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
-		const imageBudget = !blockImages && conversionModel?.api === "openai-completions" && conversionModel.input.includes("image");
+		const imageBudget = !blockImages && conversionModel && supportsRequestImageBudgetApi(conversionModel.api) && conversionModel.input.includes("image");
 		try {
 		const projected = session.projectToolResultMessagesForModel(
 			converted,
@@ -498,7 +499,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				onRequestBodyBytes: model.api === "openai-completions" ? session.requestImages.observeWireBytes : options?.onRequestBodyBytes,
+				onRequestBodyBytes: supportsRequestImageBudgetApi(model.api) ? session.requestImages.observeWireBytes : options?.onRequestBodyBytes,
 				onEffectiveDispatch: recordEffectiveDispatch,
 				transformHeaders: async (requestHeaders) => {
 					const headers = mergeProviderAttributionHeaders(

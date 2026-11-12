@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { observeRequestBody } from "../utils/request-body-observer.ts";
+import { annotateRequestBodyFailure } from "../utils/request-body-size.ts";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import { capabilityCacheRetention, contextForModelCapabilities, getModelCapabilities, mergeSamplingParams, sanitizeCapabilityRequest } from "../model-capabilities.ts";
@@ -145,7 +147,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				capabilityContext.tools,
 				compat.supportsOpenAIGrammarTools,
 			);
-			const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
+			const client = createClient(model, context, apiKey, options?.headers, observeRequestBody(options?.fetch, options?.onRequestBodyBytes), cacheSessionId);
 			let params = buildOpenAIResponsesRequestBody(model, context, options, compat, grammarToolInputProperties);
 			const nextParams = await options?.onPayload?.(params, model, options);
 			if (nextParams !== undefined) {
@@ -191,6 +193,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatOpenAIResponsesError(error);
+			annotateRequestBodyFailure(error, output);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
