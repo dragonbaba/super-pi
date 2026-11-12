@@ -1920,7 +1920,9 @@ export class ExtensionRunner {
     };
 		try {
 		if (this.runtime.nativePermissions) authorization.policy = await this.runtime.nativePermissions.authorize(event, ctx, definition, false, prepareNativeFiles);
-    if (!filesPrepared) await prepareNativeFiles();
+    // A tool with no file owner has no asynchronous preflight. Keep its safety
+    // hook admission synchronous, including installation of the hook deadline.
+    if (!filesPrepared && this.runtime.nativeFiles?.ownsDefinition(definition)) await prepareNativeFiles();
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;

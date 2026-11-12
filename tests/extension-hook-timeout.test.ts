@@ -101,7 +101,7 @@ test("transform timeout can fail open while preserving handler order", async () 
 	assert.equal(runner.hookDeliveryStats.timeouts, 1);
 });
 
-test("configured safety hook timeout is fail-closed", async () => {
+test("configured safety hook timeout is fail-closed", { timeout: 2000 }, async () => {
 	const scheduler = new FakeScheduler();
 	const runner = await createRunner(
 		(pi) => {
