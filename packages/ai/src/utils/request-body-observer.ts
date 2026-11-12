@@ -1,4 +1,7 @@
 import type { FetchFunction } from "../types.ts";
+// Node/Bun count in native code without allocating a second encoded payload.
+// Keep the allocation-free fallback for the supported browser/Workers entrypoint.
+const NATIVE_UTF8_BYTES = typeof Buffer !== "undefined" ? Buffer.byteLength : undefined;
 /** One request-bound adapter; no listeners or callbacks per chunk/image. */
 export function observeRequestBody(fetch: FetchFunction | undefined, observe?: (bytes: number) => void): FetchFunction | undefined {
 	if (!observe) return fetch;
@@ -9,6 +12,7 @@ export function observeRequestBody(fetch: FetchFunction | undefined, observe?: (
 	};
 }
 export function requestBodyUtf8Bytes(text: string): number {
+	if (NATIVE_UTF8_BYTES) return NATIVE_UTF8_BYTES(text, "utf8");
 	let bytes = 0;
 	for (let i = 0; i < text.length; i++) {
 		const c = text.charCodeAt(i);

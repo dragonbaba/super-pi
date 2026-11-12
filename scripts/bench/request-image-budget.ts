@@ -48,10 +48,32 @@ async function measure(project:boolean){
   const result={project,iterations:ITERATIONS,wireBytes,sampledBytesPerRequest:sampledBytes/ITERATIONS,cpuP50:timings[4],cpuP95:timings[7],coldPrepareMs,coldEncodes,initialHeap,peakHeap,topSites:sites.slice(0,5),metadataImages:owner.metrics.imagesInspected,warmEncodes:0,fullPayloadCopiesForCounting:0};
   owner.clear();assert.equal(owner.metrics.cacheSourceBytes,0);assert.equal(owner.metrics.cacheViewBytes,0);return result;
 }
+async function blockedBatchRecovery(){
+  const owner=new RequestImageBudget(), data=paddedPngFixture(1920,1080,Math.ceil(2.2*1024*1024)).toString("base64");
+  const messages:Message[]=[{role:"assistant",api:model.api,provider:model.provider,model:model.id,content:[],stopReason:"toolUse",timestamp:0,
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}},
+    {role:"toolResult",toolCallId:"batch",toolName:"read",isError:false,timestamp:0,content:Array.from({length:6},()=>({type:"image",data,mimeType:"image/png"}))}];
+  refs.push(new WeakRef(owner),new WeakRef(messages),new WeakRef(messages[1]!));
+  await assert.rejects(owner.prepare(messages,{},false),/current tool images exceed/);
+  assert.equal(owner.metrics.requestViewBytes,0);assert.equal(owner.metrics.cacheViewBytes,0);
+  messages.push({role:"user",content:"Continue with historical images",timestamp:1});
+  const before=performance.now();await owner.prepare(messages,{},false);
+  const recoveryPrepareMs=performance.now()-before, projected=owner.applyMessages(messages);
+  refs.push(new WeakRef(projected));
+  assert.equal(owner.metrics.retainedImageBytes,4*data.length);
+  await stream(model,{messages:projected},{apiKey:"offline-fixture",fetch:transport,maxRetries:0,onRequestBodyBytes:owner.observeWireBytes}).result();
+  const inspected=owner.metrics.imagesInspected;
+  for(let i=0;i<8;i++) await owner.prepare(messages,{},false);
+  assert.equal(owner.metrics.imagesInspected,inspected);
+  owner.completeResponse();assert.equal(owner.metrics.requestViewBytes,0);
+  const result={originalImageBytes:6*data.length,retainedImageBytes:owner.metrics.retainedImageBytes,wireBytes,recoveryPrepareMs,imagesInspected:inspected,subsequentImageByteCounts:0,encodes:owner.metrics.encodes,requestViewBytes:owner.metrics.requestViewBytes};
+  owner.clear();assert.equal(owner.metrics.projectionCacheBytes,0);return result;
+}
 try{
   const baseline=await measure(false),candidate=await measure(true);
+  const oversizedBatch=await blockedBatchRecovery();
   const heapAfterGc:number[]=[];
   for(let i=0;i<4;i++){await tick();global.gc!();heapAfterGc.push(process.memoryUsage().heapUsed);}
   assert.equal(refs.filter(r=>r.deref()).length,0);
-  console.log(JSON.stringify({baseline,candidate,heapAfterGc,retainedAfterFourGC:0,note:"Actual OpenAI chat serializer + SDK with offline fetch; corpus includes valid 1920x1080 PNG ancillary padding. Sampling includes request harness."}));
+  console.log(JSON.stringify({baseline,candidate,oversizedBatch,heapAfterGc,retainedAfterFourGC:0,note:"Actual OpenAI chat serializer + SDK with offline fetch; corpus includes valid 1920x1080 PNG ancillary padding. Sampling includes request harness."}));
 }finally{inspector.disconnect();}

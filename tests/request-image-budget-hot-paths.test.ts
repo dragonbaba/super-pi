@@ -7,7 +7,7 @@ test("body byte counting has no payload copies, callbacks, arrays, regexes or pr
   const fn=source.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==="requestBodyUtf8Bytes") as ts.FunctionDeclaration;
   function inspect(n:ts.Node):void {
     assert.equal(ts.isArrowFunction(n)||ts.isFunctionExpression(n)||ts.isNewExpression(n)||ts.isObjectLiteralExpression(n)||ts.isArrayLiteralExpression(n)||ts.isRegularExpressionLiteral(n)||ts.isAwaitExpression(n),false,n.getText(source));
-    if(ts.isCallExpression(n)) assert.match(n.expression.getText(source),/^text\.charCodeAt$/);
+    if(ts.isCallExpression(n)) assert.match(n.expression.getText(source),/^(?:text\.charCodeAt|NATIVE_UTF8_BYTES)$/);
     ts.forEachChild(n,inspect);
   }
   inspect(fn.body!);
