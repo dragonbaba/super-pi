@@ -394,7 +394,8 @@ export function deriveModelCapabilities(model: Model<Api>): Readonly<ModelCapabi
 		reasoning: Object.freeze(reasoning),
 		thoughtSignatureRoundTrip:
 			enrichment?.thoughtSignatureRoundTrip ??
-			(api === "anthropic-messages" || api === "google-generative-ai" || api === "google-vertex"),
+			(api === "anthropic-messages" || api === "google-generative-ai" || api === "google-vertex" ||
+				api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses"),
 		promptCache: Object.freeze(promptCacheCapability(model)),
 		previousResponseId:
 			api === "openai-responses" || api === "openai-codex-responses" || api === "azure-openai-responses",
