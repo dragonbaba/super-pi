@@ -1,5 +1,5 @@
 const HTTP_413 = /(?:^413(?:\s|:|$)|\bHTTP\s+413\b|\bstatus(?: code)?[:= ]+413\b)/i;
-const BODY_SIZE = /(?:request_too_large|payload too large|request entity too large|request body (?:is )?too large|failed to buffer the request body:\s*length limit exceeded)/i;
+const BODY_SIZE = /(?:request_(?:body_)?too_large|payload too large|request entity too large|request body (?:is )?too large|failed to buffer the request body:\s*length limit exceeded)/i;
 const OTHER_ERROR = /rate limit|too many requests|\b429\b|authentication|unauthorized/i;
 import { isCerebrasBodylessOverflow } from "./overflow.ts";
 import type { AssistantMessage } from "../types.ts";

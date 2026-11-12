@@ -499,7 +499,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				websocketConnectTimeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				onRequestBodyBytes: supportsRequestImageBudgetApi(model.api) ? session.requestImages.observeWireBytes : options?.onRequestBodyBytes,
+				onRequestBodyBytes: supportsRequestImageBudgetApi(model.api) || model.api === "openai-codex-responses" ? session.requestImages.observeWireBytes : options?.onRequestBodyBytes,
 				onEffectiveDispatch: recordEffectiveDispatch,
 				transformHeaders: async (requestHeaders) => {
 					const headers = mergeProviderAttributionHeaders(

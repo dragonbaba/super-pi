@@ -38,3 +38,31 @@ test("presentation policy calls carry the original source without allocating con
   }
   visit(ast); assert.equal(calls,11);
 });
+
+test("Codex metering uses primitive counters without per-delta allocations or diagnostic serialization",()=>{
+  const file="packages/ai/src/api/openai-codex-responses.ts",source=ts.createSourceFile(file,fs.readFileSync(file,"utf8"),ts.ScriptTarget.Latest,true);
+  for(const name of ["observeCodexRequestBody","webSocketRequestBytes","recordWebSocketBodyFailure"]){
+    const fn=source.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name) as ts.FunctionDeclaration;
+    function inspect(n:ts.Node):void {
+      assert.equal(ts.isArrowFunction(n)||ts.isFunctionExpression(n)||ts.isArrayLiteralExpression(n)||ts.isAwaitExpression(n),false,n.getText(source));
+      if(ts.isNewExpression(n))assert.equal(n.expression.getText(source),"CodexBodyObserverError","only failure settlement may allocate an error");
+      ts.forEachChild(n,inspect);
+    }
+    inspect(fn.body!);
+  }
+  const text=source.getFullText();
+  assert.doesNotMatch(text,/new TextEncoder\(\)\.encode\((?:getBodyJson\(\)|bodyJson)/);
+  assert.match(text,/requestBytes: webSocketRequestBytes\(error\)/);
+  assert.match(text,/const WEBSOCKET_REQUEST_BYTES = new WeakMap<object, number>\(\)/);
+  for(const name of ["processWebSocketStream","performCodexWebSocketCompaction"]){
+    const fn=source.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name) as ts.FunctionDeclaration;
+    const body=fn.body!.getText(source);let serializations=0;
+    function inspect(n:ts.Node):void {
+      if(ts.isCallExpression(n)&&n.expression.getText(source)==="JSON.stringify")serializations++;
+      ts.forEachChild(n,inspect);
+    }
+    inspect(fn.body!);assert.equal(serializations,1,"one final frame per attempt");
+    assert.match(body,/finally\s*\{\s*frame = undefined;\s*\}\s*const result = await|finally\s*\{\s*frame = undefined;\s*\}\s*await/);
+    assert.doesNotMatch(body,/Buffer\.from\(frame|TextEncoder|\.send\(JSON\.stringify/);
+  }
+});
