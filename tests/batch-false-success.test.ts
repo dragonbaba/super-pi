@@ -31,7 +31,7 @@ async function fixture(t: test.TestContext) {
   t.after(async () => { session.dispose(); await new Promise<void>(r => setImmediate(r)); rmSync(root, { recursive: true, force: true }); });
   const runner = session.extensionRunner;
   await session.bindExtensions({ uiContext: { ...runner.getUIContext(), select: async () => "仅允许本次" }, mode: "tui" });
-  session.setActiveToolsByName(["read", "edit", "write", "delete", "move", "file_batch", "goal_complete", "run_tests"]);
+  session.setActiveToolsByName(["read", "edit", "write", "copy", "delete", "move", "file_batch", "goal_complete", "run_tests"]);
   let calls = 0;
   async function call(name: string, args: any) {
     await runner.emit({ type: "turn_start" } as never); const id = `false-${++calls}`;
@@ -66,6 +66,24 @@ async function fixture(t: test.TestContext) {
   }
   return { cwd, manager, session, runner, call, say, goals: () => goals };
 }
+for (const batch of [false, true]) test(`successful copy repairs its destination but preserves source failures, batch=${batch}`, async t => {
+  const f = await fixture(t), source = join(f.cwd, "source"), destination = join(f.cwd, "copied");
+  writeFileSync(source, "before"); writeFileSync(destination, "old");
+  for (const path of ["source", "copied"]) assert.equal((await f.call("write", { path, mode: "overwrite", content: "not applied" })).isError, true);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
+  const copy = (path: string, destination: string, overwrite = false) => batch
+    ? f.call("file_batch", { operations: [{ operation: "copy", path, destination, overwrite }] })
+    : f.call("copy", { path, destination, overwrite });
+  assert.equal((await copy("source", "copied", true)).isError, false);
+  assert.equal(readFileSync(source, "utf8"), "before"); assert.equal(readFileSync(destination, "utf8"), "before");
+  assert.equal((await f.call("goal_complete", {})).isError, true, "Reading a source cannot repair its failed write");
+  writeFileSync(join(f.cwd, "replacement"), "fixed");
+  const repaired = await copy("replacement", "source", true); assert.equal(repaired.isError, false, JSON.stringify(repaired));
+  assert.equal((await f.call("goal_complete", {})).isError, false, "The destination failure was repaired by copy");
+  assert.equal((await copy("missing", "retry")).isError, true); assert.equal((await f.call("goal_complete", {})).isError, true);
+  assert.equal((await copy("source", "retry")).isError, false); assert.equal((await f.call("goal_complete", {})).isError, false, "Copy retry repairs its own destination obligation");
+});
+
 test("native previews leave no mutation obligations and cannot clear a prior failure", async t => {
   const f = await fixture(t), source = join(f.cwd, "source"); writeFileSync(source, "unchanged");
   for (const [name, input] of [

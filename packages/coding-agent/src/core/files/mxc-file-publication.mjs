@@ -61,6 +61,9 @@ export class MxcFilePublication {
     this.candidateFd = this.io.openSync(candidate, 'wx+', 0o600); this.temporary = candidate;
     this.candidate = this.io.fstatSync(this.candidateFd, { bigint: true });
     need(this.candidate.isFile() && this.candidate.nlink === 1n, 'Candidate identity unavailable');
+    this.assertParent();
+    const named = this.io.lstatSync(candidate, { bigint: true });
+    need(sameVersion(this.candidate, named) && !named.isSymbolicLink() && this.io.realpathSync(candidate) === candidate, 'Opened candidate name or identity changed before writing');
   }
   finalize(expected, size) {
     this.io.fsyncSync(this.candidateFd); this.assertOriginal();

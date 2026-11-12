@@ -88,7 +88,7 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
           const page = changes.nextItems(); more = page.hasMore;
           for (const record of page.records) {
             allSucceeded &&= record.status === "succeeded";
-            observeFileMutationOutcome(state, pending.name, record.target, record.destination, record.status);
+            observeFileMutationOutcome(state, pending.name, record.target, record.destination, record.status, record.operation);
           }
         } while (more);
         if (event.isError && allSucceeded) observeFileMutationOutcome(state, pending.name, ctx.cwd, undefined, "state_unknown");

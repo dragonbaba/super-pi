@@ -272,8 +272,10 @@ function observeMutationOutcome(state: FalseSuccessState, tool: string, target: 
 
 /** The caller supplies only rows authenticated by the session's v3 reader.
  * Never accept model/aggregate item arrays as an equivalent journal proof. */
-export function observeFileMutationOutcome(state: FalseSuccessState, tool: string, target: string, destination: string | undefined, status: string): void {
-  observeMutationOutcome(state, tool, normalizeAbsolute(target, target), status);
+export function observeFileMutationOutcome(state: FalseSuccessState, tool: string, target: string, destination: string | undefined, status: string, operation = tool): void {
+  // Copy reads its source. It can repair only its destination's mutation;
+  // unknown destinations retain a call-level failure at the supplied target.
+  if (operation !== "copy" || !destination) observeMutationOutcome(state, tool, normalizeAbsolute(target, target), status);
   if (destination) observeMutationOutcome(state, tool, normalizeAbsolute(destination, destination), status);
 }
 
@@ -438,7 +440,8 @@ function mutationTarget(
   cwd = process.cwd(),
 ): string | undefined {
   if (!MUTATION_TOOLS.has(toolName)) return undefined;
-  const path = typeof input.path === "string" ? input.path.trim() : "";
+  const value = toolName === "copy" && typeof input.destination === "string" ? input.destination : input.path;
+  const path = typeof value === "string" ? value.trim() : "";
   return path ? normalizeAbsolute(toolName === "edit" || toolName === "write" ? resolveToolPath(cwd, path) : resolve(cwd, path), cwd) : undefined;
 }
 

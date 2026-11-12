@@ -198,6 +198,7 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       temporary = { path, device: String(info.dev), inode: String(info.ino) };
       await assertTemporary(temporary, plan);
       await plan.metadata.protectTemporary?.(staged, path);
+      await assertTemporary(temporary, plan);
       if (buffered) await staged.writeFile(content);
       else await content.writeTo(staged, hooks);
       await staged.sync(); receipt.fileSynced = true;

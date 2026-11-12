@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, lstat, open, symlink, readdir, lin
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { writeFileSync, lstatSync, renameSync, symlinkSync } from "node:fs";
+import { writeFileSync, lstatSync, renameSync, symlinkSync, utimesSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
@@ -142,7 +142,13 @@ test("directory copy reports partial coverage when a new child appears during ex
   let introduced = false;
   const check = () => {
     // The original file reaching its destination proves the copy is underway.
-    if (!introduced) { try { requireCopyEffect(); } catch { return; } introduced = true; writeFileSync(join(f.source, "new-child"), "external"); }
+    if (!introduced) {
+      try { requireCopyEffect(); } catch { return; }
+      introduced = true; writeFileSync(join(f.source, "new-child"), "external");
+      // Make the metadata fault deterministic even within one filesystem clock tick.
+      const changed = new Date(Number(BigInt(tree.entries[0].identity.mtime) / 1_000_000n) + 2000);
+      utimesSync(f.source, changed, changed);
+    }
   };
   function requireCopyEffect() { return lstatSync(join(f.destination, "file")); }
   const result = await executeTree(tree, "copy", parent, f.destination, parent, check);
@@ -246,6 +252,22 @@ test("large binary overwrite streams through the real metadata commit owner", as
   assert.equal(result.outcome, "committed"); assert.equal(result.fileSynced, true);
   assert.deepEqual(await readFile(f.destination), bytes); assert.deepEqual(await readFile(f.source), bytes);
   assert.deepEqual((await readdir(f.root)).sort(), ["alias", "destination", "source"]);
+});
+
+test("native staged copy rechecks its candidate after metadata protection before streaming", async t => {
+  const f = await fixture(t), outside = join(f.root, "unapproved"); await mkdir(outside);
+  await writeFile(f.source, "private copy bytes"); await writeFile(f.destination, "old");
+  const source = await capturePathIdentity(f.source), destination = await capturePathIdentity(f.destination), metadata = await selectCommitMetadata(destination);
+  if (metadata.strategy !== "staged_replace") { t.skip("Selected metadata requires in-place publication; no staged candidate exists"); return; }
+  const original = metadata.protectTemporary!.bind(metadata); let moved = "";
+  const protectionOwner = metadata as { protectTemporary: NonNullable<typeof metadata.protectTemporary> };
+  t.mock.method(protectionOwner, "protectTemporary", async (handle: Parameters<typeof original>[0], path: string) => { await original(handle, path); moved = join(outside, "candidate"); renameSync(path, moved); });
+  const digest = await hashIdentity(source), stream: FileCommitStream = { byteLength: Number(source.size), sha256: digest,
+    async writeTo(handle, hooks) { await writeIdentityTo(source, handle, hooks.assertCurrent, hooks.signal); } };
+  const plan = { target: destination, parent: await capturePathIdentity(f.root), previousSha256: createHash("sha256").update("old").digest("hex"), metadata };
+  await assert.rejects(commitPreparedFile(plan, stream, { assertPathAllowed: async () => destination.canonical }), error => error instanceof FileCommitError && error.receipt.outcome === "not_committed");
+  assert(moved); assert.equal((await readFile(moved)).length, 0, "A displaced candidate must receive no source bytes");
+  assert.equal(await readFile(f.destination, "utf8"), "old"); assert.equal(await readFile(f.source, "utf8"), "private copy bytes");
 });
 
 test("a lying stream cannot publish a staged candidate and reports in-place writes conservatively", async t => {
