@@ -102,6 +102,17 @@ test("native previews leave no mutation obligations and cannot clear a prior fai
   assert.equal((await f.call("goal_complete", {})).isError, true, "A successful preview does not repair an unrelated failure");
 });
 
+test("array copy preflight failure blocks completion until the same destinations succeed", async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "first-source"), "one");
+  const input = { items: [{ path: "first-source", destination: " first-copy" }, { path: "later-source", destination: "later-copy" }] };
+  assert.equal((await f.call("copy", input)).isError, true);
+  assert.equal((await f.call("goal_complete", {})).isError, true, "A failed array copy cannot be reported complete");
+  writeFileSync(join(f.cwd, "later-source"), "two");
+  const result = await f.call("copy", input); assert.equal(result.isError, false, JSON.stringify(result));
+  assert.equal(readFileSync(join(f.cwd, " first-copy"), "utf8"), "one"); assert.equal(readFileSync(join(f.cwd, "later-copy"), "utf8"), "two");
+  assert.equal((await f.call("goal_complete", {})).isError, false, "Successful destinations repair the preflight failures");
+});
+
 for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move", "success", "dry-run"]) test(`R4 default Agent preserves replies and structured goal checks: ${kind}`, async t => {
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before");
   const append = f.manager.appendCustomEntry.bind(f.manager); let fired = false;

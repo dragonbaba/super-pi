@@ -7,10 +7,15 @@ import { createHash } from "node:crypto";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import { MxcFilePublication } from "../packages/coding-agent/src/core/files/mxc-file-publication.mjs";
 import { capturePathIdentity, hashIdentity } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { FileResultWriter } from "../packages/coding-agent/src/core/files/file-result-store.ts";
+import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { fileChangeObservationTargets, verifyChange, acceptFileChangeObservations } from "../packages/coding-agent/src/core/files/changes.ts";
+import { mutationRequestHash, nativeItemRequestHash } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 
-function fixture(t: any, io = fs) {
-  const root = fs.mkdtempSync(join(tmpdir(), "sp-mxc-copy-")), source = join(root, "source"), destination = join(root, "destination");
-  fs.writeFileSync(source, Buffer.alloc(3 * 1024 * 1024 + 7, 0x97)); fs.writeFileSync(destination, "old");
+function fixture(t: any, io = fs, content: Uint8Array | string = Buffer.alloc(3 * 1024 * 1024 + 7, 0x97)) {
+  const root = fs.realpathSync.native(fs.mkdtempSync(join(tmpdir(), "sp-mxc-copy-"))), source = join(root, "source"), destination = join(root, "destination");
+  fs.writeFileSync(source, content); fs.writeFileSync(destination, "old");
   const fd = fs.openSync(destination, "r"), before = fs.fstatSync(fd, { bigint: true });
   const publication = new MxcFilePublication(destination, fd, before, createHash("sha256").update("old").digest("hex"), undefined, io);
   t.after(() => { try { publication.dispose(); } finally { removeOwnedFixture(root); } });
@@ -75,4 +80,35 @@ test("post-publication replacement withholds a successor hash and retains verifi
   assert.equal(f.publication.outcome, "committed"); assert.equal(f.publication.requiresVerification, true);
   assert.equal(fs.readFileSync(f.destination, "utf8"), "external");
   f.publication.dispose(); assert.equal(f.publication.diagnostics.ioRetained, false);
+});
+
+test("validated v3 changes can observe a real retained MXC candidate while preserving name and parent bounds", async t => {
+  const io = Object.create(fs);
+  io.renameSync = () => { throw Object.assign(new Error("injected replacement denial"), { code: "EACCES" }); };
+  io.unlinkSync = () => { throw Object.assign(new Error("injected cleanup denial"), { code: "EACCES" }); };
+  const f = fixture(t, io, "retained private"), source = await capturePathIdentity(f.source), digest = await hashIdentity(source);
+  await assert.rejects(f.publication.commitCopy(source, digest), /replacement denial/);
+  assert.throws(() => f.publication.dispose(), /cleanup denial/);
+  const retained = f.publication.retainedTemporary!; assert.equal(fs.readFileSync(retained, "utf8"), "retained private");
+  const session = SessionManager.inMemory(f.root), input = { path: f.source, destination: f.destination, overwrite: true }, id = "retained-copy";
+  const callEntryId = session.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: "copy", arguments: input }], timestamp: 0 } as any);
+  const writer = new FileResultWriter({ callEntryId, toolCallId: id, operation: "copy", requestHash: mutationRequestHash("copy", input), itemCount: 1 },
+    (kind, data) => session.appendCustomEntry(kind, data), session);
+  t.after(() => writer.dispose());
+  const preparation = writer.prepare(0, { operation: "copy", inputHash: nativeItemRequestHash("copy", input, 0), target: f.source, destination: f.destination, overwrite: true });
+  writer.ready(); writer.intent(0, preparation);
+  const receipt = { operation: "copy", target: f.source, destination: f.destination, status: "failed_no_change", stateChanged: false, requiresVerification: true,
+    commit: { strategy: "staged_replace", outcome: "not_committed", fileSynced: false, directorySynced: false, retainedTemporary: retained, cleanupReason: "injected cleanup denial" } };
+  writer.commit(receipt); writer.result(0, receipt); const ref = writer.finish(), changes = new FileChangesV3(session); t.after(() => changes.dispose());
+  changes.open(ref); const record = changes.nextItems().records[0]; assert.equal(record.receiptVersion, 3);
+  const failures: string[] = []; let targets, observation;
+  try { targets = fileChangeObservationTargets(record); } catch (error) { failures.push(String(error)); }
+  try { observation = await verifyChange(record, async () => {}); } catch (error) { failures.push(String(error)); }
+  assert.deepEqual(failures, [], "Both observation scope and actual verification must accept the publication owner's retained name");
+  assert.equal(targets!.at(-1)!.path, retained); assert.equal(observation!.temporary!.sha256, digest);
+  assert.equal(acceptFileChangeObservations(record, [observation!.source, observation!.destination!, observation!.temporary!]).temporary!.sha256, digest);
+  for (const candidate of [join(f.root, "other-parent", basename(retained)), retained + ".other", join(f.root, "arbitrary.tmp")]) {
+    assert.throws(() => fileChangeObservationTargets({ ...record, receipt: { ...receipt, commit: { ...receipt.commit, retainedTemporary: candidate } } }), /Retained candidate/);
+  }
+  assert.throws(() => fileChangeObservationTargets({ ...record, receiptVersion: 2 }), /Retained candidate/);
 });

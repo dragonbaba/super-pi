@@ -166,6 +166,7 @@ function fallbackShellVerificationCwd(input: Record<string, unknown>, cwd: strin
 export function observeToolResult(state: FalseSuccessState, observation: ToolObservation): string | undefined {
   if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
   if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
+  if (observation.toolName === "copy" && observation.isError && Array.isArray(observation.input?.items)) { observeCopyArrayFailure(state, observation); return; }
   const shell = observation.toolName === "bash" || observation.toolName === "powershell";
   const execution = shell ? readShellExecution(observation.details) : undefined;
   const scope = verificationScope(observation.toolName, observation.input, execution?.cwd ?? (shell ? fallbackShellVerificationCwd(observation.input, observation.cwd) : observation.cwd));
@@ -277,6 +278,19 @@ export function observeFileMutationOutcome(state: FalseSuccessState, tool: strin
   // unknown destinations retain a call-level failure at the supplied target.
   if (operation !== "copy" || !destination) observeMutationOutcome(state, tool, normalizeAbsolute(target, target), status);
   if (destination) observeMutationOutcome(state, tool, normalizeAbsolute(destination, destination), status);
+}
+
+/** Error-only fallback before a v3 journal exists; no source is mutated. */
+function observeCopyArrayFailure(state: FalseSuccessState, observation: ToolObservation): void {
+  const items = observation.input.items as unknown[], cwd = observation.cwd ?? process.cwd();
+  let known = false, incomplete = items.length === 0;
+  for (const item of items) {
+    const input = item && typeof item === "object" ? item as Record<string, unknown> : undefined;
+    if (!input || typeof input.destination !== "string" || !input.destination) { incomplete = true; continue; }
+    const target = mutationTarget("copy", input, cwd)!;
+    observeMutationOutcome(state, "copy", target, "failed_no_change"); known = true;
+  }
+  if (!known || incomplete) observeMutationOutcome(state, "copy", normalizeAbsolute(cwd, cwd), "failed_no_change");
 }
 
 function observeBatchResult(state: FalseSuccessState, observation: ToolObservation): void {
@@ -441,7 +455,7 @@ function mutationTarget(
 ): string | undefined {
   if (!MUTATION_TOOLS.has(toolName)) return undefined;
   const value = toolName === "copy" && typeof input.destination === "string" ? input.destination : input.path;
-  const path = typeof value === "string" ? value.trim() : "";
+  const path = typeof value === "string" ? toolName === "copy" ? value : value.trim() : "";
   return path ? normalizeAbsolute(toolName === "edit" || toolName === "write" ? resolveToolPath(cwd, path) : resolve(cwd, path), cwd) : undefined;
 }
 

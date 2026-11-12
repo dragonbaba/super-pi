@@ -16,6 +16,7 @@ import { mutationRequestHash } from "./file-invocation.ts";
 import { FileChangesV3, type FileChangesPageV3 } from "./file-changes-v3.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
 import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, RETAINED_COMMIT_NAME_PATTERN, SNAPSHOT_ID_REGEX, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
+import { MXC_RETAINED_COMMIT_NAME_PATTERN } from "./mxc-file-publication.mjs";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
@@ -646,8 +647,9 @@ export function acceptFileChangeObservations(record: ChangeRecord, observations:
 function retainedTemporary(record: ChangeRecord): string | undefined {
   const path = record.receipt?.commit?.retainedTemporary;
   if (path === undefined) return undefined;
-  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.destination ?? record.target)
-    || !RETAINED_COMMIT_NAME_PATTERN.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.destination ?? record.target)) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  const name = basename(path);
+  if (!RETAINED_COMMIT_NAME_PATTERN.test(name) && !(record.receiptVersion === 3 && MXC_RETAINED_COMMIT_NAME_PATTERN.test(name))) throw new Error("Retained candidate path cannot be safely reconstructed.");
   return path;
 }
 

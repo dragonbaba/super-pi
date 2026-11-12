@@ -5,6 +5,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { writeIdentityTo } from './file-tree-core.mjs';
 import { FILE_STREAM_BUFFER_BYTES } from './file-operation-limits.mjs';
 
+// The publication producer owns the controlled retained-name format as well.
+export const MXC_RETAINED_COMMIT_NAME_PATTERN = /^\.superpi-write-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/u;
+
 function need(value, message) { if (!value) throw new Error(message); }
 function sameObject(info, expected) { return info.isFile() && String(info.dev) === String(expected.dev ?? expected.device) && String(info.ino) === String(expected.ino ?? expected.inode); }
 function sameVersion(before, current) { return sameObject(current, before) && current.size === before.size && current.mtimeNs === before.mtimeNs && current.ctimeNs === before.ctimeNs && current.mode === before.mode && current.nlink === before.nlink; }

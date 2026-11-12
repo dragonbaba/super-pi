@@ -91,4 +91,8 @@ CI 工作流及测试运行器与 B 合并基线逐字节一致：Linux 两分�
 
 复制结果观察只归属目标的变更义务，保留每项真实 operation，包括 file_batch 内的 copy；源只被读取，不能修复先前失败的源写入。失败复制的普通回退也归属目标。实际 SDK 覆盖独立 copy 与 batch：复制保留源失败并修复目标失败，真正更新原源目标后才清除该义务，失败复制的成功重试可解除自身目标义务。四个相关文件共 62 项通过、3 项平台/策略跳过，类型检查、coding-agent 构建和 13 项源码约束通过；目录变更注入显式推进 mtime，保持原断言并避免依赖文件系统时钟粒度。
 
-扩展观察链为 tool_execution_start → 调用身份表 → tool_execution_end → 预演判断或已验证 v3 项 operation → 对应目标义务 → 释放输入；新增分支只读取标量，未新增回调/Promise。离线生产 hook/core 探针（非完整 SDK/提供方测量）覆盖 32 start/end 和 16 copy 终态，保留 16 个源失败、修复 16 个目标失败，0 历史读取和干预记录。48 个输入 WeakRef 在 owner 存活时受控 GC 后存活为 0；显式重置后 16 个义务 WeakRef 存活为 0。累计分配采样估计 91,976 字节，含 inspector/fixture，主要位置为 inspector.post、路径规范化、字符串处理和 Map 删除；三次采样的最高 heap/RSS 为 62,638,096/167,518,208 字节，非连续峰值，GC 后 heap 为 40,346,320 字节。既有 32 条义务容量未改，该微型样本不用于性能改善比较。
+数组 copy 在预检失败、尚无 v3 日志时，由 error-only 的 observeCopyArrayFailure 按原目标建立义务；无法辨认目标时记录调用范围失败。实际 SDK 先复现了失败数组仍可 goal_complete，再验证同一请求的源补齐、全部目标成功后解除对应义务；合法目标名的前导空格保持。该路径不影响执行或预检，不增加数量限制。失败项沿用既有 32 条义务表，不建立额外队列或保留原参数载荷。
+
+MXC publication owner 导出自己的受控候选名格式，显式 /changes 核验仅对已验证 v3 记录接受该格式。真实替换及清理拒绝留下候选后，通过 FileResultWriter → FileChangesV3 重建记录；修复前观察范围构造与实际 verifyChange 均拒绝该生产名称，修复后可读取候选哈希并通过 sandbox 观察配对验证。错误父目录、任意/多余后缀名称和旧 v2 MXC 名称仍拒绝，原生格式保持。该名称修正位于显式核验路径，不触及普通 delta/progress 热路径。三个相关文件共 34 项通过、2 项平台跳过，类型检查、coding-agent 构建和 13 项源码约束通过。
+
+扩展观察链为 tool_execution_start → 调用身份表 → tool_execution_end → 预演判断、已验证 v3 项 operation 或失败数组回退 → 对应目标义务 → 释放输入；正常分支未新增回调/Promise。离线生产 hook/core 探针（非完整 SDK/提供方测量）覆盖 32 start/end、16 项失败数组和 16 copy 终态，保留 16 个源失败、修复 16 个目标失败，0 历史读取和干预记录。48 个输入 WeakRef 在 owner 存活时受控 GC 后存活为 0；显式重置后 16 个义务 WeakRef 存活为 0。累计分配采样估计 154,496 字节，含 inspector/fixture 和 error-only 义务创建，主要位置为 inspector.post、路径规范化、字符串处理；三次采样的最高 heap/RSS 为 56,277,032/168,153,088 字节，非连续峰值，GC 后 heap 为 40,415,416 字节。既有 32 条义务容量未改，该微型样本不用于性能改善比较。
