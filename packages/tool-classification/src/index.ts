@@ -41,7 +41,6 @@ const CATEGORY_ALIASES: Readonly<Record<string, readonly string[]>> = {
   delegation: ["delegation", "delegate", "subagent", "agent", "parallel", "委派", "子代理", "并行"],
   memory: ["memory", "recall", "session", "history", "remember", "记忆", "回忆", "会话", "历史"],
   skills: ["skill", "skills", "procedure", "workflow", "技能", "流程"],
-  graph: ["graph", "codegraph", "impact", "callers", "callees", "图谱", "影响分析", "调用关系"],
   mcp: ["mcp", "remote", "integration", "external tool", "远程工具", "外部工具", "集成"],
   navigation: ["navigation", "lsp", "diagnostic", "symbol", "reference", "导航", "诊断", "符号", "引用"],
 };
@@ -104,7 +103,6 @@ function categoryFor(name: string): string {
   if (name === "subagent") return "delegation";
   if (name === "memory" || name === "memory_search" || name === "session_search") return "memory";
   if (name === "skill_manage") return "skills";
-  if (name === "codegraph") return "graph";
   if (name === "mcp_search_tools") return "mcp";
   if (name.startsWith("lsp_")) return "navigation";
   return "other";
@@ -163,7 +161,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task. Use browser/browser_exec for public-web reading and interaction in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
-      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: browser for ordinary web work; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, graph, skills, or mcp." }),
+      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: browser for ordinary web work; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, skills, or mcp." }),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {

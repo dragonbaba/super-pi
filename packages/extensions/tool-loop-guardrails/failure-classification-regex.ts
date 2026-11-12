@@ -33,4 +33,3 @@ export const VERIFICATION_TEST_RE = /(?:^|\s)(?:node\s+--test|(?:npm|pnpm|yarn|b
 export const VERIFICATION_TYPECHECK_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check)\b|(?:npx\s+)?tsc\b|cargo\s+check\b)/iu;
 export const VERIFICATION_BUILD_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|cargo\s+build\b|go\s+build\b)/iu;
 export const VERIFICATION_LINT_RE = /(?:^|\s)(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?lint\b|eslint\b|biome\s+(?:check|lint)\b)/iu;
-export const REQUIRED_CODEGRAPH_ARGUMENT_RE = /^\s*(?:query|symbol|file|files|action) is required\.?\s*$/iu;

@@ -144,7 +144,6 @@ coding agent 提供 `read`、`grep`、`find`、`ls`、`edit`、`write`、`bash`�
 项目理解分成几层：
 
 - Project Context 用 `/project-status`、`/project-init` 和 `/project-refresh` 管理项目规则、轻量仓库索引和上下文状态。
-- CodeGraph 通过 `/codegraph-status`、`/codegraph-init` 和 `/codegraph-sync` 显式管理；它要求项目可信，不会在启动时自动完整扫描仓库。
 - LSP 工具需要配置 server，提供目标诊断、source fix 预览和符号导航。仓库自己的 typecheck、build 和 test 仍是最终依据。
 
 文件编辑使用有范围和身份检查的读写流程。快照、行定位和批量编辑有助于缩小修改范围，但不构成任意多文件事务，也不保证语义正确；每次写入仍经过正常权限和结果检查。
@@ -238,7 +237,7 @@ Super Pi 的性能工作围绕明确边界：
 
 权限规则和项目可信度属于应用层控制；选择前两档时，已接入的文件与命令工具另有 MXC ProcessContainer 隔离。宿主完全权限仍保留显式拒绝、版本与受保护元数据检查；它不会恢复旧 `full-access` 授权。“未执行”只表示可信的执行前拒绝；后端启动后的失败需要按实际结果判断。
 
-Compaction 会减少部分旧历史的直接可见性。Memory、Project Context 和 CodeGraph 各有自己的范围、上限和启用条件，不保证自动理解完整仓库或永久记住全部会话。辅助视觉需要单独配置；provider-native compaction 按扩展配置和兼容条件工作，`enabled` 如上所述默认回退为 `true`。两者均可能产生额外服务调用和费用。
+Compaction 会减少部分旧历史的直接可见性。Memory 和 Project Context 各有自己的范围、上限和启用条件，不保证自动理解完整仓库或永久记住全部会话。辅助视觉需要单独配置；provider-native compaction 按扩展配置和兼容条件工作，`enabled` 如上所述默认回退为 `true`。两者均可能产生额外服务调用和费用。
 
 ## 文档、开发和贡献
 

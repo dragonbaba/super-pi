@@ -15,7 +15,6 @@ pause after an incomplete Browser Harness approval.
 - Delegation: `subagent`.
 - Memory/session: `memory`, `memory_search`, `session_search`.
 - Skill management: `skill_manage`.
-- Graph: `codegraph`.
 - MCP: `mcp_search_tools`.
 - Other registered tools remain searchable by name and description, except policy-owned Goal, Plan-mode, and `inspect_image` tools. English and Chinese category aliases are supported.
 
