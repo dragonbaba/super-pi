@@ -26,7 +26,9 @@ requestBudget 还接受可选 maxWidth、maxHeight、maxBytes，用于明确选�
 
 明确的请求体超限触发最多一次图片预算收紧，只有最终序列化 body 确实变小才再发送；同一内容不能缩小时直接说明原因。第二次仍超限不会循环，也不重放工具或已成功修改，不自动付费摘要。普通连接错误保留现有有限重试策略，不单凭 Connection error 判作请求体超限。
 
-Anthropic thinking 前缀、Google 签名、`openai-codex-responses` 的 SSE/WS 续接及压缩传输尚未在此预算中交付，保持其既有行为。普通 Responses 的支持不代表 Codex 增量链路也已接入，不能把完整历史投影直接用于有远端状态的协议。临时 manifest 或原路径可能失效，不能保证所有历史图始终可 read。
+`openai-codex-responses` 已接入传输计量：HTTP 分别记录压缩前 JSON 和最终 body 字节，WS 记录实际发送的完整/增量帧 UTF-8 字节（不含协议/TLS 开销）。HTTP 413 不重复上传同包；WS 1009 只在输出开始前、没有远端 compaction 边界且压缩 SSE body 严格更小时允许一次回退，否则明确停止。任意网络关闭不自动判作体积超限。计量回调失败或取消在发送前停止，未发送的 compaction 不消费原提交依据；明确体积错误不触发自动付费摘要。
+
+Codex 的旧图淘汰及首次图准备仍未接入本预算；Anthropic thinking 前缀、Google 签名也尚未交付相应投影。普通 Responses 的完整历史投影不能直接用于这些有状态/签名边界。上述计量和有限回退不保证超大的 Codex 历史能够继续。临时 manifest 或原路径可能失效，不能保证所有历史图始终可 read。
 
 默认摘要仅序列化文本，不携带图片块/base64；已有每条工具正文截断不等于总输入受字节预算保护。超长用户正文仍可能触发 413，摘要会报错并停止，不自动重复相同请求；历史和摘要检查点保持原状。实际用例与合成像素对照见[补充证据](evidence/image-budget-followup-2026-11-12.md)。
 

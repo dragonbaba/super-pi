@@ -3,11 +3,11 @@ import type { FetchFunction } from "../types.ts";
 // Keep the allocation-free fallback for the supported browser/Workers entrypoint.
 const NATIVE_UTF8_BYTES = typeof Buffer !== "undefined" ? Buffer.byteLength : undefined;
 /** One request-bound adapter; no listeners or callbacks per chunk/image. */
-export function observeRequestBody(fetch: FetchFunction | undefined, observe?: (bytes: number) => void): FetchFunction | undefined {
+export function observeRequestBody(fetch: FetchFunction | undefined, observe?: (bytes: number, serializedJsonBytes?: number) => void): FetchFunction | undefined {
 	if (!observe) return fetch;
 	const send = fetch ?? globalThis.fetch;
 	return function sendObservedBody(input, init) {
-		if (typeof init?.body === "string") observe(requestBodyUtf8Bytes(init.body));
+		if (typeof init?.body === "string") { const bytes = requestBodyUtf8Bytes(init.body); observe(bytes, bytes); }
 		return send(input, init);
 	};
 }

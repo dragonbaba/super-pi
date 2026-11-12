@@ -268,7 +268,7 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 
 ## 9. Responses 请求体与 Claude 兼容补充审计（2026-11-12，分阶段实施）
 
-本节是交付后补充的实施边界。R0 [PR #293](https://github.com/dragonbaba/super-pi/pull/293) 已合并，补全 Responses 族 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界。R1 接入普通/Azure 完整历史图片预算、实际 body 观察和有限恢复；Codex transport 仍按 R2 单独实施。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
+本节是交付后补充的实施边界。R0 [PR #293](https://github.com/dragonbaba/super-pi/pull/293) 已合并，补全 Responses 族 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界。R1 [PR #294](https://github.com/dragonbaba/super-pi/pull/294) 已合并，接入普通/Azure 完整历史图片预算、实际 body 观察和有限恢复。R2 本次实现 Codex 传输计量与明确超限的有限处理；旧图淘汰和首次图准备仍待 owner 层方案，不冒充已接入完整预算。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
 
 ### 9.1 DeepSeek 的协议选择与已发现缺口
 
@@ -284,11 +284,11 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 | --- | --- | --- |
 | 普通/Azure Responses 完整历史 HTTP | SDK 生成最终 JSON，store:false；R1 已接入投影、计量和恢复 | 复用 RequestImageBudget，保留 call_id 配对、reasoning 原 item、assistant phase；原始历史不改。API/provider/model 归属改变时不继续旧请求的图片恢复 |
 | DeepSeek Responses | 官方无状态；仓库尚无专用 Responses provider 配置 | 验证真实模型 ID、视觉能力、明文 reasoning 接收→回放、function/custom 工具输出、终止事件与缓存统计；作为独立兼容配置，不靠 previous_response_id 缩小请求 |
-| Codex Responses SSE | 完整 JSON 已序列化一次，支持 zstd 后发送二进制 body | 在既有字符串/压缩结果上分别记录 serializedJsonBytes 与 wireBodyBytes；使用 byteLength，不新增 TextEncoder.encode 的整包副本；不能拿 JSON 大小冒充压缩后的上传大小 |
-| Codex Responses WebSocket | transport owner 维护 response-id、前缀匹配、增量帧和远端压缩边界 | 在最终 socket.send 帧计量；已提交前缀不在上层随意改写。新图在首次提交前准备，delta、full、SSE fallback 分别验收；投影改变时由 owner 明确处理 continuation/compaction 代次，不能把旧 ID 配给改过的前缀 |
+| Codex Responses SSE | R2 在既有 JSON/压缩结果上记录 serializedJsonBytes 和 wireBytes，HTTP 413 不重复同包 | 不新增整包编码副本；旧图淘汰和首次图准备另做 owner 层方案，不能拿 JSON 大小冒充上传大小 |
+| Codex Responses WebSocket | R2 在最终 socket.send 计量首帧/增量；保留 response-id、前缀匹配、远端 compaction 边界 | WS 1009 在无输出、无 compaction 边界且 SSE 严格更小时才回退；旧前缀投影仍未实施。后续由 owner 处理 continuation/compaction 代次，不能把旧 ID 配给改过的前缀 |
 | Anthropic/中转 Opus 5.5 | 原生 Messages；本次中转基础生成返回 503，未进入模型 | 首次发送前可准备稳定图片表示，旧图重编码/省略须遵守 thinking prefix；先测签名回放和前缀负例。服务端 context editing 只清模型上下文，不减少此次已上传 body，不能作为 413 上传恢复证据 |
 
-注意：本次 Codex 合成样本使用重复、有填充的 PNG，zstd 压缩比不能推广到真实截图。当前 SSE/WS 的 onRequestBodyBytes 也尚未接通。WebSocket 常态只发送增量，但首次会话、恢复、前缀不匹配和 fallback 仍可能上传完整历史；不能只测热连接小帧。
+注意：初始审计的 Codex 样本使用重复、有填充的 PNG，zstd 压缩比不能推广到真实截图；R2 补充不可高度压缩内容及更大 full-history fallback 负例。SSE/WS 的 onRequestBodyBytes 现已接通，兼容原单参数回调，第二个可选数字表示压缩前 JSON 字节。WebSocket 常态只发送增量，但首次会话、恢复、前缀不匹配和 fallback 仍可能上传完整历史；不能只测热连接小帧。
 
 ### 9.3 建议实施与验收顺序
 
@@ -297,4 +297,4 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 3. **R2：Codex transport owner。** 分别覆盖 SSE 压缩/不压缩、WS 首帧/增量、断连重建、前缀变化、缺失 response ID、SSE fallback、远端 compaction 边界；测实际帧/body，而非只测上层完整 payload。HTTP 413 与 WS 大消息关闭码分开核实，默认不把任意关闭或连接错误判成体积超限。恢复不重放工具、不循环重试、不静默改旧签名或远端状态。
 4. **R3：Claude 原生实测后实施。** 保持相同 system/tools/历史字节，比较首次图、未改前缀续接、旧 tool_result 省略及图片重编码负例；支持时用官方 thinking-binding-controls 的 prefix_mismatch_behavior:error 与 drop_block 对照观察，不把中转“HTTP 200”当作 thinking 被保留。该参数只用于协议探针，不成为用户命令限制。基础调用未通时不继续堆叠付费测试，也不替换用户指定的模型冒充通过。
 
-各项实现独立 PR，仍遵守原有审查/CI 流程。改动 provider delta、历史转换、大结果或请求准备链时，审计完整调用链，运行相应 AST/source、分配与 GC/生命周期基准；模块常量/正则复用，循环不增加闭包、Promise 尾链或整包复制。本次仅做审计/探针与文档补充，生产代码未变，未运行分配基准。
+各项实现独立 PR，仍遵守原有审查/CI 流程。改动 provider delta、历史转换、大结果或请求准备链时，审计完整调用链，运行相应 AST/source、分配与 GC/生命周期基准；模块常量/正则复用，循环不增加闭包、Promise 尾链或整包复制。初始审计未改生产代码；R0/R1/R2 的实现与分配数据分别记录于审计证据，不能沿用初始状态描述。

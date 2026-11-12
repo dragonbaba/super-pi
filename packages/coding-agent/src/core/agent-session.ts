@@ -4168,7 +4168,7 @@ export class AgentSession {
 		// A local preparation block is not provider overflow and never authorizes
 		// paid automatic compaction or replay of a completed tool.
 		if (isRequestBudgetBlock(assistantMessage.errorMessage)) return false;
-		if (supportsRequestImageBudgetApi(this.model?.api) && isRequestBodyTooLarge(assistantMessage)) return false;
+		if (isRequestBodyTooLarge(assistantMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
 

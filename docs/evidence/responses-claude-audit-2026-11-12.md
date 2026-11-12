@@ -36,6 +36,16 @@
 
 外部协议核实：[DeepSeek Responses](https://api-docs.deepseek.com/guides/responses_api/)明确无状态，previous_response_id 不支持，明文 reasoning.content 可回放，unsupported 顶层参数忽略；[OpenAI 会话状态](https://developers.openai.com/api/docs/guides/conversation-state)支持完整历史与服务端续接两种不同方式；[Claude preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)要求对应模型保持历史前缀，旧 tool_result/图片改写可能导致签名失效。具体实施顺序与验收见[方案第 9 节](../codemode-batch-revision-image-budget-plan.md#9-responses-请求体与-claude-兼容补充审计2026-11-12分阶段实施)。
 
+## R2：Codex 实际传输计量与超限结算
+
+旧代码在 maxRetries=1 时，对空正文 413 及 request_too_large 都上传同包两次，onRequestBodyBytes 为 0 次；新测试先在旧代码复现。现于既有 SSE JSON/zstd 和 WS 完整/增量帧边界发出两个数字：实际 body/frame 字节、压缩前 JSON 字节。HTTP 413 一次停止；WS 1009 与普通断连分开，只有无输出、无 compaction 边界且最终 SSE 严格更小时允许回退，较大完整历史不替换被拒绝的小 delta。body 错误不自动付费摘要；一般网络/503 的有限重试保留。回调失败、取消、owner 重置均在发送前停止；未发出的 compaction 不消费 commitment。Codex 旧图淘汰、首次图准备尚未交付，不能保证大历史恢复。
+
+完整审计链：SDK/model runtime → owner admission/代次 → body/onPayload → WS 前缀比较/full/delta → 单次 frame stringify → send → parser/terminal/commitment → fallback SSE 单次 stringify/zstd/fetch → compaction parity/dispatch → release/reset/dispose。诊断改用弱键数字元数据，不为诊断序列化完整历史；instructions 字节数改用原生 byteLength，不生成编码副本。每次发送仍需原有的最终序列化与前缀 hash；新增计量无 per-delta 闭包、Promise、AbortController、对象/数组或整包副本，无对象池。WS 帧局部变量在 await 响应前 finally 清空，错误元数据只含数字，不保留 payload。
+
+传输/owner/compaction/source 回归 **159/159**；真实 session **61/61**，含 Codex 8 MiB 正文、compaction=true、空正文 413：1 次上传、0 compaction，JSON 与压缩 body 计量分别和真实 body 一致。类型检查通过。测试覆盖 Unicode、SSE 压缩/不压缩、WS full/delta、缺 ID 重建、普通断连、输出开始后关闭、post-compaction、回调失败/取消/重置；原始历史和旧签名不改。
+
+同机 16 组/32 请求每模式，数值为关闭→开启数字回调（含现有 serializer/hash、离线传输及探针分配）：未压缩 SSE 采样 4,320,954→4,318,030 B/请求，成对 p50/p95 6.381/6.851→6.029/6.875 ms；zstd SSE 4,356,034→4,346,250 B/请求，12.018/13.722→12.031/13.245 ms；WS 3,295,809→3,292,315 B/请求，4.314/4.871→4.252/4.506 ms。这只计量回调成本，不宣称较旧版本减少全部分配。主分配站点为既有 sha256Json、JSON serializer、WS prefix 比较；峰值堆分别 42.4→54.6、56.1→58.3、58.8→55.7 MB，单次采样波动不当成泄漏结论。合成 JSON 524,665 B、zstd body 270,067 B；WS 首帧 524,690 B→增量 343 B。每次尝试计量 1 次；四次 GC 后 36/36 跟踪 owner/context/payload/error 释放，正常/失败/取消 dispose 的所有诊断计数和残余监听器为 0。
+
 探针位于任务临时目录，保留给本机复跑；源码路径固定在该目录内，不含 key 或私人会话。复跑先将子进程 TMP/TEMP/TMPDIR 指向任务根：
 
 ```powershell
@@ -47,6 +57,8 @@ node --expose-gc --experimental-strip-types scripts/bench/responses-replay.ts
 node --expose-gc --experimental-strip-types --test tests/request-image-budget-session.test.ts tests/request-image-budget.test.ts tests/request-image-budget-hot-paths.test.ts tests/request-image-summary.test.ts tests/source-invariants.test.ts
 node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts --responses
 node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts --azure
+node --experimental-strip-types --test tests/codex-request-body.test.ts tests/codex-transport-owner.test.ts tests/openai-codex-callback.test.ts tests/provider-contract/codex-sse-framing.contract.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts tests/request-body-observer.test.ts tests/request-image-budget-hot-paths.test.ts
+node --expose-gc --experimental-strip-types scripts/bench/codex-request-body.ts
 ```
 
 中转真实生成与目录脚本会从本机正常认证入口解析配置，不应复制配置或凭据到证据；生成脚本的后续步骤仅在基础调用成功后运行。Gemini 暂不测试，DeepSeek 的真实 Responses 集成与 Claude 签名/图片兼容仍未验证。

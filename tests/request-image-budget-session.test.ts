@@ -3,6 +3,9 @@ import test from "node:test";
 import { stream } from "../packages/ai/src/api/openai-completions.ts";
 import { stream as responses } from "../packages/ai/src/api/openai-responses.ts";
 import { stream as azure } from "../packages/ai/src/api/azure-openai-responses.ts";
+import { createOpenAICodexTransportOwner } from "../packages/ai/src/api/openai-codex-responses.ts";
+import { zstdDecompressSync } from "node:zlib";
+import { codexToken } from "./helpers/responses-sse-fixture.ts";
 import { sseFrames, textEvents } from "./helpers/responses-sse-fixture.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
@@ -68,6 +71,25 @@ for(const adapter of ADAPTERS) for (const presentation of [false,true]) test(`ov
   assert.equal(manager.getEntries().filter(entry=>entry.type==="compaction").length,0);
   assert.equal(session.requestImages.metrics.requestViewBytes,0);
   t.diagnostic(JSON.stringify({presentation,originalImageBytes:6*data.length,uploads,toolReplays:0,compactions:0}));
+});
+
+test("Codex session records actual compressed upload without automatic compaction or identical 413 replay",async t=>{
+  const owned=createOwnedTaskFixture("codex-body-session-"),root=owned.root;
+  const model:any={...ALPHA_MODEL,api:"openai-codex-responses",provider:"openai-codex",contextWindow:100000000};
+  const settings=SettingsManager.inMemory({executionEnvironment:"trusted-host",compaction:{enabled:true},retry:{enabled:true,maxRetries:2,baseDelayMs:0}});
+  const resourceLoader=new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager:settings,noExtensions:true,noContextFiles:true,noSkills:true,noPromptTemplates:true,noThemes:true});await resourceLoader.reload();
+  const owner=createOpenAICodexTransportOwner();let uploads=0,wireBytes=0,jsonBytes=0;
+  const runtime=alphaModelRuntime((target,context,options)=>owner.stream(target as any,context,{...options,apiKey:codexToken(),transport:"sse",maxRetries:1,
+    fetch:async(_url,init)=>{uploads++;wireBytes=(init!.body as Uint8Array).byteLength;jsonBytes=Buffer.byteLength(zstdDecompressSync(init!.body as Uint8Array).toString());return new Response(null,{status:413});}}));
+  runtime.getModel=()=>model;
+  const sessionManager=SessionManager.inMemory(root);
+  const {session}=await createAgentSession({cwd:root,agentDir:root,model,modelRuntime:runtime,settingsManager:settings,sessionManager,resourceLoader,noTools:"all"});
+  t.after(async()=>{await session.abort();await (session as any)._codemode.close();session.dispose();await (session as any)._sessionLeaseRelease;await owner.dispose();owned.cleanup();});
+  await session.bindExtensions({});await session.prompt("TEXT".repeat(2*1024*1024));
+  assert.equal(uploads,1);assert.equal(session.requestImages.metrics.uploads,1);
+  assert.equal(session.requestImages.metrics.wireBytes,wireBytes);assert.equal(session.requestImages.metrics.serializedJsonBytes,jsonBytes);
+  assert.ok(wireBytes<jsonBytes);assert.equal(sessionManager.getEntries().filter(entry=>entry.type==="compaction").length,0);
+  assert.match((session.messages.at(-1) as any).errorMessage,/REQUEST_BODY_TOO_LARGE/);
 });
 
 for(const adapter of ADAPTERS) for (const presentation of [false,true]) for (const failure of ["once","twice","blocked","same","connection","text-only","bare413","no-images","api-switch"] as const) test(`actual serializer: api=${adapter.api}, presentation=${presentation}, payload=${failure}`, async t => {

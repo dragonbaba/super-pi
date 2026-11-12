@@ -58,7 +58,7 @@ export class RequestImageBudget {
 	private previousWireBytes = 0;
 	private wireLimit = 0;
 	readonly metrics = { imagesInspected: 0, encodes: 0, cacheHits: 0, projectedMessages: 0, retainedImageBytes: 0,
-		userImageBytes: 0, wireBytes: 0, uploads: 0, cacheSourceBytes: 0, cacheViewBytes: 0, projectionCacheBytes: 0, requestViewBytes: 0, requestViewBytesHighWaterMark: 0 };
+		userImageBytes: 0, wireBytes: 0, serializedJsonBytes: 0, uploads: 0, cacheSourceBytes: 0, cacheViewBytes: 0, projectionCacheBytes: 0, requestViewBytes: 0, requestViewBytesHighWaterMark: 0 };
 	private resetProjections(): void { this.projected = new WeakMap(); this.metrics.projectionCacheBytes = 0; }
 	private forgetProjection(message: Message): void {
 		const previous = this.projected.get(message);
@@ -91,10 +91,10 @@ export class RequestImageBudget {
 		this.metrics.cacheSourceBytes = this.metrics.cacheViewBytes = 0;
 		return true;
 	}
-	/** Stable observer, called with the SDK's existing serialized body, never a copy. */
-	readonly observeWireBytes = (bytes: number): void => {
+	/** Stable numeric observer for existing serialized/compressed bodies or WS frames; no payload copy. */
+	readonly observeWireBytes = (bytes: number, serializedJsonBytes = bytes): void => {
 		if (this.wireLimit && bytes >= this.wireLimit) throw new Error("Request preparation blocked: image recovery did not reduce the request body; reduce images/text or compact explicitly. Completed tools were not repeated.");
-		this.metrics.wireBytes = bytes; this.metrics.uploads++;
+		this.metrics.wireBytes = bytes; this.metrics.serializedJsonBytes = serializedJsonBytes; this.metrics.uploads++;
 	};
 	private evict(source: ImageContent, view: View): void {
 		this.views.delete(source); this.sources -= view.sourceBytes; this.encoded -= view.bytes;
