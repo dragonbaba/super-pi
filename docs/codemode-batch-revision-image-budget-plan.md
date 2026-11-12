@@ -265,3 +265,36 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 | 已处理失败识别 | 真实 VM 对照先行，不严格解析源码/命令，不仅支持某一种 catch 写法 |
 | 部分成功父 isError | 正常处理的普通失败为 false，保留真实计数；系统失败和最终观察/store 规则保留 |
 | 裁剪、大文件延续、自动读去重 | 不在本轮实现，提示不承诺已有接口 |
+
+## 9. Responses 请求体与 Claude 兼容补充审计（2026-11-12，待实现）
+
+本节是交付后补充的实施边界。R0 已补全 Responses 族的 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界；图片预算及传输计量仍按 R1/R2 后续交付。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
+
+### 9.1 DeepSeek 的协议选择与已发现缺口
+
+[DeepSeek 官方 Responses 文档](https://api-docs.deepseek.com/guides/responses_api/)现已提供 `/responses`，可作为独立接入路线；这不表示仓库内置 provider 已经切换。当前 deepseek.ts 仍选 openai-completions，目录为 deepseek-v4-flash/pro 且 input 为 text；官方当前 Responses 示例使用 deepseek-flash，并声明其图片输入与工具图片输出。不能只替换 api 字符串而沿用旧目录、能力和请求选项，也不能把官方能力套给其他中转商的同名模型。
+
+- DeepSeek Responses 是无状态协议：不支持 previous_response_id、conversation、服务端 store；完整历史仍须上传。reasoning 的正文 content 可回传，encrypted_content/summary 不支持；不支持的顶层选项按官方说明会忽略。原生 OpenAI 的加密 reasoning 和 DeepSeek 明文 reasoning 必须分别验证，不能互相伪造。
+- 现有流解析器已经处理 response.reasoning_text.delta，结束时把完整 reasoning item 放入 thinkingSignature；但默认能力派生未为 Responses 族启用 thoughtSignatureRoundTrip，transformMessages 下一次会清掉这个回放字段。合成请求确认 reasoning item 在下一包消失；显式设置正确能力后同模型可完整保留。这是先于图片预算的修复项，不能通过丢弃 thinking 规避。
+- 普通 openai-responses 目前使用 store:false 和完整 input，没有自动 previous_response_id。请求入口尚未消费 onRequestBodyBytes，传入 observer 不会得到计量。OpenAI 官方允许手动管理完整历史并回传原始 reasoning/phase 等 item，参见[会话状态](https://developers.openai.com/api/docs/guides/conversation-state)与[reasoning](https://developers.openai.com/api/docs/guides/reasoning)。
+
+### 9.2 按实际传输接入，不只按 Responses 名称判断
+
+| 路径 | 当前行为 | 后续实现边界 |
+| --- | --- | --- |
+| 普通 openai-responses 完整历史 HTTP | SDK 生成最终 JSON，store:false | 先修 reasoning 同模型回放，再在已有 fetch 序列化边界接 observeRequestBody，复用预算/投影与一次更小请求恢复；保留 call_id 配对、reasoning 原 item、assistant phase；原始历史不改 |
+| DeepSeek Responses | 官方无状态；仓库尚无专用 Responses provider 配置 | 验证真实模型 ID、视觉能力、明文 reasoning 接收→回放、function/custom 工具输出、终止事件与缓存统计；作为独立兼容配置，不靠 previous_response_id 缩小请求 |
+| Codex Responses SSE | 完整 JSON 已序列化一次，支持 zstd 后发送二进制 body | 在既有字符串/压缩结果上分别记录 serializedJsonBytes 与 wireBodyBytes；使用 byteLength，不新增 TextEncoder.encode 的整包副本；不能拿 JSON 大小冒充压缩后的上传大小 |
+| Codex Responses WebSocket | transport owner 维护 response-id、前缀匹配、增量帧和远端压缩边界 | 在最终 socket.send 帧计量；已提交前缀不在上层随意改写。新图在首次提交前准备，delta、full、SSE fallback 分别验收；投影改变时由 owner 明确处理 continuation/compaction 代次，不能把旧 ID 配给改过的前缀 |
+| Anthropic/中转 Opus 5.5 | 原生 Messages；本次中转基础生成返回 503，未进入模型 | 首次发送前可准备稳定图片表示，旧图重编码/省略须遵守 thinking prefix；先测签名回放和前缀负例。服务端 context editing 只清模型上下文，不减少此次已上传 body，不能作为 413 上传恢复证据 |
+
+注意：本次 Codex 合成样本使用重复、有填充的 PNG，zstd 压缩比不能推广到真实截图。当前 SSE/WS 的 onRequestBodyBytes 也尚未接通。WebSocket 常态只发送增量，但首次会话、恢复、前缀不匹配和 fallback 仍可能上传完整历史；不能只测热连接小帧。
+
+### 9.3 建议实施与验收顺序
+
+1. **R0：Responses reasoning 回放。** 明确原生协议/可信 provider 的能力事实，保留显式能力覆盖；同 provider/API/model 的原始 reasoning item 和 phase 完整回放，跨模型规则沿用既有边界。真实 parser→下一请求 serializer 对照同时覆盖 OpenAI 加密 reasoning、DeepSeek 明文 reasoning、空 thinking、工具中间回合及 session 重载。先证明问题再修，不新增脚本/命令解析。
+2. **R1：普通完整历史 Responses 图片预算。** 复用既有 RequestImageBudget 与原生 UTF-8 计量，覆盖 SDK 的准备、presentation、投影、实际 body 和 AgentSession 恢复。验收沿用 44 图、6×2.2 MiB 当前批阻塞后新消息恢复、用户图保留、blockImages、autoResize=false、一次严格缩小重试、正文主导/无法缩小停止、取消和分支失效；44 个工具调用/结果配对保持完整。不以更换 API 名称宣称接入完成。
+3. **R2：Codex transport owner。** 分别覆盖 SSE 压缩/不压缩、WS 首帧/增量、断连重建、前缀变化、缺失 response ID、SSE fallback、远端 compaction 边界；测实际帧/body，而非只测上层完整 payload。HTTP 413 与 WS 大消息关闭码分开核实，默认不把任意关闭或连接错误判成体积超限。恢复不重放工具、不循环重试、不静默改旧签名或远端状态。
+4. **R3：Claude 原生实测后实施。** 保持相同 system/tools/历史字节，比较首次图、未改前缀续接、旧 tool_result 省略及图片重编码负例；支持时用官方 thinking-binding-controls 的 prefix_mismatch_behavior:error 与 drop_block 对照观察，不把中转“HTTP 200”当作 thinking 被保留。该参数只用于协议探针，不成为用户命令限制。基础调用未通时不继续堆叠付费测试，也不替换用户指定的模型冒充通过。
+
+各项实现独立 PR，仍遵守原有审查/CI 流程。改动 provider delta、历史转换、大结果或请求准备链时，审计完整调用链，运行相应 AST/source、分配与 GC/生命周期基准；模块常量/正则复用，循环不增加闭包、Promise 尾链或整包复制。本次仅做审计/探针与文档补充，生产代码未变，未运行分配基准。
