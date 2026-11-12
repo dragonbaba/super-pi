@@ -268,7 +268,7 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 
 ## 9. Responses 请求体与 Claude 兼容补充审计（2026-11-12，分阶段实施）
 
-本节是交付后补充的实施边界。R0 [PR #293](https://github.com/dragonbaba/super-pi/pull/293) 已合并，补全 Responses 族 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界。R1 [PR #294](https://github.com/dragonbaba/super-pi/pull/294) 已合并，接入普通/Azure 完整历史图片预算、实际 body 观察和有限恢复。R2 本次实现 Codex 传输计量与明确超限的有限处理；旧图淘汰和首次图准备仍待 owner 层方案，不冒充已接入完整预算。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
+本节是交付后补充的实施边界。R0 [PR #293](https://github.com/dragonbaba/super-pi/pull/293) 已合并，补全 Responses 族 reasoning 默认回放，回归覆盖普通/Azure/Codex 的真实 parser→下一包、重载、显式关闭与跨模型边界。R1 [PR #294](https://github.com/dragonbaba/super-pi/pull/294) 已合并，接入普通/Azure 完整历史图片预算、实际 body 观察和有限恢复。R2 [PR #295](https://github.com/dragonbaba/super-pi/pull/295) 实现 Codex 传输计量与明确超限的有限处理；旧图淘汰和首次图准备仍待 owner 层方案，不冒充已接入完整预算。R3 基础调用复测返回中转分组权限 403，未进入模型；thinking/图片前缀实测仍被外部权限阻塞。合成 SDK 探针和授权中转测试见[审计证据](evidence/responses-claude-audit-2026-11-12.md)。Gemini 暂停真实测试。
 
 ### 9.1 DeepSeek 的协议选择与已发现缺口
 
@@ -286,7 +286,7 @@ store 保存有界状态，不保存本脚本 ref。结果处理循环不改变�
 | DeepSeek Responses | 官方无状态；仓库尚无专用 Responses provider 配置 | 验证真实模型 ID、视觉能力、明文 reasoning 接收→回放、function/custom 工具输出、终止事件与缓存统计；作为独立兼容配置，不靠 previous_response_id 缩小请求 |
 | Codex Responses SSE | R2 在既有 JSON/压缩结果上记录 serializedJsonBytes 和 wireBytes，HTTP 413 不重复同包 | 不新增整包编码副本；旧图淘汰和首次图准备另做 owner 层方案，不能拿 JSON 大小冒充上传大小 |
 | Codex Responses WebSocket | R2 在最终 socket.send 计量首帧/增量；保留 response-id、前缀匹配、远端 compaction 边界 | WS 1009 在无输出、无 compaction 边界且 SSE 严格更小时才回退；旧前缀投影仍未实施。后续由 owner 处理 continuation/compaction 代次，不能把旧 ID 配给改过的前缀 |
-| Anthropic/中转 Opus 5.5 | 原生 Messages；本次中转基础生成返回 503，未进入模型 | 首次发送前可准备稳定图片表示，旧图重编码/省略须遵守 thinking prefix；先测签名回放和前缀负例。服务端 context editing 只清模型上下文，不减少此次已上传 body，不能作为 413 上传恢复证据 |
+| Anthropic/中转 Opus 5.5 | 原生 Messages；初次基础生成 503，最新复测为中转分组权限 403，均未进入模型 | 基础调用恢复后先测签名回放和前缀负例；旧图重编码/省略须遵守 thinking prefix。服务端 context editing 只清模型上下文，不减少此次已上传 body，不能作为 413 上传恢复证据 |
 
 注意：初始审计的 Codex 样本使用重复、有填充的 PNG，zstd 压缩比不能推广到真实截图；R2 补充不可高度压缩内容及更大 full-history fallback 负例。SSE/WS 的 onRequestBodyBytes 现已接通，兼容原单参数回调，第二个可选数字表示压缩前 JSON 字节。WebSocket 常态只发送增量，但首次会话、恢复、前缀不匹配和 fallback 仍可能上传完整历史；不能只测热连接小帧。
 
