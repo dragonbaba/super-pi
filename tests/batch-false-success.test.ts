@@ -12,6 +12,7 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
+import { isMutationEffectCommit } from "./helpers/file-mutation-progress.ts";
 
 async function fixture(t: test.TestContext) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "sp-false-batch-"))), agentDir = join(root, "agent"), cwd = join(root, "workspace"); mkdirSync(agentDir); mkdirSync(cwd);
@@ -69,7 +70,7 @@ for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before");
   const append = f.manager.appendCustomEntry.bind(f.manager); let fired = false;
   t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) {
-    if (type === "file-mutation-progress-v2" && data.phase === "result" && !fired) {
+    if (isMutationEffectCommit(type, data) && !fired) {
       fired = true;
       if (kind === "partial") writeFileSync(join(f.cwd, "current"), "concurrent");
       if (kind === "unknown") throw new Error("injected durable result failure");
@@ -106,7 +107,7 @@ for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move
 test("R4 incomplete disclosure, unrelated success and same-target repair", async t => {
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before"); let fired = false;
   const append = f.manager.appendCustomEntry.bind(f.manager);
-  t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) { const r = append(type, data); if (!fired && data?.phase === "result") { fired = true; writeFileSync(join(f.cwd, "current"), "changed"); } return r; });
+  t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) { const r = append(type, data); if (!fired && isMutationEffectCommit(type, data)) { fired = true; writeFileSync(join(f.cwd, "current"), "changed"); } return r; });
   assert.equal((await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "first", content: "first" }, { operation: "delete", path: "current" }, { operation: "write", mode: "create", path: "last", content: "last" }] })).isError, true);
   const honest = "尚未完成，后续项目仍需要处理。"; assert.equal(await f.say(honest), honest);
   await f.call("write", { path: "unrelated", content: "ok" });
@@ -117,7 +118,7 @@ test("R4 incomplete disclosure, unrelated success and same-target repair", async
 test("R4 uncertain result needs authoritative same-scope verification after retry", async t => {
   const f = await fixture(t); const path = join(f.cwd, "target.txt"); let fail = true;
   const append = f.manager.appendCustomEntry.bind(f.manager);
-  t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) { if (fail && data?.phase === "result") { fail = false; throw new Error("lost result"); } return append(type, data); });
+  t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) { if (fail && isMutationEffectCommit(type, data)) { fail = false; throw new Error("lost result"); } return append(type, data); });
   assert.equal((await f.call("file_batch", { operations: [{ operation: "write", mode: "create", path, content: "one" }] })).isError, true);
   await f.call("read", { path }); assert.equal((await f.call("write", { path, content: "two" })).isError, false);
   assert.equal((await f.call("goal_complete", {})).isError, true);

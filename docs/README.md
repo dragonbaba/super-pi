@@ -30,7 +30,7 @@
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、读取与修改、失败处理、工具发现和分支存储。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
-- [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：B 的 CodeGraph 退役已完成本地验证；A 的文件工具与 C 的记忆批量清理尚未实施；[B 的证据](evidence/codegraph-retirement-2026-11-12.md)。
+- [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 已审核、通过 CI 并合并，[B 的证据](evidence/codegraph-retirement-2026-11-12.md)记录结果。A 的 v3 文件工具正在验收，见[A 的候选证据](evidence/file-operations-v3-2026-11-13.md)；C 尚未实施。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。
 - [默认 Codemode 方案](codemode-default-execution-plan.md)：默认工具入口、官方 1.0.0 借鉴、PR 划分和性能契约；[执行记录](codemode-default-execution-log.md) 给出实际验证及限制。
 - [Project Context](../packages/project-context/README.md)：项目身份、规则与轻量索引；CodeGraph 集成已退役，旧索引和用户技能保留。

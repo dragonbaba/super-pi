@@ -4,10 +4,11 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { mxcFileFixture } from "./helpers/mxc-file-fixture.ts";
+import { mxcFileFixture, legacyMxcFileFixture } from "./helpers/mxc-file-fixture.ts";
+import { MXC_FILE_RUNTIME_ASSETS, MXC_FILE_WORKER_PATH } from "../packages/coding-agent/src/core/files/file-runtime-assets.mjs";
 
-test("MXC write/edit/edit/edit returns verified successor hashes without an intervening read",t=>{
-  const f=mxcFileFixture(t), name="successor.txt";
+test("Historical v2: MXC write/edit/edit/edit returns verified successor hashes without an intervening read",t=>{
+  const f=legacyMxcFileFixture(t), name="successor.txt";
   const created=f.invoke("write",{path:name,content:"one\ntwo\nthree\n"});assert.equal(created.ok,true);
   let snapshot=created.snapshot;
   for(const edits of [[{oldText:"one",newText:"ONE"}],[{oldText:"two",newText:"TWO"},{oldText:"three",newText:"THREE"}],[{oldText:"ONE",newText:"first"}]]) {
@@ -22,8 +23,8 @@ test("MXC write/edit/edit/edit returns verified successor hashes without an inte
   const sameContent=f.invoke("edit",{path:name,snapshot,edits:[{oldText:"first",newText:"final"}]});assert.equal(sameContent.ok,true,"cross-call MXC versions retain content-hash semantics");
 });
 
-test("MXC read/edit successors and partial batches preserve individual verified effects",t=>{
-  const f=mxcFileFixture(t),file=path.join(f.input,"existing");fs.writeFileSync(file,"old");
+test("Historical v2: MXC read/edit successors and partial batches preserve individual verified effects",t=>{
+  const f=legacyMxcFileFixture(t),file=path.join(f.input,"existing");fs.writeFileSync(file,"old");
   const read=f.invoke("read",{path:"existing"}), edit=f.invoke("edit",{path:"existing",snapshot:read.snapshot,edits:[{oldText:"old",newText:"new"}]});
   assert.equal(edit.ok,true);assert.equal(f.invoke("write",{path:"existing",snapshot:edit.snapshot,content:"complete"}).ok,true);
   const batch=f.invoke("file_batch",{operations:[{operation:"write",path:"kept",content:"kept"},{operation:"edit",path:"missing",snapshot:read.snapshot,edits:[{oldText:"a",newText:"b"}]},{operation:"write",path:"not-started",content:"unused"}]});
@@ -33,8 +34,8 @@ test("MXC read/edit successors and partial batches preserve individual verified 
   assert.equal(f.invoke("edit",{path:"kept",snapshot:batch.items[0].snapshot,edits:[{oldText:"kept",newText:"continued"}]}).ok,true);
 });
 
-for(const replacement of [false,true]) test(`MXC publication verification refuses changed postimages, replacement=${replacement}`,t=>{
-  const f=mxcFileFixture(t), file=path.join(f.input,"source");fs.writeFileSync(file,"old");const snapshot=f.invoke("read",{path:"source"}).snapshot;
+for(const replacement of [false,true]) test(`Historical v2: MXC publication verification refuses changed postimages, replacement=${replacement}`,t=>{
+  const f=legacyMxcFileFixture(t), file=path.join(f.input,"source");fs.writeFileSync(file,"old");const snapshot=f.invoke("read",{path:"source"}).snapshot;
   const io=Object.create(fs);
   io.renameSync=(temporary:string,target:string)=>{
     fs.renameSync(temporary,target);
@@ -47,8 +48,8 @@ for(const replacement of [false,true]) test(`MXC publication verification refuse
   assert.equal(fs.readFileSync(file,"utf8"),replacement?"new":"external");assert.deepEqual(fs.readdirSync(f.input),["source"]);
 });
 
-for(const stage of ["write","stat","close"] as const)test(`MXC new-file ${stage} failure retains uncertainty after creation`,t=>{
-  const f=mxcFileFixture(t),io=Object.create(fs);let written=false,closed=false;
+for(const stage of ["write","stat","close"] as const)test(`Historical v2: MXC new-file ${stage} failure retains uncertainty after creation`,t=>{
+  const f=legacyMxcFileFixture(t),io=Object.create(fs);let written=false,closed=false;
   io.writeFileSync=(fd:any,content:any)=>{if(stage==="write"){fs.writeSync(fd,"partial");throw Object.assign(new Error("disk full"),{code:"ENOSPC"});}fs.writeFileSync(fd,content);written=true;};
   io.fstatSync=(fd:number,options:any)=>{if(stage==="stat"&&written)throw new Error("publication stat failed");return fs.fstatSync(fd,options);};
   io.closeSync=(fd:number)=>{fs.closeSync(fd);if(stage==="close"&&written&&!closed){closed=true;throw new Error("publication close failed");}};
@@ -57,8 +58,8 @@ for(const stage of ["write","stat","close"] as const)test(`MXC new-file ${stage}
   assert.equal(fs.readFileSync(path.join(f.input,"new"),"utf8"),stage==="write"?"partial":"complete");
 });
 
-test("MXC pre-creation and stale-hash refusals stay recoverable",t=>{
-  const f=mxcFileFixture(t),io=Object.create(fs);
+test("Historical v2: MXC pre-creation and stale-hash refusals stay recoverable",t=>{
+  const f=legacyMxcFileFixture(t),io=Object.create(fs);
   io.openSync=()=>{throw Object.assign(new Error("creation denied"),{code:"EACCES"});};
   const denied=f.invoke("write",{path:"denied",content:"none"},"sandbox-write",io);
   assert.equal(denied.ok,false);assert.equal(denied.requiresVerification,undefined);assert.equal(fs.existsSync(path.join(f.input,"denied")),false);
@@ -70,8 +71,8 @@ test("MXC pre-creation and stale-hash refusals stay recoverable",t=>{
   assert.equal(conflict.ok,false);assert.equal(conflict.requiresVerification,undefined);assert.equal(fs.readFileSync(path.join(f.input,"occupied"),"utf8"),"destination");
 });
 
-test("MXC partial batch creation retains successful hashes and marks uncertain publication",t=>{
-  const f=mxcFileFixture(t),io=Object.create(fs);let writes=0;
+test("Historical v2: MXC partial batch creation retains successful hashes and marks uncertain publication",t=>{
+  const f=legacyMxcFileFixture(t),io=Object.create(fs);let writes=0;
   io.writeFileSync=(fd:any,content:any)=>{if(++writes===2){fs.writeSync(fd,"partial");throw new Error("disk full");}fs.writeFileSync(fd,content);};
   const reply=f.invoke("file_batch",{operations:[{operation:"write",path:"first",content:"one"},{operation:"write",path:"second",content:"two"},{operation:"write",path:"third",content:"three"}]},"sandbox-write",io);
   assert.equal(reply.ok,false);assert.equal(reply.requiresVerification,true);
@@ -80,8 +81,8 @@ test("MXC partial batch creation retains successful hashes and marks uncertain p
   assert.equal(fs.readFileSync(path.join(f.input,"first"),"utf8"),"one");assert.equal(fs.readFileSync(path.join(f.input,"second"),"utf8"),"partial");assert.equal(fs.existsSync(path.join(f.input,"third")),false);
 });
 
-test("MXC partial link-move and retained staged candidates require verification",t=>{
-  const f=mxcFileFixture(t);fs.writeFileSync(path.join(f.input,"source"),"old");
+test("Historical v2: MXC partial link-move and retained staged candidates require verification",t=>{
+  const f=legacyMxcFileFixture(t);fs.writeFileSync(path.join(f.input,"source"),"old");
   const moveIO=Object.create(fs);moveIO.unlinkSync=()=>{throw new Error("source removal failed");};
   const moved=f.invoke("move",{path:"source",destination:"destination"},"sandbox-write",moveIO);
   assert.equal(moved.ok,false);assert.equal(moved.requiresVerification,true);assert.equal(fs.readFileSync(path.join(f.input,"destination"),"utf8"),"old");
@@ -91,8 +92,8 @@ test("MXC partial link-move and retained staged candidates require verification"
   assert.equal(staged.ok,false);assert.equal(staged.requiresVerification,true);assert.equal(fs.readFileSync(path.join(f.input,"source"),"utf8"),"old");
 });
 
-test("MXC files update the workspace, retain dependencies and reject stale snapshots", t => {
-  const f = mxcFileFixture(t);
+test("Historical v2: MXC files update the workspace, retain dependencies and reject stale snapshots", t => {
+  const f = legacyMxcFileFixture(t);
   for (const name of ["ordinary.txt", ".venv/installed.txt", "target/output.txt", "__pycache__/cache.txt", "node_modules/local.txt"]) {
     assert.equal(f.invoke("write", { path: name, content: "first" }).ok, true);
     const read = f.invoke("read", { path: name }); assert.equal(read.ok, true);
@@ -106,8 +107,8 @@ test("MXC files update the workspace, retain dependencies and reject stale snaps
   assert.equal(batch.ok, false); assert.equal(batch.noEffects, false); assert.equal(fs.readFileSync(path.join(f.input, "completed"), "utf8"), "kept");
 });
 
-test("MXC native tools refuse protected mutations, readonly writes and invalid UTF-8 edits", t => {
-  const f = mxcFileFixture(t);
+test("Historical v2: MXC native tools refuse protected mutations, readonly writes and invalid UTF-8 edits", t => {
+  const f = legacyMxcFileFixture(t);
   for (const name of [".git", ".sp"]) {
     fs.mkdirSync(path.join(f.input, name)); fs.writeFileSync(path.join(f.input, name, "config"), "kept");
     assert.equal(f.invoke("read", { path: name + "/config" }).ok, true);
@@ -123,8 +124,8 @@ test("MXC native tools refuse protected mutations, readonly writes and invalid U
   assert.equal(fs.existsSync(path.join(f.input, "too-large")), false);
 });
 
-test("MXC atomic replacement leaves the original intact on temporary write failure", t => {
-  const f = mxcFileFixture(t), file = path.join(f.input, "source.txt"); fs.writeFileSync(file, "original");
+test("Historical v2: MXC atomic replacement leaves the original intact on temporary write failure", t => {
+  const f = legacyMxcFileFixture(t), file = path.join(f.input, "source.txt"); fs.writeFileSync(file, "original");
   const snapshot = f.invoke("read", { path: "source.txt" }).snapshot, io = Object.create(fs);
   io.writeFileSync = (target: any, ...args: any[]) => {
     if (typeof target === "number") throw new Error("fixture disk full");
@@ -171,15 +172,15 @@ test("MXC search keeps the complete JSON response within the transport budget", 
 
 test("packaged controlled worker loads its real module assets and emits facts (host process, not isolation)", t => {
   const f = mxcFileFixture(t);
-  const dist = new URL("../packages/coding-agent/dist/", import.meta.url);
-  for (const [source, name] of [["core/sandbox/mxc-file-worker.mjs", "worker.mjs"],
-    ["core/sandbox/mxc-file-limits.mjs", "mxc-file-limits.mjs"], ["utils/image-signature.mjs", "image-signature.mjs"]])
-    fs.copyFileSync(new URL(source!, dist), path.join(f.runtime, name!));
+  const dist = new URL("../packages/coding-agent/dist/core/sandbox/", import.meta.url);
+  for (const [source, name] of MXC_FILE_RUNTIME_ASSETS) {
+    const target = path.join(f.runtime, name); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.copyFileSync(new URL(source, dist), target);
+  }
   fs.writeFileSync(path.join(f.input, "hits"), "needle needle\nneedle");
   const request = path.join(f.runtime, "request.json");
   fs.writeFileSync(request, JSON.stringify({ id: "dist", workspaces: [f.input], exchange: f.exchange, mode: "read-only", operation: "grep",
     input: { pattern: "needle" } }));
-  const result = spawnSync(process.execPath, [path.join(f.runtime, "worker.mjs"), request], { encoding: "utf8", timeout: 5000,
+  const result = spawnSync(process.execPath, [path.join(f.runtime, MXC_FILE_WORKER_PATH), request], { encoding: "utf8", timeout: 5000,
     env: { ...process.env, TMP: f.root, TEMP: f.root, TMPDIR: f.root } });
   assert.equal(result.status, 0, result.stderr); const reply = JSON.parse(result.stdout);
   assert.equal(reply.ok, true); assert.equal(reply.search.outputMode, "content"); assert.equal(reply.search.coverageComplete, true); assert.equal(reply.text, "hits:1:needle needle\nhits:2:needle");

@@ -9,6 +9,7 @@ import { createExtensionRuntime } from "../packages/coding-agent/src/core/extens
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FILE_LIMIT, TEXT_LIMIT } from "../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
 import { windowsShellJobDiagnostics } from "../packages/coding-agent/src/utils/windows-shell-job.ts";
+import { sandboxFileSession } from "./helpers/sandbox-file-session.ts";
 
 const enabled = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
 const distRoot = "../packages/coding-agent/dist/core/";
@@ -32,18 +33,14 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
   await fs.writeFile(path.join(additional, "asset.txt"), "additional");
   for (const directory of [".git", ".sp"]) await fs.writeFile(path.join(project, directory, "protected"), "kept");
   const outside = path.join(root, "outside.txt"); await fs.writeFile(outside, "private");
-  const runtime = createExtensionRuntime(); runtime.appendEntry = () => {};
-  const policy = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "sandbox", {}, mode, [additional]);
+  const session = sandboxFileSession(project, mode, [additional]), { runtime, policy, ctx } = session;
   const owner = new SandboxTools(project, parent, mode, () => runtime, { directories: [additional.toUpperCase()], network: "disabled" });
   const definitions = owner.install({});
+  runtime.nativeFiles!.installResultTool(definitions);
   for (const definition of Object.values(definitions)) policy.registerDefinition(definition);
-  const ctx: any = { cwd: project, hasUI: false, signal: runtime.executionBoundary.signal, sessionManager: SessionManager.inMemory(project) };
   const initialJobCount = jobDiagnostics().created;
-  let id = 0;
   async function invoke(name: string, input: any) {
-    const call = "live-" + ++id, authorization = await policy.authorize({ type: "tool_call", toolName: name, toolCallId: call, input }, ctx, definitions[name]);
-    try { authorization.consume(input, call, name); return await definitions[name]!.execute(call, input, ctx.signal, undefined, ctx) as any; }
-    finally { authorization.release(); }
+    return session.invoke(definitions, name, input);
   }
   try {
     assert.equal(definitions.bash, undefined);
@@ -114,7 +111,7 @@ for (const mode of ["read-only", "sandbox-write"] as const) test(`live MXC ${mod
       assert.equal(await fs.readFile(path.join(project, "input.txt"), "utf8"), "first\nsecond");
     }
   } finally {
-    await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose();
+    await owner.close(); await session.close();
     assert.equal(owner.diagnostics.process.active, false); assert.equal(owner.diagnostics.process.retainedStreams, 0);
     assert.equal(owner.diagnostics.root, undefined); assert.equal(jobDiagnostics().handles, 0); assert.equal(jobDiagnostics().processHandles, 0);
     assert.ok(jobDiagnostics().created > initialJobCount, "Observe the same Job owner used by the selected backend");

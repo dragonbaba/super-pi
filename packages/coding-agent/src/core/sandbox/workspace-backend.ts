@@ -8,6 +8,11 @@ import { MAX_WRITE_BYTES } from "../files/write-limits.ts";
 import { canonicalizeProspectivePath, canonicalWorkspaceMetadata } from "../files/protected-path-policy.ts";
 import { containsDirectory } from "../session-execution-profile.ts";
 import { workspaceInput } from "./workspace-paths.ts";
+import { MXC_FILE_RUNTIME_ASSETS, MXC_FILE_WORKER_PATH } from "../files/file-runtime-assets.mjs";
+import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../files/file-operation-limits.mjs";
+import type { FileRpcEnvelope, EncodedFileRpc } from "../files/file-rpc-chunks.ts";
+import { createOwnedManifestFile, releaseOwnedManifestFile, type OwnedManifestFile } from "../files/file-manifest-artifact.mjs";
+import { boundedReason } from "../files/file-tree-core.mjs";
 import { parseSandboxNetwork, type SandboxNetwork, type SandboxNetworkSession } from "./network-policy.ts";
 import { HOST_PATH_QUERY, refreshedHostEnvironment } from "./host-path.ts";
 import { SandboxToolchains } from "./mxc-toolchains.mjs";
@@ -19,6 +24,10 @@ export interface WorkspaceSandboxOptions {
   network?: SandboxNetwork; networkSession?: SandboxNetworkSession; directories?: readonly string[];
 }
 export interface WorkspaceArtifact { name: string; bytes: number; sha256: string; }
+export interface WorkspaceFileRpcContext {
+  readonly mode: "read-only" | "sandbox-write"; readonly workspaces: readonly string[]; readonly workspaceIdentities: readonly string[];
+  readonly exchange: string; readonly maxWriteBytes: number;
+}
 export interface WorkspaceRead {
   version: 1; offset: number; limit: number; windowComplete: boolean; hasMore: boolean; lineTruncated: boolean;
   returnedLines: number; incompleteLine?: number; nextOffset?: number;
@@ -47,12 +56,10 @@ export const HOST_PATH_WORKSPACE = 0, HOST_PATH_TOOL = 1, HOST_PATH_HOST_ONLY = 
 const EXECUTOR_SHA256 = "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a";
 const ARTIFACT_NAME = /^[a-f0-9]{32}-0\.bin$/;
 const COMMAND_OUTPUT_BYTES = 32768; // Byte-ring capacity, independent of the file body's UTF-16 budget.
-const MAX_WORKSPACE_ERROR_CHARS = 32768;
 const READ_FACT_KEYS = new Set(["version", "offset", "limit", "windowComplete", "hasMore", "lineTruncated", "returnedLines", "incompleteLine", "nextOffset"]);
 const SEARCH_FACT_KEYS = new Set(["version", "operation", "outputMode", "scanComplete", "coverageComplete", "outputTruncated", "excerptTruncated", "stopReason",
   "visitedEntries", "scannedFiles", "observedRecords", "returnedRecords", "outputUnits", "skippedTooLarge", "skippedNonUtf8", "skippedNul", "excludedProtected", "excludedLinks"]);
 const SNAPSHOT_HASH = /^[a-f0-9]{64}$/;
-const MUTATION_ITEM_KEYS = new Set(["index", "operation", "status", "snapshot", "error"]);
 // Fixed transport initialization; the caller's command body is neither parsed nor rewritten.
 const POWERSHELL_UTF8 = "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding;\n";
 const require = createRequire(import.meta.url);
@@ -105,35 +112,6 @@ function validateFileFacts(reply: WorkspaceReply, operation: string, input: Reco
       && (!s.excerptTruncated || operation === "grep" && s.outputMode === "content" && s.returnedRecords > 0), "Inconsistent search facts");
   } else need(reply.search === undefined, "Unexpected search facts");
 }
-function isFileMutation(operation: string): boolean {
-  return operation === "edit" || operation === "write" || operation === "delete" || operation === "move" || operation === "file_batch";
-}
-function validateMutationFacts(reply: WorkspaceReply, operation: string, input: Record<string, unknown>): void {
-  need(reply.requiresVerification === undefined || reply.requiresVerification === true && !reply.ok && reply.phase === "mutation"
-    && isFileMutation(operation), "Invalid publication verification fact");
-  if (operation === "edit" || operation === "write") {
-    need(reply.ok ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid mutation snapshot");
-  } else if (operation !== "read") need(reply.snapshot === undefined, "Unexpected mutation snapshot");
-  if (operation !== "file_batch") { need(reply.items === undefined, "Unexpected mutation items"); return; }
-  const operations = input.operations as Record<string, unknown>[];
-  if (!reply.ok && reply.items === undefined) return; // Failure before batch execution.
-  need(Array.isArray(reply.items) && Array.isArray(operations) && reply.items.length === operations.length && operations.length <= 16, "Invalid mutation items");
-  let failed = false;
-  for (let index = 0; index < reply.items.length; index++) {
-    const item = reply.items[index]!;
-    need(item && typeof item === "object" && item.index === index && item.operation === operations[index]!.operation, "Invalid mutation item identity");
-    validateFactKeys(item, MUTATION_ITEM_KEYS, "Unexpected mutation item field");
-    if (item.status === "succeeded") {
-      need(!failed && item.error === undefined && (item.operation === "edit" || item.operation === "write"
-        ? typeof item.snapshot === "string" && SNAPSHOT_HASH.test(item.snapshot) : item.snapshot === undefined), "Invalid completed mutation item");
-    } else {
-      need(!reply.ok && item.snapshot === undefined && (failed ? item.status === "not_started" && item.error === undefined
-        : item.status === "unknown" && typeof item.error === "string" && item.error.length <= 800), "Invalid incomplete mutation item");
-      failed = true;
-    }
-  }
-  need(reply.ok !== failed, "Inconsistent mutation items");
-}
 async function officialExecutor(): Promise<string> {
   need(process.platform === "win32" && process.arch === "x64", "MXC currently requires Windows x64; no host or VM fallback");
   let manifest: string;
@@ -152,16 +130,19 @@ export class WorkspaceSandboxBackend {
   private toolchains?: SandboxToolchains; private environment?: NodeJS.ProcessEnv;
   private readonly roots: string[] = []; private readonly identities: string[] = [];
   private readonly runner = new MxcProcess(); private readonly shutdown = new AbortController();
-  private pending?: Promise<WorkspaceReply>; private closeOperation?: Promise<void>;
+  private pending?: Promise<unknown>; private closeOperation?: Promise<void>;
   private closed = false; private starts = 0; private calls = 0;
   private readonly artifacts = new Set<string>(); private readonly network: SandboxNetwork;
+  private readonly manifests = new Map<string, Readonly<OwnedManifestFile>>();
+  private fileRpcRequests = 0; private maxFileRpcRequestBytes = 0; private maxFileRpcReplyBytes = 0;
   private readonly cwd: string; private readonly parent: string; private readonly mode: "read-only" | "sandbox-write"; private readonly options: WorkspaceSandboxOptions;
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", options: WorkspaceSandboxOptions = {}) {
     this.cwd = cwd; this.parent = parent; this.mode = mode; this.options = options; this.network = parseSandboxNetwork(options.network);
   }
   get networkEnabled(): boolean { return this.network === "enabled" || this.options.networkSession?.enabled === true; }
   get diagnostics() { return { backend: "mxc", starts: this.starts, calls: this.calls, pending: !!this.pending, closed: this.closed,
-    root: this.root, ownedArtifacts: this.artifacts.size, process: this.runner.diagnostics }; }
+    root: this.root, ownedArtifacts: this.artifacts.size + this.manifests.size, process: this.runner.diagnostics,
+    fileRpcRequests: this.fileRpcRequests, maxFileRpcRequestBytes: this.maxFileRpcRequestBytes, maxFileRpcReplyBytes: this.maxFileRpcReplyBytes }; }
   workspace(index = 0): string {
     need(Number.isSafeInteger(index) && index >= 0 && index <= (this.options.directories?.length ?? 0), "Unknown workspace identity");
     return this.roots[index] ?? (index ? this.options.directories![index - 1] : this.cwd);
@@ -178,11 +159,77 @@ export class WorkspaceSandboxBackend {
   invoke(operation: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<WorkspaceReply> {
     if (this.closed) return Promise.reject(new Error("[SANDBOX_CLOSED] MXC workspace owner is closed"));
     if (operation === "bash") return Promise.reject(new Error("[SANDBOX_UNSUPPORTED] Windows sandbox provides PowerShell 7 only"));
+    if (operation !== "read" && operation !== "grep" && operation !== "find" && operation !== "ls" && operation !== "powershell")
+      return Promise.reject(new Error("[SANDBOX_UNSUPPORTED] File mutations require the prepared v3 session invocation."));
     if (this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Wait for the current operation"));
     const combined = signal ? AbortSignal.any([signal, this.shutdown.signal]) : this.shutdown.signal;
     return this.pending = this.run(operation, input, combined).finally(this.releasePending);
   }
   private readonly releasePending = (): void => { this.pending = undefined; };
+  openFileRpc(signal: AbortSignal): Promise<WorkspaceFileRpcContext> {
+    if (this.closed) return Promise.reject(new Error("[SANDBOX_CLOSED] MXC workspace owner is closed"));
+    if (this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Wait for the current operation"));
+    const combined = AbortSignal.any([signal, this.shutdown.signal]);
+    return this.pending = this.openFileRpcContext(combined).finally(this.releasePending);
+  }
+  private async openFileRpcContext(signal: AbortSignal): Promise<WorkspaceFileRpcContext> {
+    await this.ensureStarted(signal); await this.assertWorkspaceCurrent(); signal.throwIfAborted();
+    return Object.freeze({ mode: this.mode, workspaces: Object.freeze([...this.roots]), workspaceIdentities: Object.freeze([...this.identities]),
+      exchange: this.exchange!, maxWriteBytes: MAX_WRITE_BYTES });
+  }
+  private assertFileRpcContext(context: WorkspaceFileRpcContext): void {
+    need(!this.closed && this.starts > 0 && context.exchange === this.exchange && context.mode === this.mode
+      && context.workspaces.length === this.roots.length && context.workspaceIdentities.length === this.identities.length, "File RPC owner changed");
+    for (let index = 0; index < this.roots.length; index++) need(context.workspaces[index] === this.roots[index]
+      && context.workspaceIdentities[index] === this.identities[index], "File RPC workspace identity changed");
+  }
+  async createFileManifest(context: WorkspaceFileRpcContext, name: string): Promise<Readonly<OwnedManifestFile>> {
+    this.assertFileRpcContext(context); need(!this.manifests.has(name), "Duplicate assigned manifest name");
+    const owned = await createOwnedManifestFile(context.exchange, name); this.manifests.set(name, owned); return owned;
+  }
+  async releaseFileManifest(context: WorkspaceFileRpcContext, owned: OwnedManifestFile): Promise<void> {
+    const recorded = this.manifests.get(owned.name);
+    if (!recorded && this.closed && this.root === undefined) return; // Verified owner-root cleanup already released it.
+    need(recorded && recorded.device === owned.device && recorded.inode === owned.inode && context.exchange === this.exchange, "Unknown assigned manifest ownership");
+    await releaseOwnedManifestFile(context.exchange, recorded); this.manifests.delete(owned.name);
+  }
+  invokeFileRpc(context: WorkspaceFileRpcContext, envelope: FileRpcEnvelope, encoded: EncodedFileRpc, signal: AbortSignal): Promise<unknown> {
+    if (this.closed) return Promise.reject(new Error("[SANDBOX_CLOSED] MXC workspace owner is closed"));
+    if (this.pending) return Promise.reject(new Error("[SANDBOX_BUSY] Wait for the current operation"));
+    const combined = AbortSignal.any([signal, this.shutdown.signal]);
+    return this.pending = this.runFileRpc(context, envelope, encoded, combined).finally(this.releasePending);
+  }
+  private async runFileRpc(context: WorkspaceFileRpcContext, envelope: FileRpcEnvelope, encoded: EncodedFileRpc, signal: AbortSignal): Promise<unknown> {
+    this.assertFileRpcContext(context); signal.throwIfAborted(); await this.assertWorkspaceCurrent(); signal.throwIfAborted();
+    need(envelope.exchange === context.exchange && envelope.mode === context.mode && envelope.maxWriteBytes === context.maxWriteBytes
+      && envelope.workspaces.length === context.workspaces.length && envelope.workspaceIdentities.length === context.workspaceIdentities.length
+      && encoded.bytes <= FILE_RPC_REQUEST_BYTES, "Invalid file RPC send boundary");
+    for (let index = 0; index < context.workspaces.length; index++) need(envelope.workspaces[index] === context.workspaces[index]
+      && envelope.workspaceIdentities[index] === context.workspaceIdentities[index], "File RPC send workspace changed");
+    const file = path.join(this.tools!, "request.json"); await fs.writeFile(file, encoded.serialized);
+    const policy = await this.policy(this.workspace(), signal, 0); signal.throwIfAborted();
+    this.calls++; this.fileRpcRequests++; this.maxFileRpcRequestBytes = Math.max(this.maxFileRpcRequestBytes, encoded.bytes);
+    const result = await this.runner.run(this.executable!, [policy, "--", process.execPath, path.join(this.tools!, MXC_FILE_WORKER_PATH), file],
+      this.workspace(), this.executorEnvironment(), signal, 0, FILE_RPC_REPLY_BYTES);
+    const replyBytes = result.stdoutBytes ?? Buffer.byteLength(result.stdout);
+    this.maxFileRpcReplyBytes = Math.max(this.maxFileRpcReplyBytes, replyBytes);
+    need(!result.timedOut && !result.truncated && !result.stderr && result.code === 0,
+      `Incomplete controlled file RPC (exit=${result.code}, timeout=${result.timedOut}, truncated=${result.truncated}, stdoutBytes=${replyBytes})`
+      + (result.stderr ? ": " + boundedReason(result.stderr) : "") + "; inspect possible effects before retry");
+    need(replyBytes <= FILE_RPC_REPLY_BYTES, "Controlled file reply exceeds its actual byte budget");
+    return JSON.parse(result.stdout);
+  }
+  private async ensureStarted(signal: AbortSignal): Promise<void> {
+    if (this.starts) return;
+    try { await this.start(signal); }
+    catch (error) {
+      if (signal.aborted && error === signal.reason && !this.shutdown.signal.aborted) {
+        try { await this.releaseResources(); }
+        catch (cleanupError) { this.closed = true; throw cleanupError; }
+      } else this.closed = true;
+      throw error;
+    }
+  }
   private async start(signal: AbortSignal): Promise<void> {
     this.executable = await (executorPath ??= officialExecutor()); signal.throwIfAborted();
     await fs.mkdir(this.parent, { recursive: true });
@@ -195,10 +242,10 @@ export class WorkspaceSandboxBackend {
       const canonical = await fs.realpath(directory), stat = await fs.lstat(canonical, { bigint: true });
       need(stat.isDirectory(), "Workspace is not a directory"); this.roots.push(canonical); this.identities.push(stat.dev + ":" + stat.ino);
     }
-    for (const [url, name] of [[new URL("./mxc-file-worker.mjs", import.meta.url), "worker.mjs"],
-      [new URL("./mxc-file-limits.mjs", import.meta.url), "mxc-file-limits.mjs"],
-      [new URL("../../utils/image-signature.mjs", import.meta.url), "image-signature.mjs"]] as const)
-      await fs.copyFile(fileURLToPath(url), path.join(this.tools, name), fs.constants.COPYFILE_EXCL);
+    for (const [relative, name] of MXC_FILE_RUNTIME_ASSETS) {
+      const target = path.join(this.tools, name); await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.copyFile(fileURLToPath(new URL(relative, import.meta.url)), target, fs.constants.COPYFILE_EXCL);
+    }
     await fs.writeFile(path.join(this.tools, "package.json"), '{"type":"module"}', { flag: "wx" });
     await fs.writeFile(path.join(this.tools, "powershell.config.json"), '{"DisableImplicitWinCompat":true}', { flag: "wx" });
     const settings = { ...this.options.settings, exclude: [...(this.options.settings?.exclude ?? []), ...(this.options.directories ?? [])] };
@@ -219,7 +266,7 @@ export class WorkspaceSandboxBackend {
     need(!result.error && result.tier === "base-container" && result.needsDaclAugmentation === false, "Native MXC isolation unavailable; no DACL, VM or host fallback"); this.starts++;
   }
   private executorEnvironment(): NodeJS.ProcessEnv { return { ...this.environment, MXC_DACL_STATE_DIR: this.state }; }
-  private async policy(cwd: string, signal: AbortSignal): Promise<string> {
+  private async policy(cwd: string, signal: AbortSignal, timeoutMs = 120000): Promise<string> {
     signal.throwIfAborted(); this.toolchains!.assertCurrent();
     const read = [...this.toolchains!.mountRoots, this.tools!, ...await canonicalWorkspaceMetadata(this.roots)];
     if (this.mode === "read-only") read.push(...this.roots);
@@ -237,7 +284,7 @@ export class WorkspaceSandboxBackend {
     const access = this.networkEnabled ? "allow" : "deny";
     const policy = { version: "1.0.0", containment: "processcontainer", containerId: path.basename(this.root!),
       fallback: { allowDaclMutation: false }, telemetry: { enabled: false }, lifecycle: { destroyOnExit: true, preservePolicy: false },
-      process: { commandLine: "node --version", cwd, timeout: 120000, inheritDefaultEnv: false, env },
+      process: { commandLine: "node --version", cwd, timeout: timeoutMs, inheritDefaultEnv: false, env },
       filesystem: { readonlyPaths: read, readwritePaths: write, deniedPaths: [] },
       network: { egress: { default: access }, ingress: { default: access, hostLoopback: access } },
       ui: { disable: false, clipboard: "all", injection: false }, processContainer: { capabilities: ["registryRead"], filesystem: { enumeratePaths: [...queries] },
@@ -247,16 +294,7 @@ export class WorkspaceSandboxBackend {
   private async run(operation: string, input: Record<string, unknown>, signal: AbortSignal): Promise<WorkspaceReply> {
     signal.throwIfAborted();
     input = workspaceInput(this.workspace(), operation, input, this.options.directories ?? []);
-    if (!this.starts) {
-      try { await this.start(signal); }
-      catch (error) {
-        if (signal.aborted && error === signal.reason && !this.shutdown.signal.aborted) {
-          try { await this.releaseResources(); }
-          catch (cleanupError) { this.closed = true; throw cleanupError; }
-        } else this.closed = true;
-        throw error;
-      }
-    }
+    await this.ensureStarted(signal);
     await this.assertWorkspaceCurrent(); signal.throwIfAborted();
     const id = randomUUID().replaceAll("-", ""), shell = operation === "powershell";
     const root = this.workspace(input.workspaceIndex as number | undefined);
@@ -273,8 +311,8 @@ export class WorkspaceSandboxBackend {
         "-ExecutionPolicy", "Bypass", "-OutputFormat", "Text", "-Command", "& ([ScriptBlock]::Create([IO.File]::ReadAllText('" + script.replaceAll("'", "''") + "')))"];
     } else {
       const request = JSON.stringify({ id, mode: this.mode, workspaces: this.roots, operation, input, exchange: this.exchange, maxWriteBytes: MAX_WRITE_BYTES });
-      need(Buffer.byteLength(request) <= 4 * 1024 * 1024, "Request too large");
-      const file = path.join(this.tools!, "request.json"); await fs.writeFile(file, request); args = [process.execPath, path.join(this.tools!, "worker.mjs"), file];
+      need(Buffer.byteLength(request) <= FILE_RPC_REQUEST_BYTES, "Request too large");
+      const file = path.join(this.tools!, "request.json"); await fs.writeFile(file, request); args = [process.execPath, path.join(this.tools!, MXC_FILE_WORKER_PATH), file];
     }
     const environment = this.executorEnvironment();
     this.calls++;
@@ -287,19 +325,14 @@ export class WorkspaceSandboxBackend {
       let reply: WorkspaceReply;
       try { reply = JSON.parse(result.stdout); } catch { throw new Error("[SANDBOX_MXC] Incomplete file result: " + result.stdout.slice(0, 2000)); }
       need(reply && typeof reply === "object" && reply.id === id && typeof reply.ok === "boolean", "File result identity mismatch");
-      validateMutationFacts(reply, operation, input);
+      need(reply.requiresVerification === undefined && reply.items === undefined, "Unexpected mutation facts on the read protocol");
       if (!reply.ok) throw new WorkspaceOperationError(reply);
       need(result.code === 0 && typeof reply.text === "string", "Invalid file result");
+      need(operation === "read" ? typeof reply.snapshot === "string" && SNAPSHOT_HASH.test(reply.snapshot) : reply.snapshot === undefined, "Invalid read snapshot");
       validateFileFacts(reply, operation, input);
       if (reply.image) { need(operation === "read" && reply.image.artifact.name === id + "-0.bin", "Unexpected image artifact"); this.artifacts.add(reply.image.artifact.name); }
       return reply;
     } catch (error) {
-      // The controlled file RPC may already have changed the workspace. A missing
-      // or invalid reply is observation loss, never a fresh no-effect receipt.
-      if (isFileMutation(operation) && !(error instanceof WorkspaceOperationError)) throw new WorkspaceOperationError({
-        id, ok: false, phase: "mutation", noEffects: false, requiresVerification: true,
-        error: (error instanceof Error ? error.message : String(error)).slice(0, MAX_WORKSPACE_ERROR_CHARS),
-      });
       throw error;
     }
   }
@@ -348,6 +381,6 @@ export class WorkspaceSandboxBackend {
       await fs.rm(this.root, { recursive: true }); // Node removes child links themselves, never their targets.
     }
     this.root = undefined; this.identity = undefined; this.tools = undefined; this.exchange = undefined; this.temporary = undefined; this.state = undefined;
-    this.toolchains = undefined; this.environment = undefined; this.artifacts.clear(); this.roots.length = 0; this.identities.length = 0;
+    this.toolchains = undefined; this.environment = undefined; this.artifacts.clear(); this.manifests.clear(); this.roots.length = 0; this.identities.length = 0;
   }
 }

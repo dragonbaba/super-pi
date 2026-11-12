@@ -19,7 +19,7 @@ export const FALSE_SUCCESS_AUDIT_TYPE = "false-success-intervention-v1";
 
 
 
-const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix", "delete", "move"]);
+const MUTATION_TOOLS = new Set(["edit", "write", "lsp_fix", "copy", "delete", "move"]);
 const INITIAL_GOAL_MARKER = "pi-goal-prompt:";
 const GOAL_OBJECTIVE_OPEN = "<goal_objective>";
 const GOAL_ID_OPEN = "<goal_id>";
@@ -268,6 +268,13 @@ function observeMutationOutcome(state: FalseSuccessState, tool: string, target: 
   setBounded(state.obligations, makeObligation(`${uncertain ? "partial" : "mutation"}:${target}`,
     uncertain ? "partial_mutation" : "mutation", tool, status,
     uncertain ? `mutation requires verification for ${displayTarget(target)}` : `mutation incomplete for ${displayTarget(target)}`, "target", target, target));
+}
+
+/** The caller supplies only rows authenticated by the session's v3 reader.
+ * Never accept model/aggregate item arrays as an equivalent journal proof. */
+export function observeFileMutationOutcome(state: FalseSuccessState, tool: string, target: string, destination: string | undefined, status: string): void {
+  observeMutationOutcome(state, tool, normalizeAbsolute(target, target), status);
+  if (destination) observeMutationOutcome(state, tool, normalizeAbsolute(destination, destination), status);
 }
 
 function observeBatchResult(state: FalseSuccessState, observation: ToolObservation): void {

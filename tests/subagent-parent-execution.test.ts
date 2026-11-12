@@ -167,7 +167,7 @@ test("real CLI children inherit explicit host mode across all global defaults an
       assert.equal((result as any)?.isError, false, JSON.stringify(result));
       const entries = await f.observations();
       assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "host-write");
-      assert.deepEqual(entries.find(entry => entry.event === "runtime"), { event: "runtime", parent: true, files: false, tasks: false, permissions: false });
+      assert.deepEqual(entries.find(entry => entry.event === "runtime"), { event: "runtime", parent: true, files: true, tasks: false, permissions: false });
       const calls = entries.filter(entry => entry.event === "result" && entry.name !== "codemode");
       assert.deepEqual(calls.map(entry => entry.name), ["read", "grep", "find", "ls"]);
       for (const call of calls) {

@@ -15,7 +15,7 @@ for (const operation of ["delete", "move"]) for (const path of ["@name", "@@name
   writeFileSync(source, "source"); writeFileSync(unrelated, "unrelated"); writeFileSync(join(cwd, "destination"), "other destination");
   for (const p of [source, unrelated, join(cwd, "destination")]) assert.equal((await f.call("read", { path: p }, `read-${p}`)).isError, false);
   const result = await f.call("file_batch", { operations: [{ operation, path: path === "$absolute" ? source : path, ...(operation === "move" ? { destination: "@destination" } : {}) }] }, "native");
-  assert.equal(result.isError, false); assert.equal(existsSync(source), false);
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(existsSync(source), false);
   if (operation === "move") assert.equal(readFileSync(destination, "utf8"), "source");
   const branch = SessionManager.open(f.session.getSessionFile()!).getBranch();
   const restored = new MutationWriteGuard(); await restoreMutationEvidenceFromBranch(restored, cwd, branch);
@@ -46,6 +46,7 @@ for (const status of ["succeeded", "partial", "state_unknown", "failed_no_change
   });
   const input = { operations: [{ operation: "move", path: "@@name", destination: "./@destination" }] };
   const result = await f.call("file_batch", input, "state"); afterLink = undefined; f.onRecord(() => {});
+  assert.ok((result.details as any)?.items, JSON.stringify(result));
   assert.equal((result.details as any).items[0].status, status, JSON.stringify(result));
   assert.equal(existsSync(source), status === "partial" || status === "failed_no_change");
   assert.equal(readFileSync(destination, "utf8"), status === "failed_no_change" ? "racer" : "same");

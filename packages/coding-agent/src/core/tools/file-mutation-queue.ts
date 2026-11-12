@@ -35,32 +35,54 @@ async function getMutationQueueKey(filePath: string): Promise<string> {
  * Operations for different files still run in parallel.
  */
 export async function withFileMutationQueue<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
-	const registration = registrationQueue.then(async () => {
-		const key = await getMutationQueueKey(filePath);
-		const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();
+    return withFileMutationQueues([filePath], fn);
+}
 
-		let releaseNext!: () => void;
-		const nextQueue = new Promise<void>((resolveQueue) => {
-			releaseNext = resolveQueue;
-		});
-		const chainedQueue = currentQueue.then(() => nextQueue);
-		fileMutationQueues.set(key, chainedQueue);
+function registrationFinished(): void {}
 
-		return { key, currentQueue, chainedQueue, releaseNext };
-	});
-	registrationQueue = registration.then(
-		() => undefined,
-		() => undefined,
-	);
+/** Reserve every path together before waiting. Edges only point to older owners,
+ * so overlapping calls cannot deadlock and need no recursive lock callbacks.
+ * Arrays, deferred and callbacks belong to this invocation's lock setup. */
+class MutationQueueRegistration {
+    readonly paths: readonly string[];
+    readonly keys: string[] = [];
+    readonly predecessors: Promise<void>[] = [];
+    readonly barrier: Promise<void>;
+    private releaseNext!: () => void;
+    constructor(paths: readonly string[]) {
+        this.paths = paths;
+        this.barrier = new Promise<void>(this.bindRelease);
+    }
+    private readonly bindRelease = (release: () => void): void => { this.releaseNext = release; };
+    readonly register = async (): Promise<void> => {
+        const keys = new Set<string>();
+        // Resolve all names before publishing any reservation: failure has no lock side effects.
+        for (const path of this.paths) keys.add(await getMutationQueueKey(path));
+        for (const key of keys) this.keys.push(key);
+        this.keys.sort();
+        const predecessors = new Set<Promise<void>>();
+        for (const key of this.keys) {
+            const previous = fileMutationQueues.get(key);
+            if (previous) predecessors.add(previous);
+            fileMutationQueues.set(key, this.barrier);
+        }
+        for (const previous of predecessors) this.predecessors.push(previous);
+    };
+    release(): void {
+        this.releaseNext();
+        for (const key of this.keys) if (fileMutationQueues.get(key) === this.barrier) fileMutationQueues.delete(key);
+        this.keys.length = 0; this.predecessors.length = 0;
+    }
+}
 
-	const { key, currentQueue, chainedQueue, releaseNext } = await registration;
-	await currentQueue;
-	try {
-		return await fn();
-	} finally {
-		releaseNext();
-		if (fileMutationQueues.get(key) === chainedQueue) {
-			fileMutationQueues.delete(key);
-		}
-	}
+export async function withFileMutationQueues<T>(paths: readonly string[], fn: () => Promise<T>): Promise<T> {
+    const owner = new MutationQueueRegistration(paths);
+    const registration = registrationQueue.then(owner.register);
+    registrationQueue = registration.then(registrationFinished, registrationFinished);
+    try {
+        await registration;
+        for (const previous of owner.predecessors) await previous;
+        owner.predecessors.length = 0;
+        return await fn();
+    } finally { owner.release(); }
 }

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
+import { SHA256_PATTERN } from "./regex.ts";
 
 export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
@@ -32,6 +33,13 @@ export interface FileCommitHooks {
   beforeCommit?(): void | Promise<void>;
   afterCommit?(): void | Promise<void>;
   signal?: AbortSignal;
+}
+
+/** Internal bounded stream source, for copying binary/large files through the existing commit owner. */
+export interface FileCommitStream {
+  readonly byteLength: number;
+  readonly sha256: string;
+  writeTo(target: FileHandle, hooks: FileCommitHooks): Promise<void>;
 }
 
 export interface FileCommitReceipt {
@@ -73,7 +81,7 @@ export function commitSummary(receipt: FileCommitReceipt): string {
 export function commitFailure(error: FileCommitError) {
   const stateChanged = error.receipt.outcome === "unknown" ? "unknown" as const : error.receipt.outcome === "committed";
   return { ok: false, category: stateChanged === false ? "COMMIT_FAILED" : "PARTIAL_MUTATION", stateChanged,
-    status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : "failed_no_change",
+    status: stateChanged === "unknown" ? "state_unknown" as const : stateChanged ? "partial" as const : "failed_no_change" as const,
     requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, sha256: error.committedSha256, cause: error.message };
 }
 
@@ -154,12 +162,14 @@ async function cleanupTemporary(temporary: OwnedTemporary, plan: FileCommitPlan,
 }
 
 /** One commit core for snapshot/exact/overwrite. Caller owns the sorted mutation queue and evidence. */
-export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Array, hooks: FileCommitHooks): Promise<FileCommitReceipt> {
+export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Array | FileCommitStream, hooks: FileCommitHooks): Promise<FileCommitReceipt> {
   const receipt: FileCommitReceipt = { strategy: plan.metadata.strategy, compatibilityReason: plan.metadata.reason,
     outcome: "not_committed", fileSynced: false, directorySynced: false };
   let source: FileHandle | undefined, staged: FileHandle | undefined, temporary: OwnedTemporary | undefined;
   let createdPath: string | undefined, publishedObject: { device: string; inode: string } | undefined;
-  const expectedHash = createHash("sha256").update(content).digest("hex");
+  const buffered = content instanceof Uint8Array;
+  const expectedHash = buffered ? createHash("sha256").update(content).digest("hex") : content.sha256;
+  if (!Number.isSafeInteger(content.byteLength) || content.byteLength < 0 || !SHA256_PATTERN.test(expectedHash)) throw new Error("[STALE_STATE] Invalid commit source size or digest.");
   let failure: unknown, failed = false;
   try {
     hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
@@ -188,7 +198,8 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       temporary = { path, device: String(info.dev), inode: String(info.ino) };
       await assertTemporary(temporary, plan);
       await plan.metadata.protectTemporary?.(staged, path);
-      await staged.writeFile(content);
+      if (buffered) await staged.writeFile(content);
+      else await content.writeTo(staged, hooks);
       await staged.sync(); receipt.fileSynced = true;
       await hooks.beforeCommit?.();
       await assertPrepared(plan, hooks, source);
@@ -241,12 +252,14 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       await plan.metadata.assertBeforeInPlace?.(source, plan);
       hooks.assertCurrent?.(); hooks.signal?.throwIfAborted();
       receipt.outcome = "unknown"; // The first write can partially change the pinned object.
-      let written = 0;
-      while (written < content.byteLength) {
-        const next = await source.write(content, written, content.byteLength - written, written);
-        if (next.bytesWritten <= 0) throw new Error("In-place write made no progress.");
-        written += next.bytesWritten;
-      }
+      if (buffered) {
+        let written = 0;
+        while (written < content.byteLength) {
+          const next = await source.write(content, written, content.byteLength - written, written);
+          if (next.bytesWritten <= 0) throw new Error("In-place write made no progress.");
+          written += next.bytesWritten;
+        }
+      } else await content.writeTo(source, hooks);
       await source.truncate(content.byteLength);
       await source.sync(); receipt.fileSynced = true;
       receipt.outcome = "committed";

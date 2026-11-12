@@ -74,8 +74,8 @@ const MAX_PREVIOUS_CHARS = 50 * 1024;
 const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
-const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "delete", "move", "file_batch", "grep", "find", "ls", "bash", "powershell"]);
-const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "delete", "move", "file_batch", "bash", "powershell"]);
+const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "copy", "delete", "move", "file_batch", "file_result", "grep", "find", "ls", "bash", "powershell"]);
+const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "copy", "delete", "move", "file_batch", "bash", "powershell"]);
 const CHILD_GUARD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-guard.ts");
 
 function formatTokens(count: number): string {
@@ -537,7 +537,7 @@ export function effectiveTools(agent: AgentConfig, allowMutation: boolean, mode?
 	const tools: string[] = [];
 	for (const tool of requested) {
 		if (!BUILTIN_AGENT_TOOLS.has(tool)) continue;
-		if (!allowMutation && (tool === "write" || tool === "edit" || tool === "delete" || tool === "move" || tool === "file_batch" || tool === "bash" || tool === "powershell")) continue;
+		if (!allowMutation && MUTATING_AGENT_TOOLS.has(tool)) continue;
 		if (tool === "bash" && !allowBash) continue;
 		if (tool === "powershell" && (!sandbox || agent.source !== "user" || agent.tools === undefined)) continue;
 		if (tools.includes(tool)) continue;

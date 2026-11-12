@@ -24,53 +24,6 @@ function fixture(t: TestContext, change: (reply: any) => void = () => {}, mode: 
   return backend;
 }
 
-test("MXC backend validates mutation successors and preserves verified partial batch receipts",async t=>{
-  const backend=fixture(t,undefined,"sandbox-write");
-  const created=await backend.invoke("write",{path:"new",content:"one"});assert.match(created.snapshot!,/^[a-f0-9]{64}$/);
-  const edited=await backend.invoke("edit",{path:"new",snapshot:created.snapshot,edits:[{oldText:"one",newText:"two"}]});assert.notEqual(edited.snapshot,created.snapshot);
-  await assert.rejects(backend.invoke("file_batch",{operations:[{operation:"write",path:"kept",content:"kept"},{operation:"edit",path:"missing",snapshot:edited.snapshot,edits:[{oldText:"one",newText:"two"}]}]}),error=>{
-    assert.ok(error instanceof WorkspaceOperationError);assert.equal(error.reply.items?.[0]?.status,"succeeded");assert.match(error.reply.items![0]!.snapshot!,/^[a-f0-9]{64}$/);assert.equal(error.reply.items?.[1]?.snapshot,undefined);return true;
-  });
-});
-test("MXC backend retains failed publication verification and rejects a success carrying it",async t=>{
-  const failed=fixture(t,reply=>{reply.ok=false;reply.phase="mutation";reply.noEffects=false;reply.error="publication observation failed";reply.snapshot=undefined;reply.requiresVerification=true;},"sandbox-write");
-  await assert.rejects(failed.invoke("write",{path:"new",content:"written"}),error=>{
-    assert.ok(error instanceof WorkspaceOperationError);assert.equal(error.reply.requiresVerification,true);return true;
-  });
-  const forged=fixture(t,reply=>{reply.requiresVerification=true;},"sandbox-write");
-  await assert.rejects(forged.invoke("write",{path:"new",content:"written"}),/Invalid publication verification fact/);
-});
-
-for(const failure of ["transport","missing-json","identity","snapshot"] as const)test(`MXC ${failure} loss after a completed write requires verification`,async t=>{
-  const backend=fixture(t,reply=>{
-    if(failure==="transport")throw new Error("file result transport lost");
-    if(failure==="missing-json")reply.toJSON=()=>undefined;
-    if(failure==="identity")reply.id="wrong";
-    if(failure==="snapshot")reply.snapshot="invalid";
-  },"sandbox-write");
-  await assert.rejects(backend.invoke("write",{path:"published",content:"committed"}),error=>{
-    assert.ok(error instanceof WorkspaceOperationError);
-    assert.equal(error.reply.requiresVerification,true);assert.equal(error.reply.noEffects,false);assert.equal(error.reply.snapshot,undefined);return true;
-  });
-  assert.equal(fs.readFileSync(path.join(backend.workspace(),"published"),"utf8"),"committed");
-});
-
-test("MXC known pre-dispatch configuration failure remains an ordinary refusal",async t=>{
-  const backend=fixture(t,undefined,"sandbox-write");let launched=false;
-  t.mock.method((backend as any).runner,"run",async()=>{launched=true;throw new Error("must not launch");});
-  t.mock.method(backend as any,"executorEnvironment",()=>{throw new Error("pre-dispatch configuration failed");});
-  await assert.rejects(backend.invoke("write",{path:"never",content:"none"}),error=>{
-    assert.ok(error instanceof Error);assert.equal(error instanceof WorkspaceOperationError,false);assert.match(error.message,/pre-dispatch configuration failed/);return true;
-  });
-  assert.equal(launched,false);assert.equal(fs.existsSync(path.join(backend.workspace(),"never")),false);
-});
-for(const [name,change] of [["missing",(r:any)=>{r.snapshot=undefined;}],["malformed",(r:any)=>{r.snapshot="not-a-hash";}],["wrong-type",(r:any)=>{r.snapshot=42;}]] as const) test(`MXC backend rejects ${name} mutation snapshot`,async t=>{
-  const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("write",{path:"new",content:"written"}),/Invalid mutation snapshot/);
-});
-for(const [name,change] of [["missing",(r:any)=>{r.items=undefined;}],["snapshot",(r:any)=>{r.items[0].snapshot="invalid";}],["index",(r:any)=>{r.items[0].index=1;}],["status",(r:any)=>{r.items[0].status="not_started";}]] as const) test(`MXC backend rejects ${name} batch continuation`,async t=>{
-  const backend=fixture(t,change,"sandbox-write");await assert.rejects(backend.invoke("file_batch",{operations:[{operation:"write",path:"new",content:"written"}]}),/(?:Invalid|Inconsistent) (?:mutation|completed|incomplete)/);
-});
-
 test("MXC backend parses and retains valid read/search facts on the real run path", async t => {
   const backend = fixture(t);
   const read = await backend.invoke("read", { path: "text", limit: 1 });
@@ -121,4 +74,12 @@ test("MXC backend keeps worker failure semantics before success-facts validation
   await assert.rejects(backend.invoke("grep", { pattern: "needle" }), (error: any) => {
     assert.ok(error instanceof WorkspaceOperationError); assert.equal(error.reply.noEffects, true); return true;
   });
+});
+
+test("retired MXC v2 mutations reject before startup; only the session v3 owner can dispatch effects", async t => {
+  const backend = new WorkspaceSandboxBackend(process.cwd(), process.cwd(), "sandbox-write");
+  t.after(() => backend.close());
+  for (const operation of ["write", "edit", "copy", "move", "delete", "file_batch"])
+    await assert.rejects(backend.invoke(operation, {}), /prepared v3/);
+  assert.equal(backend.diagnostics.starts, 0); assert.equal(backend.diagnostics.calls, 0);
 });

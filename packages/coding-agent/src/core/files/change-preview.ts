@@ -12,7 +12,7 @@ export const MAX_PREVIEW_SOURCE_BYTES = 256 * 1024;
 const LIVE_REPORT_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export interface ChangePreview {
-  kind: "Added" | "Modified" | "Deleted" | "Moved";
+  kind: "Added" | "Modified" | "Deleted" | "Moved" | "Copied";
   bytes?: number;
   addedLines?: number;
   diff?: string;

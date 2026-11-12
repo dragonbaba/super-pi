@@ -10,6 +10,8 @@ import type { MxcProcess } from "../../packages/coding-agent/src/core/sandbox/mx
 
 import { removeOwnedFixture } from "../../tests/helpers/owned-fixture-cleanup.ts";
 import { currentCommit } from "./benchmark.ts";
+import { MXC_FILE_WORKER_PATH } from "../../packages/coding-agent/src/core/files/file-runtime-assets.mjs";
+import { FILE_RPC_REPLY_BYTES } from "../../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 
 const distRoot = "../../packages/coding-agent/dist/";
 const { WorkspaceSandboxBackend } = await import(distRoot + "core/sandbox/workspace-backend.js");
@@ -42,7 +44,9 @@ const commonGitDirectory = execFileSync("git", ["rev-parse", "--path-format=abso
   cwd: repository, windowsHide: true, encoding: "utf8",
 }).trim();
 const relative = path.relative(path.join(path.dirname(commonGitDirectory), ".task-tmp"), taskParent);
-assert.ok(relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative),
+const worktreeRelative = path.relative(path.join(repository, ".task-tmp"), taskParent);
+assert.ok(relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative)
+  || worktreeRelative === "" || worktreeRelative !== ".." && !worktreeRelative.startsWith(".." + path.sep) && !path.isAbsolute(worktreeRelative),
   "Set child TMP/TEMP/TMPDIR to an owned directory under .task-tmp");
 const root = await fs.mkdtemp(path.join(taskParent, "mxc-native-compare-"));
 const identity = await fs.lstat(root, { bigint: true });
@@ -56,7 +60,7 @@ const initialJobCount = windowsShellJobDiagnostics().created;
 function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
-async function invoke(backend: WorkspaceSandboxBackend, outputMode = "content") {
+async function invoke(backend: WorkspaceSandboxBackend, outputMode = "content", historical = false) {
   const transport = backend as unknown as NativeTransport;
   const id = randomUUID().replaceAll("-", "");
   const started = performance.now();
@@ -67,8 +71,8 @@ async function invoke(backend: WorkspaceSandboxBackend, outputMode = "content") 
     input: { pattern: "needle", outputMode }, exchange: transport.exchange,
   }));
   const result = await transport.runner.run(transport.executable,
-    [policy, "--", process.execPath, path.join(transport.tools, "worker.mjs"), request],
-    backend.workspace(), transport.executorEnvironment(), signal, 30_000, 256 * 1024);
+    [policy, "--", process.execPath, path.join(transport.tools, historical ? "worker.mjs" : MXC_FILE_WORKER_PATH), request],
+    backend.workspace(), transport.executorEnvironment(), signal, 30_000, FILE_RPC_REPLY_BYTES);
   const milliseconds = performance.now() - started;
   assert.equal(result.stderr, "");
   assert.equal(result.code, 0);
@@ -105,6 +109,13 @@ try {
       const startupOrder = mode === "read-only" ? [baseline, candidate] : [candidate, baseline];
       for (const backend of startupOrder) await (backend as unknown as NativeTransport).start(signal);
       await fs.writeFile(path.join((baseline as unknown as NativeTransport).tools, "worker.mjs"), baselineWorker);
+      // This retained historical fixture predates the source-layout-preserving runtime assets.
+      const baselineTools = (baseline as unknown as NativeTransport).tools;
+      await fs.copyFile(new URL("../../packages/coding-agent/dist/utils/image-signature.mjs", import.meta.url), path.join(baselineTools, "image-signature.mjs"));
+      if (baselineWorker.includes(Buffer.from("./mxc-file-limits.mjs"))) {
+        const limits = execFileSync("git", ["show", baselineRef + ":packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs"], { cwd: repository, windowsHide: true });
+        await fs.writeFile(path.join(baselineTools, "mxc-file-limits.mjs"), limits);
+      }
       const shell = await candidate.invoke("powershell", { command: "$PSVersionTable.PSVersion.ToString()" });
       assert.equal(shell.execution?.exitCode, 0);
       const samples: object[] = [];
@@ -112,7 +123,7 @@ try {
         const order = (pair + Number(mode === "sandbox-write")) % 2 ? [candidate, baseline] : [baseline, candidate];
         const sample: Record<string, { milliseconds: number; wireBytes: number }> = {};
         for (const backend of order) {
-          const result = await invoke(backend);
+          const result = await invoke(backend, "content", backend === baseline);
           assert.deepEqual(result.reply.text.split("\n").sort(), expectedRows);
           if (backend === candidate) {
             assert.equal(result.reply.search.coverageComplete, true);

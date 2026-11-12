@@ -9,11 +9,12 @@ import { FileService, type FileExecutionHooks } from "../packages/coding-agent/s
 import { issueSnapshotForRead } from "../packages/coding-agent/src/core/files/snapshot-line-edit.ts";
 import { createReadToolDefinition } from "../packages/coding-agent/src/core/tools/read.ts";
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
-import { FileBatch } from "../packages/coding-agent/src/core/files/file-batch.ts";
+import { FileBatch } from "./helpers/file-batch-v2.ts";
 import { renderBatchResult } from "../packages/coding-agent/src/core/files/file-results.ts";
 import { releaseBatchRenderState } from "../packages/coding-agent/src/core/files/change-preview.ts";
 import { collectChanges, verifyChange } from "../packages/coding-agent/src/core/files/changes.ts";
 import { SessionFiles } from "../packages/coding-agent/src/core/files/session-files.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { getSessionFiles, NATIVE_FILE_REVISION } from "../packages/coding-agent/src/core/files/file-host.ts";
 import { attachPermissionPathApproval, mutationRequestHash } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -69,9 +70,11 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
   t.after(async () => { await disposeNativeFileWorker(); assert.equal(dirname(cwd), parent); await rm(cwd, { recursive: true }); });
   async function exercise() {
     const runtime = createExtensionRuntime(), events = createEventBus();
+    const manager = SessionManager.inMemory(cwd);
     let records = 0; runtime.appendEntry = () => { records++; };
+    runtime.appendFileEntry = (kind, data) => { records++; return manager.appendCustomEntry(kind, data); };
     const owner = runtime.nativeFiles = new SessionFiles(runtime, events);
-    const ctx = { cwd, sessionManager: { getSessionId: () => "owner-session" } } as ExtensionContext;
+    const ctx = { cwd, sessionManager: manager } as unknown as ExtensionContext;
     const tools: Record<string, ToolDefinition<any, any>> = { read: createReadToolDefinition(cwd) };
     owner.install(tools);
     const refs: WeakRef<object>[] = [new WeakRef(owner), new WeakRef(runtime), new WeakRef(ctx), new WeakRef(tools), new WeakRef(events)];
@@ -84,6 +87,7 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
       refs.push(new WeakRef(invocation), new WeakRef(input)); return invocation;
     }
     async function run(id: string, input: Record<string, unknown>, name = "write") {
+      manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as any);
       const invocation = await prepare(id, input, name), approved = invocation.consume(input, id, name);
       const result = await tools[name].execute(id, approved, undefined, undefined, ctx);
       refs.push(new WeakRef(approved as object), new WeakRef(result)); return result;
@@ -94,10 +98,10 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
       const read = await tools.read.execute("read", { path: "a.txt" }, undefined, undefined, ctx);
       const revision = (read as unknown as { [NATIVE_FILE_REVISION]: string })[NATIVE_FILE_REVISION];
       const canonical = await realpath(join(cwd, "a.txt"));
-      assert.equal(owner.hasRevision(revision, canonical, "owner-session"), true);
+      assert.equal(owner.hasRevision(revision, canonical, manager.getSessionId()), true);
       assert.equal(owner.getDiagnostics().revisions, 1);
       assert.equal((await run("edit", { path: "a.txt", edits: [{ oldText: "source", newText: "changed" }] }, "edit")).isError, false);
-      assert.equal(owner.hasRevision(revision, canonical, "owner-session"), false, "a cached display cannot outlive its native file revision");
+      assert.equal(owner.hasRevision(revision, canonical, manager.getSessionId()), false, "a cached display cannot outlive its native file revision");
       const changed = { path: "tampered.txt", content: "before" }, pending = await prepare("tamper", changed);
       changed.content = "after"; assert.throws(() => pending.consume(changed, "tamper", "write"), /STALE_STATE/);
       const abandoned = { path: "abandoned.txt", content: "x" }, abandonedCall = await prepare("abandon", abandoned);
@@ -218,6 +222,17 @@ test("native file service keeps confirmed effects when result recording fails", 
   assert.equal(result.requiresVerification, true); assert.equal(result.ok, false);
   assert.equal(await readFile(path, "utf8"), "kept\n");
   assert.ok(f.entries.some(entry => entry.phase === "intent"));
+});
+
+test("copy preserves the unchanged source read version and invalidates an overwritten destination", async t => {
+  const f = await fixture(t), sourcePath = join(f.cwd, "copy-source"), destination = join(f.cwd, "copy-target");
+  await writeFile(sourcePath, "source"); await writeFile(destination, "old");
+  const source = await f.capture(sourcePath), previous = await f.capture(destination);
+  assert(f.service.revisions.get(source.snapshot)); assert(f.service.revisions.get(previous.snapshot));
+  const plan = await f.service.prepareV3("copy", { path: sourcePath, destination, overwrite: true }); await f.service.revalidate(plan, f.hooks);
+  const receipt = await f.service.execute(plan, "copy", f.hooks);
+  assert.equal(receipt.status, "succeeded", JSON.stringify(receipt)); assert.equal(await readFile(destination, "utf8"), "source");
+  assert(f.service.revisions.get(source.snapshot)); assert.equal(f.service.revisions.get(previous.snapshot), undefined);
 });
 
 test("native batches preflight every independent item and share bounded previews and parent ownership", { timeout: 10_000 }, async t => {

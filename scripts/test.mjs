@@ -39,6 +39,7 @@ const TEST_WEIGHTS = new Map([
 	["alpha-startup-faults.test.ts", 41], ["bash-running-responsiveness.test.ts", 41], ["alpha-raw-session.test.ts", 36],
 	["tui-frame-queue.test.ts", 35], ["image-review-boundaries.test.ts", 26], ["next-phase-task-matrix.test.ts", 25],
 	["codemode-session.test.ts", 25],
+	["file-mutation-allocation-v3.test.ts", 110],
 ]);
 const DEFAULT_TEST_WEIGHT = 6;
 // Wall-clock gated files run alone, before the pool starts: paired p50/p95 deltas

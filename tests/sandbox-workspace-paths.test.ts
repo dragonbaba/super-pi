@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { WorkspaceSandboxBackend } from "../packages/coding-agent/src/core/sandbox/workspace-backend.ts";
-import { workspaceInput } from "../packages/coding-agent/src/core/sandbox/workspace-paths.ts";
+import { workspaceInput, workspaceMutationItems } from "../packages/coding-agent/src/core/sandbox/workspace-paths.ts";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
+import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 
 test("production request translates in-workspace absolute paths without mutating authorized arguments", async t => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-workspace-path-")));
@@ -23,16 +24,18 @@ test("production request translates in-workspace absolute paths without mutating
             outputTruncated: false, excerptTruncated: false, stopReason: "none", visitedEntries: 0, scannedFiles: 0,
             observedRecords: 0, returnedRecords: 0, outputUnits: 0, skippedTooLarge: 0, skippedNonUtf8: 0, skippedNul: 0,
             excludedProtected: 0, excludedLinks: 0 } : undefined;
-        const items=request.operation==="file_batch"?request.input.operations.map((item:any,index:number)=>({index,operation:item.operation,status:"succeeded"})):undefined;
-        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok",read,search,items}),stderr:"",timedOut:false,truncated:false};
+        const snapshot = request.operation === "read" ? "a".repeat(64) : undefined;
+        return {code:0,stdout:JSON.stringify({id:request.id,ok:true,text:"ok",read,search,snapshot}),stderr:"",timedOut:false,truncated:false};
     };
     try {
         const input = Object.freeze({ path: path.join(root, "src", "example.txt") });
         await backend.invoke("read", input); assert.equal(received.at(-1).input.path, "src/example.txt");
         assert.equal(input.path, path.join(root, "src", "example.txt"));
         await backend.invoke("ls", {path:root}); assert.equal(received.at(-1).input.path, ".");
-        await backend.invoke("file_batch", {operations:[{operation:"move",path:input.path,destination:path.join(root,"new.txt")}]});
-        assert.deepEqual(received.at(-1).input.operations, [{operation:"move",path:"src/example.txt",destination:"new.txt"}]);
+        await assert.rejects(backend.invoke("file_batch", {operations:[{operation:"move",path:input.path,destination:path.join(root,"new.txt")}] }), /prepared v3/);
+        assert.equal(received.length, 2, "retired mutation transport never dispatches");
+        const projected = workspaceMutationItems(root, "file_batch", {operations:[{operation:"move",path:input.path,destination:path.join(root,"new.txt")}] });
+        assert.equal(projected[0].path, "src/example.txt"); assert.equal(projected[0].destination, "new.txt");
     } finally {
         internal.root=undefined;await backend.close();
         for(const name of ["request.json","response.json"]) await fs.unlink(path.join(exchange,name)).catch(() => {});
@@ -48,7 +51,7 @@ test("path translation is bounded and preserves shell source and relative path g
     assert.equal(workspaceInput(cwd,"powershell",shell),shell);
     assert.equal(workspaceInput(cwd,"bash",shell),shell);
     assert.throws(() => workspaceInput(cwd,"read",{path:"file",workspaceIndex:1}), /assigned by the host/);
-    assert.throws(() => workspaceInput(cwd,"file_batch",{operations:[{operation:"read",path:"file",workspaceIndex:1}]}), /assigned by the host/);
+    assert.throws(() => workspaceMutationItems(cwd,"file_batch",{operations:[{operation:"write",path:"file",mode:"create",content:"x",workspaceIndex:1}]}), /assigned by the host/);
     const additional = path.resolve(cwd, "../additional");
     const command = 'printf "$PWD"; false || printf recovered';
     assert.deepEqual(workspaceInput(cwd, "bash", { command, cwd: "literal 中文 ' directory" }),
@@ -60,8 +63,8 @@ test("path translation is bounded and preserves shell source and relative path g
     assert.throws(() => workspaceInput(cwd,"move",{path:path.join(additional,"file"),destination:"primary.txt"},[additional]), /outside/);
     for(const value of [path.resolve(cwd,"../Pi-other/file"), "\\\\server\\share\\file", "\\\\?\\C:\\file", "D:file", "a\0b"])
         assert.throws(() => workspaceInput(cwd,"read",{path:value}), /SANDBOX_PATH/);
-    assert.throws(() => workspaceInput(cwd,"file_batch",{operations:new Array(17).fill({path:"file"})}), /Invalid file batch/);
-    assert.throws(() => workspaceInput(cwd,"file_batch",{operations:[null]}), /Invalid file operation/);
+    assert.equal(workspaceMutationItems(cwd,"delete",{paths:Array.from({length:2000},(_,index)=>"file-"+index)}).length, 2000);
+    assert.throws(() => workspaceMutationItems(cwd,"file_batch",{operations:[null]}), /TOOL_ARGS_INVALID/);
     assert.throws(() => new WorkspaceSandboxBackend(cwd,cwd,"sandbox-write",{network:"Enable" as any}), /Invalid global sandboxNetwork/);
     if(process.platform === "win32") {
         assert.equal(workspaceInput(cwd,"ls",{path:cwd.toUpperCase().replaceAll("\\","/")+"/"}).path,".");
@@ -71,14 +74,15 @@ test("path translation is bounded and preserves shell source and relative path g
 
 test("sandbox tool descriptions expose actual workspace, cwd and network policy", async () => {
     for(const mode of ["read-only","sandbox-write"] as const) {
-        const owner = new WorkspaceSandboxTools(process.cwd(),process.cwd(),mode,() => {throw new Error("No execution");},{network:"enabled"});
+        const runtime = createExtensionRuntime();
+        const owner = new WorkspaceSandboxTools(process.cwd(),process.cwd(),mode,() => runtime,{network:"enabled"});
         const tools = owner.install({bash:{} as any}); assert.equal(tools.bash,undefined);
         assert.ok(tools.ls.description.includes(process.cwd()));
         assert.ok(tools.powershell.description.includes("Command cwd: " + process.cwd()));
         assert.doesNotMatch(tools.powershell.description, /C:\\SuperPiInput|C:\\SuperPiWorkspace/);
         assert.match(tools.powershell.description,/Network access: enabled/);
         assert.doesNotMatch(tools.powershell.description,/no network/);
-        await owner.close();
+        await owner.close(); await runtime.executionBoundary.dispose();
     }
 });
 

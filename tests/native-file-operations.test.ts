@@ -192,7 +192,7 @@ test("parent replacement and junction targets refuse without deleting linked dat
 test("native render and Added scan contain no per-render callbacks, arrays, promises or regex creation", () => {
   for (const [path, functionName] of [
     ["packages/extensions/mutation-guard-write/native-tools.ts", "renderFileMutationResult"],
-    ["packages/coding-agent/src/core/files/file-creation.ts", "addedContentSummary"],
+    ["packages/coding-agent/src/core/files/file-creation-core.mjs", "addedContentSummary"],
   ]) {
     const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
     let found = 0;

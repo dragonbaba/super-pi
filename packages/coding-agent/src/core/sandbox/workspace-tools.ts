@@ -14,6 +14,10 @@ import { processedImage } from "../../utils/processed-image.ts";
 import { SubagentScheduler, type TaskWorkspace } from "../tasks/scheduler.ts";
 import { HARD_MAX_CONCURRENT } from "../tasks/limits.ts";
 import { READ_LINES, IMAGE_LIMIT } from "./mxc-file-limits.mjs";
+import { SandboxFileService, type RunSandboxFilePhase } from "../files/file-sandbox-service.ts";
+import type { SandboxFileServiceFactory } from "../files/session-files.ts";
+import type { ObservationPermissions } from "../files/changes.ts";
+import { observeSandboxFileChange } from "../files/file-sandbox-observation.ts";
 
 const names = WORKSPACE_TOOL_NAMES;
 const BASELINE_PATTERN = /^[a-f0-9]{64}$/;
@@ -55,6 +59,15 @@ export class WorkspaceSandboxTools {
   private readonly networkSession?: SandboxNetworkSession;
   private networkStatus = false;
   private readonly autoResizeImages?: () => boolean;
+  private readonly fileFactory: SandboxFileServiceFactory = (event, ctx, paths) =>
+    new SandboxFileService(this.backend, this.runFilePhase, event, ctx, this.runtime(), this.shutdown.signal, paths);
+  private readonly fileObserver: NonNullable<ObservationPermissions["observeFileChange"]> = (ctx, record) =>
+    observeSandboxFileChange(this.backend, this.runFilePhase, this.runtime(), this.shutdown.signal, ctx, record);
+  private readonly runFilePhase: RunSandboxFilePhase = async (signal, run) => {
+    const reservation = this.operations.reserve(OPERATION_SLOT);
+    try { return await this.operations.run(signal, run); }
+    finally { reservation.release(); }
+  };
   constructor(cwd: string, parent: string, mode: "read-only" | "sandbox-write", runtime: () => ExtensionRuntime, toolchainOptions: WorkspaceSandboxOptions = {}, autoResizeImages?: () => boolean) {
     this.autoResizeImages = autoResizeImages;
     this.backend = new WorkspaceSandboxBackend(cwd, parent, mode, toolchainOptions); this.runtime = runtime;
@@ -66,12 +79,10 @@ export class WorkspaceSandboxTools {
     const commandEnvironment = " Command cwd: " + cwd
       + ". Commands and file tools directly use the authorized workspace. Use PowerShell 7 syntax; Bash is unavailable in this mode. Network access: " + network + ".";
     for (const name of names) {
+      // The session file owner installs every mutation below with the shared
+      // v3 schema and final invocation handoff.
+      if (name === "write" || name === "edit" || name === "copy" || name === "delete" || name === "move" || name === "file_batch") continue;
       const parameters = name === "powershell" ? Type.Object({ command: Type.String(), cwd: Type.Optional(Type.String({ description: "Literal working directory inside the primary or added workspace; defaults to the primary workspace." })), timeout: Type.Optional(Type.Number({ minimum: 0.001, maximum: 120 })) })
-        : name === "file_batch" ? Type.Object({ operations: Type.Array(Type.Any(), { minItems: 1, maxItems: 16 }) })
-        : name === "write" ? Type.Object({ path: Type.String(), content: Type.String(), snapshot: Type.Optional(Type.String()) })
-        : name === "edit" ? Type.Object({ path: Type.String(), snapshot: Type.String(), edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })) })
-        : name === "move" ? Type.Object({ path: Type.String(), destination: Type.String() })
-        : name === "delete" ? Type.Object({ path: Type.String() })
         : name === "read" ? Type.Object({ path: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: READ_LINES })) })
         : name === "grep" ? Type.Object({ path: Type.Optional(Type.String()), pattern: Type.Optional(Type.String()),
           outputMode: Type.Optional(Type.Union([Type.Literal("content"), Type.Literal("files"), Type.Literal("count")])) })
@@ -90,12 +101,16 @@ export class WorkspaceSandboxTools {
   }
   install(base: Record<string, ToolDefinition>): Record<string, ToolDefinition> {
     const installed: Record<string, ToolDefinition> = Object.create(null);
-    for (const name of Object.keys(base)) if (name !== "bash") installed[name] = base[name]!;
+    for (const name of Object.keys(base)) if (name !== "bash" && name !== "write" && name !== "edit" && name !== "copy" && name !== "delete" && name !== "move" && name !== "file_batch") installed[name] = base[name]!;
     for (const [name, definition] of this.definitions) installed[name] = definition;
+    this.runtime().nativeFiles?.installSandbox(installed, this.fileFactory, this.fileObserver);
+    for (const name of names) if (installed[name]) this.definitions.set(name, installed[name]!);
     return installed;
   }
   definition(name: string): ToolDefinition | undefined { return this.definitions.get(name); }
   private async execute(name: string, id: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) {
+    if (name === "write" || name === "edit" || name === "copy" || name === "delete" || name === "move" || name === "file_batch")
+      throw new Error("[SANDBOX_UNSUPPORTED] File mutations require the session file invocation owner.");
     const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
     const operationSignal = AbortSignal.any(signal ? [signal, boundary.signal, this.shutdown.signal] : [boundary.signal, this.shutdown.signal]);
     const reservation = this.operations.reserve(OPERATION_SLOT);
@@ -201,6 +216,7 @@ export class WorkspaceSandboxTools {
     }
   }
   async close(): Promise<void> {
+    this.runtime().nativeFiles?.releaseSandboxFactory(this.fileFactory);
     this.shutdown.abort(); this.operations.dispose();
     await this.operations.waitForIdle(); await this.backend.close();
   }

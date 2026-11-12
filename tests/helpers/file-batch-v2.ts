@@ -1,20 +1,21 @@
 import { parse, resolve } from "node:path";
-import { WINDOWS_BATCH_COMPONENT_PATTERN, WINDOWS_PATH_SEPARATOR_PATTERN } from "./regex.ts";
-import { resolveToolPath } from "./file-path.ts";
-import { mutationRequestHash } from "./file-invocation.ts";
-import { canonicalCreationDirectories, directoryKey } from "./file-creation.ts";
-import { selectCommitMetadata } from "./file-commit-metadata.ts";
-import { PreviewBudget } from "./change-preview.ts";
-import { assertIndependent, copyBatchInput, type BatchInput } from "./file-batch-protocol.ts";
-import { formatBatchResult, type ItemResult } from "./file-results.ts";
-import type { PathIdentity } from "./native-file-core.ts";
-import { FileService, type PreparedFileItem, type ExecutePreparedFile, type FileExecutionHooks, type FileOperationInput } from "./file-service.ts";
+import { WINDOWS_BATCH_COMPONENT_PATTERN, WINDOWS_PATH_SEPARATOR_PATTERN } from "../../packages/coding-agent/src/core/files/regex.ts";
+import { resolveToolPath } from "../../packages/coding-agent/src/core/files/file-path.ts";
+import { mutationRequestHash } from "../../packages/coding-agent/src/core/files/file-invocation.ts";
+import { canonicalCreationDirectories, directoryKey } from "../../packages/coding-agent/src/core/files/file-creation.ts";
+import { selectCommitMetadata } from "../../packages/coding-agent/src/core/files/file-commit-metadata.ts";
+import { PreviewBudget } from "../../packages/coding-agent/src/core/files/change-preview.ts";
+import { assertIndependent, copyBatchInput, type BatchInput } from "../../packages/coding-agent/src/core/files/file-batch-protocol.ts";
+import { formatBatchResult, type ItemResult } from "../../packages/coding-agent/src/core/files/file-results.ts";
+import type { PathIdentity } from "../../packages/coding-agent/src/core/files/native-file-core.ts";
+import { FileService, type PreparedFileItem, type ExecutePreparedFile, type FileExecutionHooks, type FileOperationInput } from "../../packages/coding-agent/src/core/files/file-service.ts";
 
-export { FileBatchParameters } from "./file-batch-protocol.ts";
-export { renderBatchResult } from "./file-results.ts";
+export { FileBatchParameters } from "../../packages/coding-agent/src/core/files/file-batch-protocol.ts";
+export { renderBatchResult } from "../../packages/coding-agent/src/core/files/file-results.ts";
 type BatchItem = PreparedFileItem & { itemId: string };
 
-/** Fixed input and bounded preparation, with no model-turn or display-based admission rules. */
+/** Historical v2 producer fixture. Production mutations use FileMutation v3;
+ * retained only to verify old receipt reconstruction and version compatibility. */
 export class FileBatch {
   readonly input: BatchInput;
   readonly requestHash: string;

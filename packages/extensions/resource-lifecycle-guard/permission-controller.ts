@@ -1,4 +1,5 @@
 import { prepareShellCwd } from "@super-pi/coding-agent";
+import { getSessionFiles } from "@super-pi/coding-agent/internal/files/file-host";
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -139,7 +140,7 @@ function subagentTaskRequests(input: unknown, defaultCwd: string): SubagentTaskR
 }
 
 interface OperationRequest {
-  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec" | "delete" | "move" | "file_batch";
+  operation: "edit" | "write" | "lsp_fix" | "bash" | "powershell" | "browser_exec" | "copy" | "delete" | "move" | "file_batch";
   batch?: true;
   readOnlyPreview?: boolean;
   nativePlan?: NativePlan;
@@ -150,7 +151,7 @@ interface OperationRequest {
   exactTargets: string[];
   targetAssessments: PermissionTargetAssessment[];
   classes: readonly string[];
-  pathApproval?: { canonicalTarget: string; protectedRoots: string[] };
+  pathApproval?: { canonicalTarget: string; protectedRoots: string[]; canonicalPaths?: readonly string[] };
   highRisk: boolean;
   catastrophicRoots?: string[];
   opaqueScript: boolean;
@@ -477,7 +478,7 @@ export class SessionPermissionController {
   }
 
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner, opaqueScript = false): Promise<ToolCallBlock | undefined> {
-    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
+    if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "copy" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
       && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
     if (!this.#restored) return { block: true, reason: "[SHELL_CWD_CHANGED] Permissions are unavailable until the Session workspace identity is restored; the tool was not executed." };
@@ -925,6 +926,32 @@ export class SessionPermissionController {
 
   async #buildRequest(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner): Promise<OperationRequest | undefined> {
     const purpose = operationPurpose(event, ctx);
+    const files = getSessionFiles(this.#pi);
+    if (files && (event.toolName === "write" || event.toolName === "edit" || event.toolName === "copy" || event.toolName === "delete" || event.toolName === "move" || event.toolName === "file_batch")) {
+      const prepared = files.getPreparedMutation(event.input, event.toolCallId, event.toolName);
+      if (!prepared) throw new Error("[POLICY_BLOCKED] Missing current session file preparation.");
+      const exactTargets: string[] = [], canonicalPaths: string[] = [], targetAssessments: PermissionTargetAssessment[] = [], destructiveTargets: string[] = [], primitives: string[] = [];
+      let highRisk = false;
+      for (const item of prepared.items) {
+        for (let index = 0; index < item.paths.length; index++) {
+          const path = item.paths[index]; exactTargets.push(path); canonicalPaths.push(path);
+          // Copy source access retains the legacy read policy. Only destinations
+          // need a writable workspace; every source remains visible in the dialog.
+          if (item.operation !== "copy" || index > 0) targetAssessments.push(await this.#state.assessTarget(path, ctx.cwd));
+          if (item.operation === "delete" || item.operation === "move") destructiveTargets.push(path);
+        }
+        if (item.operation === "delete") { highRisk = true; if (!primitives.includes("irreversible_delete_no_backup")) primitives.push("irreversible_delete_no_backup"); }
+        for (const path of item.tree?.protectedPaths ?? [item.approval]) {
+          if (sensitiveProtectedRoots(path.protectedRoots.filter(root => root !== "workspace_root"))) highRisk = true;
+          for (const root of path.protectedRoots) if (!primitives.includes(root)) primitives.push(root);
+        }
+      }
+      return { operation: event.toolName, batch: true, readOnlyPreview: prepared.dryRun, requestHash: prepared.requestHash,
+        catastrophicRoots: prepared.dryRun ? [] : await protectedRootViolations({ targets: destructiveTargets }, ctx.cwd, this.#state.additional),
+        purpose, summary: prepared.describePreflight(), exactTargets, targetAssessments, classes: ["file:" + event.toolName],
+        highRisk: !prepared.dryRun && highRisk, opaqueScript: false, primitives, fingerprintMaterial: prepared.requestHash,
+        pathApproval: { canonicalTarget: prepared.items[0].target, canonicalPaths, protectedRoots: [] } };
+    }
     if (event.toolName === "browser_exec") {
       if (!event.input || typeof event.input !== "object") return undefined;
       const input = event.input as { code?: unknown; session?: unknown; timeoutMs?: unknown };

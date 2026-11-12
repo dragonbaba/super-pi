@@ -15,6 +15,8 @@ import { createAgentSession, type CreateAgentSessionOptions } from "../packages/
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { isMutationEffectCommit } from "./helpers/file-mutation-progress.ts";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import type { AssistantMessage, Context } from "../packages/ai/src/types.ts";
 import type { InlineExtension, ExtensionFactory, ToolCatalogSnapshot } from "../packages/coding-agent/src/core/extensions/types.ts";
@@ -46,6 +48,16 @@ const jiti = createJiti(import.meta.url);
 const { default: mutation } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/mutation-guard-write/index.ts");
 const { default: guardrails } = await jiti.import<{ default: InlineExtension }>("../packages/extensions/tool-loop-guardrails/index.ts");
 const { collectChanges } = await jiti.import<typeof import("../packages/extensions/mutation-guard-write/changes.ts")>("../packages/extensions/mutation-guard-write/changes.ts");
+async function currentFileChanges(manager: SessionManager, cwd: string) {
+  const records = collectChanges(manager.getBranch(), cwd), owner = new FileChangesV3(manager);
+  try {
+    for (const call of await owner.calls()) {
+      owner.open(call.ref); let more: boolean;
+      do { const page = owner.nextItems(); for (const row of page.records) records.push(row); more = page.hasMore; } while (more);
+    }
+    return records;
+  } finally { owner.dispose(); }
+}
 const { default: planMode } = await jiti.import<{ default: ExtensionFactory }>("../packages/plan-mode/src/index.ts");
 const { default: toolClassification } = await jiti.import<{ default: InlineExtension }>("../packages/tool-classification/src/index.ts");
 const MODEL = { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false,
@@ -191,7 +203,7 @@ test("caught mutation invocation journal failure cannot commit store",async t=>{
 
 test("caught native batch item journal failure keeps aggregate verification fatal",async t=>{
   const f=await fixture(t),append=f.manager.appendCustomEntry.bind(f.manager);let fired=false;
-  f.manager.appendCustomEntry=(kind,data)=>{if(!fired&&kind==="file-mutation-progress-v2"&&(data as any)?.phase==="result"){fired=true;throw new Error("item journal failed");}return append(kind,data);};
+  f.manager.appendCustomEntry=(kind,data)=>{if(!fired&&isMutationEffectCommit(kind,data)){fired=true;throw new Error("item journal failed");}return append(kind,data);};
   const first=await f.run(['try{await tools.file_batch({operations:[{operation:"write",mode:"create",path:"batch.txt",content:"committed"}]})}catch{}store("bad",true);']);
   assert.equal(fired,true);assert.equal(first.results[0]?.isError,true);assert.equal(readFileSync(join(f.cwd,"batch.txt"),"utf8"),"committed");
   const saved=f.manager.getBranch().find(e=>e.type==="custom"&&e.customType===CODEMODE_RESULT_ENTRY) as any;
@@ -694,13 +706,13 @@ test("native files have one owner and support same-script unshown read/edit in d
     assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "final\n");
     assert.equal(readFileSync(join(f.cwd, "new/copy.txt"), "utf8"), "copy");
     assert.deepEqual(files.getDiagnostics(), { pending: 0, inFlight: 0, revisions: 2, closed: false });
-    const changes = collectChanges(f.manager.getBranch(), f.cwd);
+    const changes = await currentFileChanges(f.manager, f.cwd);
     assert.ok(changes.length >= 3); assert.ok(changes.every(change => !change.unavailable), JSON.stringify(changes));
-    const factCount = f.manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2").length;
+    const factCount = f.manager.getBranch().filter(entry => entry.type === "custom" && (entry.customType === "file-mutation-progress-v2" || entry.customType === "file-mutation-progress-v3")).length;
     const preview = await f.run(['await tools.file_batch({dryRun:true,operations:[{operation:"write",mode:"create",path:"preview/only.txt",content:"preview"}]})']);
     assert.equal(preview.results.at(-1)?.isError, false, JSON.stringify(preview.results.at(-1)));
     assert.throws(() => readFileSync(join(f.cwd, "preview/only.txt")), { code: "ENOENT" });
-    assert.equal(f.manager.getBranch().filter(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v2").length, factCount, "preview records no mutation progress");
+    assert.equal(f.manager.getBranch().filter(entry => entry.type === "custom" && (entry.customType === "file-mutation-progress-v2" || entry.customType === "file-mutation-progress-v3")).length, factCount, "preview records no mutation progress");
     assert.ok(collectChanges(f.manager.getBranch(), f.cwd).some(change => change.preview));
     if (!bundle) {
       const native = await f.run(['await tools.move({path:"new/copy.txt",destination:"new/moved.txt"}); await tools.delete({path:"new/moved.txt"});']);
@@ -1363,8 +1375,8 @@ test("a completed write stays recoverable in /changes when its end event times o
 	assert.equal((saved[0] as any).data.result.isError, false, "the persisted receipt keeps the tool's own outcome");
 	assert.match((saved[0] as any).data.observationError, /tool_execution_end.*timed out after 20ms/);
 	const sha256 = createHash("sha256").update("created\n").digest("hex");
-	for (const branch of [f.manager.getBranch(), SessionManager.open(f.manager.getSessionFile()!).getBranch()]) {
-		const changes = collectChanges(branch, f.cwd);
+	for (const manager of [f.manager, SessionManager.open(f.manager.getSessionFile()!)]) {
+		const branch = manager.getBranch(), changes = await currentFileChanges(manager, f.cwd);
 		assert.equal(changes.length, 1, JSON.stringify(changes));
 		assert.equal(changes[0]!.operation, "write");
 		assert.equal(changes[0]!.status, "succeeded");
@@ -2230,7 +2242,7 @@ for (const nested of ["edit", "file_batch"]) test(`a nested ${nested} receipt re
 	await f.session.bindExtensions({ onError: error => errors.push(error) });
 	await f.session.reload();
 	assert.deepEqual(errors, []);
-	const changes = collectChanges(f.manager.getBranch(), f.cwd);
+	const changes = await currentFileChanges(f.manager, f.cwd);
 	assert.ok(changes.some(change => !change.unavailable));
 	const outcome = await f.run(['await tools.write({path:"file.txt",content:"edited\\nworld\\n"})',
 		'await tools.read({path:"file.txt"}); await tools.write({path:"file.txt",content:"edited\\nworld\\n"})']);

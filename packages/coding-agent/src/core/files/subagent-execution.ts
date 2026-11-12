@@ -11,7 +11,7 @@ import type { TSchema } from "typebox";
 
 export const WORKSPACE_MESSAGE_PREFIX = "sp-workspace-v1:";
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
-const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "delete", "move", "file_batch", "bash", "powershell"]);
+const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "copy", "delete", "move", "file_batch", "bash", "powershell"]);
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SEARCH_TOOLS = new Set(["grep", "find", "ls"]);
 const READY_TIMEOUT_MS = 30_000;
@@ -105,7 +105,11 @@ export class SubagentExecution {
         }
         else if (name === "file_batch") {
             if (!Array.isArray(args.operations)) throw new Error("Expected file batch operations");
-            args.operations = args.operations.map((item: Record<string, any>) => this.rebase(item, item.operation));
+            const operations = []; for (const item of args.operations) operations.push(this.rebase(item, item.operation)); args.operations = operations;
+        } else if (name === "copy" || name === "move" || name === "delete") {
+            if (Array.isArray(args.items)) { const items = []; for (const item of args.items) items.push(this.rebase(item, name)); args.items = items; }
+            if (Array.isArray(args.paths)) { const paths = []; for (const path of args.paths) paths.push(resolve(this.profile.cwd, path)); args.paths = paths; }
+            Object.assign(args, this.rebase(args, name));
         } else Object.assign(args, this.rebase(args, name));
         this.scope = this.agent.createDelegatedToolDispatch(`${this.parentToolCallId}:delegated:${++this.sequence}`, this.controller.signal, observeToolEvent, this.tools);
         this.pending = this.run(name, args, this.scope);

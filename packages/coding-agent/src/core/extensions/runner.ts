@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./types.ts";
 import { getShellCwdBinding } from "../tools/shell-cwd.ts";
 import type { SessionExecutionBoundary } from "../execution-boundary.ts";
 import type { NativePolicyInvocation } from "../execution-policy.ts";
+import { FILE_RESULT_ENTRY } from "../files/file-result-protocol.ts";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -596,7 +597,7 @@ class PendingToolAuthorization implements ToolInvocationAuthorization {
       // in tool_call. Native mutation grants retain their private value checks.
       if (!this.authority && this.checks.length === 0) return args;
       // Native files have one terminal authority and own a private prepared payload.
-      if (name === "file_batch" || name === "edit" || name === "write" || name === "delete" || name === "move") {
+      if (name === "file_batch" || name === "edit" || name === "write" || name === "copy" || name === "delete" || name === "move") {
         if (this.checks.length || !this.authority) throw new Error("Blocked by policy: file operation requires one terminal authority");
         const authority = this.authority;
         try { return authority.consume(args, id, name, signal); }
@@ -853,6 +854,7 @@ export class ExtensionRunner {
 		this.runtime.sendMessage = actions.sendMessage;
 		this.runtime.sendUserMessage = actions.sendUserMessage;
 		this.runtime.appendEntry = actions.appendEntry;
+		this.runtime.appendFileEntry = actions.appendFileEntry ?? this.appendNativeFileEntry;
 		this.runtime.setSessionName = actions.setSessionName;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setLabel = actions.setLabel;
@@ -944,6 +946,12 @@ export class ExtensionRunner {
 			this.modelRegistry.unregisterProvider(name);
 		};
 	}
+  /** Standalone ExtensionRunner callers have the same actual append-ID owner as
+   * AgentSession. It never infers an ID from a later leaf or emits per-row events. */
+  private readonly appendNativeFileEntry = (kind: string, data: unknown): string => {
+    if (kind !== FILE_RESULT_ENTRY) throw new Error("Invalid private file entry kind.");
+    return this.sessionManager.appendCustomEntry(kind, data);
+  };
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {
 		if (actions) {
@@ -1889,7 +1897,7 @@ export class ExtensionRunner {
 		const name = event.toolName;
 		if (!this.runtime.nativePermissions && !this.handlerEventTypes.has("tool_call")
 			&& !this.runtime.nativeFiles?.ownsDefinition(definition) && name !== "bash" && name !== "powershell"
-			&& name !== "edit" && name !== "write" && name !== "delete" && name !== "move" && name !== "file_batch") {
+			&& name !== "edit" && name !== "write" && name !== "copy" && name !== "delete" && name !== "move" && name !== "file_batch") {
 			if (this.ordinaryToolEpoch?.generation !== generation) this.ordinaryToolEpoch = new OrdinaryToolEpoch(boundary);
 			return { finalAuthorization: this.ordinaryToolEpoch };
 		}
@@ -1901,14 +1909,18 @@ export class ExtensionRunner {
 		this.beginOwnedHook();
 		const authorization = new PendingToolAuthorization(this.finalAuthorizations ??= new Set(), boundary, generation);
 		let handedOff = false;
+		let filesPrepared = false;
+    // One invocation setup hook. Cheap policy denials precede its filesystem
+    // preflight; its plans are included in the one approval and existing drain.
+    const prepareNativeFiles = async (canonicalPaths?: readonly string[]): Promise<(() => string) | undefined> => {
+      if (!this.runtime.nativeFiles?.ownsDefinition(definition)) return;
+      const native = await this.runtime.nativeFiles.prepareInvocation(event, ctx, canonicalPaths);
+      filesPrepared = true;
+      if (native) { authorization.add(native); return native.describePreflight; }
+    };
 		try {
-		if (this.runtime.nativePermissions) authorization.policy = await this.runtime.nativePermissions.authorize(event, ctx, definition);
-		if (this.runtime.nativeFiles?.ownsDefinition(definition)) {
-			const native = await this.runtime.nativeFiles.prepareInvocation(event, ctx);
-			if (native) {
-				authorization.add(native);
-			}
-		}
+		if (this.runtime.nativePermissions) authorization.policy = await this.runtime.nativePermissions.authorize(event, ctx, definition, false, prepareNativeFiles);
+    if (!filesPrepared) await prepareNativeFiles();
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;

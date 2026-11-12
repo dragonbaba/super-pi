@@ -300,7 +300,7 @@ test("delegation consumption reuses the invocation authority without allocating 
 test("native file execution reuses invocation callbacks through effect and release boundaries", () => {
   for (const [path, targets] of [
     ["packages/coding-agent/src/core/files/file-service.ts", [["FileExecution", ["run", "record"]], ["FileService", ["assertPrepared", "release", "clear", "dispose", "revalidate"]]]],
-    ["packages/coding-agent/src/core/files/file-batch.ts", [["FileBatch", ["assertLive", "release", "dispose"]], ["BatchExecution", ["run", "assertCurrent", "record", "execute"]]]],
+    ["packages/coding-agent/src/core/files/file-mutation.ts", [["FileMutation", ["assertLive", "release", "dispose"]], ["FileMutationExecution", ["run", "assertCurrent", "recordEffect", "execute"]]]],
     ["packages/coding-agent/src/core/files/session-files.ts", [["NativeFileInvocation", ["assertCurrent", "record", "release", "revoke", "dispose"]], ["SessionFiles", ["assertCurrent", "finish", "ownsDefinition", "hasHandlers", "hasRevision"]]]],
   ] as const) {
   const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);

@@ -8,9 +8,10 @@ import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
 import { createSessionLease, type SessionLease } from "./session-lease.ts";
 import { NATIVE_FILE_REVISION } from "./files/file-host.ts";
+import { FILE_RESULT_ENTRY, FILE_MUTATION_CALL_ENTRY } from "./files/file-result-protocol.ts";
 import { SubagentExecution, type OpenSubagentExecution } from "./files/subagent-execution.ts";
 import type { ToolSelection } from "./tool-selection.ts";
-import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES } from "./codemode-constants.ts";
+import { CODEMODE_NAME, CODEMODE_DESCRIPTION, CODEMODE_STORE_ENTRY, CODEMODE_CALL_ENTRY, CODEMODE_RESULT_ENTRY, DIRECT_CONTROL_NAMES, CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import type { CodemodeReadEvent } from "./extensions/types.ts";
 import type { AutoReviewDenial, PermissionRefusal } from "./execution-policy.ts";
 /**
@@ -793,6 +794,18 @@ export class AgentSession {
 	private _scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
 
 	// Event subscription state
+	/** Public custom entries keep their existing renderer/observer event. */
+	private readonly _appendSessionEntry = (customType: string, data: unknown): string => {
+		const entryId = this.sessionManager.appendCustomEntry(customType, data);
+		const entry = this.sessionManager.getEntry(entryId);
+		if (entry) this._emit({ type: "entry_appended", entry });
+		return entryId;
+	};
+	/** Native journal metadata is queried through file_result, without a render event per row. */
+	private readonly _appendNativeFileEntry = (customType: string, data: unknown): string => {
+		if (customType !== FILE_RESULT_ENTRY) throw new Error("Native file publication requires a v3 journal record");
+		return this.sessionManager.appendCustomEntry(customType, data);
+	};
 	private _unsubscribeAgent?: () => void;
 	private _unsubscribeAgentObserver?: () => void;
 	private _unsubscribeExtensionObserver?: () => void;
@@ -1210,7 +1223,7 @@ export class AgentSession {
 	 * happens here instead of in wrappers.
 	 */
 	private _installAgentToolHooks(): void {
-		this.agent.beforeToolCall = async ({ toolCall, args, context, parentToolCallId, nestedIssuedAt }, signal) => {
+		this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args, context, parentToolCallId, nestedIssuedAt }, signal) => {
 			await this._codemode.admitVisibleReads(this._emitCodemodeRead);
 			if (toolCall.name === "inspect_image" && this.settingsManager.getBlockImages()) {
 				return { block: true, reason: "图片读取/发送已被 blockImages 禁止" };
@@ -1228,7 +1241,16 @@ export class AgentSession {
 					input: args as Record<string, unknown>,
 				}, context.tools?.find(tool => tool.name === toolCall.name)?.execute === this._toolRegistry.get(toolCall.name)?.execute
 					? this._toolDefinitions.get(toolCall.name)?.definition : undefined, signal);
-				try { if (!decision?.block) this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args); }
+				try {
+					if (!decision?.block) {
+						this._codemode.recordInvocation(parentToolCallId, toolCall.id, toolCall.name, args);
+						if (!parentToolCallId && assistantMessage.api === "host-operation" && CODEMODE_MUTATION_NAMES.has(toolCall.name)
+							&& this._resourceLoader.getExtensions().runtime.nativeFiles?.ownsDefinition(this._toolDefinitions.get(toolCall.name)?.definition)) {
+							this.sessionManager.appendCustomEntry(FILE_MUTATION_CALL_ENTRY, { version: 3, origin: "host-operation",
+								call: { type: "toolCall", id: toolCall.id, name: toolCall.name, arguments: structuredClone(args) } });
+						}
+					}
+				}
 				catch (error) { decision?.finalAuthorization?.release(); throw error; }
 				return decision;
 			} catch (err) {
@@ -4716,12 +4738,9 @@ export class AgentSession {
 					});
 				},
 				appendEntry: (customType, data) => {
-					const entryId = this.sessionManager.appendCustomEntry(customType, data);
-					const entry = this.sessionManager.getEntry(entryId);
-					if (entry) {
-						this._emit({ type: "entry_appended", entry });
-					}
+					this._appendSessionEntry(customType, data);
 				},
+				appendFileEntry: this._appendNativeFileEntry,
 				setSessionName: (name) => {
 					this.setSessionName(name);
 				},
@@ -5249,9 +5268,11 @@ export class AgentSession {
 				});
 		}
 
-		if (!this._baseToolsOverride && !this._workspaceSandbox) this._resourceLoader.getExtensions().runtime.nativeFiles?.install(baseToolDefinitions,
+		if (!parentExecution && !this._baseToolsOverride && !this._workspaceSandbox) this._resourceLoader.getExtensions().runtime.nativeFiles?.install(baseToolDefinitions,
 			!this._allowedToolNames || this._allowedToolNames.has("edit") || this._allowedToolNames.has("write") || this._allowedToolNames.has("file_batch"), this._operationOptions !== undefined);
 		if (this._workspaceSandbox) baseToolDefinitions = this._workspaceSandbox.install(baseToolDefinitions);
+		if (this._workspaceSandbox && !this._baseToolsOverride) this._resourceLoader.getExtensions().runtime.nativeFiles?.installResultTool(baseToolDefinitions);
+		if (parentExecution) this._resourceLoader.getExtensions().runtime.nativeFiles?.installResultTool(baseToolDefinitions);
 		if (Object.hasOwn(baseToolDefinitions, CODEMODE_NAME)) throw new Error("codemode is a reserved built-in orchestration tool");
 		baseToolDefinitions[CODEMODE_NAME] = this._codemode.definition;
 		const nativeTasks = this._resourceLoader.getExtensions().runtime.nativeTasks;
@@ -5312,7 +5333,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: [...getDefaultToolNames(), ...(nativeTasks ? ["tasks"] : []), ...(extensionsResult.runtime.nativeFiles ? ["delete", "move", "file_batch"] : [])];
+			: [...getDefaultToolNames(), ...(nativeTasks ? ["tasks"] : []), ...(extensionsResult.runtime.nativeFiles ? ["copy", "delete", "move", "file_batch", "file_result"] : [])];
 		const requestedActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		const powerShellAvailable = this.isPowerShellAvailable();
 		const baseActiveToolNames: string[] = [];

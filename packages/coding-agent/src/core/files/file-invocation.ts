@@ -1,6 +1,7 @@
 import { createHash, type Hash } from "node:crypto";
 import type { NativePlan } from "./native-file-core.ts";
 import type { FileCreationPlan } from "./file-creation.ts";
+import type { NativeFileInvocationInput, NativeFileOperation } from "./file-operation-input.ts";
 
 // One-call binding shared with the legacy issuer; it carries no command classification policy.
 const PERMISSION_PATH_APPROVAL = Symbol.for("pi.session-permission.path-approval.v2");
@@ -10,7 +11,7 @@ export interface PermissionPathApproval {
   schemaVersion: 1;
   sequence: number;
   toolCallId: string;
-  operation: "edit" | "write" | "lsp_fix" | "delete" | "move" | "file_batch";
+  operation: "edit" | "write" | "lsp_fix" | "copy" | "delete" | "move" | "file_batch";
   requestHash: string;
   canonicalTarget: string;
   /** Native policy binds every batch source/destination, not only the first target. */
@@ -27,9 +28,21 @@ export interface PermissionPathApproval {
 
 interface PermissionCarryingInput { [PERMISSION_PATH_APPROVAL]?: PermissionPathApproval; }
 
+/** Hash one journal item directly from its original array/scalar call, without a projected wrapper. */
+export function nativeItemRequestHash(operation: NativeFileOperation, input: NativeFileInvocationInput, index: number): string {
+  const pair = input.items?.[index], hash = createHash("sha256");
+  updateStructuredHashField(hash, operation);
+  updateStructuredHashField(hash, input.paths ? input.paths[index] : pair ? pair.path : input.path);
+  updateStructuredHashField(hash, input.purpose);
+  updateStructuredHashField(hash, pair ? pair.destination : input.destination);
+  if (operation === "delete" && input.recursive !== undefined) hash.update(input.recursive ? "recursive:1;" : "recursive:0;");
+  if (operation === "copy" && input.overwrite !== undefined) hash.update(input.overwrite ? "overwrite:1;" : "overwrite:0;");
+  return hash.digest("hex");
+}
+
 export function mutationRequestHash(operation: PermissionPathApproval["operation"], input: unknown): string {
   const value = input && typeof input === "object"
-    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown; operations?: unknown; dryRun?: unknown; mode?: unknown }
+    ? input as { path?: unknown; destination?: unknown; purpose?: unknown; content?: unknown; snapshot?: unknown; edits?: unknown; kind?: unknown; root?: unknown; server?: unknown; write?: unknown; operations?: unknown; dryRun?: unknown; mode?: unknown; paths?: unknown; items?: unknown; recursive?: unknown; overwrite?: unknown }
     : {};
   const hash = createHash("sha256");
   updateStructuredHashField(hash, operation);
@@ -43,8 +56,21 @@ export function mutationRequestHash(operation: PermissionPathApproval["operation
       updateStructuredHashField(hash, item?.mode);
       hash.update(mutationRequestHash(item?.operation, item));
     }
-  } else if (operation === "move" || operation === "delete") {
+  } else if (operation === "move" || operation === "delete" || operation === "copy") {
     updateStructuredHashField(hash, value.destination);
+    if (value.paths !== undefined) {
+      hash.update("paths;");
+      if (!Array.isArray(value.paths)) hash.update("invalid;");
+      else for (const path of value.paths) updateStructuredHashField(hash, path);
+    }
+    if (value.items !== undefined) {
+      hash.update("items;");
+      if (!Array.isArray(value.items)) hash.update("invalid;");
+      else for (const item of value.items) { updateStructuredHashField(hash, item?.path); updateStructuredHashField(hash, item?.destination); }
+    }
+    if (value.recursive !== undefined) hash.update(value.recursive === true ? "recursive:1;" : "recursive:0;");
+    if (value.overwrite !== undefined) hash.update(value.overwrite === true ? "overwrite:1;" : "overwrite:0;");
+    if (value.dryRun !== undefined) hash.update(value.dryRun === true ? "preview;" : "apply;");
   } else if (operation === "write") {
     updateStructuredHashField(hash, value.content);
     // Preserve the existing hash when the optional baseline is absent.

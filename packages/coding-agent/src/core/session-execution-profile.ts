@@ -6,7 +6,7 @@ import { assertPermissionMode, type SessionPermissionMode } from "./permission-m
 import type { SessionManager } from "./session-manager.ts";
 
 export interface SessionExecutionProfile { mode: SessionPermissionMode; directories: readonly string[]; }
-export const WORKSPACE_TOOL_NAMES = ["read", "ls", "find", "grep", "write", "edit", "delete", "move", "file_batch", "powershell"] as const;
+export const WORKSPACE_TOOL_NAMES = ["read", "ls", "find", "grep", "write", "edit", "copy", "delete", "move", "file_batch", "powershell"] as const;
 export const MAX_SESSION_DIRECTORIES = 16;
 
 export function containsDirectory(root: string, target: string): boolean {

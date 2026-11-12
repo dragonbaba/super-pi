@@ -1,15 +1,17 @@
 // Controlled file-tool entry inside MXC; no shell parser or host fallback.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
-import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from './image-signature.mjs';
+import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from '../../utils/image-signature.mjs';
+import { MxcFilePublication } from '../files/mxc-file-publication.mjs';
+import { FILE_RPC_REQUEST_BYTES } from '../files/file-operation-limits.mjs';
+import { pathIdentityFromStat, sameIdentity, boundedReason } from '../files/file-tree-core.mjs';
 import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, DIRECTORY_READ_BUFFER,
   normalizeReadOffset, normalizeReadLimit } from './mxc-file-limits.mjs';
 
 const DIRECTORY_OPTIONS = Object.freeze({ bufferSize: DIRECTORY_READ_BUFFER });
 const PROTECTED_NAMES = new Set(['.git', '.sp']);
-const VERIFY_BYTES = 64 * 1024;
 let unverifiedPublication = false;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function need(value, message) { if (!value) throw new Error(message); }
@@ -177,49 +179,28 @@ function readWindow(source, input, reply) {
       + (nextOffset === undefined ? '' : '; nextOffset=' + nextOffset) + '.]\n' : '')
     + source.slice(start, end) + '\n[Snapshot: ' + reply.snapshot + ']';
 }
-function publishedSnapshot(target, identity, text) {
-  const expected = hash(text), size = Buffer.byteLength(text), fd = fs.openSync(target, 'r');
-  try {
-    const before = fs.fstatSync(fd, { bigint: true });
-    need(before.isFile() && before.dev === identity.dev && before.ino === identity.ino && before.size === BigInt(size), 'Published file identity changed; verify current state');
-    const bytes = Buffer.allocUnsafe(Math.min(VERIFY_BYTES, Math.max(1, size))), actual = createHash('sha256');
-    let offset = 0;
-    while (offset < size) {
-      const count = fs.readSync(fd, bytes, 0, Math.min(bytes.length, size - offset), offset);
-      need(count > 0, 'Published file changed during verification');
-      actual.update(count === bytes.length ? bytes : bytes.subarray(0, count)); offset += count;
-    }
-    const after = fs.fstatSync(fd, { bigint: true }), named = fs.lstatSync(target, { bigint: true });
-    need(named.isFile() && before.dev === named.dev && before.ino === named.ino && before.size === after.size
-      && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs && before.size === named.size
-      && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs && actual.digest('hex') === expected,
-      'Published file changed; verify current state');
-    return expected;
-  } finally { fs.closeSync(fd); }
-}
-function mutate(root, operation, input, maxWriteBytes) {
+function mutate(root, operation, input, maxWriteBytes, preflight = false, baseline, facts) {
+  need(!preflight || operation === 'write' || operation === 'edit', 'Only text preparation uses this owner');
   const target = local(root, input.path, true);
-  if (operation === 'delete') { need(fs.lstatSync(target).isFile(), 'Only files may be deleted'); fs.unlinkSync(target); return; }
-  if (operation === 'move') {
-    const destination = local(root, input.destination, true);
-    need(fs.lstatSync(target).isFile(), 'Only files may be moved');
-    fs.mkdirSync(path.dirname(destination), { recursive: true }); fs.linkSync(target, destination);
-    unverifiedPublication = true; fs.unlinkSync(target); unverifiedPublication = false; return;
-  }
   need(operation === 'write' || operation === 'edit', 'Unsupported file operation');
   if (operation === 'write' && !fs.existsSync(target)) {
     need(input.snapshot == null && typeof input.content === 'string' && Buffer.byteLength(input.content) <= maxWriteBytes, 'Invalid new-file write');
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const fd = fs.openSync(target, 'wx'); let identity;
-    unverifiedPublication = true; // The destination exists even if writing/stat/close subsequently fails.
-    try { fs.writeFileSync(fd, input.content); identity = fs.fstatSync(fd, { bigint: true }); } finally { fs.closeSync(fd); }
-    return verifiedPublication(target, identity, input.content);
+    need(input.mode !== 'overwrite' && baseline?.exists !== true, 'Prepared overwrite target disappeared; no creation');
+    if (baseline) need(hash(input.content) === baseline.nextSha256, 'Prepared new-file content changed; no creation');
+    if (preflight) {
+      try { fs.lstatSync(target); throw new Error('Create refuses an existing link or object'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      return { exists: false, target, nextSha256: hash(input.content), bytes: Buffer.byteLength(input.content) };
+    }
+    throw new Error('Exclusive creation requires the prepared v3 creation owner');
   }
   // Read a pinned version, then replace atomically; a failed temporary write leaves the original intact.
-  let fd = fs.openSync(target, 'r'), temporary;
+  let fd = fs.openSync(target, 'r');
   try {
     const before = fs.fstatSync(fd, { bigint: true });
     need(before.isFile() && before.size <= BigInt(FILE_LIMIT), 'File exceeds text capacity');
+    need(!(operation === 'write' && input.mode === 'create') && baseline?.exists !== false, 'Create target appeared; no overwrite');
+    if (baseline?.identity) need(sameIdentity(baseline.identity, pathIdentityFromStat(target, fs.realpathSync(target), before)), 'Prepared text target identity changed');
     const bytes = readHandle(fd, FILE_LIMIT);
     need(input.snapshot === hash(bytes), 'Read snapshot required or changed. Read again and reconcile before retry.');
     let text = input.content;
@@ -233,35 +214,28 @@ function mutate(root, operation, input, maxWriteBytes) {
       }
     }
     need(typeof text === 'string' && Buffer.byteLength(text) <= maxWriteBytes, 'Write exceeds the native write limit');
-    const candidate = path.join(path.dirname(target), '.superpi-write-' + randomUUID() + '.tmp');
-    const temporaryFd = fs.openSync(candidate, 'wx'); temporary = candidate;
-    let publication;
-    try { fs.writeFileSync(temporaryFd, text); publication = fs.fstatSync(temporaryFd, { bigint: true }); } finally { fs.closeSync(temporaryFd); }
-    const current = fs.fstatSync(fd, { bigint: true });
-    // Windows cannot replace the destination while this read handle is open.
-    fs.closeSync(fd); fd = undefined;
-    const named = fs.statSync(target, { bigint: true });
-    need(before.dev === named.dev && before.ino === named.ino && before.size === current.size
-      && before.mtimeNs === current.mtimeNs && before.ctimeNs === current.ctimeNs && before.size === named.size
-      && before.mtimeNs === named.mtimeNs && before.ctimeNs === named.ctimeNs, 'File changed before write');
-    unverifiedPublication = true;
-    fs.renameSync(temporary, target); temporary = undefined;
-    return verifiedPublication(target, publication, text);
-  } finally {
-    try { if (fd !== undefined) fs.closeSync(fd); }
-    finally { if (temporary) try { fs.unlinkSync(temporary); } catch (error) { unverifiedPublication = true; throw error; } }
-  }
+    if (baseline) need(hash(text) === baseline.nextSha256, 'Prepared text changed; no publication');
+    if (preflight) return { exists: true, target, identity: pathIdentityFromStat(target, fs.realpathSync(target), before), nextSha256: hash(text), bytes: Buffer.byteLength(text) };
+    const publication = new MxcFilePublication(target, fd, before, input.snapshot, baseline?.parent); fd = undefined;
+    try { return publication.commitText(text); }
+    finally { try { publication.dispose(); } finally {
+      unverifiedPublication ||= publication.requiresVerification;
+      if (facts) {
+        facts.stateChanged = publication.outcome === 'unknown' ? 'unknown' : publication.outcome === 'committed' || publication.retainedTemporary !== undefined;
+        facts.requiresVerification = publication.requiresVerification || undefined; facts.retainedTemporary = publication.retainedTemporary;
+        facts.commit = { strategy: 'staged_replace', outcome: publication.outcome, fileSynced: publication.outcome === 'committed', directorySynced: false,
+          retainedTemporary: publication.retainedTemporary };
+      }
+    } }
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
-function verifiedPublication(target, identity, text) {
-  unverifiedPublication = true;
-  const snapshot = publishedSnapshot(target, identity, text);
-  unverifiedPublication = false;
-  return snapshot;
-}
-let request, items, phase = 'request';
-try {
-  const requestFile = process.argv[2]; need(fs.statSync(requestFile).size <= 4 * 1024 * 1024, 'Request too large');
-  request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
+function runFileWorker(preparsedRequest) {
+ let request, phase = 'request';
+ try {
+  if (preparsedRequest === undefined) {
+    const requestFile = process.argv[2]; need(fs.statSync(requestFile).size <= FILE_RPC_REQUEST_BYTES, 'Request too large');
+    request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
+  } else request = preparsedRequest;
   const roots = request.workspaces, input = request.input, operation = request.operation;
   need(Array.isArray(roots) && roots.length > 0 && roots.length <= 17, 'Invalid workspace table');
   const root = roots[input.workspaceIndex ?? 0]; need(typeof root === 'string', 'Unknown workspace');
@@ -287,25 +261,31 @@ try {
     phase = 'read'; const result = search(root, operation, input.path || '.', input.pattern, input.outputMode);
     reply.text = result.text; reply.search = result.search;
   } else {
-    need(request.mode === 'sandbox-write', 'Read-only workspace'); phase = 'mutation';
-    if (operation === 'file_batch') {
-      need(Array.isArray(input.operations) && input.operations.length > 0 && input.operations.length <= 16, 'Invalid batch');
-      items = reply.items = [];
-      for (let index = 0; index < input.operations.length; index++) {
-        const item = input.operations[index];
-        try { items.push({ index, operation: item.operation, status: 'succeeded', snapshot: mutate(roots[item.workspaceIndex ?? 0], item.operation, item, request.maxWriteBytes) }); }
-        catch (error) {
-          items.push({ index, operation: item.operation, status: 'unknown', error: String(error.message).slice(0,800) });
-          for (let next = index + 1; next < input.operations.length; next++) items.push({ index: next, operation: input.operations[next].operation, status: 'not_started' });
-          throw error;
-        }
-      }
-    } else reply.snapshot = mutate(root, operation, input, request.maxWriteBytes);
-    reply.text = 'Workspace operation completed';
+    throw new Error('File mutations require the prepared v3 RPC');
   }
   console.log(JSON.stringify(reply));
-} catch (error) {
-  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: phase !== 'mutation', items,
-    requiresVerification: unverifiedPublication || undefined, error: String(error.message).slice(0, 32768) }));
+ } catch (error) {
+  console.log(JSON.stringify({ id: request?.id, ok: false, phase, noEffects: true, error: String(error.message).slice(0, 32768) }));
   process.exitCode = 1;
+ }
 }
+function prepareTextMutation(root, operation, input, maxWriteBytes) {
+  need(operation === 'write' || operation === 'edit', 'Invalid text preparation operation');
+  return mutate(root, operation, input, maxWriteBytes, true);
+}
+function executePreparedTextMutation(root, operation, input, maxWriteBytes, baseline) {
+  need(operation === 'write' || operation === 'edit', 'Invalid prepared text operation');
+  const facts = { stateChanged: false, requiresVerification: undefined, retainedTemporary: undefined };
+  const previous = unverifiedPublication; unverifiedPublication = false;
+  try {
+    const snapshot = mutate(root, operation, input, maxWriteBytes, false, baseline, facts);
+    need(snapshot === baseline.nextSha256, 'Published text does not match the prepared postimage');
+    return { status: 'succeeded', stateChanged: true, snapshot, bytes: baseline.bytes, commit: facts.commit };
+  } catch (error) {
+    const changed = facts.stateChanged === 'unknown' ? 'unknown' : facts.stateChanged;
+    return { status: changed === 'unknown' ? 'state_unknown' : changed ? 'partial' : 'failed_no_change', stateChanged: changed,
+      requiresVerification: changed !== false || unverifiedPublication || facts.requiresVerification || undefined,
+      commit: facts.commit, reason: boundedReason(String(error.message)) };
+  } finally { unverifiedPublication = previous; }
+}
+export { runFileWorker, prepareTextMutation, executePreparedTextMutation };

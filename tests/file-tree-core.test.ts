@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, mkdir, writeFile, readFile, lstat, open, symlink, readdir, link } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { writeFileSync, lstatSync } from "node:fs";
+import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
+import { capturePathIdentity, prepareTree, executeTree, writeIdentityTo, hashIdentity, boundedReason } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
+import { commitPreparedFile, FileCommitError, type FileCommitStream } from "../packages/coding-agent/src/core/files/file-commit.ts";
+import { selectCommitMetadata } from "../packages/coding-agent/src/core/files/file-commit-metadata.ts";
+import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
+
+async function fixture(t: any) {
+  const root = await mkdtemp(join(tmpdir(), "sp-tree-v3-"));
+  t.after(async () => { await disposeNativeFileWorker(); removeOwnedFixture(root); });
+  const source = join(root, "source"), destination = join(root, "destination");
+  return { root, source, destination };
+}
+const current = () => {};
+
+test("directory copy reports partial coverage when a new child appears during execution", async t => {
+  const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "file"), "original");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "copy"), parent = await capturePathIdentity(f.root);
+  let introduced = false;
+  const check = () => {
+    // The original file reaching its destination proves the copy is underway.
+    if (!introduced) { try { requireCopyEffect(); } catch { return; } introduced = true; writeFileSync(join(f.source, "new-child"), "external"); }
+  };
+  function requireCopyEffect() { return lstatSync(join(f.destination, "file")); }
+  const result = await executeTree(tree, "copy", parent, f.destination, parent, check);
+  assert.equal(introduced, true); assert.equal(result.status, "partial"); assert.equal(result.coverageComplete, false); assert.equal(result.requiresVerification, true);
+  assert.equal(await readFile(join(f.source, "new-child"), "utf8"), "external");
+});
+test("shared tree core copies nested binary files with fixed-buffer verification", async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.source, "nested"), { recursive: true });
+  const bytes = Buffer.alloc(200003, 0x8f);
+  await writeFile(join(f.source, "nested", "binary"), bytes);
+  await writeFile(join(f.source, "empty"), "");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "copy");
+  const parent = await capturePathIdentity(f.root);
+  const result = await executeTree(tree, "copy", parent, f.destination, parent, current);
+  assert.equal(result.status, "succeeded"); assert.equal(result.files, 2); assert.equal(result.bytes, bytes.length);
+  assert.deepEqual(await readFile(join(f.destination, "nested", "binary")), bytes);
+  assert.deepEqual(await readFile(join(f.source, "nested", "binary")), bytes);
+  assert.deepEqual(await readdir(f.destination), ["empty", "nested"]);
+});
+
+for (const operation of ["copy", "move"] as const) test(`exclusive ${operation} refuses a raced destination file and directory`, async t => {
+  const f = await fixture(t);
+  for (const directory of [false, true]) {
+    const source = f.source + String(directory), destination = f.destination + String(directory);
+    if (directory) { await mkdir(source); await writeFile(join(source, "child"), "source"); }
+    else await writeFile(source, "source");
+    const tree = await prepareTree(await capturePathIdentity(source), operation);
+    if (directory) { await mkdir(destination); await writeFile(join(destination, "sentinel"), "external"); }
+    else await writeFile(destination, "external");
+    const parent = await capturePathIdentity(f.root);
+    const result = await executeTree(tree, operation, parent, destination, parent, current);
+    assert.equal(result.status, "failed_no_change"); assert.equal(result.stateChanged, false);
+    assert.equal(await readFile(directory ? join(destination, "sentinel") : destination, "utf8"), "external");
+    assert.equal(await readFile(directory ? join(source, "child") : source, "utf8"), "source");
+  }
+});
+
+test("directory move migrates each file and removes source directories nonrecursively", async t => {
+  const f = await fixture(t); await mkdir(join(f.source, "nested"), { recursive: true });
+  await writeFile(join(f.source, "nested", "file"), "source");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "move"), parent = await capturePathIdentity(f.root);
+  const result = await executeTree(tree, "move", parent, f.destination, parent, current);
+  assert.equal(result.status, "succeeded"); assert.equal(result.files, 1);
+  assert.equal(await readFile(join(f.destination, "nested", "file"), "utf8"), "source");
+  await assert.rejects(lstat(f.source), { code: "ENOENT" });
+});
+
+test("recursive delete unlinks a junction without following its target; copy skips it and move refuses it", async t => {
+  const f = await fixture(t); await mkdir(f.source); const outside = join(f.root, "outside"); await mkdir(outside);
+  await writeFile(join(outside, "sentinel"), "external"); await writeFile(join(f.source, "own"), "own");
+  await symlink(outside, join(f.source, "junction"), process.platform === "win32" ? "junction" : "dir");
+  const source = await capturePathIdentity(f.source), parent = await capturePathIdentity(f.root);
+  await assert.rejects(prepareTree(source, "move"), /contains a link/);
+  await assert.rejects(prepareTree(source, "delete"), /recursive: true/);
+  const copy = await prepareTree(source, "copy"); assert.equal(copy.skippedLinks, 1);
+  const copied = await executeTree(copy, "copy", parent, f.destination, parent, current);
+  assert.equal(copied.status, "succeeded"); assert.equal(copied.coverageComplete, false);
+  assert.deepEqual(await readdir(f.destination), ["own"]);
+  const removed = await executeTree(await prepareTree(source, "delete", true), "delete", parent, undefined, undefined, current);
+  assert.equal(removed.status, "succeeded"); assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "external");
+});
+
+for (const name of [".git", ".sp"]) test(`whole tree preflight refuses nested ${name} before any effects`, async t => {
+  const f = await fixture(t); await mkdir(join(f.source, "nested", name), { recursive: true }); await writeFile(join(f.source, "file"), "original");
+  for (const operation of ["copy", "move", "delete"] as const) await assert.rejects(prepareTree(await capturePathIdentity(f.source), operation, true), /protected/);
+  assert.equal(await readFile(join(f.source, "file"), "utf8"), "original"); await assert.rejects(lstat(f.destination), { code: "ENOENT" });
+});
+
+test("a changed prepared file blocks the whole top-level item before creating its destination", async t => {
+  const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "file"), "original");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "move"), parent = await capturePathIdentity(f.root);
+  await writeFile(join(f.source, "file"), "changed");
+  const result = await executeTree(tree, "move", parent, f.destination, parent, current);
+  assert.equal(result.status, "failed_no_change"); await assert.rejects(lstat(f.destination), { code: "ENOENT" });
+});
+
+test("stream copy detects mid-read source mutation and cancellation with source retained", async t => {
+  const f = await fixture(t); await writeFile(f.source, Buffer.alloc(200000, 4));
+  const source = await capturePathIdentity(f.source), target = await open(f.destination, "wx+");
+  let writes = 0;
+  const write = target.write.bind(target);
+  target.write = (async (...args: any[]) => { const result = await (write as any)(...args); if (++writes === 1) await writeFile(f.source, "changed"); return result; }) as any;
+  try { await assert.rejects(writeIdentityTo(source, target, current), /changed|grew/); }
+  finally { await target.close(); }
+  assert.equal(await readFile(f.source, "utf8"), "changed");
+  const aborted = new AbortController(); aborted.abort();
+  await assert.rejects(hashIdentity(await capturePathIdentity(f.source), current, aborted.signal), { name: "AbortError" });
+});
+
+test("large binary overwrite streams through the real metadata commit owner", async t => {
+  const f = await fixture(t), bytes = Buffer.alloc(3 * 1024 * 1024 + 17, 0xa7);
+  await writeFile(f.source, bytes); await writeFile(f.destination, "old");
+  const source = await capturePathIdentity(f.source), destination = await capturePathIdentity(f.destination);
+  const digest = await hashIdentity(source), before = createHash("sha256").update("old").digest("hex");
+  const stream: FileCommitStream = { byteLength: bytes.length, sha256: digest,
+    async writeTo(handle, hooks) { assert.equal(await writeIdentityTo(source, handle, hooks.assertCurrent, hooks.signal), digest); } };
+  const plan = { target: destination, parent: await capturePathIdentity(f.root), previousSha256: before, metadata: await selectCommitMetadata(destination) };
+  const result = await commitPreparedFile(plan, stream, { assertPathAllowed: async () => f.destination, assertCurrent: current });
+  assert.equal(result.outcome, "committed"); assert.equal(result.fileSynced, true);
+  assert.deepEqual(await readFile(f.destination), bytes); assert.deepEqual(await readFile(f.source), bytes);
+  assert.deepEqual((await readdir(f.root)).sort(), ["destination", "source"]);
+});
+
+test("a lying stream cannot publish a staged candidate and reports in-place writes conservatively", async t => {
+  const f = await fixture(t); await writeFile(f.destination, "old");
+  const destination = await capturePathIdentity(f.destination), metadata = await selectCommitMetadata(destination);
+  const stream: FileCommitStream = { byteLength: 3, sha256: createHash("sha256").update("new").digest("hex"), async writeTo(handle) { await handle.writeFile("bad"); } };
+  const plan = { target: destination, parent: await capturePathIdentity(f.root), previousSha256: createHash("sha256").update("old").digest("hex"), metadata };
+  await assert.rejects(commitPreparedFile(plan, stream, { assertPathAllowed: async () => f.destination }), error => {
+    assert(error instanceof FileCommitError); assert.equal(error.receipt.outcome, metadata.strategy === "staged_replace" ? "not_committed" : "committed"); return true;
+  });
+  assert.equal(await readFile(f.destination, "utf8"), metadata.strategy === "staged_replace" ? "old" : "bad");
+});
+
+test("failure reasons obey UTF-8 byte budgets without splitting surrogate pairs", () => {
+  const result = boundedReason("𠮷".repeat(800)); assert.equal(Buffer.byteLength(result), 800); assert.equal(result.length, 400);
+});
+
+for (const operation of ["copy", "move", "delete"] as const) test(`one directory ${operation} handles its own regular-file hardlink aliases`, async t => {
+  const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "a"), "shared"); await link(join(f.source, "a"), join(f.source, "b"));
+  const source = await capturePathIdentity(f.source), parent = await capturePathIdentity(f.root), tree = await prepareTree(source, operation, true);
+  const result = await executeTree(tree, operation, parent, operation === "delete" ? undefined : f.destination, operation === "delete" ? undefined : parent, current);
+  assert.equal(result.status, "succeeded", JSON.stringify(result)); assert.equal(result.files, 2);
+  if (operation !== "delete") for (const name of ["a", "b"]) assert.equal(await readFile(join(f.destination, name), "utf8"), "shared");
+  if (operation !== "copy") await assert.rejects(lstat(f.source), { code: "ENOENT" });
+});

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, parse, relative } from "node:path";
 import { getAgentDir } from "../../config.ts";
 import { canonicalizeProspectivePath } from "./protected-path-policy.ts";
+import { fileMutationItemCount, fileMutationItem, fileMutationItemOperation } from "./file-mutation-input.ts";
 
 const POSIX_SYSTEM_ROOTS = ["/bin", "/sbin", "/usr", "/etc", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys", "/run"] as const;
 const MAC_SYSTEM_ROOTS = ["/System", "/Library", "/Applications"] as const;
@@ -50,24 +51,25 @@ function deletionRefusal(target: string, workspaces: readonly string[], home: st
 
 /** Cold, bounded native invocation classification; execution and approvals remain owned by SessionExecutionPolicy. */
 export async function assessHostMutations(workspaces: readonly string[], paths: readonly string[], tool: string, input: Record<string, any>, existingFilesOnly = false): Promise<HostMutationAssessment> {
-    const batch = tool === "file_batch", count = batch ? input.operations.length : 1;
+    const batch = tool === "file_batch", count = fileMutationItemCount(tool, input);
     const assessment: HostMutationAssessment = { ask: false, details: "" };
     // A preview cannot delete or overwrite. Existing explicit rules and protected-file checks still apply.
-    if (batch && input.dryRun === true) return assessment;
+    if (input.dryRun === true) return assessment;
     const agent = await canonicalizeProspectivePath(getAgentDir());
     let destructive = false;
     for (let index = 0; index < count; index++) {
-        const operation = batch ? input.operations[index].operation : tool;
+        const operation = fileMutationItemOperation(tool, input, index);
         if (operation === "delete" || operation === "move") destructive = true;
     }
     const home = destructive ? await canonicalizeProspectivePath(homedir()) : "";
     const system = destructive ? await systemRoots(home) : [];
     let cursor = 0;
     for (let index = 0; index < count; index++) {
-        const item = batch ? input.operations[index] : input, operation = batch ? item.operation : tool;
+        const item = fileMutationItem(tool, input, index), operation = fileMutationItemOperation(tool, input, index);
         const target = paths[cursor++]!, external = !inWorkspace(workspaces, target), agentPath = inside(agent, target);
         assessment.details += `${operation}: ${target} [${agentPath ? "agent 自身目录" : external ? "工作区外" : "工作区内"}]\n`;
-        if (operation === "delete" || operation === "move") {
+        if (operation === "copy") { /* Source has the read role; only its destination can be overwritten. */ }
+        else if (operation === "delete" || operation === "move") {
             const reason = deletionRefusal(target, workspaces, home, agent, system);
             if (reason) assessment.forbidden ??= `${operation} ${target}\n禁止原因：${reason}`;
             else if (external) assessment.ask = true;
@@ -82,6 +84,10 @@ export async function assessHostMutations(workspaces: readonly string[], paths: 
             const destination = paths[cursor++]!, outside = !inWorkspace(workspaces, destination), agentDestination = inside(agent, destination);
             assessment.details += `目标: ${destination} [${agentDestination ? "agent 自身目录" : outside ? "工作区外" : "工作区内"}]\n`;
             if (outside || agentDestination) assessment.ask = true;
+            if (operation === "copy" && outside) {
+                if (item.overwrite === true && await exists(destination, existingFilesOnly)) assessment.externalOverwrite ??= `copy ${destination}`;
+                else if (!await exists(destination, false)) (assessment.newExternalFiles ??= []).push(destination);
+            }
         }
     }
     return assessment;

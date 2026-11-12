@@ -1,8 +1,10 @@
-import { link, lstat, open, opendir, realpath, rmdir, unlink } from "node:fs/promises";
+import { link, lstat, open, opendir, rmdir, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { UNSAFE_NATIVE_PATH_PATTERN, NATIVE_ERROR_CATEGORY_PATTERN } from "./regex.ts";
+import { capturePathIdentity, sameIdentity } from "./file-tree-core.mjs";
+export { capturePathIdentity, sameIdentity } from "./file-tree-core.mjs";
 
 export type NativeOperation = "delete" | "move";
 export interface NativeInput { path: string; destination?: string; purpose?: string }
@@ -54,19 +56,6 @@ export function validateNativeInput(operation: NativeOperation, value: unknown):
     if (typeof path !== "string" || !path.trim() || path.length > 4096 || UNSAFE_NATIVE_PATH_PATTERN.test(path)) throw new Error(`[TOOL_ARGS_INVALID] ${key} must be one literal path (1-4096 characters).`);
   }
   if (input.purpose !== undefined && (typeof input.purpose !== "string" || input.purpose.length > 800)) throw new Error("[TOOL_ARGS_INVALID] Invalid purpose.");
-}
-
-export async function capturePathIdentity(path: string): Promise<PathIdentity> {
-  const canonical = await realpath(path);
-  const info = await lstat(path, { bigint: true });
-  if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error("[unsupported] Links, reparse points and special files are unsupported.");
-  return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino),
-    size: String(info.size), mtime: String(info.mtimeNs), ctime: String(info.ctimeNs), mode: String(info.mode), links: String(info.nlink), directory: info.isDirectory() });
-}
-
-export function sameIdentity(a: PathIdentity, b: PathIdentity, metadata = true): boolean {
-  return a.canonical === b.canonical && a.device === b.device && a.inode === b.inode && a.directory === b.directory && a.mode === b.mode
-    && (!metadata || (a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.links === b.links));
 }
 
 async function assertAbsent(path: string): Promise<void> {

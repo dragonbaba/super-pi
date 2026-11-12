@@ -1,7 +1,7 @@
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { MAX_SNAPSHOT_LINE_EDITS, validateInsertionFields, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
-import { SNAPSHOT_LINE_REFERENCE_PATTERN, SNAPSHOT_LINE_REFERENCE_REGEX, SNAPSHOT_ID_PATTERN } from "./regex.ts";
+import { SNAPSHOT_LINE_REFERENCE_PATTERN, SNAPSHOT_LINE_REFERENCE_REGEX, SNAPSHOT_ID_PATTERN, SHA256_PATTERN } from "./regex.ts";
 export const GuardedReplaceParameters = Type.Object({
   oldText: Type.String({ description: "Exact text to replace; repeated text needs range evidence or expectedLine." }),
   newText: Type.String({ description: "Replacement text." }),
@@ -164,4 +164,14 @@ export const NativeWriteParameters = Type.Object({
   ...WriteParameters.properties,
   snapshot: Type.Optional(Type.String({ pattern: SNAPSHOT_ID_PATTERN,
     description: "Optional exact snap_ ID from the read annotation, not result.ref. Omit to use the latest current read of this target. An explicit ID never falls back to a newer read or creates a missing target." })),
+}, { additionalProperties: false });
+
+/** MXC snapshots are SHA-256 preconditions, never native snap_ read versions. */
+export const SandboxWriteParameters = Type.Object({
+  ...WriteParameters.properties,
+  snapshot: Type.Optional(Type.String({ pattern: SHA256_PATTERN.source, description: "SHA-256 from this sandbox target's read or clean own write/edit, not result.ref." })),
+}, { additionalProperties: false });
+export const SandboxEditParameters = Type.Object({
+  ...EditParameters.properties,
+  snapshot: Type.String({ pattern: SHA256_PATTERN.source, description: "Current sandbox target SHA-256. Exact replacements must each be unique." }),
 }, { additionalProperties: false });
