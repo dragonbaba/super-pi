@@ -11,6 +11,7 @@ accesses authorized workspaces in two sandbox modes. Three other modes use host 
 | MXC migration and route evidence | Delivered history; evidence for the recorded revision |
 | Windows Sandbox VM plans and evidence | Retired history; see the archived acceptance suite below |
 | CodeMode R1–R5, OpenCode OC, upstream V/F and PF external acceptance | Mixed plans and evidence; verify individual items before marking complete |
+| File operations / CodeGraph / memory cleanup | B merged in #296; A candidate in #297, with [validation status](evidence/file-operations-v3-2026-11-13.md); C pending |
 
 ## Windows Sandbox VM retirement
 

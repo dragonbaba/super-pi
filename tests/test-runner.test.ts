@@ -79,6 +79,22 @@ test("test runner preserves a failing child exit code and names the exact file",
 	}
 });
 
+test("targeted file selection runs once without unrelated files or the memory workspace", () => {
+  const root = mkdtempSync(join(tmpdir(), "super-pi-test-selected-"));
+  try {
+    writeFileSync(join(root, "selected.test.ts"), 'import test from "node:test"; test("selected", () => {});\n');
+    writeFileSync(join(root, "unrelated.test.ts"), 'throw new Error("unrelated file must not execute");\n');
+    const result = spawnSync(process.execPath, [join(process.cwd(), "scripts/test.mjs"), "--root", root,
+      "--file", "selected.test.ts", "--file", "selected.test.ts"], { encoding: "utf8", env: NESTED_RUNNER_ENV });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.stdout.match(/\[test\] START selected.test.ts/g)?.length, 1);
+    assert.doesNotMatch(result.stdout, /unrelated|memory workspace/);
+    assert.match(result.stdout, /1 parallel job/);
+    const missing = runRunner(root, "--file", "absent.test.ts");
+    assert.notEqual(missing.status, 0); assert.match(missing.stderr, /Unknown test file/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("default runner executes GC integration once with isolated cwd, home and offline data", () => {
 	const root = mkdtempSync(join(tmpdir(), "super-pi-test-isolation-"));
 	const report = join(root, "observed.json");
@@ -89,10 +105,14 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { getHeapStatistics } from 'node:v8';
 test('isolated GC fixture', () => {
   assert.equal(typeof global.gc, 'function');
   assert.equal(process.env.SP_OFFLINE, '1');
   assert.equal(process.env.SP_TUI_WRITE_LOG, '');
+  assert.ok(process.execArgv.includes('--max-old-space-size=768'));
+  assert.ok(process.env.NODE_OPTIONS.endsWith('--max-old-space-size=768'));
+  assert.ok(getHeapStatistics().heap_size_limit < 1024 * 1024 * 1024);
   for (const key of ['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']) assert.equal(process.env[key], process.cwd());
   assert.equal(process.env.SP_CODING_AGENT_DIR, resolve(process.cwd(), 'agent'));
   assert.equal(process.env.SP_CODING_AGENT_SESSION_DIR, resolve(process.cwd(), 'sessions'));
@@ -143,7 +163,7 @@ test("runner schedules known slow files first and bounds the default width", asy
 	await assert.rejects(run({ suite: "unit", root: join(tmpdir(), "super-pi-runner-never-discovered"), skipMemory: true,
 		list: false, jobs: 1, shard: { index: 3, count: 2 } }), /i\/n/);
 	assert.equal(defaultJobs({ SP_TEST_JOBS: "3" }), 3);
-	assert.ok(defaultJobs({}) >= 1 && defaultJobs({}) <= 8);
+	assert.equal(defaultJobs({}), 1);
 	assert.throws(() => defaultJobs({ SP_TEST_JOBS: "0" }), /positive integer/);
 	for (const jobs of [0, -1, Number.NaN, 1.5]) {
 		await assert.rejects(run({ suite: "unit", root: join(tmpdir(), "super-pi-runner-never-discovered"), skipMemory: true, list: false, jobs }), /positive integer/);

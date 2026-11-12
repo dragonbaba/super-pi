@@ -1,6 +1,6 @@
 # 文件操作 v3 验收记录
 
-日期：2026-11-13（Asia/Tokyo）。基线为 B 的合并提交 `f6fe77936da78244128e265802325a86cf76d401`。本记录对应 `codex/file-ops-v3` 候选；最终完整回归、50,000 文件目录、PR 审核和 CI 尚待完成，不表示已合并。
+日期：2026-11-13（Asia/Tokyo）。基线为 B 的合并提交 `f6fe77936da78244128e265802325a86cf76d401`。本记录对应 [PR #297](https://github.com/dragonbaba/super-pi/pull/297) 的 `codex/file-ops-v3` 候选；原生 50,000 文件目录已通过，真实 MXC 目录、最终完整回归、PR 审核和 CI 尚待完成，不表示已合并。
 
 ## 实现与生产入口
 
@@ -10,7 +10,7 @@
 
 共享的文件创建、树遍历、流式复制与发布 owner 负责两条执行链路；原生同卷 move 保留独占 link → 验证 → unlink，跨卷和 MXC 使用流式复制、目标重读哈希、源身份复核后删源。真实 MXC 在同一挂载和不同授权挂载均拒绝硬链接，故 move 在执行前固定选择 `copy_unlink_verified`，没有失败后回退或重放。目录目标用独占 mkdir，不合并或覆盖已有目录；删源仅用非递归 rmdir。
 
-生产 MXC v2 mutation 分发和独立的 core v2 batch 执行器已退役，历史生产者仅在明确命名的测试 fixture。v1/v2 历史记录解析保留原预算。随源码扩展中为旧嵌入 API 保留的兼容实现，在有 SessionFiles 的当前运行时跳过注册；当前 CLI、Codemode 与子代理使用同一个 v3 owner。
+生产 MXC v2 mutation 分发和独立的 core v2 batch 执行器已退役，随后删除了复制的历史执行器测试 fixture。v1/v2 历史记录解析保留原预算与直接构造的回执夹具。随源码扩展中为旧嵌入 API 保留的兼容实现，在有 SessionFiles 的当前运行时跳过注册；当前 CLI、Codemode 与子代理使用同一个 v3 owner。
 
 ## 已观察的实际会话验证
 
@@ -31,13 +31,17 @@
 
 首轮连续 MXC 压测中 batch 在 1,389 项成功后出现传输不完整，记录 1 项未知、610 项未启动，后续不再派发并清理完成。同期宿主 PowerShell 报 OOM，机器 commit 接近上限；没有证据把根因归到某个用户进程或本改动，也没有结束用户进程。后续以上述独立新 fixture 测试 2,000 项，没有重放未知调用。该首轮不计作成功样本。
 
+原生完整会话另完成一个含 50,000 个单字节文件、101 个目录的 copy → move → delete，每步核对全部文件内容或源目录确实消失，计数、字节与完整记录一致。耗时分别为 362,802.3503 / 78,193.7635 / 30,707.0414 ms，宿主 user/system CPU 分别为 81,172,000/112,157,000、27,906,000/61,203,000、9,641,000/25,234,000 µs。采样峰值 heap 194,345,424、RSS 436,719,616 字节，累计分配采样估计 17,480,554,032 字节（包含逐文件校验，非精确总量）；关闭、清除 fixture mock 历史并受控 GC 后，6 个 item/tree 引用存活数为 0。对应共享引擎未在此后改变；后续增加的 commit/终态配对校验另由当前回归覆盖。
+
 ## 定向回归与安全边界
 
 - `file-result-v3` / `file-result-owner-v3` / source invariant：33 项通过，含第 17、513、2,000 项、实际 JSON 页预算、错误分支/cursor/源参数、断链、准备清单篡改、无终态 intent、记录失败与 writer 引用释放。持久化会话日志超过 2 MiB，派生后删除原会话仍能分页读取。
 - `file-mutation-v3` / `file-changes-v3` / queue / trie：20 项通过，含完整顶层目标覆盖、剩余草案、数组继续与 batch 停止、最后目标拒绝无前项效果、dryRun 无记录无目录、全量计数和有界样本。后续计数修正的 dryRun/source gate 3 项通过。
 - 实际 C: → D: 跨卷文件/目录回归通过；迁移中新增文件和修改尚未迁移文件均保留在源，结果 partial。共享树与 worker 的 22 项定向回归覆盖嵌套复制/移动/删除、源目录变化和大于 4 KiB 的共享创建父目录 artifact。
+- 实际 MXC 的独立 C: → D: 文件 copy/move、D: → C: 目录 move 均通过；两个 root 的 device 不同，源/目标独立授权，准备记录固定 `copy_unlink_verified`。9 个实际 RPC 的最大请求/回复为 1,206 / 906 字节，结束后无 artifact、active process、stream、child、Job、排队或 reservation。
 - 实际 MXC 小会话 write/read/连续 SHA edit、受保护路径、PowerShell 7 和清理通过。进程替换 fixture 仍使用真实 backend 的序列化、计量、回复验证、artifact registry 和共享 worker，覆盖 12 类发布后丢失/矛盾回复及下一请求的清理边界；不代表实际隔离进程测试。
 - Codemode 当前 v3 回执、提交事实与取消回归 10 项通过；真实 CLI 子代理转发及 D5/D6 回归 6 项通过；false-success guard 回归 18 项通过。自动审核附件新旧回执回归 9 项通过、1 个 POSIX FIFO 在 Windows 跳过；大批次早期项和有哈希的 copy 目标可核对，变化后的内容不附入审核请求。
+- 审计复现了 commit 与终态 SHA 不一致仍被接受的缺口；增加配对、SHA 格式、snapshot 与失败后继校验后，相关组合回归 45 项通过、1 项平台跳过。当前 v3 worker 的 post-open write/stat/close 三个故障注入均保留目标、报告 partial 和需要核验，且不提供 SHA/snapshot；这些测试未用历史 v2 worker。
 
 ## 分配、复杂度与生命周期
 
@@ -49,8 +53,12 @@ native 2,000×4 的初轮 profiler：采样期间峰值 heap 169,571,000 字节�
 
 ## 复现与待完成门禁
 
-普通检查：`npm run check`、`npm run build:offline`、`SP_TEST_JOBS=1 npm test -- --keep-going`，构建和消费 dist 的测试不并发。Windows 长嵌套 SQLite fixture 在本次环境使用 task-owned 的短 TMP；相同短 TMP 下的定向复现通过，没有为路径长度修改 SQLite 或产品代码。
+普通检查从 `npm test -- --file <相关文件>` 开始；需要完整门禁时使用 `npm test`。默认单进程，Node 老生代上限 768 MiB，memory 文件也串行；不连续重复跑子集与完整套件。CI 每个分片首个失败后停止派发文件，六个最终 head 分片仍须全部通过。构建和消费 dist 的测试不并发。Windows 长嵌套 SQLite fixture 在本次环境使用 task-owned 的短 TMP；相同短 TMP 下的定向复现通过，没有为路径长度修改 SQLite 或产品代码。
 
-实际 2,000 项：设置 `SUPERPI_FILE_V3_STRESS=1`，运行 `node --expose-gc --experimental-strip-types --test tests/file-operations-v3-live.test.ts`；可用 `SUPERPI_FILE_V3_STRESS_OPERATION=file_batch` 选择独立 fixture。50,000 文件：设置 `SUPERPI_FILE_V3_TREE_STRESS=1` 与 `SUPERPI_FILE_V3_TREE_ENVIRONMENT=native` 或 `mxc`，运行 `tests/file-tree-v3-live.test.ts`。MXC 目录测量 wrapper 只在 task-owned 运行副本记录 worker resourceUsage，不修改生产入口或隔离策略，随 owner 关闭清理。
+上述规模测量仅留为手动命令，当前入口见[测试文档](../testing.md)。native 分配 sampler、目录 probe 和真实 MXC acceptance 分别位于 `scripts/bench/file-mutations-v3.ts`、`scripts/bench/file-tree-v3.ts`、`scripts/acceptance/file-operations-v3.ts`，不在默认测试发现目录。MXC 目录测量 wrapper 只在 task-owned 运行副本记录 worker resourceUsage，不修改生产入口或隔离策略。
 
-尚待填入最终目录测量、完整检查结果、最终 head 审核和六个 CI 分片。没有等价旧实现全覆盖的同机对照，因此本记录不声称速度或分配总量改善。
+2026-11-13 用户报告 Codex 崩溃并要求限制、清理测试后，本轮停止且不自动重跑大规模压测。MXC 50,000 文件仅 copy 完成（562,011.1968 ms，3 个实际 RPC，最大请求/回复 1,095/810 字节）；move 未完成，delete 未开始，不计作通过。原压测进程已不在；两个精确登记的压测临时根已删除。首次 CI run `43303174955` 已取消，不满足最终 head 门禁。旧 head 审核有待处理的问题，尚未合并。
+
+本轮测试清理删除 19 个过期/重复用例及两份复制执行器，将 36/15 会话成本矩阵移到手动 benchmark。默认实际 native 效果回归缩为 70 项，仍跨越 inline/page 边界；2,000 行纯元数据覆盖保持。通过新运行器串行运行 7 个相关文件、50 项检查（单文件约 0.26–5 秒），以及一个实际 SDK changes/reopen 回归和类型检查。没有再次运行大规模分配/目录压测。V8 老生代限制不等于含 Buffer/native 分配的 RSS 硬上限。
+
+最终 head 审核和六个 CI 分片仍待完成。没有等价旧实现全覆盖的同机对照，因此本记录不声称速度或分配总量改善。

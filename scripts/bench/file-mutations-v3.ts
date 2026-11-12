@@ -5,41 +5,12 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { Session as InspectorSession } from "node:inspector/promises";
 import { setImmediate as tick } from "node:timers/promises";
-import { readFileSync } from "node:fs";
-import ts from "typescript";
-import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
-import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
-import { FileResultReader } from "../packages/coding-agent/src/core/files/file-result-store.ts";
-import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
-import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
-import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
-
-test("native v3 executor callbacks are created once outside the target loop", () => {
-  const source = ts.createSourceFile("file-service.ts", readFileSync("packages/coding-agent/src/core/files/file-service.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const owner = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "FileService") as ts.ClassDeclaration;
-  const method = owner.members.find(node => node.name?.getText(source) === "withPreparedItems") as ts.MethodDeclaration;
-  let constructors = 0;
-  function visit(node: ts.Node): void {
-    if (ts.isNewExpression(node) && node.expression.getText(source) === "FileExecution") {
-      constructors++; let parent: ts.Node | undefined = node.parent;
-      while (parent && parent !== method) { assert(!ts.isArrowFunction(parent) && !ts.isForOfStatement(parent) && !ts.isForStatement(parent)); parent = parent.parent; }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(method); assert.equal(constructors, 1);
-  const mutation = ts.createSourceFile("file-mutation.ts", readFileSync("packages/coding-agent/src/core/files/file-mutation.ts", "utf8"), ts.ScriptTarget.Latest, true);
-  const execution = mutation.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "FileMutationExecution") as ts.ClassDeclaration;
-  function noCallbacks(node: ts.Node): void {
-    assert(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node), "Per-target processing must reuse invocation callbacks");
-    if (ts.isNewExpression(node)) assert(!["Promise", "AbortController"].includes(node.expression.getText(mutation)));
-    ts.forEachChild(node, noCallbacks);
-  }
-  for (const name of ["run", "preparation", "remember"]) {
-    const member = execution.members.find(node => node.name?.getText(mutation) === name)!;
-    const body = ts.isMethodDeclaration(member) ? member.body! : (member as ts.PropertyDeclaration).initializer as ts.ArrowFunction;
-    noCallbacks(ts.isArrowFunction(body) ? body.body : body);
-  }
-});
+import { nativeFileSession } from "../../tests/helpers/sandbox-file-session.ts";
+import { FileService } from "../../packages/coding-agent/src/core/files/file-service.ts";
+import { FileResultReader } from "../../packages/coding-agent/src/core/files/file-result-store.ts";
+import { FileChangesV3 } from "../../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { disposeNativeFileWorker } from "../../packages/coding-agent/src/core/files/native-file-client.ts";
+import { FILE_RESULT_PAGE_BYTES } from "../../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 
 test("native session v3 covers 2,000 targets for every public operation and releases owned plans", { timeout: 600000 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "file-native-allocation-"))), f = nativeFileSession(root), { files, policy } = f;

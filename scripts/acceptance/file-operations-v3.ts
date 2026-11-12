@@ -2,18 +2,56 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { sandboxFileSession } from "./helpers/sandbox-file-session.ts";
-import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
-import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
-import { FileResultReader } from "../packages/coding-agent/src/core/files/file-result-store.ts";
-import { FILE_RESULT_PAGE_BYTES, FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
+import { join, dirname } from "node:path";
+import { sandboxFileSession } from "../../tests/helpers/sandbox-file-session.ts";
+import { WorkspaceSandboxTools } from "../../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
+import { FileChangesV3 } from "../../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { FileResultReader } from "../../packages/coding-agent/src/core/files/file-result-store.ts";
+import { FILE_RESULT_PAGE_BYTES, FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 
 const live = process.platform === "win32" && process.env.SUPERPI_FILE_V3_STRESS === "1";
 const selectedOperation = process.env.SUPERPI_FILE_V3_STRESS_OPERATION;
 const stressOperations = ["copy", "move", "delete", "file_batch"] as const;
 if (selectedOperation && !stressOperations.includes(selectedOperation as any)) throw new Error("Unknown live stress operation");
 const probe = process.platform === "win32" && process.env.SUPERPI_FILE_V3_PROBE === "1";
+test("real MXC cross-volume files and directories use their independently authorized roots", {
+  skip: !probe || !process.env.SP_FILE_CROSS_VOLUME_ROOT, timeout: 60000,
+}, async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "file-v3-cross-"))), cwd = join(root, "workspace");
+  let cleanup: (() => Promise<void>) | undefined;
+  t.after(async () => { try { await cleanup?.(); } finally { await rm(root, { recursive: true, force: true }); } });
+  await mkdir(cwd);
+  const parent = await realpath(process.env.SP_FILE_CROSS_VOLUME_ROOT!), added = await realpath(await mkdtemp(join(parent, "mxc-cross-")));
+  const identity = await lstat(added, { bigint: true });
+  const f = sandboxFileSession(cwd, "sandbox-write", [added]);
+  const owner = new WorkspaceSandboxTools(cwd, join(root, "runtime"), "sandbox-write", () => f.runtime, { directories: [added], network: "disabled" });
+  cleanup = async () => {
+    try { await owner.close(); await f.close(); }
+    finally {
+      const current = await lstat(added, { bigint: true });
+      assert.equal(await realpath(added), added); assert.equal(dirname(added), parent);
+      assert(!current.isSymbolicLink() && current.dev === identity.dev && current.ino === identity.ino);
+      await rm(added, { recursive: true });
+    }
+  };
+  assert.notEqual((await lstat(cwd, { bigint: true })).dev, identity.dev);
+  const definitions = owner.install({}); for (const definition of Object.values(definitions)) f.policy.registerDefinition(definition);
+  const bytes = Buffer.alloc(100003, 0x93); await writeFile(join(cwd, "source"), bytes);
+  const copied = await f.invoke(definitions, "copy", { path: "source", destination: join(added, "copy") }); assert.equal(copied.isError, false, JSON.stringify(copied));
+  assert.deepEqual(await readFile(join(added, "copy")), bytes); assert.deepEqual(await readFile(join(cwd, "source")), bytes);
+  await mkdir(join(added, "directory")); await writeFile(join(added, "directory", "child"), "nested");
+  for (const [path, destination] of [[join(cwd, "source"), join(added, "moved")], [join(added, "directory"), join(cwd, "directory")]]) {
+    const result = await f.invoke(definitions, "move", { path, destination }); assert.equal(result.isError, false, JSON.stringify(result));
+    await assert.rejects(lstat(path), { code: "ENOENT" });
+    const reader = new FileResultReader(f.manager);
+    try { assert.equal(reader.read(result.details.resultRef).records.find(row => row.record.phase === "prepared")?.record.moveStrategy, "copy_unlink_verified"); }
+    finally { reader.dispose(); }
+  }
+  assert.deepEqual(await readFile(join(added, "moved")), bytes); assert.equal(await readFile(join(cwd, "directory", "child"), "utf8"), "nested");
+  assert.equal(owner.diagnostics.ownedArtifacts, 0);
+  t.diagnostic(JSON.stringify({ fixture: "real-MXC-cross-volume", operations: 3, ...owner.diagnostics }));
+});
+
 test("real MXC move probe compares primary and additional workspace destinations", { skip: !probe, timeout: 60000 }, async t => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "file-v3-probe-"))), cwd = join(root, "workspace"), additional = join(root, "added");
   await mkdir(cwd); await mkdir(additional);

@@ -1438,6 +1438,7 @@ test("N1 metadata-only verification rejects replacement during the final permiss
 });
 
 test("N1 actual default SDK Session: view/verify/draft do not trigger provider calls or replay on reopen", { timeout: 60000 }, async t => {
+  const { FileChangesV3 } = await import("../packages/coding-agent/src/core/files/file-changes-v3.ts");
   const { createAgentSession } = await import("../packages/coding-agent/src/core/sdk.ts");
   const { DefaultResourceLoader } = await import("../packages/coding-agent/src/core/resource-loader.ts");
   const { SettingsManager } = await import("../packages/coding-agent/src/core/settings-manager.ts");
@@ -1463,10 +1464,16 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   const options = { cwd, agentDir, settingsManager, resourceLoader, sessionManager: manager, model: ALPHA_MODEL, modelRuntime: runtime, noTools: "builtin" as const };
   let { session } = await createAgentSession(options);
   t.after(async () => { session.dispose(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(dirname(resolve(root)), resolve(tmpdir())); rmSync(root, { recursive: true, force: true }); });
-  let action = "View", selectedItem = "sdk-preview:nested:1:0", input = ""; const notices: string[] = [];
+  let action = "View", selectedItem = "sdk-batch:nested:1:0", input = "", inspected = false; const notices: string[] = [];
   const ui = { ...session.extensionRunner.getUIContext(),
-    select: async (title: string, choices: string[]) => title === "Session changes" ? choices.find(s => s.startsWith(selectedItem + " "))
-      : title === selectedItem ? action : "仅允许本次",
+    select: async (title: string, choices: string[]) => {
+      if (title.startsWith("File changes:")) {
+        if (inspected) return "Back to calls";
+        inspected = true;
+        return action === "Draft remaining request" ? "Draft remaining work on this page" : choices.find(s => s.startsWith(selectedItem + " "));
+      }
+      return title === selectedItem ? action : "仅允许本次";
+    },
     getEditorText: () => input, setEditorText: (text: string) => { input = text; }, notify: (text: string) => { notices.push(text); },
     custom: async <T>(factory: any): Promise<T> => { const component = await factory({ terminal: { rows: 24 }, requestRender() {} }, {}, {}, () => {}); try { component.render(17); component.render(80); } finally { component.dispose?.(); } return undefined as T; },
   };
@@ -1481,23 +1488,31 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   const preview = await call("sdk-preview", { dryRun: true, operations: [{ operation: "write", mode: "create", path: "parents/new", content: "preview" }] });
   assert.equal(preview.isError, false, JSON.stringify(preview));
   assert.equal(existsSync(join(cwd, "parents")), false);
-  await session.extensionRunner.getCommand("changes")!.handler("", session.extensionRunner.createContext() as never);
   writeFileSync(join(cwd, "stale"), "old");
   const append = manager.appendCustomEntry.bind(manager);
   t.mock.method(manager, "appendCustomEntry", (kind: string, data: any) => {
     const entry = append(kind, data);
-    if (kind === "file-mutation-progress-v2" && data.phase === "result" && data.itemId === "sdk-batch:nested:1:0") writeFileSync(join(cwd, "stale"), "external");
+    if (kind === "file-mutation-progress-v3") {
+      const payload = JSON.parse(data.payload);
+      if (payload.phase === "commit" && payload.itemId === "sdk-batch:nested:1:0") writeFileSync(join(cwd, "stale"), "external");
+    }
     return entry;
   });
   const result = await call("sdk-batch", { operations: [{ operation: "write", mode: "create", path: "committed", content: "postimage" }, { operation: "delete", path: "stale" }, { operation: "write", mode: "create", path: "remaining", content: "desired" }] });
   assert.equal(result.isError, true);
+  const reader = new FileChangesV3(manager);
+  const reference = (await reader.calls()).find(call => call.toolCallId === "sdk-batch:nested:1")!.ref; reader.dispose();
+  async function inspectChanges() {
+    inspected = false;
+    await session.extensionRunner.getCommand("changes")!.handler(reference, session.extensionRunner.createContext() as never);
+  }
   const callsBeforeCommands = providerCalls;
   selectedItem = "sdk-batch:nested:1:0"; action = "Verify current state";
-  await session.extensionRunner.getCommand("changes")!.handler("", session.extensionRunner.createContext() as never);
+  await inspectChanges();
   assert.deepEqual(notices, [], JSON.stringify({ notices, branch: manager.getBranch().map((e: any) => ({ id: e.id, type: e.type, customType: e.customType, phase: e.data?.phase, role: e.message?.role, calls: e.message?.role === "assistant" ? e.message.content : undefined, resultId: e.message?.toolCallId })) }));
   assert.ok(manager.getBranch().some((e: any) => e.customType === "file-change-verification-v1" && e.data.postimageMatches === true), JSON.stringify(collectChanges(manager.getBranch(), cwd)));
   action = "Draft remaining request";
-  await session.extensionRunner.getCommand("changes")!.handler("", session.extensionRunner.createContext() as never);
+  await inspectChanges();
   assert.match(input, /remaining/); assert.equal(existsSync(join(cwd, "remaining")), false);
   assert.deepEqual(notices, []);
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations.size, 0);
@@ -1507,7 +1522,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   ({ session } = await createAgentSession({ ...options, sessionManager: SessionManager.open(file) }));
   await session.bindExtensions({ mode: "tui", uiContext: ui });
   action = "View";
-  await session.extensionRunner.getCommand("changes")!.handler("", session.extensionRunner.createContext() as never);
+  await inspectChanges();
   assert.deepEqual(notices, []);
   assert.equal(existsSync(join(cwd, "remaining")), false);
   assert.equal(readFileSync(join(cwd, "committed"), "utf8"), "postimage");

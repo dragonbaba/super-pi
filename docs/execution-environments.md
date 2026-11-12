@@ -46,6 +46,8 @@
 
 这些工具和 `file_batch` 的新调用均返回 v3 汇总：`succeeded`、`failed`、`partial`、`unknown`、`cancelled`、`notStarted`、`coverageComplete` 和 `resultRef`。小结果附 `details.items`；大结果明确 `itemsOmitted: true`。用 `file_result({ref: resultRef, cursor?, limit?})` 查询当前会话分支的记录，按 `nextCursor` 续页。引用与 Codemode 的展示 `ref` 不同，既不读取任意宿主文件，也不签发文件读取版本。历史 v1/v2 会话保留原有读取预算。
 
+查询页的 `coverageComplete` 表示已读完一个已结束调用的完整记录链；`pageComplete` 表示已到链尾，`callComplete` 表示调用发布了结束记录。它们不证明所有文件操作成功或目录内部覆盖完整；须同时检查各项终态、`requiresVerification` 和该项的 `coverageComplete`，以及原工具结果的汇总。
+
 copy/delete/move 数组在明确的 `failed_no_change` 或 `partial` 后继续其余独立目标；`file_batch` 首次失败即停止。取消、撤销授权、权限代次或会话改变、日志或传输丢失以及 `state_unknown` 都停止剩余项。成功项不回滚，也不为恢复回复而重放。目录内部明细只留有界样本；覆盖不完整时须重新列目录核对。`/changes` 按页恢复全部顶层目标；沙箱中的现状核对仍由当前授权下的 MXC 观察入口执行，不回退到宿主读取。
 
 成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。

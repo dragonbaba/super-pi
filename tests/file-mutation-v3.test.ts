@@ -37,12 +37,12 @@ test("v3 binds the dispatcher's existing numeric repair without changing origina
   const original = f.session.getEntry(source) as any; assert.equal(original.message.content[0].arguments.path, 123);
 });
 
-test("2,000 native targets publish every terminal state and keep the summary bounded", async t => {
-  const f = await fixture(t), paths = [];
-  for (let index = 0; index < 2000; index++) { const path = "file-" + index; await writeFile(join(f.cwd, path), "x"); paths.push(path); }
+test("native targets cross inline and page boundaries while publishing every terminal state", async t => {
+  const f = await fixture(t), paths = [], count = 70;
+  for (let index = 0; index < count; index++) { const path = "file-" + index; await writeFile(join(f.cwd, path), "x"); paths.push(path); }
   const mutation = f.mutation("delete", { paths }); await mutation.prepare();
   const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy });
-  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 2000);
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, count);
   assert.equal(result.details.itemsOmitted, true); assert.equal(result.details.items, undefined);
   assert(Buffer.byteLength(JSON.stringify(result)) < FILE_RESULT_PAGE_BYTES);
   const reader = new FileResultReader(f.session); t.after(() => reader.dispose());
@@ -50,10 +50,10 @@ test("2,000 native targets publish every terminal state and keep the summary bou
   do {
     const page = reader.read(result.details.resultRef!, cursor, 128);
     assert(Buffer.byteLength(JSON.stringify(page)) <= FILE_RESULT_PAGE_BYTES);
-    for (const row of page.records) if (row.record.phase === "result") { terminal++; sawLast ||= row.record.index === 1999 && row.record.status === "succeeded"; }
+    for (const row of page.records) if (row.record.phase === "result") { terminal++; sawLast ||= row.record.index === count - 1 && row.record.status === "succeeded"; }
     coverage = page.coverageComplete; cursor = page.nextCursor ?? undefined;
   } while (cursor);
-  assert.equal(terminal, 2000); assert(sawLast); assert(coverage);
+  assert.equal(terminal, count); assert(sawLast); assert(coverage);
 });
 
 test("independent arrays continue ordinary failures; ordered file_batch stops with an explicit suffix", async t => {

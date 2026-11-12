@@ -13,9 +13,14 @@ provides a serial build for diagnosis.
 
 `node scripts/test.mjs --suite all --list` lists the deterministic
 execution-unit order (of the selected shard, if any), including the memory
-workspace, without executing tests. Each file is discovered once and runs in a
-bounded pool of `min(available CPUs, 8)` child processes; `--jobs N` or
-`SP_TEST_JOBS=N` overrides the width, and `--jobs 1` restores serial execution.
+workspace, without executing tests. Each file is discovered once. The default
+is one child process at a time, including the memory workspace's test files.
+`--jobs N` or `SP_TEST_JOBS=N` is an explicit parallel override. Each ordinary
+Node test process has a 768 MiB old-generation heap limit; native allocations
+and buffers are separate from that V8 limit. Large allocation samplers and
+filesystem stress workloads run only through the explicit commands below.
+The same heap option is passed through the child environment to ordinary nested
+Node processes; no global Node or system setting is changed.
 Files with wall-clock pass conditions (`bash-running-responsiveness`,
 `tool-lifecycle-postmerge`) run alone before the pool starts. In the pool,
 known slow files start first so they do not extend the tail. `--shard i/n` or
@@ -38,6 +43,16 @@ that package is tested independently. Native MXC acceptance and allocation
 benchmarks are opt-in and run separately from ordinary CI. `--keep-going` is an explicit
 diagnostic option; routine CI stays fail-fast.
 
+For a local change, select exact files rather than running unrelated suites:
+`npm test -- --file file-mutation-v3.test.ts --file file-result-v3.test.ts`.
+Paths are relative to `tests/` (or `--root`), duplicates run once, unknown files
+fail before execution, and selecting files does not add the memory workspace.
+Sharding and suite filters still apply. Do not automatically run unit, hot,
+contract and the full suite in succession, or repeat full suites just to wait
+for remote CI/review. Start with the relevant small regression and expand only
+for changed behavior or a diagnosed failure. Do not overlap local benchmarks
+with normal development or unrelated work.
+
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
 `SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
 directory shared by the run's children, so jiti's tmpdir transpile cache stays
@@ -55,6 +70,34 @@ replace resource-lifecycle assertions. START/END lines identify the file,
 elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
+
+- Retired v2 mutation executors no longer run through copied test producers:
+  13 MXC cases and four native batch/owner cases were removed with both copied
+  execution fixtures. Historical v1/v2 receipt parsing remains covered by the
+  dedicated receipt/recovery fixtures. Current creation/publication faults,
+  queue ownership, partial outcomes and no replay use the production v3 owners.
+- The default native v3 effect test uses 70 targets to cross inline and page
+  boundaries. The 2,000-row metadata protocol tests remain small and retain
+  the 17/513/2,000 boundaries. The four-operation 2,000-target sampler,
+  50,000-file tree probe and real MXC stress acceptance are outside `tests/`.
+- The 36-session task-cost matrix and 15-session context-cost matrix moved to
+  `scripts/bench/`; their measurements are no longer repeated in ordinary CI.
+  The obsolete 17-item rejection and the duplicate legacy combined matrix were
+  removed. Current whole-call preflight and actual SDK changes/reopen behavior
+  remain in focused production-path regressions.
+
+The following are manual measurements, not a required local test chain:
+
+| Command | Workload |
+| --- | --- |
+| `npm run bench:file-mutations` | Four native operations × 2,000 targets, allocation profile and reference release |
+| `npm run bench:file-tree` | 50,000-file native/MXC directory probe; also requires `SUPERPI_FILE_V3_TREE_STRESS=1` and an explicit environment selection |
+| `npm run test:file-ops:live` | Real MXC stress/probes; also requires the corresponding `SUPERPI_FILE_V3_STRESS=1` or `SUPERPI_FILE_V3_PROBE=1` |
+| `npm run bench:file-task-matrix` | 36-session serializer/task-cost comparison |
+| `npm run bench:file-recovery-matrix` | 15-session context-cost comparison and measurement instrumentation checks |
+
+Use an owned temporary directory and close processes before removing its exact
+identity. These commands do not run as part of `npm test` or the CI workflow.
 
 Request-image projection uses the actual OpenAI chat serializer with offline fetch in
 `tests/request-image-budget-session.test.ts`, including 44 valid PNG history blocks,

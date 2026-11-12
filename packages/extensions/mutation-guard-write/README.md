@@ -1,6 +1,17 @@
 # Mutation Guard: File operations
 
-Pi extension retaining the unique built-in `edit` and `write` entrypoints and adding conditional native `delete` and `move` tools through existing discovery.
+Current Super Pi installs write/edit/copy/delete/move/file_batch and file_result
+through the session's native `SessionFiles` owner. This extension skips tool
+registration when that owner is present. Native and MXC calls share the v3
+preflight, authorization, result journal and paged query path; see
+[current file operations](../../../docs/execution-environments.md#文件结果的完整性)
+and [candidate validation](../../../docs/evidence/file-operations-v3-2026-11-13.md).
+
+The sections below preserve the legacy compatibility implementation and v1/v2
+design/evidence history. Their 16-target and 512-entry windows, same-volume move
+restriction and v2 result shape describe that history, not current v3 calls.
+Retained extension exports support older embedding APIs; they are not an
+alternative execution owner in the current CLI, Codemode or subagent runtime.
 
 ## Native delete, move and creation
 

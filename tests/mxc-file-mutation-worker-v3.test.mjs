@@ -4,6 +4,8 @@ import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm } from 'node:f
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { runFileMutationRequest } from '../packages/coding-agent/src/core/sandbox/mxc-file-mutation-worker.mjs';
 import { capturePathIdentity } from '../packages/coding-agent/src/core/files/file-tree-core.mjs';
 import { readFileWorkerManifest, readFileParentManifest, writeFileParentManifest } from '../packages/coding-agent/src/core/files/file-worker-plan.mjs';
@@ -50,6 +52,31 @@ test('worker-only v3 preparation is read-only and recursive copy preserves every
   assert.equal(receipt.status, 'succeeded', JSON.stringify(receipt)); assert.equal(receipt.files, 1);
   assert.deepEqual(await readFile(join(f.workspace, 'copied/nested/file')), await readFile(join(f.workspace, 'source/nested/file')));
   assert.equal(receipt.snapshot, undefined, 'copy does not invent a native read version');
+});
+
+for (const failure of ['writeFile', 'stat', 'close']) test(`worker-only v3 exclusive creation retains post-open ${failure} failures without a successor`, async t => {
+  const f = await fixture(t, [{ operation: 'write', mode: 'create', path: 'created', content: 'complete content' }]);
+  const prepared = await f.prepare(), validated = await f.validate(prepared), target = join(f.workspace, 'created');
+  const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`), originalOpen = fsPromises.open;
+  t.mock.method(fsPromises, 'open', async (path, ...args) => {
+    const handle = await originalOpen(path, ...args);
+    if (path === target && args[0] === 'wx') {
+      const original = handle[failure].bind(handle);
+      t.mock.method(handle, failure, async (...values) => {
+        if (failure === 'writeFile') await original('partial');
+        if (failure === 'close') await original(...values);
+        throw Object.assign(new Error(`injected post-open ${failure}`), { code: 'EIO' });
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const receipt = await f.execute(0, prepared, validated, { effects });
+  assert.equal(receipt.status, 'partial', JSON.stringify(receipt)); assert.equal(receipt.stateChanged, true);
+  assert.equal(receipt.requiresVerification, true); assert.equal(receipt.snapshot, undefined); assert.equal(receipt.sha256, undefined);
+  assert.equal((await lstat(target)).isFile(), true);
+  if (failure === 'writeFile') assert.equal(await readFile(target, 'utf8'), 'partial');
 });
 
 test('worker-only binary overwrite streams through the existing MXC publication owner', async t => {
