@@ -78,7 +78,8 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     const pending = pendingMutations.get(event.toolCallId);
     pendingMutations.delete(event.toolCallId);
     if (!pending || pending.name !== event.toolName) return;
-    const details = event.result.details as { mutationReceiptVersion?: unknown; resultRef?: unknown } | undefined;
+    const details = event.result.details as { mutationReceiptVersion?: unknown; resultRef?: unknown; preview?: unknown } | undefined;
+    if (!event.isError && pending.input?.dryRun === true && details?.mutationReceiptVersion === 3 && details.preview === true) return;
     if (details?.mutationReceiptVersion === 3 && typeof details.resultRef === "string") {
       const changes = new FileChangesV3(ctx.sessionManager);
       try {

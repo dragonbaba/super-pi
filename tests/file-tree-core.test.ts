@@ -118,6 +118,24 @@ test("copy accepts a lexical destination alias to its pinned canonical parent", 
   assert.equal(result.status, "succeeded", JSON.stringify(result)); assert.equal(await readFile(join(parent, "target"), "utf8"), "source");
 });
 
+for (const operation of ["copy", "move"] as const) test(`directory ${operation} refuses a redirected mkdir parent before populating children`, async t => {
+  const f = await fixture(t), parentPath = join(f.root, "parent"), outside = join(f.root, "unapproved"), destination = join(parentPath, "target");
+  await mkdir(f.source); await mkdir(parentPath); await mkdir(outside); await writeFile(join(f.source, "private"), "private source");
+  const tree = await prepareTree(await capturePathIdentity(f.source), operation), sourceParent = await capturePathIdentity(f.root), parent = await capturePathIdentity(parentPath);
+  const originalMkdir = fsPromises.mkdir; let injected = false;
+  t.mock.method(fsPromises, "mkdir", async (path: any, ...args: any[]) => {
+    if (path === destination) {
+      renameSync(parentPath, parentPath + ".original"); symlinkSync(outside, parentPath, process.platform === "win32" ? "junction" : "dir"); injected = true;
+    }
+    return (originalMkdir as any)(path, ...args);
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await executeTree(tree, operation, sourceParent, destination, parent, current, undefined, true);
+  assert(injected); assert.equal(result.status, "partial", JSON.stringify(result)); assert.equal(result.requiresVerification, true);
+  assert.deepEqual(await readdir(join(outside, "target")), [], "Redirected directory must receive no source children");
+  assert.equal(await readFile(join(f.source, "private"), "utf8"), "private source");
+});
+
 test("directory copy reports partial coverage when a new child appears during execution", async t => {
   const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "file"), "original");
   const tree = await prepareTree(await capturePathIdentity(f.source), "copy"), parent = await capturePathIdentity(f.root);

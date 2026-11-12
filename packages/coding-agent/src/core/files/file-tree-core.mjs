@@ -297,7 +297,10 @@ class TreeExecution {
             this.current(); this.attempted = true; this.effectPending = true;
             await mkdir(destination, process.platform === 'win32' ? undefined : { mode: (Number(entry.identity.mode) & 0o777) | 0o700 });
             this.effectPending = false; this.changed = true;
-            this.created.set(index, await capturePathIdentity(destination)); this.directories++;
+            await this.checkParent(parent);
+            const created = await capturePathIdentity(destination);
+            if (!created.directory || created.canonical !== resolve(parent.canonical, basename(destination))) throw new Error('[STALE_STATE] Created directory is outside its prepared parent; no children were populated.');
+            this.created.set(index, created); this.directories++;
           } else if (this.operation === 'move') await this.moveFile(entry, destination, parent);
           else { await this.copyFile(entry, destination, parent); this.files++; }
         }

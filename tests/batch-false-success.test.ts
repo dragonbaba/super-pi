@@ -66,6 +66,24 @@ async function fixture(t: test.TestContext) {
   }
   return { cwd, manager, session, runner, call, say, goals: () => goals };
 }
+test("native previews leave no mutation obligations and cannot clear a prior failure", async t => {
+  const f = await fixture(t), source = join(f.cwd, "source"); writeFileSync(source, "unchanged");
+  for (const [name, input] of [
+    ["delete", { path: "source", dryRun: true }],
+    ["delete", { paths: ["source"], dryRun: true }],
+    ["move", { path: "source", destination: "target", dryRun: true }],
+    ["move", { items: [{ path: "source", destination: "target" }], dryRun: true }],
+  ] as const) {
+    const result = await f.call(name, input);
+    assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.preview, true); assert.equal(result.details.resultRef, undefined);
+    assert.equal(readFileSync(source, "utf8"), "unchanged"); assert.equal((await f.call("goal_complete", {})).isError, false);
+  }
+  assert.equal((await f.call("delete", { path: "missing", dryRun: true })).isError, true);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
+  assert.equal((await f.call("delete", { path: "source", dryRun: true })).isError, false);
+  assert.equal((await f.call("goal_complete", {})).isError, true, "A successful preview does not repair an unrelated failure");
+});
+
 for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move", "success", "dry-run"]) test(`R4 default Agent preserves replies and structured goal checks: ${kind}`, async t => {
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before");
   const append = f.manager.appendCustomEntry.bind(f.manager); let fired = false;
