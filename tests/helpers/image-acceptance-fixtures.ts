@@ -31,3 +31,20 @@ export function paddedPngFixture(width = 1920, height = 1080, base64Bytes = 1_14
 	const text = Buffer.alloc(padding, 65); text.write("fixture\0");
 	return Buffer.concat([png.subarray(0, -12), chunk("tEXt", text), png.subarray(-12)]);
 }
+
+/** Synthetic pixel detail controls, not a substitute for subjective photo/HD-2D review. */
+export function detailPngFixture(pattern: "checker" | "glyph" | "edge" | "gradient"): Buffer {
+	const width = 1920, height = 128, raw = Buffer.alloc((width * 4 + 1) * height);
+	for (let y=0;y<height;y++) for (let x=0;x<width;x++) {
+		const offset = y*(width*4+1)+1+x*4;
+		let value: number;
+		if (pattern === "checker") value = (x+y)%2 ? 255 : 0;
+		else if (pattern === "glyph") value = x%8===1 || y%8===1 || y%8===4 && x%8<5 ? 255 : 0;
+		else if (pattern === "edge") value = Math.abs(x%128-64)+Math.abs(y-64)<48 ? 220 : 25;
+		else value = Math.round(x*255/(width-1));
+		raw[offset]=value;raw[offset+1]=pattern==="gradient"?y*2:value;raw[offset+2]=value;
+		raw[offset+3]=pattern==="edge" && value===25 ? 0 : 255;
+	}
+	const header=Buffer.alloc(13);header.writeUInt32BE(width);header.writeUInt32BE(height,4);header[8]=8;header[9]=6;
+	return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk("IHDR",header),chunk("IDAT",deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]);
+}

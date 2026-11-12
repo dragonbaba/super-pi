@@ -98,6 +98,26 @@ test("the complete originating assistant batch is protected", async () => {
   await owner.prepare(messages,{},false); assert.equal(imageBytes(owner.applyMessages(messages)),12*MiB);
   await assert.rejects(owner.prepare([assistant,tool(7*MiB,"one"),tool(7*MiB,"two")],{},false),/current tool images exceed/); owner.clear();
 });
+
+for (const boundary of ["user", "assistant", "text-tool-batch"] as const) test(`oversized batch becomes historical after ${boundary}`, async () => {
+  const owner = new RequestImageBudget();
+  const assistant: Message = {role:"assistant",api:"openai-completions",provider:"openai",model:"fixture",content:[],stopReason:"toolUse",timestamp:0,
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+  const batch = tool(0);
+  batch.content = Array.from({length:6}, () => tool(Math.ceil(2.2*MiB)).content[0]!);
+  const messages: Message[] = [assistant,batch];
+  await assert.rejects(owner.prepare(messages,{},false),/current tool images exceed/);
+  if (boundary === "user") messages.push({role:"user",content:"Continue with text",timestamp:1});
+  else messages.push({...assistant,stopReason:boundary === "assistant" ? "stop" : "toolUse"});
+  if (boundary === "text-tool-batch") messages.push({...tool(0,"text"),content:[{type:"text",text:"text only"}]});
+  await owner.prepare(messages,{},false);
+  assert.equal(imageBytes(owner.applyMessages(messages)),4* Math.ceil(2.2*MiB));
+  assert.equal(imageBytes(messages),6* Math.ceil(2.2*MiB));
+  assert.equal(owner.metrics.encodes,0);
+  messages.push({...assistant}, {...batch,toolCallId:"new-current"});
+  await assert.rejects(owner.prepare(messages,{},false),/current tool images exceed/);
+  owner.clear();
+});
 test("successful recovery releases the byte ceiling without permitting another recovery", async () => {
   const owner = new RequestImageBudget(), messages = [tool(1024)];
   await owner.prepare(messages,{},false); owner.observeWireBytes(2048); assert.equal(owner.tighten(),true);

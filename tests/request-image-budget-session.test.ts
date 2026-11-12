@@ -9,6 +9,50 @@ import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { paddedPngFixture } from "./helpers/image-acceptance-fixtures.ts";
 
+for (const presentation of [false,true]) test(`oversized batch recovers after a new user message and text-only tool batch, presentation=${presentation}`, async t => {
+  const owned = createOwnedTaskFixture("image-budget-recovery-"), root = owned.root;
+  const model: any = {...ALPHA_MODEL,api:"openai-completions",input:["text","image"],contextWindow:1000000};
+  const settings = SettingsManager.inMemory({executionEnvironment:"trusted-host",compaction:{enabled:false},retry:{enabled:true,maxRetries:3,baseDelayMs:0},images:{autoResize:false}});
+  const resources = new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager:settings,noExtensions:true,noContextFiles:true,noSkills:true,noPromptTemplates:true,noThemes:true});
+  await resources.reload();
+  const uploads: {bytes:number;images:number}[] = [];
+  const runtime = alphaModelRuntime((target,context,options) => stream(target as any,context,{...options,apiKey:"offline-fixture",maxRetries:0,
+    fetch:async (_url,init) => {
+      const wire = JSON.parse(init!.body as string); let images = 0;
+      for (const message of wire.messages) if (Array.isArray(message.content)) for (const block of message.content) if (block.type === "image_url") images++;
+      uploads.push({bytes:Buffer.byteLength(init!.body as string),images});
+      return new Response('data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"continued"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',{headers:{"content-type":"text/event-stream"}});
+    }}));
+  runtime.getModel = () => model;
+  const manager = SessionManager.inMemory(root);
+  const {session} = await createAgentSession({cwd:root,agentDir:root,model,modelRuntime:runtime,settingsManager:settings,sessionManager:manager,resourceLoader:resources,noTools:"all",
+    toolResultPresentation:presentation?{enabled:true,budgetTokens:100000}:undefined});
+  t.after(async()=>{await session.abort();await (session as any)._codemode.close();session.dispose();await (session as any)._sessionLeaseRelease;owned.cleanup();});
+  await session.bindExtensions({});
+  const assistant: any = {role:"assistant",api:model.api,provider:model.provider,model:model.id,content:[{type:"toolCall",id:"oversized",name:"read",arguments:{path:"fixture.png"}}],stopReason:"toolUse",timestamp:0,
+    usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+  const data = paddedPngFixture(1920,1080,Math.ceil(2.2*1024*1024)).toString("base64");
+  manager.appendMessage({role:"user",content:"Inspect six images",timestamp:0});
+  manager.appendMessage(assistant);
+  manager.appendMessage({role:"toolResult",toolCallId:"oversized",toolName:"read",content:Array.from({length:6},()=>({type:"image",data,mimeType:"image/png"})),isError:false,timestamp:0});
+  session.agent.state.messages = manager.buildSessionContext().messages;
+  await session.agent.continue();
+  assert.equal(uploads.length,0,"current over-budget batch must not be silently dropped or uploaded");
+  assert.match((session.messages.at(-1) as any).errorMessage,/current tool images exceed.*Send a new text message.*images.requestBudget/);
+  await session.prompt("Continue with text; do not repeat the image tool");
+  assert.equal(uploads.length,1); assert.equal(uploads[0]!.images,4);
+  session.agent.state.messages.push({...assistant,content:[{type:"toolCall",id:"text-only",name:"read",arguments:{path:"notes.txt"}}]});
+  session.agent.state.messages.push({role:"toolResult",toolCallId:"text-only",toolName:"read",content:[{type:"text",text:"text-only output"}],isError:false,timestamp:1});
+  await session.agent.continue();
+  assert.equal(uploads.length,2); assert.equal(uploads[1]!.images,4);
+  assert.equal(session.messages.filter(message=>message.role==="toolResult" && message.toolCallId==="oversized").length,1);
+  const original = session.messages.find(message=>message.role==="toolResult" && message.toolCallId==="oversized")!;
+  assert.ok(original.role==="toolResult"); assert.equal(original.content.filter(block=>block.type==="image" && block.data===data).length,6);
+  assert.equal(manager.getEntries().filter(entry=>entry.type==="compaction").length,0);
+  assert.equal(session.requestImages.metrics.requestViewBytes,0);
+  t.diagnostic(JSON.stringify({presentation,originalImageBytes:6*data.length,uploads,toolReplays:0,compactions:0}));
+});
+
 for (const presentation of [false,true]) for (const failure of ["once","twice","blocked","same","connection","text-only"] as const) test(`actual serializer: presentation=${presentation}, payload=${failure}`, async t => {
   const owned = createOwnedTaskFixture("image-budget-session-"), root = owned.root;
   const model: any = { ...ALPHA_MODEL, api:"openai-completions", input:failure==="text-only"?["text"]:["text","image"], contextWindow:1000000 };

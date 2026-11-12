@@ -10,6 +10,7 @@ export const IMAGE_VIEW_BYTES = 4.5 * 1024 * 1024;
 const CACHE_SOURCE_BYTES = 32 * 1024 * 1024;
 const CACHE_ENTRIES = 128;
 const PROJECTION_CACHE_BYTES = 2 * 1024 * 1024;
+const CURRENT_BATCH_TOO_LARGE = "Request preparation blocked: current tool images exceed the image budget. Send a new text message to continue with this batch treated as history (some images may be omitted), or explicitly adjust images.requestBudget to inspect the whole batch. Original history and completed tools are unchanged; do not repeat completed tools.";
 const OMITTED: TextContent = Object.freeze({ type: "text", text: "[Historical tool image omitted from this request. The original remains in session history; use its recorded source or manifest if still available. Do not repeat completed mutations.]" });
 
 export interface RequestImageSettings {
@@ -126,12 +127,18 @@ export class RequestImageBudget {
 		if (policy !== this.policy) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; this.policy = policy; }
 		if (this.recovery) { keep = Math.max(1, Math.floor(keep / 2)); step = Math.max(1, Math.floor(step / 2)); }
 		const capacity = keep + step; generation = this.generation;
-		let total = 0, latestStart = 0, latestIndex = -1, batchStart = 0, batchIndex = -1;
+		let total = 0, latestStart = 0, latestIndex = messages.length, batchStart = 0, batchIndex = -1;
 		let metadataChanged = false;
 		this.metrics.userImageBytes = 0;
 		for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
 			const message = messages[messageIndex]!;
-			if (message.role === "assistant") { batchStart = total; batchIndex = messageIndex; }
+			// Protection belongs only to the outstanding tool batch. A later model
+			// turn or explicit user submission makes earlier images historical,
+			// including a batch whose first request was blocked before upload.
+			if (message.role === "assistant" || message.role === "user") {
+				latestStart = batchStart = total; latestIndex = messages.length;
+				batchIndex = message.role === "assistant" ? messageIndex : -1;
+			}
 			if (message.role === "user" && Array.isArray(message.content)) {
 				for (const block of message.content) if (block.type === "image") this.metrics.userImageBytes += block.data.length;
 			}
@@ -146,7 +153,7 @@ export class RequestImageBudget {
 			}
 			if (bytes) { latestIndex = batchIndex >= 0 ? batchIndex : messageIndex; latestStart = batchIndex >= 0 ? batchStart : total; total += bytes; }
 		}
-		if (latestIndex < 0) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; return; }
+		if (total === 0) { const recovery = this.recovery, wireLimit = this.wireLimit; this.clear(); this.recovery = recovery; this.wireLimit = wireLimit; return; }
 		let cutoff = Math.max(0, Math.floor((total - keep) / step) * step);
 		// A large current batch can straddle an ordinary stride. Keep that whole batch,
 		// remove older images, then enforce the actual encoded-byte bound below.
@@ -201,7 +208,7 @@ export class RequestImageBudget {
 					this.active.set(block, cycle);
 					retained += bytes;
 					if (messageIndex >= latestIndex) { latestBytes += bytes; pendingCurrent -= bytes; }
-					if (latestBytes + pendingCurrent > capacity) throw new Error("Request preparation blocked: current tool images exceed the image budget. Reduce this image batch or explicitly adjust images.requestBudget; original history and completed tools are unchanged.");
+					if (latestBytes + pendingCurrent > capacity) throw new Error(CURRENT_BATCH_TOO_LARGE);
 					// Converge while encoding, rather than retaining every expanded view
 					// until a final pass. At most one just-produced view crosses capacity.
 					while (retained + pendingCurrent > capacity && dropMessage < latestIndex && dropMessage <= messageIndex) {
@@ -225,7 +232,7 @@ export class RequestImageBudget {
 				}
 				if (previousOmission !== (this.omittedUntil.get(message) ?? 0)) this.forgetProjection(message);
 			}
-			if (latestBytes > capacity) throw new Error("Request preparation blocked: current tool images exceed the image budget. Reduce this image batch or explicitly adjust images.requestBudget; original history and completed tools are unchanged.");
+			if (latestBytes > capacity) throw new Error(CURRENT_BATCH_TOO_LARGE);
 			if (retained > capacity || pendingCurrent !== 0) throw new Error("Request preparation blocked: image budget did not converge");
 			// Mark all surviving occurrences before pruning shared view ownership.
 			activeCycle = ++this.epoch;
