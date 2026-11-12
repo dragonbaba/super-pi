@@ -221,8 +221,8 @@ function assertSuccessfulOutput(output: AssistantMessage): asserts output is Suc
 function isTerminalRateLimitError(errorText: string) {
     return TERMINAL_RATE_LIMIT_PATTERN.test(errorText);
 }
-function isRetryableError(status: number, errorText: string) {
-    if (status === 413) return false;
+function isRetryableError(status: number, errorText: string, code?: string) {
+    if (status === 413 || isCodexBodySizeCode(code)) return false;
     if (status === 429 && isTerminalRateLimitError(errorText)) {
         return false;
     }
@@ -448,6 +448,7 @@ function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-resp
                         }));
                         recordWebSocketFailure(owner, cacheSessionId, error);
                         if (websocketStarted) {
+                            if (!(error instanceof WebSocketCloseError && error.requestBytes !== undefined)) activateWebSocketSseFallback(owner, cacheSessionId);
                             throw error;
                         }
                         if (error instanceof WebSocketCloseError && error.requestBytes !== undefined) {
@@ -511,7 +512,8 @@ function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-resp
                         break;
                     }
                     const errorText = await response.text();
-                    if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
+                    const info = await parseErrorResponse(response, errorText);
+                    if (attempt < maxRetries && isRetryableError(response.status, errorText, info.code)) {
                         const retryAfterDelayMs = getRetryAfterDelayMs(response.headers);
                         const delayMs = retryAfterDelayMs === undefined
                             ? BASE_DELAY_MS * 2 ** attempt
@@ -519,13 +521,7 @@ function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-resp
                         await sleep(delayMs, options?.signal);
                         continue;
                     }
-                    // Parse error for friendly message on final attempt or non-retryable error
-                    const fakeResponse = new Response(errorText, {
-                        status: response.status,
-                        statusText: response.statusText,
-                    });
-                    const info = await parseErrorResponse(fakeResponse);
-                    throw new CodexApiError(info.friendlyMessage || info.message, { status: response.status });
+                    throw new CodexApiError(info.friendlyMessage || info.message, { status: response.status, code: info.code });
                 }
                 catch (error) {
                     if (error instanceof Error) {
@@ -731,13 +727,16 @@ class CodexApiError extends Error {
     readonly payload?: unknown;
     constructor(message: string, options?: { cause?: unknown; status?: number; code?: string; payload?: unknown }) {
         super(options?.status === 413 ? `HTTP 413: ${message}` :
-            options?.code === "request_too_large" || options?.code === "request_body_too_large" || options?.code === "payload_too_large" ? `[REQUEST_BODY_TOO_LARGE] ${message}` : message);
+            isCodexBodySizeCode(options?.code) ? `[REQUEST_BODY_TOO_LARGE] ${message}` : message);
         this.name = "CodexApiError";
         this.status = options?.status;
         this.code = options?.code;
         this.payload = options?.payload;
         this.cause = options?.cause;
     }
+}
+function isCodexBodySizeCode(code: string | undefined): boolean {
+    return code === "request_too_large" || code === "request_body_too_large" || code === "payload_too_large";
 }
 class CodexProtocolError extends Error {
     readonly payload?: unknown;
@@ -1205,18 +1204,22 @@ function isWebSocketSseFallbackActive(owner: CodexTransportOwner, sessionId: str
 function recordWebSocketSseFallback(owner: CodexTransportOwner, sessionId: string | undefined): void {
     if (!sessionId || !owner.isActive)
         return;
+    activateWebSocketSseFallback(owner, sessionId);
     const stats = getOrCreateWebSocketDebugStats(owner, sessionId);
     stats.sseFallbacks++;
-    stats.websocketFallbackActive = isWebSocketSseFallbackActive(owner, sessionId);
+}
+function activateWebSocketSseFallback(owner: CodexTransportOwner, sessionId: string | undefined): void {
+    if (!sessionId || !owner.isActive) return;
+    owner.websocketSseFallbackSessions.add(sessionId);
+    getOrCreateWebSocketDebugStats(owner, sessionId).websocketFallbackActive = true;
 }
 function recordWebSocketFailure(owner: CodexTransportOwner, sessionId: string | undefined, error: unknown): void {
     if (!sessionId || !owner.isActive)
         return;
-    owner.websocketSseFallbackSessions.add(sessionId);
     const stats = getOrCreateWebSocketDebugStats(owner, sessionId);
     stats.websocketFailures++;
     stats.lastWebSocketError = formatThrownValue(error);
-    stats.websocketFallbackActive = true;
+    stats.websocketFallbackActive = isWebSocketSseFallbackActive(owner, sessionId);
 }
 let _cachedWebsocket: WebSocketConstructor | null = null;
 async function getWebSocketConstructor(env?: ProviderEnv): Promise<WebSocketConstructor | null> {
@@ -2122,6 +2125,7 @@ async function processWebSocketStream(owner: CodexTransportOwner,
     // WebSocket continuation still works via connection-scoped previous_response_id state.
     const fullBody = body;
     let requestBytes: number | undefined;
+    let dispatched = false;
     try {
         options?.signal?.throwIfAborted();
         owner.assertCurrent();
@@ -2154,6 +2158,7 @@ async function processWebSocketStream(owner: CodexTransportOwner,
         try {
             observeCodexRequestBody(options, requestBytes, requestBytes);
             options?.signal?.throwIfAborted(); owner.assertCurrent();
+            dispatched = true;
             socket.send(frame);
         } finally { frame = undefined; }
         await processResponsesStream(startWebSocketOutputOnFirstEvent(mapCodexEvents(parseWebSocket(owner, socket, options?.signal, idleTimeoutMs), output), onStart), output, stream, model, {
@@ -2180,7 +2185,8 @@ async function processWebSocketStream(owner: CodexTransportOwner,
     }
     catch (error) {
         recordWebSocketBodyFailure(error, requestBytes, entry?.continuation?.compactionBoundary === true);
-        const preserveCachedContinuation = (error instanceof PostCompactionContinuationError || error instanceof InvalidContinuationPayloadError || error instanceof CodexBodyObserverError) && entry !== undefined;
+        const preserveCachedContinuation = !dispatched && owner.isActive && entry !== undefined && isWebSocketReusable(socket) &&
+            (error instanceof PostCompactionContinuationError || error instanceof InvalidContinuationPayloadError || error instanceof CodexBodyObserverError || options?.signal?.aborted === true);
         if (entry && !preserveCachedContinuation) {
             entry.continuation = undefined;
         }
@@ -2435,7 +2441,7 @@ async function performCodexSseCompaction(owner: CodexTransportOwner,
         } catch (error) { await cancelUnconsumedResponse(owner, response); throw error; }
         if (!response.ok) {
             const info = await parseErrorResponse(response);
-            throw new CodexApiError(info.friendlyMessage || info.message, { status: response.status });
+            throw new CodexApiError(info.friendlyMessage || info.message, { status: response.status, code: info.code });
         }
         const { responseId: _responseId, ...result } = await collectRemoteCompactionEvents(parseSSE(response, combinedSignal.signal));
         return result;
@@ -2459,6 +2465,7 @@ async function performCodexWebSocketCompaction(owner: CodexTransportOwner, param
     const acquired = acquireExistingCompactionWebSocket(owner, params.sessionId, params.accountId, params.headers);
     let keepConnection = false;
     let requestBytes: number | undefined;
+    let dispatched = false;
     try {
         const continuation = acquired.entry.continuation;
         if (!continuation ||
@@ -2483,6 +2490,7 @@ async function performCodexWebSocketCompaction(owner: CodexTransportOwner, param
         try {
             observeCodexRequestBody(params.options, requestBytes, requestBytes);
             params.options.signal?.throwIfAborted(); owner.assertCurrent();
+            dispatched = true;
             params.onDispatch();
             acquired.entry.socket.send(frame);
         } finally { frame = undefined; }
@@ -2502,7 +2510,8 @@ async function performCodexWebSocketCompaction(owner: CodexTransportOwner, param
     }
     catch (error) {
         recordWebSocketBodyFailure(error, requestBytes, acquired.entry.continuation?.compactionBoundary === true);
-        if (error instanceof InvalidContinuationPayloadError || error instanceof CodexBodyObserverError)
+        if (!dispatched && owner.isActive && isWebSocketReusable(acquired.entry.socket) &&
+            (error instanceof InvalidContinuationPayloadError || error instanceof CodexBodyObserverError || params.options.signal?.aborted))
             keepConnection = true;
         throw error;
     }
@@ -2582,16 +2591,18 @@ async function compactOpenAICodexRequestOwned(owner: CodexTransportOwner,
 // ============================================================================
 // Error Handling
 // ============================================================================
-async function parseErrorResponse(response: Response) {
-    const raw = await response.text();
+async function parseErrorResponse(response: Response, providedRaw?: string) {
+    const raw = providedRaw ?? await response.text();
     let message = raw || response.statusText || "Request failed";
     let friendlyMessage;
+    let code: string | undefined;
     try {
         const parsed = JSON.parse(raw);
         const err = parsed?.error;
         if (err) {
-            const code = err.code || err.type || "";
-            if (USAGE_LIMIT_ERROR_CODE_PATTERN.test(code) || response.status === 429) {
+            const rawCode = err.code || err.type;
+            code = typeof rawCode === "string" ? rawCode : undefined;
+            if (USAGE_LIMIT_ERROR_CODE_PATTERN.test(code ?? "") || response.status === 429) {
                 const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
                 const mins = err.resets_at
                     ? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000))
@@ -2603,7 +2614,7 @@ async function parseErrorResponse(response: Response) {
         }
     }
     catch { }
-    return { message, friendlyMessage };
+    return { message, friendlyMessage, code };
 }
 // ============================================================================
 // Auth & Headers

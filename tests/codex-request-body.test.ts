@@ -75,6 +75,14 @@ test("Codex observer failure blocks SSE without transport retry",async t=>{
   assert.match(result.errorMessage!,/^Request preparation blocked:.*synthetic measurement failure/);
 });
 
+for(const status of [400,500])for(const field of ["code","type"] as const)test(`Codex preserves an explicit body-size ${field} with generic prose, HTTP ${status}`,async t=>{
+  const owner=createOpenAICodexTransportOwner();t.after(()=>owner.dispose());let uploads=0;
+  const result=await owner.stream(model,context,{apiKey:codexToken(),transport:"sse",maxRetries:1,
+    fetch:async()=>{uploads++;return new Response(JSON.stringify({error:{[field]:"request_too_large",message:"synthetic failure"}}),{status,headers:{"retry-after-ms":"0"}});}}).result();
+  assert.equal(uploads,1);assert.equal(isRequestBodyTooLarge(result),true);assert.match(result.errorMessage!,/synthetic failure/);
+  assert.doesNotMatch(result.errorMessage!,/HTTP 413/,"preserve the actual non-413 status boundary");
+});
+
 test("Codex WS counts actual full/delta frames and preserves continuation on observer failure",async t=>{
   const f=sockets(t),owner=createOpenAICodexTransportOwner();t.after(()=>owner.dispose());
   const observed:number[][]=[];let rejectObserver=false,http=0;
@@ -117,6 +125,10 @@ test("Codex 1009 does not replace a small delta with a larger full-history fallb
   const second=await owner.stream(model,{messages:[...largeContext.messages,first,{role:"user",content:"x",timestamp:1}]},options).result();
   assert.equal(second.stopReason,"error");assert.equal(isRequestBodyTooLarge(second),true);assert.equal(http,0);
   assert.equal(owner.getDebugStats(options.sessionId)?.sseFallbacks,0);
+  assert.equal(owner.getDebugStats(options.sessionId)?.websocketFallbackActive,false);
+  f.mode("success");
+  const recovered=await owner.stream(model,{messages:[{role:"user",content:"smaller next request",timestamp:2}]},options).result();
+  assert.equal(recovered.stopReason,"stop",recovered.errorMessage);assert.equal(http,0,"rejected size fallback must not latch SSE for the next request");
 });
 
 test("Codex missing response ID retains existing full-request recovery and measures both frames",async t=>{
@@ -178,9 +190,27 @@ test("Codex post-compaction preflight and 1009 retain the provider boundary",asy
   await owner.compact(model,payload,options);assert.equal(observations,2);
   const invalid=await owner.stream(model,context,options).result();assert.match(invalid.errorMessage!,/post-compaction continuation boundary/);
   assert.equal(observations,2,"preflight rejected before creating/sending a frame");assert.equal(owner.diagnostics.cached,1);
+  const onPayload=(body:unknown)=>({...body as Record<string,unknown>,input:[artifact,{role:"user",content:[{type:"input_text",text:"after compaction"}]}]});
+  const controller=new AbortController();
+  const aborted=await owner.stream(model,context,{...options,onPayload,signal:controller.signal,onRequestBodyBytes:()=>{observations++;controller.abort();}}).result();
+  assert.equal(aborted.stopReason,"aborted");assert.equal(f.frames.length,2);assert.equal(owner.diagnostics.cached,1);
   f.mode("size");
-  const rejected=await owner.stream(model,context,{...options,onPayload:body=>({...body as Record<string,unknown>,input:[artifact,{role:"user",content:[{type:"input_text",text:"after compaction"}]}]})}).result();
+  const rejected=await owner.stream(model,context,{...options,onPayload}).result();
   assert.equal(rejected.stopReason,"error");assert.equal(isRequestBodyTooLarge(rejected),true);assert.equal(http,0);
-  assert.equal(observations,3);assert.equal(f.bodies.at(-1).previous_response_id,"compacted");
+  assert.equal(observations,4);assert.equal(f.bodies.at(-1).previous_response_id,"compacted");
   assert.equal(owner.getDebugStats(options.sessionId)?.sseFallbacks,0);
+  assert.equal(owner.getDebugStats(options.sessionId)?.websocketFallbackActive,false);
+});
+
+test("Codex pre-send compaction observer abort preserves a reusable live commitment",async t=>{
+  const f=sockets(t),owner=createOpenAICodexTransportOwner();t.after(()=>owner.dispose());
+  const options={apiKey:codexToken(),sessionId:"wire-compaction-abort",transport:"auto" as const,maxRetries:0,codexRemoteCompaction:true};
+  const first=await owner.stream(model,context,options).result();assert.equal(first.stopReason,"stop");
+  const payload=buildOpenAICodexRequestBody(model,{messages:[...context.messages,first]},options,options.sessionId) as Record<string,unknown>;
+  const controller=new AbortController();
+  await assert.rejects(owner.compact(model,payload,{...options,signal:controller.signal,onRequestBodyBytes:()=>controller.abort()}),/abort/i);
+  assert.equal(f.frames.length,1);assert.equal(owner.diagnostics.consumed,0);assert.equal(owner.diagnostics.commitments,1);
+  assert.equal(owner.diagnostics.cached,1);assert.equal(f.instances[0]!.readyState,1);
+  assert.deepEqual((await owner.compact(model,payload,options)).compactionItem,artifact);
+  assert.equal(f.frames.length,2);assert.equal(f.bodies[1].previous_response_id,first.responseId);
 });
