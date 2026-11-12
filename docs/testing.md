@@ -98,6 +98,9 @@ The following are manual measurements, not a required local test chain:
 
 Use an owned temporary directory and close processes before removing its exact
 identity. These commands do not run as part of `npm test` or the CI workflow.
+For a bounded allocation-contract check, set `SP_FILE_BENCH_TARGETS=32` for
+`bench:file-mutations`; record that smaller workload explicitly and do not
+compare its totals with the 2,000-target measurements as a speedup.
 
 Request-image projection uses the actual OpenAI chat serializer with offline fetch in
 `tests/request-image-budget-session.test.ts`, including 44 valid PNG history blocks,

@@ -146,7 +146,7 @@
 | `sandbox/workspace-tools.ts`、`workspace-paths.ts`、`mxc-file-worker.mjs`、`workspace-backend.ts` | 共用全调用预检、内部准备清单和分块校验；元数据查询绕过文件路径转换，固定交给会话记录 owner。 |
 | `session-manager.ts`、`agent-session.ts`、`extensions/types.ts`、`extensions/runner.ts` | v3 复用 `appendCustomEntry` 与 `getEntry`；提供返回已发布条目 ID 的内部记录接口，读者绑定当前会话/分支。公开扩展 `appendEntry(): void` 无需为此改变。 |
 | 新增 `files/file-result-protocol.ts` 与 `files/file-result-store.ts` | 前者仅放 schema、版本、记录/分页字节预算；后者负责 v3 记录、绑定、分页与生命周期。名称为拟新增文件，实施时不得复制第二套文件提交或授权逻辑。 |
-| `packages/extensions/subagent` | 默认不开放 `copy`；显式允许 `file_result` 时也只能查询子代理自己的会话，不能访问父会话记录。 |
+| `packages/extensions/subagent` | 默认不开放 `copy`；显式允许 `file_result` 时，本地记录由子会话读取。委派操作的结果由实际执行的父 owner 保存，只允许当前子任务按其真实嵌套来源查询自己的委派结果；不能访问父会话的其他记录，任务 owner 结束即撤销该查询能力。 |
 | `files/subagent-execution.ts`、`packages/tool-classification/src/index.ts` | 同步工具识别与分类；`file_result` 是只读查询，不能进入变更集合，也不能因未识别而绕过现有工具许可。 |
 | `docs/codemode.md`、`docs/execution-environments.md`、`docs/README.md` | 当前说明与索引同步更新 |
 

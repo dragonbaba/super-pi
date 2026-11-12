@@ -13,8 +13,9 @@ export function summarizeCreatedDirectories(creation, created) {
         if (bytes + size > FILE_RESULT_INLINE_BYTES) break;
         bytes += size; sample.push(parent);
     }
-    return { bytes: creation.bytes, addedLines: creation.addedLines, createdDirectoryCount: created.length,
-        createdDirectories: sample, createdDirectoriesOmitted: created.length - sample.length };
+    const total = creation.createdDirectoryCount ?? created.length;
+    return { bytes: creation.bytes ?? 0, addedLines: creation.addedLines, createdDirectoryCount: total,
+        createdDirectories: sample, createdDirectoriesOmitted: total - sample.length };
 }
 export function directoryKey(path) { return process.platform === "win32" ? path.toLowerCase() : path; }
 const createdFileIdentities = new WeakMap();

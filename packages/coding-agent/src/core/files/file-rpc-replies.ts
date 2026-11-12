@@ -85,6 +85,7 @@ export function fileRpcExecutedReceipt(row: unknown, envelope: FileWorkerRequest
     fields(receipt.creation, CREATION_FIELDS); const creation = receipt.creation;
     need(prepared.creation && count(creation.createdDirectoryCount) && creation.createdDirectoryCount <= prepared.creation.directories.length
       && Array.isArray(creation.createdDirectories) && creation.createdDirectories.length <= FILE_RESULT_FAILURE_SAMPLES
+      && creation.createdDirectories.length <= creation.createdDirectoryCount && count(creation.createdDirectoriesOmitted)
       && creation.createdDirectoriesOmitted === creation.createdDirectoryCount - creation.createdDirectories.length && count(creation.bytes)
       && (creation.addedLines === undefined || count(creation.addedLines)) && (creation.createdDirectoryCount === 0 || receipt.stateChanged !== false), "Invalid bounded creation facts");
   }

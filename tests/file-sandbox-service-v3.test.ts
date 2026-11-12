@@ -10,6 +10,8 @@ import { runFileMutationRequest } from "../packages/coding-agent/src/core/sandbo
 import { runFileObservationRequest } from "../packages/coding-agent/src/core/sandbox/mxc-file-observation-worker.mjs";
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
+import fsSync from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 
 async function fixture(t: test.TestContext, changeReply?: (request: any, reply: any) => void) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "sandbox-session-v3-")));
@@ -71,7 +73,7 @@ test("sandbox changes verification observes worker bytes and never grants a nati
   assert.equal(f.files.hasRevision(result.details.snapshot, join(f.cwd, "observed"), f.manager.getSessionId()), false);
 });
 
-for (const failure of ["index", "snapshot", "transport", "generation", "wire-hash", "ready", "intent", "missing-item", "extra-item", "not-started", "outcome", "native-version"] as const) test(`sandbox ${failure} loss after publication stops later effects without replay`, async t => {
+for (const failure of ["index", "snapshot", "transport", "generation", "wire-hash", "ready", "intent", "missing-item", "extra-item", "not-started", "outcome", "native-version", "created-parent-count"] as const) test(`sandbox ${failure} loss after publication stops later effects without replay`, async t => {
   const f = await fixture(t, (request, reply) => {
     if (request.phase !== "execute") return;
     if (failure === "index") reply.items[0].index++;
@@ -86,6 +88,11 @@ for (const failure of ["index", "snapshot", "transport", "generation", "wire-has
     if (failure === "not-started") reply.items[0].receipt.status = "not_started";
     if (failure === "outcome") reply.items[0].receipt.stateChanged = false;
     if (failure === "native-version") reply.items[0].receipt.revision = "snap_forbidden";
+    if (failure === "created-parent-count") {
+      delete reply.items[0].receipt.createdParents;
+      reply.items[0].receipt.creation.createdDirectories.push({ path: "untrusted parent" });
+      reply.items[0].receipt.creation.createdDirectoriesOmitted = -1;
+    }
   });
   const result = await f.call("file_batch", { operations: [
     { operation: "write", mode: "create", path: "published", content: "kept" },
@@ -104,4 +111,15 @@ test("sandbox invalid last preparation rejects the entire invocation before any 
   assert.equal(f.sends.filter(row => row.phase === "execute").length, 0); assert.equal(await readFile(join(f.cwd, paths[0]), "utf8"), "x");
   // Refusal cleanup joins before a subsequent unrelated invocation can start.
   assert.equal(f.owned.size, 0); assert.equal((await f.call("write", { path: "after-refusal", content: "allowed" })).isError, false);
+});
+
+test("sandbox failed preparation artifact cleanup permits the next independent request", async t => {
+  const f = await fixture(t);
+  t.mock.method(fsSync, "writeFileSync", () => { throw Object.assign(new Error("ENOSPC preparation inventory"), { code: "ENOSPC" }); });
+  syncBuiltinESMExports();
+  try { await assert.rejects(f.call("write", { path: "refused", content: "not written" }), /ENOSPC/); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(f.owned.size, 0); await assert.rejects(readFile(join(f.cwd, "refused")), { code: "ENOENT" });
+  const next = await f.call("write", { path: "next", content: "kept" });
+  assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(await readFile(join(f.cwd, "next"), "utf8"), "kept"); assert.equal(f.owned.size, 0);
 });

@@ -8,10 +8,13 @@ import { resolveToCwd } from "../tools/path-utils.ts";
 import { assertCheckpointJson } from "../tasks/checkpoints.ts";
 import { resolveToolPath } from "./file-path.ts";
 import type { TSchema } from "typebox";
+import { createHash, randomUUID } from "node:crypto";
+import type { ReadonlySessionManager } from "../session-manager.ts";
+import { parseFileResultReference } from "./file-result-protocol.ts";
 
 export const WORKSPACE_MESSAGE_PREFIX = "sp-workspace-v1:";
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
-const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "copy", "delete", "move", "file_batch", "bash", "powershell"]);
+const WORKSPACE_TOOLS = new Set(["read", "grep", "find", "ls", "write", "edit", "copy", "delete", "move", "file_batch", "file_result", "bash", "powershell"]);
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const SEARCH_TOOLS = new Set(["grep", "find", "ls"]);
 const READY_TIMEOUT_MS = 30_000;
@@ -69,24 +72,29 @@ export class SubagentExecution {
     private pending?: Promise<NestedToolResultMessage>;
     private readonly controller = new AbortController();
     private readonly parentSignal: AbortSignal;
-    private readonly parentToolCallId: string;
+    private delegationPrefix: string;
+    private session?: ReadonlySessionManager;
     private readonly tools: AgentTool[] = [];
     private sequence = 0;
     private cleanupFailure?: string;
     private readonly revoke = (): void => { this.controller.abort(); void this.scope?.close(); };
     failureReason?: string;
-    constructor(agent: Agent, definitions: ReadonlyMap<string, ToolDefinition>, tools: ReadonlyMap<string, AgentTool>, options: SubagentExecutionOptions) {
+    constructor(agent: Agent, definitions: ReadonlyMap<string, ToolDefinition>, tools: ReadonlyMap<string, AgentTool>, options: SubagentExecutionOptions, session?: ReadonlySessionManager) {
         options.assertCurrent(); options.signal.throwIfAborted();
         this.agent = agent; this.check = options.assertCurrent; this.profile = options.profile;
-        this.parentSignal = options.signal; this.parentToolCallId = options.toolCallId;
+        this.parentSignal = options.signal; this.session = session;
+        const parentId = options.toolCallId.length <= 128 ? options.toolCallId : createHash("sha256").update(options.toolCallId).digest("hex");
+        this.delegationPrefix = `${parentId}:delegated:${randomUUID()}:`;
         for (const name of options.tools) {
-            if (!WORKSPACE_TOOLS.has(name) || !options.profile.writable && !READ_TOOLS.has(name)) continue;
+            if (!WORKSPACE_TOOLS.has(name) || !options.profile.writable && !READ_TOOLS.has(name) && name !== "file_result") continue;
             if (name === "bash" && (options.profile.mode === "read-only" || options.profile.mode === "sandbox-write")) continue;
             const definition = definitions.get(name);
             const tool = tools.get(name);
             if (!definition || !tool) throw new Error(`Parent tool is unavailable: ${name}`);
             this.tools.push(tool);
-            this.descriptors.push({ name, label: definition.label, description: definition.description, parameters: definition.parameters });
+            this.descriptors.push({ name, label: definition.label, description: name === "file_result"
+                ? "Page only outcomes executed for this delegated task while its parent owner is active. Cannot query unrelated parent records, read files or restore file versions."
+                : definition.description, parameters: definition.parameters });
         }
         this.parentSignal.addEventListener("abort", this.revoke, { once: true });
     }
@@ -97,7 +105,8 @@ export class SubagentExecution {
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected tool arguments object");
         const args = { ...input } as Record<string, any>;
         // Only structured path fields change base. Shell source is passed through unchanged.
-        if (name === "bash" || name === "powershell") {
+        if (name === "file_result") this.assertOwnResult(args.ref);
+        else if (name === "bash" || name === "powershell") {
             // Child profiles do not expose tasks controls. Preserve that existing background admission rule.
             if (args.background === true) throw new Error("Subagent shells require foreground execution; the child has no shell task-management tools");
             if (args.cwd !== undefined) args.cwd = resolve(this.profile.cwd, args.cwd);
@@ -111,9 +120,21 @@ export class SubagentExecution {
             if (Array.isArray(args.paths)) { const paths = []; for (const path of args.paths) paths.push(resolve(this.profile.cwd, path)); args.paths = paths; }
             Object.assign(args, this.rebase(args, name));
         } else Object.assign(args, this.rebase(args, name));
-        this.scope = this.agent.createDelegatedToolDispatch(`${this.parentToolCallId}:delegated:${++this.sequence}`, this.controller.signal, observeToolEvent, this.tools);
+        this.scope = this.agent.createDelegatedToolDispatch(`${this.delegationPrefix}${++this.sequence}`, this.controller.signal, observeToolEvent, this.tools);
         this.pending = this.run(name, args, this.scope);
         return this.pending;
+    }
+    /** No result cache or parent-history scan: only a trusted nested-call source
+     * from this exact task owner may enter the parent's ordinary indexed reader. */
+    private assertOwnResult(raw: unknown): void {
+        const reference = parseFileResultReference(raw), entry = this.session?.getEntry(reference.callEntryId);
+        const data = entry?.type === "custom" && entry.customType === "codemode-tool-call-v1" ? entry.data as any : undefined;
+        const parent = data?.parentToolCallId;
+        const sequence = typeof parent === "string" && parent.startsWith(this.delegationPrefix) ? parent.slice(this.delegationPrefix.length) : "";
+        const index = Number(sequence);
+        if (!sequence || String(index) !== sequence || !Number.isSafeInteger(index) || index < 1 || index > this.sequence
+            || data.version !== 1 || data.call?.id !== reference.toolCallId || reference.toolCallId !== `${parent}:nested:1`)
+            throw new Error("[FILE_RESULT_BRANCH] Result does not belong to this delegated task.");
     }
     private rebase(input: Record<string, unknown>, operation: string): Record<string, unknown> {
         const args = { ...input };
@@ -145,7 +166,7 @@ export class SubagentExecution {
         const scope = this.scope; await scope?.close();
         if (scope?.abandonedCalls) this.cleanupFailure = "Delegated tool ignored cancellation; effects may still be running. Execution must remain closed.";
         // Scope close imposes the existing bounded cancellation grace. An abandoned call is reported by that owner.
-        this.agent = undefined; this.check = undefined; this.scope = undefined; this.pending = undefined;
+        this.agent = undefined; this.check = undefined; this.scope = undefined; this.pending = undefined; this.session = undefined; this.delegationPrefix = "";
         this.descriptors.length = 0;
         this.tools.length = 0;
         if (this.cleanupFailure) throw new Error(this.cleanupFailure);

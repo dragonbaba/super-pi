@@ -148,10 +148,12 @@ class FileExecution {
     }
   }
   record(phase: string, extra?: Record<string, unknown>): void {
+    // The v3 invocation already published these phases for the entire call.
+    if (this.hooks.batch && (phase === "intent" || phase === "origin")) return;
     const item = this.item;
     this.hooks.record({ toolCallId: this.toolCallId, itemId: this.itemId, phase, operation: item.operation,
       target: item.target, destination: item.tree?.destination ?? item.native?.destination, requestHash: item.requestHash,
-      directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined, ...extra });
+      directories: this.hooks.batch ? undefined : item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined, ...extra });
   }
   async run(): Promise<FileReceipt> {
     const { item, hooks } = this;

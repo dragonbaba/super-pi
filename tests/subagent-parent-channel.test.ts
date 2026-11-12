@@ -12,12 +12,13 @@ function fixture(execute: AgentTool["execute"]) {
   const tool: AgentTool = { name: "read", label: "Read", description: "Owned probe", parameters: Type.Object({ path: Type.String() }), execute };
   const agent = new Agent({ initialState: { tools: [tool] }, streamFn: () => { throw new Error("No provider may start"); } });
   const signal = new AbortController(); let authorizations = 0;
+  const session = { getEntry() { return undefined; } };
   agent.beforeToolCall = async () => { authorizations++; return undefined; };
   const owner = new SubagentExecution(agent, new Map([[tool.name, tool as any]]), new Map([[tool.name, tool]]), {
     profile: { mode: "host-write", workspace: process.cwd(), directories: [], generation: 0, cwd: process.cwd(), writable: false },
     toolCallId: "owned-task", tools: ["read"], signal: signal.signal, assertCurrent() { signal.signal.throwIfAborted(); },
-  });
-  return { owner, signal, agent, get authorizations() { return authorizations; } };
+  }, session as any);
+  return { owner, signal, agent, session, get authorizations() { return authorizations; } };
 }
 const smallResult = { content: [{ type: "text" as const, text: "owned receipt" }], details: undefined };
 
@@ -76,12 +77,14 @@ test("parent task channel has one request slot and releases cancellation ownersh
     return smallResult;
   });
   const before = getEventListeners(f.signal.signal, "abort").length;
+  assert.equal((f.owner as any).session, f.session);
   const pending = f.owner.execute("read", { path: "sample.txt" }); await started;
   assert.throws(() => f.owner.execute("read", { path: "sample.txt" }), /already busy/);
   f.signal.abort(); await pending; await f.owner.dispose(); release();
   assert.equal(f.authorizations, 1); assert.equal(f.agent.state.isStreaming, false); assert.equal(before, 1);
   assert.equal(getEventListeners(f.signal.signal, "abort").length, 0);
-  for (const field of ["agent", "check", "scope", "pending"]) assert.equal((f.owner as any)[field], undefined);
+  for (const field of ["agent", "check", "scope", "pending", "session"]) assert.equal((f.owner as any)[field], undefined);
+  assert.equal((f.owner as any).delegationPrefix, "");
   assert.equal((f.owner as any).tools.length + f.owner.descriptors.length, 0);
   assert.throws(() => f.owner.execute("read", { path: "sample.txt" }), /closed/);
   let finish!: (value: typeof smallResult) => void;

@@ -48,6 +48,8 @@
 
 查询页的 `coverageComplete` 表示已读完一个已结束调用的完整记录链；`pageComplete` 表示已到链尾，`callComplete` 表示调用发布了结束记录。它们不证明所有文件操作成功或目录内部覆盖完整；须同时检查各项终态、`requiresVerification` 和该项的 `coverageComplete`，以及原工具结果的汇总。
 
+显式允许子代理使用 `file_result` 时，它可查询本次任务自己委派操作产生的结果，包括被省略的大结果；不能查询父会话的其他调用。委派结果的查询能力随该任务 owner 结束而失效，本地子会话记录仍遵循自己的分支边界。
+
 copy/delete/move 数组在明确的 `failed_no_change` 或 `partial` 后继续其余独立目标；`file_batch` 首次失败即停止。取消、撤销授权、权限代次或会话改变、日志或传输丢失以及 `state_unknown` 都停止剩余项。成功项不回滚，也不为恢复回复而重放。目录内部明细只留有界样本；覆盖不完整时须重新列目录核对。`/changes` 按页恢复全部顶层目标；沙箱中的现状核对仍由当前授权下的 MXC 观察入口执行，不回退到宿主读取。
 
 成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。

@@ -4,7 +4,9 @@ import { mkdtemp, mkdir, writeFile, readFile, lstat, open, symlink, readdir, lin
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { writeFileSync, lstatSync } from "node:fs";
+import { writeFileSync, lstatSync, renameSync, symlinkSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
 import { capturePathIdentity, prepareTree, executeTree, writeIdentityTo, hashIdentity, boundedReason } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
 import { commitPreparedFile, FileCommitError, type FileCommitStream } from "../packages/coding-agent/src/core/files/file-commit.ts";
@@ -18,6 +20,51 @@ async function fixture(t: any) {
   return { root, source, destination };
 }
 const current = () => {};
+
+for (const copyMove of [false, true]) for (const replacement of [false, true]) test(`final source deletion retains destination-check drift, copyMove=${copyMove}, replacement=${replacement}`, async t => {
+  const f = await fixture(t); await writeFile(f.source, "original");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "move"), parent = await capturePathIdentity(f.root), originalStat = fsPromises.lstat, originalOpen = fsPromises.open;
+  let copiedHandleClosed = false, injected = false;
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    const handle = await (originalOpen as any)(path, ...args);
+    if (path === f.destination && args[0] === "wx+") {
+      const close = handle.close.bind(handle);
+      t.mock.method(handle, "close", async () => { await close(); copiedHandleClosed = true; });
+    }
+    return handle;
+  });
+  t.mock.method(fsPromises, "lstat", async (path: any, ...args: any[]) => {
+    const stat = await (originalStat as any)(path, ...args);
+    if (path === f.destination && !injected && (!copyMove || copiedHandleClosed)) {
+      if (replacement) renameSync(f.source, f.source + ".retained");
+      writeFileSync(f.source, "new source"); injected = true;
+    }
+    return stat;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await executeTree(tree, "move", parent, f.destination, parent, current, undefined, copyMove);
+  assert(injected); assert.equal(result.status, "partial", JSON.stringify(result)); assert.equal(result.requiresVerification, true);
+  assert.equal(await readFile(f.source, "utf8"), "new source");
+  assert.equal(await readFile(f.destination, "utf8"), replacement || copyMove ? "original" : "new source");
+});
+
+test("copy checks the newly opened destination parent before writing source bytes", async t => {
+  const f = await fixture(t), parentPath = join(f.root, "parent"), outside = join(f.root, "unapproved"), destination = join(parentPath, "target");
+  await mkdir(parentPath); await mkdir(outside); await writeFile(f.source, "private source");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "copy"), sourceParent = await capturePathIdentity(f.root), parent = await capturePathIdentity(parentPath);
+  const originalOpen = fsPromises.open; let injected = false;
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    if (path === destination && args[0] === "wx+") {
+      renameSync(parentPath, parentPath + ".original"); symlinkSync(outside, parentPath, process.platform === "win32" ? "junction" : "dir"); injected = true;
+    }
+    return (originalOpen as any)(path, ...args);
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await executeTree(tree, "copy", sourceParent, destination, parent, current);
+  assert(injected); assert.equal(result.status, "partial");
+  assert.equal(await readFile(join(outside, "target"), "utf8"), "", "Redirected target must receive no source bytes");
+  assert.equal(await readFile(f.source, "utf8"), "private source");
+});
 
 test("directory copy reports partial coverage when a new child appears during execution", async t => {
   const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "file"), "original");

@@ -54,7 +54,7 @@ export class ManifestArtifactWriter {
       const info = await handle.stat({ bigint: true }), named = await lstat(path, { bigint: true });
       need(sameObject(info, owned) && sameObject(named, owned) && info.size === 0n && named.size === 0n
         && !named.isSymbolicLink() && await realpath(path) === path, 'Host-assigned artifact changed or was already consumed');
-      return new ManifestArtifactWriter(path, owned.name, handle, owned.device, owned.inode, authority, signal);
+      return new ManifestArtifactWriter(path, owned.name, handle, owned.device, owned.inode, authority, signal, false);
     } catch (error) { await handle.close(); throw error; }
   }
   static async create(exchange, assignedName, authority, signal) {
@@ -66,10 +66,11 @@ export class ManifestArtifactWriter {
       return new ManifestArtifactWriter(path, assignedName, handle, String(info.dev), String(info.ino), authority, signal);
     } catch (error) { await handle.close(); throw error; }
   }
-  constructor(path, name, handle, device, inode, authority, signal) {
+  constructor(path, name, handle, device, inode, authority, signal, ownsArtifact = true) {
     this.path = path; this.name = name; this.handle = handle; this.device = device; this.inode = inode;
     this.authority = authority; this.signal = signal; this.hash = createHash('sha256'); this.bytes = 0; this.records = 0;
     this.finishing = undefined; this.disposal = undefined; this.closed = false; this.poisoned = false; this.published = false;
+    this.ownsArtifact = ownsArtifact;
   }
   append(record) {
     need(this.handle && this.hash && !this.closed && !this.poisoned, 'Artifact writer is closed or failed');
@@ -104,9 +105,11 @@ export class ManifestArtifactWriter {
     if (this.published) return;
     try { if (handle) await handle.close(); }
     finally {
-      const info = await lstat(this.path, { bigint: true });
-      need(sameObject(info, this) && !info.isSymbolicLink() && await realpath(this.path) === this.path, 'Incomplete artifact ownership changed; retained');
-      await unlink(this.path);
+      if (this.ownsArtifact) {
+        const info = await lstat(this.path, { bigint: true });
+        need(sameObject(info, this) && !info.isSymbolicLink() && await realpath(this.path) === this.path, 'Incomplete artifact ownership changed; retained');
+        await unlink(this.path);
+      }
     }
   }
   get diagnostics() { return { handleRetained: this.handle !== undefined, hashRetained: this.hash !== undefined,

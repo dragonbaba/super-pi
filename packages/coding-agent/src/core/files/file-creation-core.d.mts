@@ -4,7 +4,7 @@ export function directoryKey(path: string): string;
 export interface FileCreationPlan { path: string; canonicalTarget: string; ancestor: PathIdentity; directories: readonly string[]; }
 export interface CreatedDirectory { path: string; identity?: PathIdentity; status: "created" | "removed" | "retained"; }
 export interface CreationResult { createdDirectories: CreatedDirectory[]; bytes: number; addedLines?: number; }
-export function summarizeCreatedDirectories(creation: { bytes: number; addedLines?: number }, created: readonly CreatedDirectory[]):
+export function summarizeCreatedDirectories(creation: { bytes?: number; addedLines?: number; createdDirectoryCount?: number }, created: readonly CreatedDirectory[]):
   { bytes: number; addedLines?: number; createdDirectoryCount: number; createdDirectories: CreatedDirectory[]; createdDirectoriesOmitted: number };
 export interface CreatedFileIdentity { readonly path: string; readonly device: string; readonly inode: string; }
 export function originalCreatedFileIdentity(result: CreationResult): Readonly<CreatedFileIdentity> | undefined;

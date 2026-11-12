@@ -8,6 +8,16 @@ import { ManifestArtifactWriter, visitManifestArtifact, releaseManifestArtifact,
 import { FILE_MANIFEST_RECORD_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 
 const name = "a".repeat(32) + "-0.manifest";
+
+test("failed attached writer leaves its assigned artifact for host cleanup and the next invocation", async t => {
+  const root = await fixture(t), owned = await createOwnedManifestFile(root, name), writer = await ManifestArtifactWriter.attach(root, owned);
+  assert.throws(() => writer.append({ payload: "x".repeat(FILE_MANIFEST_RECORD_BYTES) }), /record budget/);
+  await writer.dispose();
+  assert.deepEqual(await readdir(root), [name]); await releaseOwnedManifestFile(root, owned);
+  const next = await createOwnedManifestFile(root, name), replacement = await ManifestArtifactWriter.attach(root, next);
+  replacement.append({ payload: "next invocation" }); await replacement.finish(); await replacement.dispose();
+  await releaseOwnedManifestFile(root, next); assert.deepEqual(await readdir(root), []);
+});
 async function fixture(t: any) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "sp-manifest-v3-")));
   t.after(() => removeOwnedFixture(root)); return root;

@@ -870,7 +870,7 @@ export class AgentSession {
 	private _customTools: ToolDefinition[];
 	private _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	private readonly _openSubagentExecution: OpenSubagentExecution = options =>
-		new SubagentExecution(this.agent, this._baseToolDefinitions, this._toolRegistry, options);
+		new SubagentExecution(this.agent, this._baseToolDefinitions, this._toolRegistry, options, this.sessionManager);
 	private _cwd: string;
 	private _extensionRunnerRef?: { current?: ExtensionRunner };
 	private _extensionRunnerOptions?: ExtensionRunnerOptions;
@@ -5272,7 +5272,7 @@ export class AgentSession {
 			!this._allowedToolNames || this._allowedToolNames.has("edit") || this._allowedToolNames.has("write") || this._allowedToolNames.has("file_batch"), this._operationOptions !== undefined);
 		if (this._workspaceSandbox) baseToolDefinitions = this._workspaceSandbox.install(baseToolDefinitions);
 		if (this._workspaceSandbox && !this._baseToolsOverride) this._resourceLoader.getExtensions().runtime.nativeFiles?.installResultTool(baseToolDefinitions);
-		if (parentExecution) this._resourceLoader.getExtensions().runtime.nativeFiles?.installResultTool(baseToolDefinitions);
+		if (parentExecution && !Object.hasOwn(baseToolDefinitions, "file_result")) this._resourceLoader.getExtensions().runtime.nativeFiles?.installResultTool(baseToolDefinitions);
 		if (Object.hasOwn(baseToolDefinitions, CODEMODE_NAME)) throw new Error("codemode is a reserved built-in orchestration tool");
 		baseToolDefinitions[CODEMODE_NAME] = this._codemode.definition;
 		const nativeTasks = this._resourceLoader.getExtensions().runtime.nativeTasks;

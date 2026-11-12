@@ -200,6 +200,11 @@ class TreeExecution {
       this.effectPending = true; target = await open(destination, 'wx+'); this.effectPending = false; this.changed = true;
       const info = await target.stat({ bigint: true });
       published = { device: String(info.dev), inode: String(info.ino) };
+      await this.checkParent(parent);
+      const opened = await capturePathIdentity(destination);
+      if (!info.isFile() || info.nlink !== 1n || opened.canonical !== destination || opened.device !== published.device || opened.inode !== published.inode
+        || opened.links !== '1') throw new Error('[STALE_STATE] Opened copy target is outside its prepared parent or has another owner.');
+      this.current();
       const digest = await writeIdentityTo(source, target, this.current, this.signal);
       await target.sync();
       await this.checkParent(parent);
@@ -226,6 +231,7 @@ class TreeExecution {
     const source = await capturePathIdentity(entry.identity.path), target = await capturePathIdentity(destination);
     if (source.size !== entry.identity.size || source.mtime !== entry.identity.mtime || target.device !== source.device || target.inode !== source.inode
       || source.links !== (expected.links === '1' ? '2' : String(BigInt(expected.links) + 1n))) throw new Error('[STALE_STATE] Move source or linked destination changed; both names retained.');
+    if (!sameIdentity(source, await capturePathIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Linked move source changed at the final deletion boundary; both names retained.');
     this.current(); this.effectPending = true; await unlink(entry.identity.path); this.effectPending = false; this.files++; this.bytes += Number(entry.identity.size);
     if (entry.identity.links !== '1') await this.advanceSource(entry, false);
   }
@@ -233,6 +239,7 @@ class TreeExecution {
     const copied = await this.copyFile(entry, destination, parent);
     await this.checkSource(entry); await this.checkParent(parent); this.current();
     if (!sameIdentity(copied, await capturePathIdentity(destination))) throw new Error('[STALE_STATE] Copied destination changed before source deletion; source retained.');
+    if (!sameIdentity(this.sourceIdentity(entry), await captureTreeIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Copied source changed at the final deletion boundary; source retained.');
     this.current(); this.effectPending = true; await unlink(entry.identity.path); this.effectPending = false; this.files++;
     if (entry.identity.links !== '1') await this.advanceSource(entry, true);
   }

@@ -5,7 +5,7 @@ import { mutationRequestHash } from "./file-invocation.ts";
 import { fileSourceArguments } from "./file-source-arguments.ts";
 import { assertIndependent } from "./file-path-conflicts.ts";
 import { PreviewBudget, displayMetadata } from "./change-preview.ts";
-import { canonicalCreationDirectories, directoryKey } from "./file-creation.ts";
+import { directoryKey, summarizeCreatedDirectories, type CreatedDirectory } from "./file-creation.ts";
 import { boundedReason } from "./file-tree-core.mjs";
 import type { FileMutationService, PreparedFileItem, FileOperation, FileOperationInput, FileExecutionHooks, ExecutePreparedFile, FileReceipt } from "./file-service.ts";
 import { FileResultWriter, type AppendFileResultEntry, type FileResultSession } from "./file-result-store.ts";
@@ -17,7 +17,7 @@ export type PreparedMutationItem = PreparedFileItem & { itemId: string; prepared
 const INPUT_FIELDS = ["content", "destination", "snapshot", "edits", "recursive", "overwrite", "purpose"] as const;
 const RECEIPT_FIELDS = ["operation", "target", "destination", "status", "stateChanged", "requiresVerification", "sha256", "previousSha256",
   "sourceIdentity", "created", "bytes", "files", "directories", "skippedLinks", "coverageComplete", "revision", "revisionContinuation", "snapshot",
-  "changedBytes", "replacements", "deduplicatedEdits", "category", "createdDirectories", "stopInvocation"] as const;
+  "changedBytes", "replacements", "deduplicatedEdits", "category", "stopInvocation"] as const;
 
 /** Locate the exact persisted source on this branch. No synthetic call or guessed leaf. */
 export function findFileMutationCall(session: FileResultSession, id: string, operation: FileResultOperation, hash: string): string {
@@ -138,9 +138,17 @@ export function projectMutationReceipt(receipt: Record<string, unknown>): Omit<F
   if (commit) result.commit = { strategy: commit.strategy, compatibilityReason: commit.compatibilityReason && boundedReason(commit.compatibilityReason),
     outcome: commit.outcome, fileSynced: commit.fileSynced, directorySynced: commit.directorySynced,
     retainedTemporary: commit.retainedTemporary, cleanupReason: commit.cleanupReason && boundedReason(commit.cleanupReason) };
-  const creation = receipt.creation as { bytes?: number; addedLines?: number; createdDirectories?: unknown[]; createdDirectoryCount?: number; createdDirectoriesOmitted?: number; manifestSha256?: string } | undefined;
-  if (creation) result.creation = { bytes: creation.bytes, addedLines: creation.addedLines, createdDirectories: creation.createdDirectories,
-    createdDirectoryCount: creation.createdDirectoryCount, createdDirectoriesOmitted: creation.createdDirectoriesOmitted, manifestSha256: creation.manifestSha256 };
+  const creation = receipt.creation as { bytes?: number; addedLines?: number; createdDirectories?: CreatedDirectory[]; createdDirectoryCount?: number; manifestSha256?: string } | undefined;
+  if (creation?.createdDirectories) {
+    const bounded = summarizeCreatedDirectories(creation, creation.createdDirectories);
+    result.creation = creation.manifestSha256 ? { ...bounded, manifestSha256: creation.manifestSha256 } : bounded;
+    if (bounded.createdDirectoriesOmitted) result.coverageComplete = false;
+  } else if (Array.isArray(receipt.createdDirectories)) {
+    const bounded = summarizeCreatedDirectories(receipt, receipt.createdDirectories);
+    result.createdDirectories = bounded.createdDirectories; result.createdDirectoryCount = bounded.createdDirectoryCount;
+    result.createdDirectoriesOmitted = bounded.createdDirectoriesOmitted;
+    if (bounded.createdDirectoriesOmitted) result.coverageComplete = false;
+  }
   const reason = receipt.reason ?? receipt.cause;
   if (typeof reason === "string") result.reason = boundedReason(reason);
   return result;
@@ -222,7 +230,6 @@ class FileMutationExecution {
       strategy: tree?.overwriteCommit?.metadata.strategy ?? item.snapshot?.metadata?.strategy
         ?? (item.remote?.prepared.header.destinationIdentity || item.remote?.prepared.header.text?.exists ? "staged_replace" : undefined),
       compatibilityReason: tree?.overwriteCommit?.metadata.reason ?? item.snapshot?.metadata?.reason,
-      plannedDirectories: item.creation && !item.remote ? canonicalCreationDirectories(item.creation) : undefined,
       plannedDirectoryCount: item.creation?.directories.length, creationAncestor: item.creation?.ancestor,
       manifest: item.remote?.manifest,
       files: tree?.tree.files, directories: tree?.tree.directories, bytes: tree?.tree.bytes, skippedLinks: tree?.tree.skippedLinks };
@@ -296,7 +303,7 @@ class FileMutationExecution {
       }
       if (typeof receipt.skippedLinks === "number") this.skippedLinks += receipt.skippedLinks;
       this.requiresVerification ||= receipt.requiresVerification === true;
-      this.coverageComplete &&= receipt.coverageComplete !== false && receipt.status !== "partial" && receipt.status !== "state_unknown";
+      this.coverageComplete &&= metadata.coverageComplete !== false && receipt.status !== "partial" && receipt.status !== "state_unknown";
       this.remember({ index: this.current, itemId: item.itemId, ...metadata });
       if (receipt.stopInvocation === true || receipt.status === "state_unknown" || receipt.status === "cancelled" || mutation.operation === "file_batch" && receipt.status !== "succeeded") break;
     }

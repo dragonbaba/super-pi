@@ -11,6 +11,7 @@ import { FileResultReader } from "../packages/coding-agent/src/core/files/file-r
 import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-result-protocol.ts";
 import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
 
 async function fixture(t: test.TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), "file-mutation-v3-")); t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -24,6 +25,31 @@ async function fixture(t: test.TestContext) {
 }
 function current(): void {}
 function unexpectedLegacy(): never { throw new Error("v3 must not publish legacy journal records"); }
+
+test("bounded native created-parent facts keep complete counts and allow the next batch item", async t => {
+  const root = await mkdtemp(join(tmpdir(), "parent-facts-v3-")), f = nativeFileSession(root), definitions: any = {};
+  t.after(async () => { await f.close(); await rm(root, { recursive: true, force: true }); }); f.files.install(definitions);
+  const existing = Array(24).fill("existing-segment").join("/"); await mkdir(join(root, existing), { recursive: true });
+  const target = existing + "/" + Array(32).fill("missing").join("/") + "/target";
+  const result = await f.invoke(definitions, "file_batch", { operations: [
+    { operation: "write", path: target, mode: "create", content: "kept" },
+    { operation: "write", path: "following", mode: "create", content: "next" },
+  ] });
+  assert.equal(result.isError, false, JSON.stringify({ failed: result.details.failed, unknown: result.details.unknown, notStarted: result.details.notStarted, reason: result.details.reason }));
+  assert.equal(result.details.succeeded, 2); assert.equal(result.details.coverageComplete, false);
+  assert.equal(result.details.directories, 32); assert.equal(await readFile(join(root, target), "utf8"), "kept");
+  assert.equal(await readFile(join(root, "following"), "utf8"), "next");
+  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose()); let cursor: string | undefined, found = false;
+  do {
+    const page = reader.read(result.details.resultRef, cursor); assert(Buffer.byteLength(JSON.stringify(page)) <= FILE_RESULT_PAGE_BYTES);
+    for (const row of page.records) if (row.record.phase === "result" && row.record.index === 0) {
+      const creation = row.record.creation as any; assert.equal(creation.createdDirectoryCount, 32);
+      assert(creation.createdDirectories.length <= 8); assert.equal(creation.createdDirectoriesOmitted, 32 - creation.createdDirectories.length); found = true;
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert(found);
+});
 
 test("v3 binds the dispatcher's existing numeric repair without changing original history", async t => {
   const f = await fixture(t); await writeFile(join(f.cwd, "123"), "original");
