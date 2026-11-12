@@ -60,7 +60,7 @@ export interface AutoReviewDenial {
 const MAX_AUTO_DENIALS = 10;
 const MUTATIONS = new Set(["edit", "write", "copy", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
-const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command"]);
+const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command", "copy", "move", "delete", "file_batch"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks", "file_result"]);
 const SANDBOX_TOOLS = new Set<string>([...SAFE, ...WORKSPACE_TOOL_NAMES]);
 const BLOCKED = "[POLICY_BLOCKED] ";

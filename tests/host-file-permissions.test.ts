@@ -83,6 +83,27 @@ test("native delete/move and mixed batches ask once outside; primary and added w
   assert.equal(f.dialogs.length, count + 1); assert.match(f.dialogs.at(-1)!, /工作区内/); assert.match(f.dialogs.at(-1)!, /工作区外/);
 });
 
+test("tree mutations honor descendant denies and explicit asks before any effect", async t => {
+  for (const operation of ["delete", "move", "copy"] as const) for (const batch of [false, true]) for (const decision of ["deny", "ask"] as const) {
+    const source = "tree", destination = "target", rulePath = join(operation === "copy" ? destination : source, "keep.txt");
+    const f = await fixture(t, { rules: [{ tool: operation, path: rulePath, decision }] });
+    await fs.mkdir(join(f.workspace, source)); await fs.writeFile(join(f.workspace, source, "keep.txt"), "keep");
+    const item = { path: source, ...(operation === "delete" ? { recursive: true } : { destination }) };
+    if (decision === "deny") {
+      await assert.rejects(f.call(batch ? "file_batch" : operation, batch ? { operations: [{ operation, ...item }] } : item), /Explicitly denied/);
+      assert.equal(await fs.readFile(join(f.workspace, source, "keep.txt"), "utf8"), "keep");
+      await assert.rejects(fs.stat(join(f.workspace, destination)), { code: "ENOENT" }); assert.equal(f.dialogs.length, 0);
+    } else {
+      const result = await f.call(batch ? "file_batch" : operation, batch ? { operations: [{ operation, ...item }] } : item);
+      assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(f.dialogs.length, 1, `${operation}, batch=${batch}`);
+    }
+  }
+  const f = await fixture(t, { rules: [{ tool: "file_batch", path: "tree/keep.txt", decision: "deny" }] });
+  await fs.mkdir(join(f.workspace, "tree")); await fs.writeFile(join(f.workspace, "tree/keep.txt"), "keep");
+  await assert.rejects(f.call("file_batch", { operations: [{ operation: "delete", path: "tree", recursive: true }] }), /Explicitly denied/);
+  assert.equal(await fs.readFile(join(f.workspace, "tree/keep.txt"), "utf8"), "keep");
+});
+
 test("denied batches have no partial effects; missing UI/never require approval without persistent refusals", async t => {
   const f = await fixture(t);
   const local = join(f.workspace, "keep.txt"), external = join(f.outside, "keep.txt");

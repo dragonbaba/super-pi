@@ -47,7 +47,7 @@
 
 完整链路审计范围为 SessionFiles → FileMutation → FileService/SandboxFileService → 原有 SessionManager.appendCustomEntry/条目索引 → FileResultReader → FileChangesV3/false-success consumer。生产进度条目不逐项触发整份 UI 历史重建。FileExecution 在调用锁作用域内只建立一个固定 active slot，源约束检查拒绝在目标循环内创建回调、Promise executor 或 AbortController。OS I/O 的 Promise 属于文件操作边界；审批、调用准备、显式 /changes 命令及关闭为独立生命周期。
 
-native 2,000×4 的初轮 profiler：采样期间峰值 heap 169,571,000 字节、RSS 412,545,024 字节；HeapProfiler 的累计采样估计 5,453,715,416 字节，包含 fixture/profiler 和结果核对，不是精确总分配。清除 node:test mock 的返回 Promise 历史后受控 GC，14,000 个 prepared item/tree WeakRef 的存活数为 0；32,012 条会话历史记录为预期持有，单列而非计作泄漏。最终冻结候选将重跑并记录主要分配位置。
+native 2,000×4 的初轮 profiler：采样期间峰值 heap 169,571,000 字节、RSS 412,545,024 字节；HeapProfiler 的累计采样估计 5,453,715,416 字节，包含 fixture/profiler 和结果核对，不是精确总分配。清除 node:test mock 的返回 Promise 历史后受控 GC，14,000 个 prepared item/tree WeakRef 的存活数为 0；32,012 条会话历史记录为预期持有，单列而非计作泄漏。用户要求限制测试后，冻结候选只做下文的小样本复核。
 
 按相同路径形状递增 100/1,000/10,000 项，trie 的路径访问数为 4,000/40,000/400,000，节点为 418/4,018/40,018，身份数等于目标数。一次定向运行的耗时 0.685/3.963/39.932 ms，heap 增量约 0.30/1.08/13.37 MiB；数字包含平台绝对路径深度，节点/访问增长为线性，不使用两两路径比较。临时 trie 属调用预检，未存入全局缓存。
 
@@ -57,7 +57,7 @@ native 2,000×4 的初轮 profiler：采样期间峰值 heap 169,571,000 字节�
 
 上述规模测量仅留为手动命令，当前入口见[测试文档](../testing.md)。native 分配 sampler、目录 probe 和真实 MXC acceptance 分别位于 `scripts/bench/file-mutations-v3.ts`、`scripts/bench/file-tree-v3.ts`、`scripts/acceptance/file-operations-v3.ts`，不在默认测试发现目录。MXC 目录测量 wrapper 只在 task-owned 运行副本记录 worker resourceUsage，不修改生产入口或隔离策略。
 
-2026-11-13 用户报告 Codex 崩溃并要求限制、清理测试后，本轮停止且不自动重跑大规模压测。MXC 50,000 文件仅 copy 完成（562,011.1968 ms，3 个实际 RPC，最大请求/回复 1,095/810 字节）；move 未完成，delete 未开始，不计作通过。原压测进程已不在；两个精确登记的压测临时根已删除。首次 CI run `43303174955` 已取消，不满足最终 head 门禁。旧 head 审核有待处理的问题，尚未合并。
+2026-11-13 用户报告 Codex 崩溃并要求限制、清理测试后，本轮停止且不自动重跑大规模压测。MXC 50,000 文件仅 copy 完成（562,011.1968 ms，3 个实际 RPC，最大请求/回复 1,095/810 字节）；move 未完成，delete 未开始，不计作通过。原压测进程已不在；两个精确登记的压测临时根已删除。首次 CI run `43303174955` 已取消，不满足最终 head 门禁。
 
 本轮测试清理删除 19 个过期/重复用例及两份复制执行器，将 36/15 会话成本矩阵移到手动 benchmark。默认实际 native 效果回归缩为 70 项，仍跨越 inline/page 边界；2,000 行纯元数据覆盖保持。通过新运行器串行运行 7 个相关文件、50 项检查（单文件约 0.26–5 秒），以及一个实际 SDK changes/reopen 回归和类型检查。没有再次运行大规模分配/目录压测。V8 老生代限制不等于含 Buffer/native 分配的 RSS 硬上限。
 
@@ -76,3 +76,7 @@ native 2,000×4 的初轮 profiler：采样期间峰值 heap 169,571,000 字节�
 在新资源约束下，8 个相关文件执行 84 项：80 通过、4 个显式平台/live/GC 跳过；另一个矛盾父目录计数回归通过。类型检查、串行 12 包离线构建与后续 coding-agent 定向构建通过。没有启动本地完整测试或再次运行大规模压测。
 
 分配契约采用 32 项的小样本复核四个真实 native 会话操作、分页、共享新建父目录、分页后继续 edit，以及外部修改拒绝。copy/move/delete/batch 分别耗时 420.138/236.227/129.008/211.074 ms；峰值 heap 41,469,632、RSS 139,853,824 字节，累计分配采样估计 107,786,496 字节。主要采样位置为 V8 API、Node 文件 I/O/async hooks、路径规范化与 parseFileResultPayload；225 个 item/tree 引用受控 GC 后存活为 0，532 条会话历史为预期持有。样本与旧 2,000 项工作负载不同，不作耗时或分配改善对比。
+
+目录 copy/move/delete 及 batch 的 deny/ask 规则覆盖后代路径，显式 ask 不交给自动审核放行。删除在父目录检查和 canonical 解析后最后读取源身份；两个单文件替换注入在修复前会误删新文件，修复后无效果并保留新旧文件。copy 的目标可使用指向已钉住父目录的词法别名，重定向至其他父目录仍不能写入源正文。POSIX 新文件从 0600 创建并通过句柄恢复源的 rwx 权限；新目录仅额外保留 owner 的填充权限，全部填充后从下往上恢复原 rwx 权限，不把 0700 私有目录或 0600 文件改成公共可读。此处不宣称复制 ACL、属主或特殊 mode 位。
+
+对应 7 个文件的定向检查为 73 项通过、1 项 POSIX 平台跳过，类型检查与 coding-agent 构建通过。实际 SDK 混合工具/重开测试改用当前 v3 commit 故障边界和完整分页回执，不再依赖已退役的 v2 执行记录。Windows 的最新 32 项分配复核耗时约 1.47 秒，峰值 heap 44,092,880、RSS 140,750,848 字节；累计采样估计 109,151,960 字节，225 个临时引用存活为 0，532 条历史保留。POSIX rwx 回归由 Linux CI 验证。

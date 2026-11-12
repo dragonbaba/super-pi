@@ -8,10 +8,22 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
-import { collectStructuredMutationReceipts } from "../packages/extensions/mutation-guard-write/session-evidence.ts";
+import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { isMutationEffectCommit } from "./helpers/file-mutation-progress.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 
 const bashPath = process.platform !== "win32" ? "/bin/bash" : existsSync("D:/Git/bin/bash.exe") ? "D:/Git/bin/bash.exe" : join(process.env.ProgramFiles!, "Git/bin/bash.exe");
+
+async function currentReceipts(manager: SessionManager) {
+  const owner = new FileChangesV3(manager), records = [];
+  try {
+    while (owner.hasMoreCalls) for (const call of await owner.calls()) {
+      owner.open(call.ref); let more;
+      do { const page = owner.nextItems(); for (const record of page.records) records.push(record); more = page.hasMore; } while (more);
+    }
+    return records;
+  } finally { owner.dispose(); }
+}
 
 test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts and reopen", { timeout: 60000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), "sp-abc-integration-"));
@@ -67,7 +79,7 @@ test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts an
   let failAfterFirst = true;
   t.mock.method(manager, "appendCustomEntry", function(kind: string, data: any) {
     const value = append(kind, data);
-    if (failAfterFirst && kind === "file-mutation-progress-v2" && data.phase === "result") { failAfterFirst = false; writeFileSync(join(cwd, "current"), "concurrent"); }
+    if (failAfterFirst && isMutationEffectCommit(kind, data)) { failAfterFirst = false; writeFileSync(join(cwd, "current"), "concurrent"); }
     return value;
   });
   writeFileSync(join(cwd, "current"), "before");
@@ -108,13 +120,13 @@ test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts an
     { operation: "delete", path: "first" }, { operation: "delete", path: "current" },
     { operation: "write", mode: "create", path: "last", content: "not applied" },
   ] })).isError, false);
-  const beforeReceipts = collectStructuredMutationReceipts(manager.getBranch());
+  const beforeReceipts = await currentReceipts(manager);
   assert.equal(beforeReceipts.filter((item: any) => item.toolCallId === partial.toolCallId && item.status === "succeeded").length, 1);
   const file = manager.getSessionFile()!; assert.ok(file);
   session.dispose(); const reopened = SessionManager.open(file);
   await session.waitForSessionLeaseRelease(); await options.resourceLoader.reload();
   ({ session } = await createAgentSession({ ...options, sessionManager: reopened })); runner = session.extensionRunner; await session.bindExtensions({});
-  const receipts = collectStructuredMutationReceipts(reopened.getBranch());
+  const receipts = await currentReceipts(reopened);
   assert.deepEqual(receipts, beforeReceipts);
   assert.equal(readFileSync(join(cwd, "first"), "utf8"), "first"); assert.equal(readFileSync(join(cwd, "current"), "utf8"), "concurrent"); assert.equal(existsSync(join(cwd, "last")), false);
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal(((runner as any).finalAuthorizations?.size ?? 0), 0);
