@@ -43,6 +43,61 @@ async function fixture(t, operations, operation = 'file_batch') {
   return { root, workspace, exchange, request, items, prepare, validate, execute, rpc };
 }
 
+for (const operation of ['copy', 'move']) for (const depth of [1, 3]) for (const directory of [false, true]) {
+  test(`worker manifest ${operation} creates ${depth} missing parents for a ${directory ? 'directory' : 'file'}`, async t => {
+    const prefix = depth === 1 ? 'new' : 'new/second/third';
+    const f = await fixture(t, [{ operation, path: 'source', destination: prefix + '/target' }], operation);
+    const source = join(f.workspace, 'source');
+    if (directory) { await mkdir(source); await writeFile(join(source, 'payload'), 'kept'); }
+    else await writeFile(source, 'kept');
+    const prepared = await f.prepare(), validated = await f.validate(prepared);
+    await assert.rejects(lstat(join(f.workspace, 'new')), { code: 'ENOENT' });
+    const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`);
+    const receipt = await f.execute(0, prepared, validated, { effects });
+    assert.equal(receipt.status, 'succeeded', JSON.stringify(receipt));
+    assert.equal(receipt.creation.createdDirectoryCount, depth);
+    assert.equal(await readFile(join(f.workspace, prefix, 'target', ...(directory ? ['payload'] : [])), 'utf8'), 'kept');
+    if (operation === 'move') await assert.rejects(lstat(source), { code: 'ENOENT' });
+  });
+}
+
+test('worker missing-parent preparation rejects workspace escapes and protected destinations', async t => {
+  for (const operation of ['copy', 'move']) for (const destination of ['../outside-new-parent/target', '.git/missing/target']) {
+    const f = await fixture(t, [{ operation, path: 'source', destination }], operation); await writeFile(join(f.workspace, 'source'), 'kept');
+    await assert.rejects(f.prepare(), /FILE_WORKSPACE_PATH/); assert.equal(await readFile(join(f.workspace, 'source'), 'utf8'), 'kept');
+    await assert.rejects(lstat(join(f.workspace, '.git')), { code: 'ENOENT' });
+  }
+});
+
+for (const operation of ['copy', 'move']) test(`worker ${operation} binds missing-parent inventory to its destination workspace`, async t => {
+  const f = await fixture(t, [{ operation, path: 'source', destination: 'new/deep/target' }], operation);
+  const second = join(f.root, 'second-workspace'); await mkdir(second); const identity = await capturePathIdentity(second);
+  f.request.workspaces.push(second); f.request.workspaceIdentities.push(identity.device + ':' + identity.inode); f.items[0].destinationWorkspaceIndex = 1;
+  await writeFile(join(f.workspace, 'source'), 'kept'); const prepared = await f.prepare(), validated = await f.validate(prepared);
+  const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`), receipt = await f.execute(0, prepared, validated, { effects });
+  assert.equal(receipt.status, 'succeeded', JSON.stringify(receipt)); assert.equal(receipt.creation.createdDirectoryCount, 2);
+  assert.equal(await readFile(join(second, 'new/deep/target'), 'utf8'), 'kept'); await assert.rejects(lstat(join(f.workspace, 'new')), { code: 'ENOENT' });
+});
+
+test('worker parent-creation failure reports the retained directory inventory without moving the source', async t => {
+  const f = await fixture(t, [{ operation: 'move', path: 'source', destination: 'new/deep/target' }], 'move');
+  await writeFile(join(f.workspace, 'source'), 'kept'); const prepared = await f.prepare(), validated = await f.validate(prepared);
+  const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`), original = fsPromises.mkdir;
+  t.mock.method(fsPromises, 'mkdir', async (path, ...args) => {
+    if (path === join(f.workspace, 'new/deep')) throw Object.assign(new Error('fixture parent denied'), { code: 'EACCES' });
+    return original(path, ...args);
+  });
+  syncBuiltinESMExports();
+  let receipt;
+  try { receipt = await f.execute(0, prepared, validated, { effects }); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(receipt.status, 'partial'); assert.equal(receipt.stateChanged, true); assert.equal(receipt.requiresVerification, true);
+  assert.equal(receipt.creation.createdDirectoryCount, 1); assert.equal(receipt.creation.createdDirectories[0].status, 'retained');
+  const manifest = await readFileWorkerManifest(f.request, f.items[0], 0, prepared[0].manifest);
+  const parents = await readFileParentManifest(f.request, 0, manifest.creation, 'created', receipt.createdParents);
+  assert.equal(parents.created[0].path, join(f.workspace, 'new')); assert.equal(await readFile(join(f.workspace, 'source'), 'utf8'), 'kept');
+});
+
 test('worker-only v3 preparation is read-only and recursive copy preserves every prepared file', async t => {
   const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }], 'copy');
   await mkdir(join(f.workspace, 'source')); await mkdir(join(f.workspace, 'source/nested'));

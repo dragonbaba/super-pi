@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, writeFile, readFile, mkdir, lstat, symlink, realpath, rm } from "node:fs/promises";
 import { existsSync, writeFileSync } from "node:fs";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
@@ -14,6 +16,21 @@ async function fixture(t: any) {
   return root;
 }
 const current = () => {};
+for (const operation of ["copy", "move"] as const) for (const depth of [1, 3]) for (const directory of [false, true]) {
+  test(`native ${operation} prepares and creates ${depth} missing parents for a ${directory ? "directory" : "file"}`, async t => {
+    const root = await fixture(t), source = join(root, "source"), prefix = depth === 1 ? "new" : "new/second/third";
+    if (directory) { await mkdir(source); await writeFile(join(source, "payload"), "kept"); }
+    else await writeFile(source, "kept");
+    const plan = await prepareNativeTreeOperation(root, operation, { path: "source", destination: prefix + "/target" });
+    await assert.rejects(lstat(join(root, "new")), { code: "ENOENT" });
+    const result = await executeNativeTreePlan(plan, current);
+    assert.equal(result.status, "succeeded", JSON.stringify(result));
+    assert.equal((result.creation as any).createdDirectories.length, depth);
+    assert.equal(await readFile(join(root, prefix, "target", ...(directory ? ["payload"] : [])), "utf8"), "kept");
+    if (operation === "move") await assert.rejects(lstat(source), { code: "ENOENT" });
+    else assert.equal(await readFile(directory ? join(source, "payload") : source, "utf8"), "kept");
+  });
+}
 test("native tree owner supports recursive copy/move/delete with v3 outcomes", async t => {
   const root = await fixture(t); await mkdir(join(root, "source", "nested"), { recursive: true }); await writeFile(join(root, "source", "nested", "file"), "data");
   const copied = await executeNativeTreePlan(await prepareNativeTreeOperation(root, "copy", { path: "source", destination: "copied" }), current);
@@ -23,6 +40,42 @@ test("native tree owner supports recursive copy/move/delete with v3 outcomes", a
   const removed = await executeNativeTreePlan(await prepareNativeTreeOperation(root, "delete", { path: "moved", recursive: true }), current);
   assert.equal(removed.status, "succeeded"); await assert.rejects(lstat(join(root, "moved")), { code: "ENOENT" });
   assert.equal(await readFile(join(root, "source", "nested", "file"), "utf8"), "data");
+});
+test("native missing-parent preflight preserves workspace, protected-path and folded containment boundaries", async t => {
+  const root = await fixture(t); await mkdir(join(root, "Source")); await writeFile(join(root, "Source/file"), "kept");
+  for (const operation of ["copy", "move"] as const) {
+    for (const destination of ["../outside-new-parent/target", ".git/missing/target"]) await assert.rejects(prepareNativeTreeOperation(root, operation, { path: "Source", destination }), /POLICY_BLOCKED/);
+    await assert.rejects(prepareNativeTreeOperation(root, operation, { path: "Source", destination: "source/new/target" }), /BATCH_CONFLICT/);
+  }
+  await assert.rejects(lstat(join(root, ".git")), { code: "ENOENT" }); assert.equal(await readFile(join(root, "Source/file"), "utf8"), "kept");
+});
+test("native cancellation reports retained created parents and permits a fresh independent request", async t => {
+  const root = await fixture(t); await writeFile(join(root, "source"), "kept");
+  const plan = await prepareNativeTreeOperation(root, "move", { path: "source", destination: "new/deep/target" });
+  const controller = new AbortController(), original = fsPromises.mkdir;
+  t.mock.method(fsPromises, "mkdir", async (path: any, ...args: any[]) => {
+    const result = await original(path, ...args); if (path === join(root, "new")) controller.abort(new Error("fixture cancellation")); return result;
+  });
+  syncBuiltinESMExports();
+  let result;
+  try { result = await executeNativeTreePlan(plan, current, controller.signal); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(result.status, "partial"); assert.equal(result.stateChanged, true); assert.equal(result.requiresVerification, true);
+  assert.equal((result.creation as any).createdDirectories[0].path, join(await realpath(root), "new"));
+  assert.equal((result.creation as any).createdDirectories[0].status, "retained");
+  assert.equal(await readFile(join(root, "source"), "utf8"), "kept");
+  const next = await executeNativeTreePlan(await prepareNativeTreeOperation(root, "copy", { path: "source", destination: "new/recovered" }), current);
+  assert.equal(next.status, "succeeded"); assert.equal(await readFile(join(root, "new/recovered"), "utf8"), "kept");
+});
+test("native missing parents do not change junction copy/skip or move/refusal behavior", async t => {
+  const root = await fixture(t); await mkdir(join(root, "source")); await mkdir(join(root, "outside"));
+  await writeFile(join(root, "outside/marker"), "outside kept"); await writeFile(join(root, "source/payload"), "kept");
+  await symlink(join(root, "outside"), join(root, "source/link"), process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(prepareNativeTreeOperation(root, "move", { path: "source", destination: "move-parent/target" }), /link|symbolic|unsupported/i);
+  await assert.rejects(lstat(join(root, "move-parent")), { code: "ENOENT" });
+  const result = await executeNativeTreePlan(await prepareNativeTreeOperation(root, "copy", { path: "source", destination: "copy-parent/target" }), current);
+  assert.equal(result.status, "succeeded"); assert.equal(result.skippedLinks, 1); assert.equal(result.coverageComplete, false);
+  await assert.rejects(lstat(join(root, "copy-parent/target/link")), { code: "ENOENT" }); assert.equal(await readFile(join(root, "outside/marker"), "utf8"), "outside kept");
 });
 test("native copy overwrite uses its pinned destination and source digest", async t => {
   const root = await fixture(t); await writeFile(join(root, "source"), Buffer.alloc(1024 * 1024 + 13, 0x91)); await writeFile(join(root, "target"), "old");

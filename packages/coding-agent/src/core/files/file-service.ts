@@ -164,7 +164,7 @@ class FileExecution {
       if (!hooks.batch && !item.native) this.record("origin");
       if (hooks.batch || !item.snapshot) this.record("intent");
       if (hooks.batch) await this.service.revalidate(item, hooks);
-      if (item.tree) receipt = await executeNativeTreePlan(item.tree, this.assertCurrent, hooks.signal);
+      if (item.tree) receipt = await executeNativeTreePlan(item.tree, this.assertCurrent, hooks.signal, hooks.sharedDirectories);
       else if (item.artifact) {
         if (createHash("sha256").update(item.artifact.bytes).digest("hex") !== item.artifact.sha256) throw new Error("[STALE_STATE] Artifact changed after preparation");
         const commit = item.artifact.commit ? await commitPreparedFile(item.artifact.commit, item.artifact.bytes,
@@ -271,8 +271,9 @@ export class FileService {
     if (tree.destination) paths.push(tree.destination);
     const item: PreparedFileItem = { operation, input: tree.input, target: tree.source.canonical, paths,
       executionPath: tree.source.path, generation: this.revisions.generation, requestHash: mutationRequestHash(operation, raw),
-      approval: tree.protectedPaths[0], identity: tree.source, tree,
+      approval: tree.protectedPaths[0], identity: tree.source, tree, creation: tree.creation,
       preview: { kind: operation === "delete" ? "Deleted" : operation === "move" ? "Moved" : "Copied", bytes: tree.tree.bytes,
+        plannedDirectories: tree.creation?.directories,
         risk: `${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.skippedLinks} links skipped; source trees and destinations are revalidated before effects.` } };
     signal?.throwIfAborted(); this.prepared.add(item); this.assertPrepared(item); return item;
   }
@@ -380,7 +381,7 @@ export class FileService {
     if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Prepared target changed.");
     if (item.tree) {
       if (item.tree.deferredCopyHash && !hooks.preflightOnly) item.tree = await finalizeNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
-      else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
+      else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal, true, hooks.sharedDirectories);
     }
     else if (item.native) await revalidateNativePlan(item.native);
     else if (item.creation) {

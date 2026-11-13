@@ -92,6 +92,7 @@ export function fileRpcExecutedReceipt(row: unknown, envelope: FileWorkerRequest
   if (receipt.createdParents !== undefined) validateManifestArtifact(receipt.createdParents, `${envelope.id}-${envelope.itemCount + row.index}.manifest`);
   need(receipt.snapshot === undefined || (input.operation === "write" || input.operation === "edit") && receipt.status === "succeeded", "Failure or non-text operation cannot issue a successor snapshot");
   if (receipt.status === "succeeded") {
+    if (prepared.creation) need(receipt.creation && (prepared.creation.directories.length === 0 || receipt.createdParents), "Creation lost its complete parent outcome inventory");
     if (header.text) {
       need(receipt.sha256 === header.text.nextSha256 && receipt.snapshot === header.text.nextSha256 && receipt.bytes === header.text.bytes, "Verified text successor differs from preparation");
       if (header.text.exists) need(receipt.previousSha256 === header.text.previousSha256 && receipt.commit?.outcome === "committed", "Text overwrite lost its publication/preimage facts");

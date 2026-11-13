@@ -104,11 +104,11 @@ function retainUnprovenDirectories(created) {
 export class FileCreationFailure extends Error {
     constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; }
 }
-export async function executeFileCreation(plan, content, assertPathAllowed, signal, beforeExclusiveCreate, sharedDirectories, assertAuthority, structuredFailure = false) {
+/** Shared parent effects for text creation and copy/move destinations. Preparation
+ * remains read-only; callers retain this complete inventory until publication. */
+export async function executeFileCreationDirectories(plan, assertPathAllowed, signal, sharedDirectories, assertAuthority) {
     const created = [];
-    let fileCreated = false;
     let effectPending = false;
-    let originalIdentity;
     try {
         await verifyCreationAncestor(plan);
         if (directoryKey(await assertPathAllowed()) !== directoryKey(plan.canonicalTarget))
@@ -136,6 +136,24 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
             record.status = "created";
             sharedDirectories?.set(directoryKey(path), identity);
         }
+        return created;
+    } catch (error) {
+        retainUnprovenDirectories(created);
+        const changed = created.length > 0;
+        const stateChanged = effectPending && !knownNoEffectError(error) ? "unknown" : changed;
+        throw new FileCreationFailure({ ok: false, status: stateChanged === "unknown" ? "state_unknown" : changed ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
+            operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
+            target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
+            fileCreated: false, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) });
+    }
+}
+export async function executeFileCreation(plan, content, assertPathAllowed, signal, beforeExclusiveCreate, sharedDirectories, assertAuthority, structuredFailure = false) {
+    let created = [];
+    let fileCreated = false;
+    let effectPending = false;
+    let originalIdentity;
+    try {
+        created = await executeFileCreationDirectories(plan, assertPathAllowed, signal, sharedDirectories, assertAuthority);
         await beforeExclusiveCreate?.(plan.path);
         signal?.throwIfAborted();
         await verifyCreationAncestor(plan);
@@ -182,6 +200,7 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
         return result;
     }
     catch (error) {
+        if (error instanceof FileCreationFailure) throw structuredFailure ? error : new Error(JSON.stringify(error.facts));
         retainUnprovenDirectories(created);
         for (const directory of created)
             if (directory.status === "removed")

@@ -16,6 +16,7 @@ const CREATION_FIELDS = new Set(['path', 'canonicalTarget', 'ancestor', 'directo
 const TREE_ROW_FIELDS = new Set(['kind', 'index', 'parent', 'identity']);
 const DIRECTORY_ROW_FIELDS = new Set(['kind', 'index', 'path']);
 function need(value, message) { if (!value) throw new Error('[FILE_WORKER_PLAN] ' + message); }
+function creationWorkspaceIndex(item) { return item.operation === 'copy' || item.operation === 'move' ? item.destinationWorkspaceIndex : item.workspaceIndex; }
 function fields(value, allowed) {
   need(value && typeof value === 'object' && !Array.isArray(value), 'Expected metadata object');
   for (const key of Object.keys(value)) need(allowed.has(key), 'Unexpected metadata field');
@@ -71,8 +72,11 @@ export class FileWorkerManifest {
     if (item.operation === 'copy' || item.operation === 'move') {
       const destination = workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, item.destination);
       need(typeof header.destination === 'string' && equalPath(header.destination, destination), 'Destination assignment changed');
-      scopedIdentity(request.workspaces, item.destinationWorkspaceIndex, header.destinationParent, true, false);
-      need(header.destinationParent.directory && equalPath(header.destinationParent.path, dirname(destination)), 'Invalid destination parent');
+      if (header.creation) need(header.destinationParent === undefined && header.destinationIdentity === undefined, 'Missing-parent destination cannot have an existing parent or overwrite object');
+      else {
+        scopedIdentity(request.workspaces, item.destinationWorkspaceIndex, header.destinationParent, true, false);
+        need(header.destinationParent.directory && equalPath(header.destinationParent.path, dirname(destination)), 'Invalid destination parent');
+      }
       if (header.destinationIdentity) {
         scopedIdentity(request.workspaces, item.destinationWorkspaceIndex, header.destinationIdentity, false, false);
         need(item.operation === 'copy' && item.overwrite === true && !header.source.directory && !header.destinationIdentity.directory
@@ -97,9 +101,11 @@ export class FileWorkerManifest {
     if (header.creation) {
       fields(header.creation, CREATION_FIELDS);
       const creation = header.creation;
-      scopedIdentity(request.workspaces, item.workspaceIndex, creation.ancestor, true, false);
-      need(!header.source && header.text?.exists === false && creation.ancestor.directory && equalPath(creation.path, requested)
-        && equalPath(creation.canonicalTarget, header.target) && count(creation.directoryCount), 'Invalid missing-parent preparation');
+      scopedIdentity(request.workspaces, creationWorkspaceIndex(item), creation.ancestor, true, false);
+      const destinationCreation = item.operation === 'copy' || item.operation === 'move';
+      need((destinationCreation ? header.source && !header.text : !header.source && header.text?.exists === false)
+        && creation.ancestor.directory && equalPath(creation.path, destinationCreation ? header.destination : requested)
+        && equalPath(creation.canonicalTarget, destinationCreation ? header.destination : header.target) && count(creation.directoryCount), 'Invalid missing-parent preparation');
     }
     need(item.operation === 'write' || item.operation === 'edit' ? header.text && !header.tree : header.source && header.tree && !header.text, 'Missing operation inventory');
     this.header = header;
@@ -127,7 +133,7 @@ export class FileWorkerManifest {
     fields(record, DIRECTORY_ROW_FIELDS);
     const creation = this.header.creation;
     need(creation && record.index === this.directories.length && typeof record.path === 'string', 'Invalid creation directory order');
-    workspaceFilePath(this.request.workspaces, this.header.workspaceIndex, record.path);
+    workspaceFilePath(this.request.workspaces, creationWorkspaceIndex(this.item), record.path);
     const previous = this.directories.length ? this.directories[this.directories.length - 1] : creation.ancestor.path;
     need(equalPath(dirname(record.path), previous), 'Missing-parent chain changed'); this.directories.push(record.path);
   }
@@ -188,9 +194,16 @@ export async function prepareFileWorkerManifest(request, item, index, owned, tex
     header.tree = { entries: tree.entries.length, files: tree.files, directories: tree.directories, bytes: tree.bytes, skippedLinks: tree.skippedLinks };
     if (item.operation !== 'delete') {
       const destination = workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, item.destination);
-      header.destinationParent = await capturePathIdentity(dirname(destination));
-      need(header.destinationParent.directory, 'Destination parent is not a directory');
-      header.destination = resolve(header.destinationParent.canonical, basename(destination));
+      try { header.destinationParent = await capturePathIdentity(dirname(destination)); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        creation = await prepareFileCreation(destination, true, Infinity);
+        need(creation, 'Missing destination changed during preparation');
+        workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, creation.ancestor.canonical, true);
+        header.creation = { path: creation.path, canonicalTarget: creation.canonicalTarget, ancestor: creation.ancestor, directoryCount: creation.directories.length };
+      }
+      need(!header.destinationParent || header.destinationParent.directory, 'Destination parent is not a directory');
+      header.destination = creation?.canonicalTarget ?? resolve(header.destinationParent.canonical, basename(destination));
       workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
       if (item.operation === 'copy' && item.overwrite === true && !header.source.directory) {
         try { header.destinationIdentity = await capturePathIdentity(destination); }
@@ -216,7 +229,7 @@ export async function revalidateFileWorkerManifest(request, item, prepared, prev
   if (header.source) need(sameIdentity(header.source, item.operation === 'delete' ? await captureTreeIdentity(header.source.path) : await capturePathIdentity(header.source.path)), 'Prepared source changed');
   if (header.destination) {
     workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
-    need(sameIdentity(header.destinationParent, await capturePathIdentity(header.destinationParent.path), false), 'Prepared destination parent changed');
+    if (header.destinationParent) need(sameIdentity(header.destinationParent, await capturePathIdentity(header.destinationParent.path), false), 'Prepared destination parent changed');
     if (header.destinationIdentity) need(sameIdentity(header.destinationIdentity, await capturePathIdentity(header.destination)), 'Prepared overwrite destination changed');
     else await absent(header.destination);
   }

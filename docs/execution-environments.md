@@ -42,6 +42,8 @@
 
 ### 文件结果的完整性
 
+`copy` / `move` 的目标父目录缺失时，会复用 `write` 的只读建目录清单，在同一次审批中展示数量，并在授权后逐级独占创建。只允许在工作区内创建缺失父目录，受保护路径、目录覆盖/合并、源链接和大小写折叠冲突仍按原规则拒绝。数组或 `file_batch` 中前项已创建的公共父目录通过身份清单供后项复用；`dryRun` 不创建目录。若失败或取消发生在建目录之后，回执列出保留目录并报告部分或未知效果；不会擅自删除无法证明所有权的目录，也不重放已完成项。
+
 `copy` / `move` 接受单值 `path` + `destination` 或非空 `items: [{path, destination}]`；`delete` 接受 `path` 或非空 `paths`，两种形式互斥。copy 默认不覆盖，`overwrite: true` 只替换已有普通文件；删除非空目录须用 `recursive: true`。copy 跳过目录内链接并计数，move 预检拒绝含链接或特殊文件的源树；recursive delete 只删除链接本身。包含 `.git` / `.sp` 的目录树在预检时整体拒绝。`dryRun` 完整预检，返回总数、总字节和有界路径样本，不写变更记录；正式执行重新预检并授权。
 
 这些工具和 `file_batch` 的新调用均返回 v3 汇总：`succeeded`、`failed`、`partial`、`unknown`、`cancelled`、`notStarted`、`coverageComplete` 和 `resultRef`。小结果附 `details.items`；大结果明确 `itemsOmitted: true`。用 `file_result({ref: resultRef, cursor?, limit?})` 查询当前会话分支的记录，按 `nextCursor` 续页。引用与 Codemode 的展示 `ref` 不同，既不读取任意宿主文件，也不签发文件读取版本。历史 v1/v2 会话保留原有读取预算。
