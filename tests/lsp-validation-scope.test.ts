@@ -162,22 +162,23 @@ test("LSP session transitions drain late acquisitions and own services independe
   t.diagnostic(JSON.stringify({ serviceReferences: refs.length, liveReferences: 0, sampledBytesIncludingVmAndProcesses: sampled }));
 });
 
-test("LSP diagnostics and navigation await cancellation cleanup after late acquire", { timeout: 5000 }, async () => {
+test("late cancellation releases unowned diagnostics leases and drains navigation ownership", { timeout: 5000 }, async () => {
   const f = fixture();
   try {
     for (const navigate of [false, true]) {
       const abort = new AbortController(); let acquired!: (lease: unknown) => void, close!: () => void;
       const pending = new Promise(resolve => { acquired = resolve; });
       const cleanup = new Promise<void>(resolve => { close = resolve; });
-      let discards = 0, settled = false, effects = 0;
+      let discards = 0, releases = 0, settled = false, effects = 0;
       const lease = { client: { didOpen() { effects++; } } };
-      const pool = { acquire: () => pending, discard() { discards++; return cleanup; }, release() { throw new Error("cancelled lease released"); } };
+      const pool = { acquire: () => pending, discard() { discards++; return cleanup; }, release() { releases++; } };
       const work = navigate
         ? runNavigation(pool, f.adapters[0], { root: f.root, path: "example.ts", action: "workspace_symbols", query: "n" }, 100, abort.signal, { ui: { setStatus() {} } }, "lsp")
         : runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 100, abort.signal, { ui: { setStatus() {} } }, "lsp");
       const result = assert.rejects(work, /cancel|abort/i).then(() => { settled = true; });
       abort.abort(); acquired(lease); await tick();
-      assert.equal(discards, 1); assert.equal(effects, 0); assert.equal(settled, false);
+      assert.equal(discards, navigate ? 1 : 0); assert.equal(releases, navigate ? 0 : 1);
+      assert.equal(effects, 0); assert.equal(settled, !navigate);
       close(); await result;
     }
   } finally { f.release(); }
@@ -212,7 +213,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
       children.push(child); refs.push(new WeakRef(child)); return child;
     }
     const module = { exports: {} as any };
-    runInNewContext(compiled, { module, exports: module.exports, Buffer, AbortController,
+    runInNewContext(compiled, { module, exports: module.exports, Buffer, AbortController, performance,
       require(name: string) {
         if (name === "node:child_process") return { spawn };
         if (name === "node:path") return { default: path };
@@ -433,7 +434,11 @@ for (const mode of ["full", "push-empty", "push-provisional", "push-silent", "pu
         const result = await work;
         assert.equal(result.details.status, "diagnostics_received"); assert.equal(result.details.summary.files, 1);
         assert.equal(result.details.summary.diagnostics, mode === "push-provisional" ? 1 : 0);
-      } else await assert.rejects(work, /unconfirmed|synthetic diagnostic failure/);
+      } else {
+        const result = await work;
+        assert.equal(result.isError, true); assert.deepEqual(result.details.unconfirmedFiles, ["example.ts"]);
+        assert.match(result.details.failure, /unconfirmed|synthetic diagnostic failure/);
+      }
     } finally { try { await pool.shutdownAll(); } finally { f.release(); } }
   });
 }
@@ -461,7 +466,8 @@ test("strict validation can fail for silence while source fixes retain an empty 
   const f = fixture("push-silent"), pool = new LspClientPool();
   const ctx = { ui: { setStatus() {} } };
   try {
-    await assert.rejects(runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 2500, undefined, ctx, "lsp"), /unconfirmed/);
+    const silent = await runDiagnostics(pool, f.adapters[0], { root: f.root, paths: ["example.ts"] }, 2500, undefined, ctx, "lsp");
+    assert.equal(silent.isError, true); assert.deepEqual(silent.details.unconfirmedFiles, ["example.ts"]);
     const result = await runFix(pool, f.adapters[0], { root: f.root, path: "example.ts", write: false }, 2500, undefined, ctx, "lsp");
     assert.equal(result.details.changed, true);
     assert.equal(result.details.editCount, 1);

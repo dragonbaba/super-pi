@@ -1,6 +1,6 @@
 import { defineTool, type ExtensionAPI, type ToolDefinition } from "@super-pi/coding-agent";
 import { Type } from "typebox";
-import { DEFAULT_FILE_LIMIT, MAX_ACTIVE_OPERATIONS, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.ts";
+import { DEFAULT_FILE_LIMIT, MAX_ACTIVE_OPERATIONS, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS, MIN_DIAGNOSTIC_WAIT_MS, MAX_DIAGNOSTIC_WAIT_MS } from "./limits.ts";
 import { consumeFixAuthorization } from "./fix-authorization.ts";
 import type { LspClientPool } from "./client-pool.ts";
 import type { LspServerAdapter } from "./types.ts";
@@ -25,6 +25,7 @@ const DiagnosticsParameters = Type.Object({
 		maximum: MAX_COLLECTED_FILES,
 	})),
 	server: ServerParameter,
+	waitMs: Type.Optional(Type.Integer({ minimum: MIN_DIAGNOSTIC_WAIT_MS, maximum: MAX_DIAGNOSTIC_WAIT_MS, description: "Per-file first-report wait in milliseconds; defaults to server grace and is capped by global timeout. Empty push reports remain provisional for the observation window; readiness alone does not prove diagnostics complete." })),
 });
 
 const SingleFileParameters = {
@@ -92,7 +93,7 @@ export default function lsp(pi: ExtensionAPI) {
 	const lspDiagnosticsTool = defineTool({
 		name: "lsp_diagnostics",
 		label: "LSP: Diagnostics",
-		description: "Run diagnostics using configured, language-agnostic LSP server routes.",
+		description: "Run configured LSP diagnostics with optional waitMs. Report elapsed time, batches, per-file confirmation and unconfirmed paths for targeted retries. Project readiness alone does not confirm an empty push report.",
 		promptSnippet: "Run configured LSP diagnostics",
 		promptGuidelines: [
 			"Start at most one server per call; narrow ambiguous routes. Report missing servers and run the authoritative CLI typecheck after broad type changes.",
@@ -123,7 +124,7 @@ export default function lsp(pi: ExtensionAPI) {
 				const result = await runner.runDiagnostics(
 					pool,
 					route.adapter,
-					{ root, paths: params.paths, limit: params.limit, files: route.files },
+					{ root, paths: params.paths, limit: params.limit, files: route.files, waitMs: params.waitMs },
 					timeoutMs,
 					signal,
 					ctx,
@@ -135,8 +136,13 @@ export default function lsp(pi: ExtensionAPI) {
 			const sections = [];
 			const routeDetails = [];
 			let submittedFiles = 0;
+			let diagnosticFailure = false, serverFailed = false, elapsedMs = 0, batchCount = 0;
+			const unconfirmedFiles: string[] = [];
 			for (const { route, result } of results) {
-				submittedFiles += route.files.length;
+				submittedFiles += result.details.submittedFiles ?? route.files.length;
+				diagnosticFailure ||= result.isError === true; serverFailed ||= result.details.status === "failed";
+				elapsedMs += result.details.elapsedMs ?? 0; batchCount += result.details.batchCount ?? 0;
+				for (const file of result.details.unconfirmedFiles ?? []) unconfirmedFiles.push(file);
 				sections.push(`${route.reason}\n\n${textFromResult(result)}`);
 				routeDetails.push({
 					server: route.adapter.name,
@@ -165,7 +171,8 @@ export default function lsp(pi: ExtensionAPI) {
 				: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
 			return { ...runner.textResult(sections.join("\n\n---\n\n"), {
 				root,
-				status: submittedFiles === 0 ? "not_checked" : incomplete ? "partial" : "diagnostics_received",
+				status: serverFailed ? "failed" : submittedFiles === 0 ? "not_checked" : incomplete || diagnosticFailure ? "partial" : "diagnostics_received",
+				unconfirmedFiles, elapsedMs, batchCount,
 				submittedFiles,
 				uncoveredFiles,
 				skippedScopeLimited,
@@ -173,7 +180,7 @@ export default function lsp(pi: ExtensionAPI) {
 				fileLimit: params.limit ?? DEFAULT_FILE_LIMIT,
 				skipped: skippedDetails,
 				routes: routeDetails,
-			}), isError: submittedFiles === 0 || incomplete };
+			}), isError: submittedFiles === 0 || incomplete || diagnosticFailure };
 		},
 	});
 

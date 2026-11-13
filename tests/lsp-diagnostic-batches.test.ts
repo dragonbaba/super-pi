@@ -45,6 +45,7 @@ test('diagnostics checks the entire collection while bounding simultaneously ope
     const result = await runDiagnostics(pool, f.adapter, { root: f.root, files: f.files }, 5000, undefined, ctx, 'batch');
     assert.equal(result.details.status, 'diagnostics_received');
     assert.equal(result.details.summary.files, MAX_COLLECTED_FILES);
+    assert.equal(result.details.scheduling, 'sliding_window'); assert.equal(result.details.peakOpenDocuments, DIAGNOSTIC_BATCH_SIZE);
     assert.deepEqual(result.details.files.map((entry: any) => entry.path), f.files.map(file => file.slice(f.root.length + 1)));
     const lease = await pool.acquire(f.adapter, f.root, 5000);
     const stats = JSON.parse((await lease.client.workspaceSymbols('stats'))[0].name);
@@ -58,7 +59,10 @@ test('server exit after a complete batch and a partial batch fails, and the next
   try {
     const active = runDiagnostics(pool, f.adapter, { root: f.root, files: f.files }, 5000, undefined, ctx, 'batch');
     const queued = runDiagnostics(pool, f.adapter, { root: f.root, files: [f.files[f.files.length - 1]] }, 5000, undefined, ctx, 'queued');
-    await Promise.all([assert.rejects(active, /exited|closed|stopping|stdin/i), assert.rejects(queued, /exited|closed|stopping|stdin/i)]);
+    const [failed] = await Promise.all([active, assert.rejects(queued, /exited|closed|stopping|stdin/i)]);
+    assert.equal(failed.isError, true); assert.equal(failed.details.status, 'failed');
+    assert(failed.details.summary.files >= DIAGNOSTIC_BATCH_SIZE);
+    assert.equal(failed.details.unconfirmedFiles.length, MAX_COLLECTED_FILES - failed.details.summary.files);
     const result = await runDiagnostics(pool, f.adapter, { root: f.root, files: [f.files[0]] }, 5000, undefined, ctx, 'batch');
     assert.equal(result.details.summary.files, 1);
     assert.equal(result.details.status, 'diagnostics_received');
@@ -77,36 +81,39 @@ test('cancelling a queued call drains admission before the active call finishes,
     client.didOpen = (...args: any[]) => { opened++; return didOpen(...args); };
     client.diagnostics = async (...args: any[]) => { const result = await diagnostics(...args); announce(); await held; return result; };
     const active = runDiagnostics(pool, f.adapter, { root: f.root, files: f.files.slice(0, DIAGNOSTIC_BATCH_SIZE) }, 5000, undefined, ctx, 'active');
-    const rejectedActive = assert.rejects(active, /exited|closed|cancel|stopping|stdin/i);
+    const completedActive = Promise.allSettled([active]);
     await started;
     const queued = runDiagnostics(pool, f.adapter, { root: f.root, files: [f.files[DIAGNOSTIC_BATCH_SIZE]] }, 5000, controller.signal, ctx, 'queued');
-    const rejectedQueued = assert.rejects(queued, /cancel|closed|stopping/i);
+    const rejectedQueued = assert.rejects(queued, /abort|cancel|closed|stopping/i);
     await tick(); assert.equal(opened, DIAGNOSTIC_BATCH_SIZE);
     controller.abort(); await rejectedQueued;
-    assert.equal(client.running, false);
-    resume(); await rejectedActive;
+    assert.equal(client.running, true, 'queued cancellation must not discard the shared server');
+    resume(); const finished = await completedActive;
+    assert.equal(finished[0].status, 'fulfilled');
     const next = await runDiagnostics(pool, f.adapter, { root: f.root, files: [f.files[0]] }, 5000, undefined, ctx, 'next');
     assert.equal(next.details.summary.files, 1);
   } finally { resume(); try { await pool.shutdownAll(); } finally { removeOwnedFixture(f.root); } }
 });
 for (const cancel of [false, true]) {
-  test(`a ${cancel ? 'cancellation' : 'read failure'} between batches stops the next batch and permits the next request`, async () => {
+  test(`a ${cancel ? 'cancellation' : 'read failure'} before refill drains open slots and permits the next request`, async () => {
     const f = fixture(), pool = new LspClientPool(), controller = new AbortController();
     try {
       const lease = await pool.acquire(f.adapter, f.root, 5000), client = lease.client;
       pool.release(lease);
       const diagnostics = client.diagnostics.bind(client);
-      let received = 0;
+      let received = 0, opened = 0;
+      const didOpen = client.didOpen.bind(client);
+      client.didOpen = (...args: any[]) => { opened++; return didOpen(...args); };
       client.diagnostics = async (...args: any[]) => {
         const result = await diagnostics(...args);
-        if (++received === DIAGNOSTIC_BATCH_SIZE) {
+        if (++received === 1) {
           if (cancel) controller.abort();
           else unlinkSync(f.files[DIAGNOSTIC_BATCH_SIZE]);
         }
         return result;
       };
       await assert.rejects(runDiagnostics(pool, f.adapter, { root: f.root, files: f.files }, 5000, controller.signal, ctx, 'batch'), cancel ? /cancel|abort|closed|stopping/i : /ENOENT/);
-      assert.equal(received, DIAGNOSTIC_BATCH_SIZE, 'no second-batch diagnostic request');
+      assert.equal(opened, DIAGNOSTIC_BATCH_SIZE, 'no additional document opens after failure/cancellation');
       if (cancel) assert.equal(client.running, false);
       else {
         const stats = JSON.parse((await client.workspaceSymbols('stats'))[0].name);

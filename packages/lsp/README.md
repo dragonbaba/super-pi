@@ -63,14 +63,50 @@ result ID, so their pull responses must contain a full `items` report. Source fi
 retain the previous bounded empty diagnostic context for code actions on silent-clean
 servers; computing a code action does not establish a validation pass.
 
-Diagnostics calls sharing a client take turns. Each call opens, awaits reports for,
-and closes at most 16 documents at a time, keeping the same server bound across
+Diagnostics calls sharing a client take turns. Each call uses a sliding window:
+it opens at most 16 documents and replaces a completed document immediately,
+keeping the same server bound across
 overlapping diagnostics calls. The 200-file collection limit remains the total requested
 scope, independent of this batch size. A missing report, cancellation, or server
-exit fails the call; completed earlier batches do not establish a complete pass.
+exit makes the call unsuccessful; completed reports remain available for inspection.
 Cold projects may need a longer configured diagnostics grace window. Batching
 limits simultaneous open documents; it does not guarantee a bound on the server's
 retained project memory.
+
+`lsp_diagnostics` accepts optional `waitMs` (integer milliseconds, 1–120,000).
+For push servers it overrides the configured `pushDiagnosticsGraceMs`; without
+either setting, the global request timeout bounds the first report. Pull requests
+keep their global timeout unless `waitMs` is supplied. The effective wait never
+exceeds global `timeout`, including when reusing a client created with an older
+timeout. Existing post-pull grace and non-empty push quiet periods remain bounded
+by the remaining request time.
+
+The result includes `elapsedMs`, `batchCount`, `batches` (file count, elapsed time,
+project readiness), `effectiveWaitMs`, `scheduling`, `peakOpenDocuments`, and
+per-file `outcomes`. With sliding scheduling, batches are logical groups of up to
+16 inputs in collection order. Their `startedMs` and elapsed spans may overlap;
+they are observation groups, not barriers. Each outcome reports
+`status`, `receivedReport`, `completion` (`report`, `window_expired`, or
+`server_error`), `elapsedMs` and readiness when its report arrived. Confirmed
+diagnostics stay in `files`; `unconfirmedFiles` lists every path that still needs
+checking, including a suffix not opened after server exit. Missing reports return
+`partial` with `isError: true`; server exit returns `failed`. Retry only those
+paths explicitly; the tool never retries internally. Cancelling a queued call
+removes only its admission entry and releases its lease, preserving the server
+and the active call. Active cancellation retains its existing client-discard
+behavior.
+
+Project readiness from the navigation client is context, not proof that push
+diagnostics are final. Real TypeScript traces showed empty reports after readiness
+followed by diagnostics more than 800 ms later. This version therefore keeps the
+observation window for empty push reports; it does not claim that project readiness
+removes repeated windows or makes cold startup a one-time wait. Sliding scheduling
+is selected from an equivalent 88-file measurement. A known pre-readiness empty publication remains
+unconfirmed at the deadline. Servers without a readiness signal retain the
+existing window behavior. Receiving a report is targeted feedback, not a promise
+that the server will never publish a later update. See the
+[timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md)
+for the proposed `geterr/requestCompleted` completion barrier.
 
 Explicit relative roots are resolved from the session workspace; trimmed-empty roots
 use that workspace as well. Nonblank roots preserve their original whitespace.
