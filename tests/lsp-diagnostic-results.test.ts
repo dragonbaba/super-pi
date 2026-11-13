@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { createJiti } from 'jiti';
 import { removeOwnedFixture } from './helpers/owned-fixture-cleanup.ts';
 import { MIN_DIAGNOSTIC_WAIT_MS, MAX_DIAGNOSTIC_WAIT_MS } from '../packages/lsp/src/limits.ts';
@@ -53,15 +54,36 @@ test('a ready project with insufficient margin remains unconfirmed at the deadli
   assert(outcome.projectReadyForMs < DIAGNOSTIC_PROJECT_READY_MARGIN_MS);
  } finally { await f.close(); }
 });
-test('the overall deadline also checks current readiness age after a report clears', async () => {
+test('the overall deadline accepts a report received while ready before reloading', async () => {
  const f = fixture('ready-clear'); f.adapter.diagnosticsSettleMs = 5000;
  try {
   const lease = await f.pool.acquire(f.adapter, f.root, 5000); f.pool.release(lease);
   const result = await runDiagnostics(f.pool, f.adapter, { root: f.root, paths: ['confirmed.ts'], waitMs: 500 }, 500, undefined, f.ctx, 'signal');
-  assert.equal(result.isError, true); assert.deepEqual(result.details.unconfirmedFiles, ['confirmed.ts']);
+  assert.equal(result.isError, false); assert.deepEqual(result.details.unconfirmedFiles, []);
   const outcome = result.details.outcomes[0];
   assert.equal(outcome.completion, 'window_expired'); assert.equal(outcome.projectReady, true);
-  assert.equal(outcome.projectReadyAtCompletion, true); assert(outcome.projectReadyForMs < DIAGNOSTIC_PROJECT_READY_MARGIN_MS);
+  assert.equal(outcome.projectReadyAtCompletion, false); assert.equal(outcome.projectReadyForMs, 0);
+ } finally { await f.close(); }
+});
+test('the fallback deadline accepts a report received while ready before reloading', async () => {
+ const f = fixture('ready-reload');
+ try {
+  const result = await runDiagnostics(f.pool, f.adapter, { root: f.root, paths: ['confirmed.ts'], waitMs: 1500 }, 5000, undefined, f.ctx, 'signal');
+  assert.equal(result.isError, false); assert.equal(result.details.summary.files, 1);
+  const outcome = result.details.outcomes[0];
+  assert.equal(outcome.completion, 'window_expired'); assert.equal(outcome.projectReady, true);
+  assert.equal(outcome.projectReadyAtCompletion, false); assert.equal(outcome.projectReadyForMs, 0);
+ } finally { await f.close(); }
+});
+test('deadline calls without observation retain the existing current-readiness rule', async () => {
+ const f = fixture('ready-reload'), uri = pathToFileURL(join(f.root, 'confirmed.ts')).href;
+ try {
+  const lease = await f.pool.acquire(f.adapter, f.root, 5000), client = lease.client;
+  try {
+   client.didOpen(uri, 'const value = 1;', 'typescript');
+   await assert.rejects(client.diagnostics(uri, true, 1500), /unconfirmed/);
+   assert.equal(client.projectReady, false);
+  } finally { try { if (client.running) client.didClose(uri); } finally { f.pool.release(lease); } }
  } finally { await f.close(); }
 });
 test('a pre-readiness empty publication remains unconfirmed at the window boundary', async () => {

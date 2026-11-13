@@ -109,11 +109,12 @@ followed by diagnostics more than 800 ms later. This version therefore keeps the
 observation window for empty push reports; it does not claim that project readiness
 removes repeated windows or makes cold startup a one-time wait. Sliding scheduling
 is selected from an equivalent 88-file measurement. At expiry an empty report is
-accepted only if the project is currently ready and has stayed ready for the shared
-4,000 ms margin, whether the report arrived before or after readiness. A new loading
-cycle resets that age. The margin exceeds the observed 1.4–3.3 second late-update
-gaps; it is a bounded observation policy, not a finality guarantee. Still loading
-or insufficient readiness age remains unconfirmed. Servers without a readiness signal retain the
+accepted if the project was ready when that report arrived, or is currently ready
+and has stayed ready for the shared 4,000 ms margin. A new loading cycle resets
+that age while retaining a ready report's confirmation at expiry. The margin exceeds the observed 1.4–3.3 second late-update
+gaps; it is a bounded observation policy, not a finality guarantee. Only when both
+conditions fail does the empty report remain unconfirmed. Calls without report
+observations retain their existing current-readiness check. Servers without a readiness signal retain the
 existing window behavior. Receiving a report is targeted feedback, not a promise
 that the server will never publish a later update. See the
 [timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md)

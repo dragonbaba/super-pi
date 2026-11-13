@@ -25,7 +25,7 @@ const DiagnosticsParameters = Type.Object({
 		maximum: MAX_COLLECTED_FILES,
 	})),
 	server: ServerParameter,
-	waitMs: Type.Optional(Type.Integer({ minimum: MIN_DIAGNOSTIC_WAIT_MS, maximum: MAX_DIAGNOSTIC_WAIT_MS, description: "Per-file first-report wait in milliseconds; defaults to server grace and is capped by global timeout (20 seconds by default). Increase configuration timeout before requesting waitMs above 20000. When waitMs is supplied, clean push-diagnostic files wait the full window. Empty reports require sufficient current project readiness at expiry." })),
+	waitMs: Type.Optional(Type.Integer({ minimum: MIN_DIAGNOSTIC_WAIT_MS, maximum: MAX_DIAGNOSTIC_WAIT_MS, description: "Per-file first-report wait in milliseconds; defaults to server grace and is capped by global timeout (20 seconds by default). Increase configuration timeout before requesting waitMs above 20000. When waitMs is supplied, clean push-diagnostic files wait the full window. At expiry, an empty report is accepted if the project was ready when it arrived or has continuously been ready for the shared margin." })),
 });
 
 const SingleFileParameters = {

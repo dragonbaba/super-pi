@@ -681,8 +681,8 @@ export class LspClient {
 			for (const waiter of this.#projectWaiters) waiter.finish(true);
 		}
 	}
-	#emptyDiagnosticsReady(): boolean {
-		return !this.#projectProgressSeen || this.#projectReady && performance.now() - this.#projectReadySince >= DIAGNOSTIC_PROJECT_READY_MARGIN_MS;
+	#emptyDiagnosticsReady(observation?: DiagnosticReport): boolean {
+		return observation?.projectReady === true || !this.#projectProgressSeen || this.#projectReady && performance.now() - this.#projectReadySince >= DIAGNOSTIC_PROJECT_READY_MARGIN_MS;
 	}
 
 	#recordPublishedDiagnostics(
@@ -758,7 +758,7 @@ export class LspClient {
 				fallbackTimer = setTimeout(
 					() => {
 						if (observation) observation.completion = "window_expired";
-						if (fallback.requirePublication && (!latestPublication || (latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady()))) {
+						if (fallback.requirePublication && (!latestPublication || (latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady(observation)))) {
 							fail(new Error(`${this.#adapter.name} LSP did not confirm a diagnostic report for ${uri}; validation is unconfirmed.`));
 						} else settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
 					},
@@ -767,7 +767,7 @@ export class LspClient {
 			}
 			overallTimer = setTimeout(() => {
 				if (observation) observation.completion = "window_expired";
-				if (latestPublication && !(fallback?.requirePublication && latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady())) {
+				if (latestPublication && !(fallback?.requirePublication && latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady(observation))) {
 					settleWith(latestPublication.diagnostics);
 				} else if (fallback && !fallback.requirePublication) {
 					settleWith(fallback.diagnostics);

@@ -8,11 +8,15 @@ function handle(message) {
  if (message.method === 'initialize') send({ id: message.id, result: { capabilities: {} } });
  else if (message.method === 'textDocument/didOpen') {
   const uri = message.params.textDocument.uri, count = (opens.get(uri) ?? 0) + 1; opens.set(uri, count);
-  if (mode === 'late-ready' || mode === 'loading-empty' || mode === 'ready-empty' || mode === 'ready-clear') {
+  if (mode === 'late-ready' || mode === 'loading-empty' || mode === 'ready-empty' || mode === 'ready-clear' || mode === 'ready-reload') {
    if (!created) { created = true; send({ id: 'load', method: 'window/workDoneProgress/create', params: { token: 'load' } }); }
    send({ method: '$/progress', params: { token: 'load', value: { kind: 'begin', title: TYPESCRIPT_PROJECT_PROGRESS_TITLE } } }); publish(uri);
    if (mode === 'ready-empty' || mode === 'ready-clear') setTimeout(() => send({ method: '$/progress', params: { token: 'load', value: { kind: 'end' } } }), 20);
-   if (mode === 'ready-clear') { publish(uri, true); setTimeout(() => publish(uri), 40); }
+   if (mode === 'ready-clear') { publish(uri, true); setTimeout(() => publish(uri), 40); setTimeout(() => send({ method: '$/progress', params: { token: 'load', value: { kind: 'begin', title: TYPESCRIPT_PROJECT_PROGRESS_TITLE } } }), 60); }
+   if (mode === 'ready-reload') {
+    setTimeout(() => { send({ method: '$/progress', params: { token: 'load', value: { kind: 'end' } } }); publish(uri); }, 20);
+    setTimeout(() => send({ method: '$/progress', params: { token: 'load', value: { kind: 'begin', title: TYPESCRIPT_PROJECT_PROGRESS_TITLE } } }), 40);
+   }
    if (mode === 'late-ready') {
     setTimeout(() => { send({ method: '$/progress', params: { token: 'load', value: { kind: 'end' } } }); publish(uri); }, 10);
     setTimeout(() => publish(uri, true), 1100);
