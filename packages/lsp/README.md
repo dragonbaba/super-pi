@@ -69,29 +69,45 @@ keeping the same server bound across
 overlapping diagnostics calls. The 200-file collection limit remains the total requested
 scope, independent of this batch size. A missing report, cancellation, or server
 exit makes the call unsuccessful; completed reports remain available for inspection.
-Cold projects may need a longer configured diagnostics grace window. Batching
+Cold publishing servers may need a longer configured diagnostics grace window. Batching
 limits simultaneous open documents; it does not guarantee a bound on the server's
 retained project memory.
 
-`lsp_diagnostics` accepts optional `waitMs` (integer milliseconds, 1–120,000).
-For push servers it overrides the configured `pushDiagnosticsGraceMs`; without
-either setting, the global request timeout bounds the first report. Pull requests
-keep their global timeout unless `waitMs` is supplied. The effective wait never
-exceeds global `timeout`, including when reusing a client created with an older
-timeout. Global `timeout` defaults to 20 seconds: set a larger `timeout` in
-`pi-lsp.json` before requesting `waitMs` above 20,000. Supplying `waitMs` makes
-clean push-diagnostic files wait the full observation window, even if an empty
-report arrives immediately. Authoritative pull reports and non-empty push reports
-retain their existing completion behavior. Existing post-pull grace and non-empty
-push quiet periods remain bounded by the remaining request time.
+Configured TypeScript adapters declare a synchronous diagnostics capability.
+The canonical `typescript` adapter and `typescript-language-server` executable
+routes use it only when initialization advertises `typescript.tsserverRequest`.
+Each opened document requests `syntacticDiagnosticsSync`,
+`semanticDiagnosticsSync`, and `suggestionDiagnosticsSync`; all three must succeed
+before the file is confirmed. The measured TypeScript bound is one open document,
+within the shared 16-document maximum. Other adapters retain their current routes.
+If the command is not advertised, the client uses the existing publish/pull path
+and records `syncRequestFallback: "command_not_advertised"`. A failed sync request
+does not retry or fall back to a publication window.
+
+`lsp_diagnostics` accepts optional `waitMs` (integer milliseconds, 1–120,000):
+
+- `publish`: the per-file first-report observation window, overriding configured
+  `pushDiagnosticsGraceMs`. Clean files use the complete window.
+- `pull`: the existing first-report request timeout. Full pull reports and the
+  existing post-pull grace behavior are preserved.
+- `sync-request`: ignored, even when supplied. Each of the three requests uses
+  the current global `timeout`; there is no publication grace or quiet wait.
+
+Global `timeout` defaults to 20 seconds. For publish/pull waits above 20,000 ms,
+increase `timeout` in `pi-lsp.json` first. Existing publish/pull deadlines remain
+bounded by current configuration and the reused client's original timeout. Sync
+requests use the current call's global timeout, including after it increases.
 
 The result includes `elapsedMs`, `batchCount`, `batches` (file count, elapsed time,
-project readiness), `effectiveWaitMs`, `scheduling`, `peakOpenDocuments`, and
+project readiness for non-sync routes), `diagnosticPath` (`publish`, `pull`, or
+`sync-request`), `effectiveWaitMs`, `scheduling`, `peakOpenDocuments`, and
 per-file `outcomes`. With sliding scheduling, batches are logical groups of up to
 16 inputs in collection order. Their `startedMs` and elapsed spans may overlap;
 they are observation groups, not barriers. Each outcome reports
-`status`, `receivedReport`, `completion` (`report`, `window_expired`, or
-`server_error`, or `read_error`), `elapsedMs`, `projectReady` when its report
+`status`, `receivedReport`, `completion` (`report`, `window_expired`,
+`request_failed`, `server_error`, or `read_error`), `elapsedMs`, and `diagnosticPath`.
+Sync results mark `effectiveWaitMs` as `"not_applicable"` and sync outcomes omit
+readiness fields; non-sync outcomes include `projectReady` when their report
 arrived, and `projectReadyAtCompletion`/`projectReadyForMs` at completion (the
 deadline for `window_expired`). Confirmed
 diagnostics stay in `files`; `unconfirmedFiles` lists every path that still needs
@@ -103,7 +119,8 @@ removes only its admission entry and releases its lease, preserving the server
 and the active call. Active cancellation retains its existing client-discard
 behavior.
 
-Project readiness from the navigation client is context, not proof that push
+The following readiness/window rules apply to publishing paths, including a
+TypeScript server without the bridge capability. Project readiness from the navigation client is context, not proof that push
 diagnostics are final. Real TypeScript traces showed empty reports after readiness
 followed by diagnostics more than 800 ms later. This version therefore keeps the
 observation window for empty push reports; it does not claim that project readiness
@@ -117,8 +134,12 @@ conditions fail does the empty report remain unconfirmed. Calls without report
 observations retain their existing current-readiness check. Servers without a readiness signal retain the
 existing window behavior. Receiving a report is targeted feedback, not a promise
 that the server will never publish a later update. See the
-[timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md)
-for the proposed `geterr/requestCompleted` completion barrier.
+[timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md).
+The earlier `geterr/requestCompleted` barrier proposal is rejected: tsserver
+completes cancelled geterr operations, didOpen can cancel/reissue them, and the
+bridge discards completion performance data. See the
+[synchronous-request evidence](../../docs/evidence/typescript-synchronous-diagnostics-2026-11-14.md)
+for the diagnostic equivalence gate, concurrency measurements and rerun commands.
 
 Explicit relative roots are resolved from the session workspace; trimmed-empty roots
 use that workspace as well. Nonblank roots preserve their original whitespace.

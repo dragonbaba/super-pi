@@ -1,5 +1,7 @@
 # LSP 大批量诊断、到期就绪与逐文件失败
 
+后续结论：此前 README 提议的 `geterr/requestCompleted` 完成屏障已否决；取消的 geterr 也会收到 requestCompleted，且桥接丢弃 performanceData。TypeScript 的后续实现与同代码等价性门槛见[同步诊断证据](typescript-synchronous-diagnostics-2026-11-14.md)。本记录的发布窗口与就绪余量仍适用于其他发布型服务器及兼容回退路径。
+
 日期：2026-11-14。原始main基线 `3e8b2f5a150e91292c6bd8d7c883dd054c47d390`；本次到期判定修正基线 `14034286e7e3638f1a2e219dca44358c68a17181`，另与 `b7a5f595222a978b7a284a9828d02872db7acaee` 并列对照。#302仍叠在尚未合入的#301 `d6b691129d243d20a4004e9a82bea3b5bb7a4110` 上。本次仅修改#302的到期判定、说明及对应回归。
 
 ## 问题与生产复现
