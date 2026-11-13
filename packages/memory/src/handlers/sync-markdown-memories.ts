@@ -15,8 +15,10 @@ import { ENTRY_DELIMITER, MEMORY_FILE, USER_FILE } from '../constants.js';
 import { AGENT_ROOT } from '../paths.js';
 import { withMarkdownMutationLock } from '../store/markdown-mutation-lock.js';
 import { scanContent } from '../store/content-scanner.js';
+import type { AtomicLockCoordinator } from '../store/atomic-lock-coordinator.js';
+import { readRawMemoryFile } from '../store/raw-memory.js';
 
-const PROJECT_ID_PATTERN = /--[a-f0-9]{24}$/;
+export const PROJECT_ID_PATTERN = /--[a-f0-9]{24}$/;
 
 export interface BackfillCounters {
   filesScanned: number;
@@ -34,23 +36,20 @@ function readEntries(filePath: string): string[] {
   return raw.split(ENTRY_DELIMITER).map((entry) => entry.trim()).filter(Boolean);
 }
 
-function scanProjectDirs(agentRoot: string, projectsMemoryDir = "projects-memory"): Array<{ name: string; memoryFile: string }> {
+function scanProjectDirs(agentRoot: string, projectsMemoryDir = "projects-memory"): Array<{ name: string; memoryFile: string | null }> {
   const projectsRoot = path.resolve(agentRoot, projectsMemoryDir);
-  const projects = new Map<string, string>();
+  const projects: Array<{ name: string; memoryFile: string | null }> = [];
 
   if (fs.existsSync(projectsRoot)) {
     for (const name of fs.readdirSync(projectsRoot)) {
       if (!PROJECT_ID_PATTERN.test(name) || !isSafeProjectName(name, projectsRoot)) continue;
       const memoryFile = resolveAuthoritativeMemoryFile(projectsRoot, name);
-      if (memoryFile) {
-        projects.set(name, memoryFile);
-      }
+      const failureFile = resolveAuthoritativeProjectFile(projectsRoot, name, "failures.md");
+      if (memoryFile && fs.existsSync(memoryFile) || failureFile && fs.existsSync(failureFile)) projects.push({ name, memoryFile });
     }
   }
 
-  return [...projects.entries()]
-    .map(([name, memoryFile]) => ({ name, memoryFile }))
-    .filter(({ memoryFile }) => fs.existsSync(memoryFile));
+  return projects;
 }
 
 function realpathIfPresent(filePath: string): string {
@@ -62,7 +61,7 @@ function realpathIfPresent(filePath: string): string {
   }
 }
 
-function resolveAuthoritativeProjectFile(root: string, projectName: string, fileName: string): string | null {
+export function resolveAuthoritativeProjectFile(root: string, projectName: string, fileName: string): string | null {
   const canonicalRoot = realpathIfPresent(root);
   if (!isSafeProjectName(projectName, path.resolve(root))) return null;
   if (path.basename(fileName) !== fileName || (fileName !== MEMORY_FILE && fileName !== "failures.md")) return null;
@@ -101,6 +100,53 @@ function resolveAuthoritativeProjectFile(root: string, projectName: string, file
   return canonicalProjectFile;
 }
 
+function backfillCounters(): BackfillCounters {
+  return { filesScanned: 0, entriesScanned: 0, imported: 0, skipped: 0, removed: 0, warnings: [] };
+}
+
+async function reconcileFile(dbManager: DatabaseManager, counters: BackfillCounters, filePath: string | null,
+  target: 'memory' | 'user' | 'failure', project: string | null = null, coordinator?: AtomicLockCoordinator,
+): Promise<void> {
+  const reconcile = async () => {
+    if (filePath && fs.existsSync(filePath)) counters.filesScanned++;
+    let entries: string[];
+    if (filePath && coordinator) {
+      const raw = await readRawMemoryFile(filePath);
+      entries = raw ? raw.bytes.toString('utf8').split(ENTRY_DELIMITER).map(entry => entry.trim()).filter(Boolean) : [];
+    } else entries = filePath ? readEntries(filePath) : [];
+    counters.entriesScanned += entries.length;
+    const safeEntries: string[] = [];
+    for (const entry of entries) {
+      const blocked = scanContent(entry);
+      if (blocked) counters.warnings.push(`${path.basename(project ?? 'global')}/${target}: ${blocked}`);
+      else safeEntries.push(entry);
+    }
+    try {
+      const result = target === 'failure' && project === null
+        ? reconcileMarkdownFailureScopes(dbManager, safeEntries, false)
+        : reconcileMarkdownMemoryScope(dbManager, safeEntries, target, project);
+      counters.imported += result.inserted; counters.skipped += result.existing; counters.removed += result.removed;
+    } catch (error) {
+      counters.warnings.push(`${path.basename(project ?? 'global')}/${target}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  if (filePath) await withMarkdownMutationLock(filePath, reconcile, { coordinator });
+  else await reconcile();
+}
+
+/** Explicit cleanup reconciles only affected files, using its own connection. */
+export async function reconcileProjectMarkdownFiles(dbManager: DatabaseManager, projectsRoot: string, project: string,
+  targets: readonly ('memory' | 'failure')[], coordinator: AtomicLockCoordinator,
+): Promise<BackfillCounters> {
+  if (!PROJECT_ID_PATTERN.test(project)) throw new Error('Not a canonical project identity');
+  const counters = backfillCounters();
+  for (const target of targets) {
+    const filePath = resolveAuthoritativeProjectFile(projectsRoot, project, target === 'memory' ? MEMORY_FILE : 'failures.md');
+    await reconcileFile(dbManager, counters, filePath, target, project, coordinator);
+  }
+  return counters;
+}
+
 function resolveAuthoritativeMemoryFile(root: string, projectName: string): string | null {
   return resolveAuthoritativeProjectFile(root, projectName, MEMORY_FILE);
 }
@@ -119,57 +165,15 @@ export async function syncMarkdownMemoriesToSqlite(
   projectsMemoryDir?: string,
   agentRoot = AGENT_ROOT,
 ): Promise<BackfillCounters & { projectCount: number }> {
-  const counters: BackfillCounters = {
-    filesScanned: 0,
-    entriesScanned: 0,
-    imported: 0,
-    skipped: 0,
-    removed: 0,
-    warnings: [],
-  };
+  const counters = backfillCounters();
 
   const globalMemoryFile = path.join(globalDir, MEMORY_FILE);
   const globalUserFile = path.join(globalDir, USER_FILE);
   const globalFailureFile = path.join(globalDir, 'failures.md');
 
-  const reconcileFile = async (
-    filePath: string | null,
-    target: 'memory' | 'user' | 'failure',
-    project: string | null = null,
-  ) => {
-    const reconcile = () => {
-      if (filePath && fs.existsSync(filePath)) counters.filesScanned++;
-      const entries = filePath ? readEntries(filePath) : [];
-      counters.entriesScanned += entries.length;
-      const safeEntries: string[] = [];
-      for (const entry of entries) {
-        const blocked = scanContent(entry);
-        if (blocked) {
-          counters.warnings.push(`${path.basename(project ?? 'global')}/${target}: ${blocked}`);
-        } else {
-          safeEntries.push(entry);
-        }
-      }
-      try {
-        const result = target === 'failure' && project === null
-          ? reconcileMarkdownFailureScopes(dbManager, safeEntries, false)
-          : reconcileMarkdownMemoryScope(dbManager, safeEntries, target, project);
-        counters.imported += result.inserted;
-        counters.skipped += result.existing;
-        counters.removed += result.removed;
-      } catch (err) {
-        counters.warnings.push(
-          `${path.basename(project ?? 'global')}/${target}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    };
-    if (filePath) await withMarkdownMutationLock(filePath, reconcile);
-    else reconcile();
-  };
-
-  await reconcileFile(globalMemoryFile, 'memory');
-  await reconcileFile(globalUserFile, 'user');
-  await reconcileFile(globalFailureFile, 'failure');
+  await reconcileFile(dbManager, counters, globalMemoryFile, 'memory');
+  await reconcileFile(dbManager, counters, globalUserFile, 'user');
+  await reconcileFile(dbManager, counters, globalFailureFile, 'failure');
 
   const projects = scanProjectDirs(agentRoot, projectsMemoryDir);
   const projectFiles = new Map(projects.map((project) => [project.name, project.memoryFile]));
@@ -188,9 +192,9 @@ export async function syncMarkdownMemoriesToSqlite(
     const memoryFile = currentIdentity
       ? projectFiles.get(projectName) ?? resolveAuthoritativeMemoryFile(projectsRoot, projectName)
       : null;
-    await reconcileFile(memoryFile, 'memory', projectName);
+    await reconcileFile(dbManager, counters, memoryFile, 'memory', projectName);
     const failureFile = currentIdentity ? resolveAuthoritativeProjectFile(projectsRoot, projectName, "failures.md") : null;
-    await reconcileFile(failureFile, 'failure', projectName);
+    await reconcileFile(dbManager, counters, failureFile, 'failure', projectName);
   }
 
   return { ...counters, projectCount: projectNames.size };

@@ -1,6 +1,6 @@
 # 文件操作 v3 验收记录
 
-日期：2026-11-13（Asia/Tokyo）。基线为 B 的合并提交 `f6fe77936da78244128e265802325a86cf76d401`。本记录对应 [PR #297](https://github.com/dragonbaba/super-pi/pull/297) 的 `codex/file-ops-v3` 候选；原生 50,000 文件目录已通过，真实 MXC 目录、最终完整回归、PR 审核和 CI 尚待完成，不表示已合并。
+日期：2026-11-13（Asia/Tokyo）。基线为 B 的合并提交 `f6fe77936da78244128e265802325a86cf76d401`。[PR #297](https://github.com/dragonbaba/super-pi/pull/297) 已以最终 head `903f0f6bcdf96d69117ee644c1508ca698bf2a03` 完成无发现审核和[六个原有 CI 分片](https://github.com/dragonbaba/super-pi/actions/runs/43402770417)，合并为 `5df268b5568266508461e62c8b29044b4f1c7648`；合并树与已验证 head 一致，本地 main 的 12 包串行离线构建通过。规模测量的限制仍适用：真实 MXC 50,000 文件仅复制完成，未完成的移动/删除不算通过。
 
 ## 实现与生产入口
 
@@ -61,7 +61,7 @@ CI 工作流及测试运行器与 B 合并基线逐字节一致：Linux 两分�
 
 测试清理删除 19 个过期/重复用例及两份复制执行器，将 36/15 会话成本矩阵移到手动 benchmark。普通 native 效果回归使用 70 项跨越 inline/page 边界，完整 2,000 项效果测量留在手动 sampler；2,000 行纯元数据协议覆盖保持。7 个相关文件、50 项检查（单文件约 0.26–5 秒）、实际 SDK changes/reopen 回归和类型检查通过。没有再次运行大规模分配/目录压测。
 
-最终 head 审核和六个 CI 分片仍待完成。没有等价旧实现全覆盖的同机对照，因此本记录不声称速度或分配总量改善。
+最终 head 的审核和六个原有 CI 分片已完成，结果见页首。没有等价旧实现全覆盖的同机对照，因此本记录不声称速度或分配总量改善。
 
 ## 安全边界与有界复核
 
@@ -105,6 +105,6 @@ MXC publication owner 导出自己的受控候选名格式，显式 /changes 核
 
 实际 SDK 在第二条 prepared append 注入 ENOSPC：修复前两项 copy/batch 均未执行，仅修复首个目的地就可 goal_complete。观察器现比较已验证的 visited 与 itemCount，仅对未准备后缀按原输入登记未开始义务；不把目录部分覆盖混作缺失准备，也不把未开始项伪造成未知效果。两目的地各完成后才能解除。另复现并移除了 batch 预检回退中残留的 16 项分支，17 个小文件的失败→同请求成功可正常解除；历史 v1/v2 回执解析范围保持。
 
-新增四个效果/SDK 回归在生产修复前全部失败，修复后通过。七文件相关回归与源码约束 82 通过、1 个 POSIX 平台跳过；后续独立的 17 项 batch 及两项 prepared-ENOSPC 回归 3 通过。类型检查、受影响 coding-agent 构建通过。文件效果与元数据发布不属于普通 delta/progress 热路径；结果观察的共享后缀处理通过同步、无逐项回调/Promise/包装工厂的源码约束。
+新增四个效果/SDK 回归在生产修复前全部失败，修复后通过。本地定向回归与源码约束 82 通过、1 个 POSIX 平台跳过；后续独立的 17 项 batch 及两项 prepared-ENOSPC 回归 3 通过。此前命令误写 MXC worker 测试为 `.ts`，该本地汇总不含该文件；实际 `.mjs` 文件由最终 CI 的 Linux 分片 2 完整执行并通过，Linux 分片 1 同时通过中断私有权限、最终 rwx 与 mtime 回归。类型检查、受影响 coding-agent 构建通过。文件效果与元数据发布不属于普通 delta/progress 热路径；结果观察的共享后缀处理通过同步、无逐项回调/Promise/包装工厂的源码约束。
 
-对应小样本离线生产 hook/core 探针额外覆盖 copy/move/delete/batch 各 8 项未准备后缀；32 start/end、16 copy 终态、64 输入引用和重置后 16 义务引用均释放，0 历史读取/干预。采样估计 465,016 字节，主要位置为路径规范化与 replaceAll；三次采样最高 heap/RSS 为 63,391,176/168,235,008 字节，GC 后 heap 40,452,960 字节，耗时 1.1795 ms，CPU 低于 Windows 计数粒度。不将该数据称为连续峰值、精确分配总量或性能改善。复核命令：`node --experimental-strip-types --test --test-concurrency=1 tests/file-tree-core.test.ts tests/batch-false-success.test.ts tests/file-mutation-v3.test.ts tests/mxc-file-mutation-worker-v3.test.ts tests/file-mutation-source-v3.test.ts tests/source-invariants.test.ts tests/shell-observation-hot-paths.test.ts`；CI/runner 与 B 基线逐字节一致。
+对应小样本离线生产 hook/core 探针额外覆盖 copy/move/delete/batch 各 8 项未准备后缀；32 start/end、16 copy 终态、64 输入引用和重置后 16 义务引用均释放，0 历史读取/干预。采样估计 465,016 字节，主要位置为路径规范化与 replaceAll；三次采样最高 heap/RSS 为 63,391,176/168,235,008 字节，GC 后 heap 40,452,960 字节，耗时 1.1795 ms，CPU 低于 Windows 计数粒度。不将该数据称为连续峰值、精确分配总量或性能改善。复核命令：`node --experimental-strip-types --test --test-concurrency=1 tests/file-tree-core.test.ts tests/batch-false-success.test.ts tests/file-mutation-v3.test.ts tests/mxc-file-mutation-worker-v3.test.mjs tests/file-mutation-source-v3.test.ts tests/source-invariants.test.ts tests/shell-observation-hot-paths.test.ts`；CI/runner 与 B 基线逐字节一致。

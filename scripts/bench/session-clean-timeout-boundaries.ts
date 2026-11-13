@@ -268,6 +268,7 @@ await runBenchmarkMain({
 		const lifecycleGcAvailable = lifecycleThisRun && typeof globalThis.gc === "function";
 		if (lifecycleGcAvailable) globalThis.gc();
 		const beforeHeap = lifecycleGcAvailable ? process.memoryUsage().heapUsed : 0;
+		const cpuStarted = process.cpuUsage();
 		const started = performance.now();
 		const selectorResult = sampleThisRun
 			? await runSampledSelectorFixture(iterations, lifecycleThisRun)
@@ -276,6 +277,7 @@ await runBenchmarkMain({
 			? await runSampledShellFixture(iterations)
 			: { value: runShellFixture(iterations), sample: emptySample };
 		const elapsedMs = performance.now() - started;
+		const fixtureCpu = process.cpuUsage(cpuStarted);
 		const selectorWeakOwnerReleased = lifecycleGcAvailable && selectorResult.value.ownerRefs
 			? await releaseDiagnostics(selectorResult.value.ownerRefs)
 			: undefined;
@@ -297,6 +299,8 @@ await runBenchmarkMain({
 			shellCalls: shellResult.value.calls, shellMutationFindings: shellResult.value.mutationFindings, shellPermissionFindings: shellResult.value.permissionFindings,
 			shellLifecycleRefusals: shellResult.value.lifecycleRefusals, shellTargetCount: shellResult.value.targetCount,
 			fixtureElapsedMs: elapsedMs,
+			fixtureCpuUserMicroseconds: fixtureCpu.user, fixtureCpuSystemMicroseconds: fixtureCpu.system,
+			processMaximumRssBytes: process.resourceUsage().maxRSS * 1024,
 		};
 		if (sampleThisRun) Object.assign(metrics, {
 			selectorSampledAllocationBytes: selectorResult.sample.sampledBytes,

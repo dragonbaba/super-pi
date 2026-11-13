@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, basename } from 'node:path';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { spawnSync } from 'node:child_process';
 import { createExtensionHarness, emitAll } from './extension-harness.mjs';
 
 const root = await mkdtemp(join(tmpdir(), 'sp-memory-management-'));
@@ -20,7 +23,117 @@ const { buildMemoryDigest } = await import('../dist/memory-digest.js');
 const { detectProject } = await import('../dist/project.js');
 const { createMemoryReviewHandler } = await import('../dist/handlers/memory-review.js');
 const { registerMemoryCommand } = await import('../dist/handlers/memory-command.js');
+const { readRawMemoryFile, removeRawMemorySelections, preselectRawMemoryEntry } = await import('../dist/store/raw-memory.js');
+const { listBulkMemory, executeBulkMemoryCleanup, summarizeBulkSelection } = await import('../dist/handlers/memory-bulk-cleanup.js');
+const { createLazyBulkMemoryHandler } = await import('../dist/handlers/memory-bulk-command-registration.js');
+const { syncMarkdownMemoriesToSqlite } = await import('../dist/handlers/sync-markdown-memories.js');
 test.after(async () => { await AtomicLockCoordinator.closeSharedUnder(root); await rm(root, { recursive: true, force: true }); });
+
+test('actual dist registration and headless menus do not load bulk UI or the shared selector', () => {
+  const script = `
+    import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    const loaded = [];
+    const hook = registerHooks({ load(url, context, next) { loaded.push(url); return next(url, context); } });
+    const { createExtensionHarness } = await import(${JSON.stringify(new URL('./extension-harness.mjs', import.meta.url).href)});
+    const extension = (await import(${JSON.stringify(new URL('../dist/index.js', import.meta.url).href)})).default;
+    const harness = createExtensionHarness(); extension(harness.api);
+    const handler = harness.commands.get('memory').handler;
+    await handler('', { hasUI: false, mode: 'rpc', ui: { notify() {}, select() { throw new Error('headless menu opened'); } } });
+    await handler('', { hasUI: true, mode: 'rpc', ui: { notify() {}, select: async (_title, choices) => choices.find(choice => choice === '批量清理记忆') } });
+    assert.equal(loaded.some(url => url.endsWith('/memory-bulk-command.js') || url.endsWith('/bounded-selector.js')), false);
+    hook.deregister(); console.log(JSON.stringify({ uiModulesLoaded: 0, registeredCommands: [...harness.commands.keys()] }));
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-'], { input: script, cwd: root,
+    env: { ...process.env, SP_CODING_AGENT_DIR: join(root, 'lazy-agent') }, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(JSON.parse(result.stdout).uiModulesLoaded, 0);
+});
+
+test('raw removal preserves every unselected byte for all selection groups', async () => {
+  const directory = join(root, 'raw-masks'); await mkdir(directory);
+  const delimiter = Buffer.from('\n§\n'), fragments = [Buffer.from('  alpha \n'), Buffer.from('\tbéta  '), Buffer.from([0x20, 0xff, 0x0a]), Buffer.from('同文 <!-- created=2000-01-01, last=2001-01-01 --> '), Buffer.from('同文 <!-- created=2002-01-01, last=2003-01-01 -->\n')];
+  const original = Buffer.concat(fragments.flatMap((fragment, i) => i ? [delimiter, fragment] : [fragment]));
+  const file = join(directory, 'MEMORY.md'); await writeFile(file, original);
+  const raw = await readRawMemoryFile(file);
+  assert.equal(raw.snapshot.entries.length, 5);
+  for (let mask = 0; mask < 32; mask++) {
+    const selected = raw.snapshot.entries.filter(row => mask & (1 << row.ordinal));
+    const remaining = fragments.filter((_fragment, i) => !(mask & (1 << i)));
+    const expected = Buffer.concat(remaining.flatMap((fragment, i) => i ? [delimiter, fragment] : [fragment]));
+    assert.deepEqual(removeRawMemorySelections(raw.bytes, raw.snapshot, selected), expected, 'mask=' + mask);
+  }
+  assert.equal(raw.snapshot.entries[3].created, '2000-01-01'); assert.equal(raw.snapshot.entries[4].modified, '2003-01-01');
+  assert.notEqual(raw.snapshot.entries[3].sha256, raw.snapshot.entries[4].sha256);
+  assert.throws(() => removeRawMemorySelections(Buffer.from('external'), raw.snapshot, [raw.snapshot.entries[0]]), /已变化/);
+});
+
+test('raw publication reloads normal tool state and preserves same-text siblings', async () => {
+  const { store, config } = await fixture('raw-publication'), file = join(config.memoryDir, 'MEMORY.md');
+  const kept = ' \tidentical <!-- created=2002-01-01, last=2003-01-01 -->  \n';
+  await writeFile(file, 'identical <!-- created=2000-01-01, last=2001-01-01 -->\n§\n' + kept);
+  await store.loadFromDisk();
+  const coordinator = new AtomicLockCoordinator(join(dirname(config.memoryDir), '.pi-hermes-locks.sqlite'));
+  try {
+    const raw = await readRawMemoryFile(file);
+    const result = await store.removeRawEntries('memory', raw.snapshot, [raw.snapshot.entries[0]], coordinator);
+    assert.equal(result.deleted, 1); assert.deepEqual(await readFile(file), Buffer.from(kept));
+    assert.equal((await store.listEntries('memory')).total, 1);
+    assert.equal((await store.add('memory', 'new entry')).success, true);
+    const updated = await readFile(file, 'utf8'); assert.doesNotMatch(updated, /2000-01-01/); assert.match(updated, /2002-01-01/);
+    const all = await readRawMemoryFile(file);
+    await store.removeRawEntries('memory', all.snapshot, all.snapshot.entries, coordinator);
+    assert.equal((await readFile(file)).length, 0);
+  } finally { coordinator.close(); store.close(); }
+});
+
+test('raw deletion skips a stale file and never retries a publication conflict', async t => {
+  const { store, config } = await fixture('raw-conflict'), file = join(config.memoryDir, 'MEMORY.md');
+  const coordinator = new AtomicLockCoordinator(join(dirname(config.memoryDir), '.pi-hermes-locks.sqlite'));
+  try {
+    await writeFile(file, 'old\n§\nkeep'); const old = await readRawMemoryFile(file);
+    await writeFile(file, 'external edit');
+    await assert.rejects(store.removeRawEntries('memory', old.snapshot, [old.snapshot.entries[0]], coordinator), /已变化/);
+    assert.equal(await readFile(file, 'utf8'), 'external edit');
+    await writeFile(file, 'old\n§\nkeep'); const current = await readRawMemoryFile(file);
+    const link = fsPromises.link; let publications = 0;
+    t.mock.method(fsPromises, 'link', async (source, destination) => {
+      if (destination === current.snapshot.path && source.endsWith('write.tmp')) { publications++; await writeFile(file, 'concurrent writer'); }
+      return link(source, destination);
+    });
+    syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    await assert.rejects(store.removeRawEntries('memory', current.snapshot, [current.snapshot.entries[0]], coordinator));
+    assert.equal(publications, 1); assert.equal(await readFile(file, 'utf8'), 'concurrent writer');
+  } finally { coordinator.close(); store.close(); }
+});
+
+test('a post-publication refresh failure cannot resurrect removed memory on the next normal write', async t => {
+  const { store, config } = await fixture('raw-refresh-failure'), file = join(config.memoryDir, 'MEMORY.md');
+  const coordinator = new AtomicLockCoordinator(join(dirname(config.memoryDir), '.pi-hermes-locks.sqlite'));
+  try {
+    await writeFile(file, 'removed entry\n§\nkept entry'); await store.loadFromDisk();
+    const raw = await readRawMemoryFile(file), readState = store.readFileState.bind(store); let reads = 0;
+    t.mock.method(store, 'readFileState', async (current, rawParent) => {
+      if (current === raw.snapshot.path && rawParent && ++reads === 3) throw new Error('fixture refresh read failed');
+      return readState(current, rawParent);
+    });
+    const result = await store.removeRawEntries('memory', raw.snapshot, [raw.snapshot.entries[0]], coordinator);
+    assert.equal(result.deleted, 1); assert.match(result.warning, /refresh read failed/); assert.equal(await readFile(file, 'utf8'), 'kept entry');
+    assert.equal((await store.add('memory', 'new entry')).success, true);
+    assert.doesNotMatch(await readFile(file, 'utf8'), /removed entry/); assert.match(await readFile(file, 'utf8'), /kept entry/);
+  } finally { coordinator.close(); store.close(); }
+});
+
+test('bulk age presets use known modification dates and the existing temporary failure window', () => {
+  const row = { ordinal: 0, sha256: 'fixture', chars: 1, summary: '', category: 'failure', created: '2026-01-01', modified: '2026-11-01', project: null };
+  const now = Date.parse('2026-12-01T12:00:00Z');
+  assert.equal(preselectRawMemoryEntry(row, { kind: 'age', days: 30 }, now), false);
+  assert.equal(preselectRawMemoryEntry({ ...row, modified: '2026-10-31' }, { kind: 'age', days: 30 }, now), true);
+  assert.equal(preselectRawMemoryEntry({ ...row, modified: null }, { kind: 'age', days: 0 }, now), false);
+  assert.equal(preselectRawMemoryEntry(row, { kind: 'temporary', days: 7 }, now), true);
+  assert.equal(preselectRawMemoryEntry({ ...row, category: 'correction' }, { kind: 'temporary', days: 7 }, now), false);
+  assert.equal(preselectRawMemoryEntry({ ...row, created: '2026-11-24' }, { kind: 'temporary', days: 7 }, now), false);
+});
 
 async function fixture(name) {
   const config = { ...loadConfig(), memoryDir: join(root, name), userCharLimit: 10000 };
@@ -28,6 +141,165 @@ async function fixture(name) {
   await store.loadFromDisk();
   return { config, store, harness: createExtensionHarness() };
 }
+
+async function bulkFixture(name) {
+  const f = await fixture(name), projectsRoot = join(root, name + '-projects'), projectName = 'current--' + 'a'.repeat(24);
+  const memoryDir = join(projectsRoot, projectName); await mkdir(memoryDir, { recursive: true });
+  const projectStore = new MemoryStore({ ...f.config, memoryDir }); await projectStore.loadFromDisk();
+  const db = new DatabaseManager(f.config.memoryDir);
+  registerMemoryTool(f.harness.api, f.store, projectStore, db, projectName);
+  registerMemorySearchTool(f.harness.api, db, projectName);
+  const options = { store: f.store, projectStore, config: f.config, dbManager: db, globalDir: f.config.memoryDir, projectsRoot,
+    project: { name: projectName, memoryDir, root: join(root, 'current-project'), displayName: 'current' } };
+  return { ...f, options, db, projectStore, close() { db.close(); f.store.close(); projectStore.close(); } };
+}
+
+test('bulk global/current scopes reconcile search and keep exact unselected bytes', async () => {
+  const f = await bulkFixture('bulk-scopes');
+  try {
+    const globalFile = join(f.options.globalDir, 'MEMORY.md'), projectFile = join(f.options.project.memoryDir, 'MEMORY.md');
+    const kept = ' \tkeep scoped <!-- created=2000-01-01, last=2001-01-01 -->\n';
+    for (const file of [globalFile, projectFile]) await writeFile(file, 'remove scoped\n§\n' + kept);
+    await syncMarkdownMemoriesToSqlite(f.db, f.options.globalDir, basename(f.options.projectsRoot), root);
+    const search = f.harness.tools.get('memory_search');
+    assert.equal((await search.execute('before', validate(search, { query: 'remove', project: '*' }))).details.count, 2);
+    for (const scope of ['global', 'project']) {
+      const list = await listBulkMemory(f.options, scope), selected = list.rows.filter(row => row.entry.summary === 'remove scoped');
+      const summary = summarizeBulkSelection(selected); assert.equal(summary.count, 1); assert.equal(summary.files.length, 1);
+      const report = await executeBulkMemoryCleanup(f.options, selected);
+      assert.equal(report.deleted, 1); assert.equal(report.warnings.length, 0); assert.equal(report.characters, summary.characters);
+    }
+    assert.deepEqual(await readFile(globalFile), Buffer.from(kept)); assert.deepEqual(await readFile(projectFile), Buffer.from(kept));
+    assert.equal((await search.execute('after', validate(search, { query: 'remove', project: '*' }))).details.count, 0);
+    await writeFile(join(f.options.globalDir, 'failures.md'), '[correction] global\n§\n[correction] legacy <!-- created=2000-01-01, last=2001-01-01, project64=bGVnYWN5 -->');
+    const globalFailures = await listBulkMemory(f.options, 'global-failure'); assert.equal(globalFailures.rows.length, 1); assert.match(globalFailures.rows[0].entry.summary, /global/);
+  } finally { f.close(); }
+});
+
+test('all-project bulk includes orphan/failure-only identities, skips links and stale files, and reconciles only affected scopes', async t => {
+  const f = await bulkFixture('bulk-projects'), orphan = 'orphan--' + 'b'.repeat(24), failures = 'failures--' + 'c'.repeat(24), stale = 'stale--' + 'd'.repeat(24);
+  const outside = join(root, 'bulk-outside'), legacy = join(f.options.projectsRoot, 'old-basename');
+  try {
+    for (const name of [orphan, failures, stale]) await mkdir(join(f.options.projectsRoot, name));
+    await mkdir(outside); await mkdir(legacy);
+    await writeFile(join(outside, 'MEMORY.md'), 'outside must stay'); await writeFile(join(legacy, 'MEMORY.md'), 'legacy must stay');
+    await writeFile(join(f.options.projectsRoot, orphan, 'MEMORY.md'), 'remove orphan\n§\n \tkeep orphan  ');
+    await writeFile(join(f.options.projectsRoot, failures, 'failures.md'), '[failure] remove failure\n§\n[correction] keep failure');
+    await writeFile(join(f.options.projectsRoot, stale, 'MEMORY.md'), 'remove stale\n§\nkeep stale');
+    await fsPromises.symlink(outside, join(f.options.projectsRoot, 'linked--' + 'e'.repeat(24)), process.platform === 'win32' ? 'junction' : 'dir');
+    await fsPromises.symlink(join(outside, 'MEMORY.md'), join(f.options.projectsRoot, failures, 'MEMORY.md'), 'file');
+    const originalOpen = fsPromises.open, canonicalLegacy = await realpath(legacy), canonicalOutside = await realpath(outside);
+    t.mock.method(fsPromises, 'open', async (file, ...args) => {
+      assert.ok(!String(file).startsWith(canonicalLegacy) && !String(file).startsWith(canonicalOutside), 'Excluded content must not be opened');
+      return originalOpen(file, ...args);
+    });
+    syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    const list = await listBulkMemory(f.options, 'all-projects'); assert.equal(list.legacyDirectories, 1); assert.equal(list.rows.length, 6);
+    assert.equal(list.rows.some(row => row.file.project === failures && row.file.target === 'failure'), true);
+    await syncMarkdownMemoriesToSqlite(f.db, f.options.globalDir, basename(f.options.projectsRoot), root);
+    assert.equal(searchMemories(f.db, 'remove', { project: failures }).length, 1, 'Manual sync also discovers failure-only canonical projects');
+    await writeFile(join(f.options.projectsRoot, stale, 'MEMORY.md'), 'external stale replacement');
+    const report = await executeBulkMemoryCleanup(f.options, list.rows.filter(row => row.entry.summary.includes('remove')));
+    assert.equal(report.deleted, 2); assert.equal(report.changedFiles, 2); assert.equal(report.skippedFiles, 1);
+    assert.equal(await readFile(join(f.options.projectsRoot, orphan, 'MEMORY.md'), 'utf8'), ' \tkeep orphan  ');
+    assert.equal(await readFile(join(f.options.projectsRoot, stale, 'MEMORY.md'), 'utf8'), 'external stale replacement');
+    assert.equal(searchMemories(f.db, 'remove', { project: orphan }).length, 0); assert.equal(searchMemories(f.db, 'remove', { project: failures }).length, 0);
+    assert.equal(searchMemories(f.db, 'remove', { project: stale }).length, 1, 'Unchanged/skipped project search scope is not broadly reconciled');
+  } finally { f.close(); }
+});
+
+test('index failure does not roll back Markdown deletion and explicit sync recovers search', async t => {
+  const f = await bulkFixture('bulk-index-failure');
+  try {
+    const file = join(f.options.globalDir, 'MEMORY.md'); await writeFile(file, 'indexgone\n§\nkeep');
+    await syncMarkdownMemoriesToSqlite(f.db, f.options.globalDir, basename(f.options.projectsRoot), root);
+    const list = await listBulkMemory(f.options, 'global');
+    const unavailable = t.mock.method(f.db, 'getDb', () => { throw new Error('fixture index unavailable'); });
+    const report = await executeBulkMemoryCleanup(f.options, list.rows.filter(row => row.entry.summary === 'indexgone'));
+    assert.equal(report.deleted, 1); assert.equal(await readFile(file, 'utf8'), 'keep'); assert.match(report.warnings.join('\n'), /fixture index unavailable/);
+    unavailable.mock.restore();
+    assert.equal(searchMemories(f.db, 'indexgone', { project: null }).length, 1);
+    await syncMarkdownMemoriesToSqlite(f.db, f.options.globalDir, basename(f.options.projectsRoot), root);
+    assert.equal(searchMemories(f.db, 'indexgone', { project: null }).length, 0);
+    assert.equal((await f.store.listEntries('memory')).total, 1);
+  } finally { f.close(); }
+});
+
+test('transient project cleanup closes its own coordinator and preserves a live shared owner', async t => {
+  const f = await bulkFixture('bulk-coordinator'), project = 'other--' + 'f'.repeat(24), directory = join(f.options.projectsRoot, project);
+  let lease, shared;
+  try {
+    await mkdir(directory); await writeFile(join(directory, 'MEMORY.md'), 'remove\n§\nkeep');
+    shared = AtomicLockCoordinator.shared(join(await realpath(f.options.projectsRoot), '.pi-hermes-locks.sqlite'));
+    lease = shared.tryAcquire('live-owner', { staleMs: 300000 }); assert.ok(lease);
+    const connection = shared.cachedDb, closed = [], close = AtomicLockCoordinator.prototype.close;
+    const closing = t.mock.method(AtomicLockCoordinator.prototype, 'close', function() { closed.push(this); return close.call(this); });
+    const list = await listBulkMemory(f.options, 'all-projects');
+    const report = await executeBulkMemoryCleanup(f.options, list.rows.filter(row => row.entry.summary === 'remove'));
+    closing.mock.restore();
+    assert.equal(report.deleted, 1); assert.equal(closed.includes(shared), false); assert.equal(shared.cachedDb, connection);
+    assert.equal(closed.length, 1); assert.equal(closed[0].cachedDb, null, 'Task-owned connection closed after its leases released');
+    assert.equal(connection.prepare('SELECT COUNT(*) AS count FROM locks').get().count, 1, 'Only the pre-existing owner lease remains');
+  } finally { lease?.release(); shared?.close(); f.close(); }
+});
+
+test('built memory menu opens the lazy selector, preserves cancellation and confirms raw removal', async t => {
+  const { KeybindingsManager } = await import('../../coding-agent/dist/core/keybindings.js');
+  const theme = { bold: value => value, fg: (_tone, value) => value }, keybindings = new KeybindingsManager();
+  for (const action of ['headless', 'cancel-scope', 'escape-list', 'cancel-confirm', 'confirm']) {
+    const f = await bulkFixture('bulk-ui-' + action), file = join(f.options.globalDir, 'MEMORY.md'), messages = [];
+    try {
+      const original = 'remove UI\n§\n \tkeep UI  '; await writeFile(file, original);
+      let selections = 0, customCount = 0, acquisitions = 0;
+      const acquire = AtomicLockCoordinator.prototype.tryAcquire;
+      const acquisition = t.mock.method(AtomicLockCoordinator.prototype, 'tryAcquire', function(...args) { acquisitions++; return acquire.apply(this, args); });
+      const noop = async () => {};
+      registerMemoryCommand(f.harness.api, { ...f.options, review: noop, cleanup: noop, sync: noop, skills: noop, bulk: createLazyBulkMemoryHandler(f.options) });
+      const ctx = { hasUI: action !== 'headless', mode: 'tui', ui: {
+        notify: text => messages.push(text),
+        select: async (_title, choices) => {
+          selections++;
+          if (selections === 1) return choices.find(choice => choice === '批量清理记忆');
+          if (selections === 2) return action === 'cancel-scope' ? undefined : choices[1];
+          return choices[0];
+        },
+        custom: async factory => {
+          customCount++; let settle;
+          const response = new Promise(resolve => { settle = resolve; });
+          const selector = factory({ terminal: { rows: 28 } }, theme, keybindings, settle);
+          selector.focused = true;
+          const frame = selector.render(112); assert.ok(frame.length <= 24);
+          if (customCount === 1) {
+            assert.match(frame.join('\n'), /记忆/); assert.doesNotMatch(frame.join('\n'), /使用中的会话/);
+            if (action === 'escape-list') selector.handleInput('\x1b');
+            else {
+              // Both default-selected rows are editable; retain only the first.
+              selector.handleInput('\x1b[B'); selector.render(112); selector.handleInput(' ');
+              await new Promise(resolve => setTimeout(resolve, 270)); selector.render(112); selector.handleInput('\x1b[3~');
+            }
+          } else {
+            assert.match(frame.join('\n'), /确认删除 1 条记忆/); assert.match(frame.join('\n'), /→ 取消/);
+            if (action === 'cancel-confirm') selector.handleInput('\x1b');
+            else {
+              selector.handleInput('\x1b[A'); selector.render(112);
+              await new Promise(resolve => setTimeout(resolve, 170)); selector.render(112); selector.handleInput('\r');
+            }
+          }
+          const result = await response; selector.dispose(); return result;
+        },
+      } };
+      try { await f.harness.commands.get('memory').handler('', ctx); }
+      finally { acquisition.mock.restore(); }
+      if (action === 'confirm') {
+        assert.equal(await readFile(file, 'utf8'), ' \tkeep UI  '); assert.equal(customCount, 2); assert(acquisitions > 0);
+        assert.match(messages.join('\n'), /删除 1 条/);
+      } else {
+        assert.equal(await readFile(file, 'utf8'), original); assert.equal(acquisitions, 0);
+        if (action === 'headless' || action === 'cancel-scope') assert.equal(customCount, 0);
+      }
+    } finally { f.close(); }
+  }
+});
 function validate(tool, args) {
   return validateToolArguments(tool, { type: 'toolCall', id: 'test', name: tool.name, arguments: args });
 }
@@ -237,19 +509,19 @@ test('unified manager dispatches existing scoped review and maintenance handlers
   const calls = [];
   const record = name => async args => { calls.push([name, args]); };
   registerMemoryCommand(harness.api, { store, projectStore: store, project: { root: root, memoryDir: config.memoryDir }, globalDir: config.memoryDir,
-    review: record('review'), cleanup: record('cleanup'), sync: record('sync'), skills: record('skills') });
+    review: record('review'), cleanup: record('cleanup'), sync: record('sync'), skills: record('skills'), bulk: record('bulk') });
   const handler = harness.commands.get('memory').handler;
   const ctx = { hasUI: true, ui: { select: async (_title, choices) => choices[5], notify: () => {} } };
   await handler('', ctx);
   assert.deepEqual(calls, [['review', 'global user']]);
-  for (const [label, name] of [['管理技能', 'skills'], ['同步搜索索引', 'sync'], ['清理恢复产物', 'cleanup']]) {
+  for (const [label, name] of [['管理技能', 'skills'], ['同步搜索索引', 'sync'], ['清理恢复产物', 'cleanup'], ['批量清理记忆', 'bulk']]) {
     ctx.ui.select = async (_title, choices) => choices.find(choice => choice === label);
     await handler('', ctx);
     assert.deepEqual(calls.at(-1), [name, '']);
   }
   ctx.hasUI = false;
   await handler('', ctx);
-  assert.equal(calls.length, 4);
+  assert.equal(calls.length, 5);
 });
 
 test('shutdown closes the exact Markdown coordinators after writes and resolves owner path aliases', async () => {

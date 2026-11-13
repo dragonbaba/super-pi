@@ -41,7 +41,13 @@ test("bundled reports are removed while retained extensions keep their loading o
   ]) {
     const { SUPPORTED_SP_VERSION_PATTERN: supported } = await import(pathToFileURL(join(root, "packages", relative)).href);
     assert.equal(supported.test(VERSION), true, `${relative} must accept the current host`);
-    assert.equal(supported.test("0.84.1"), true, `${relative} must preserve legacy compatibility`);
+    const legacyCompatible = relative !== "extensions/session-memory-manager/regex.ts";
+    assert.equal(supported.test("0.84.1"), legacyCompatible, `${relative} must match its supported host APIs`);
+    if (!legacyCompatible) {
+      const peer = json(join(extensionRoot, "session-memory-manager/package.json")).peerDependencies["@super-pi/coding-agent"];
+      assert.equal(peer, "^1.0.0");
+      assert.equal(json(join(root, "package-lock.json")).packages["packages/extensions/session-memory-manager"].peerDependencies["@super-pi/coding-agent"], peer);
+    }
     for (const version of ["0.83.1", "0.85.0", "2.0.0", "unknown"]) {
       assert.equal(supported.test(version), false, `${relative} must reject ${version}`);
     }
@@ -103,7 +109,7 @@ test("the real launcher assembles default resources and honors explicit isolatio
   for (const name of removed) assert.ok(paths.every(path => !path.includes(name)));
 });
 
-test("the built launcher loads zero extensions or only explicit child/task providers", t => {
+test("the built launcher loads only requested extensions in isolated runs", t => {
   const fixture = mkdtempSync(join(tmpdir(), "sp-minimal-launcher-"));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
   const agent = join(fixture, "agent");
@@ -124,7 +130,7 @@ test("the built launcher loads zero extensions or only explicit child/task provi
     };
   `);
   const childGuard = join(extensionRoot, "subagent/child-guard.ts");
-  for (const explicit of [[], ["--extension", childGuard], ["--extension", join(extensionRoot, "resource-lifecycle-guard/index.ts"), "--extension", join(extensionRoot, "subagent/index.ts")]]) {
+  for (const explicit of [[], ["--extension", childGuard], ["--extension", join(extensionRoot, "resource-lifecycle-guard/index.ts"), "--extension", join(extensionRoot, "subagent/index.ts")], ["--extension", join(extensionRoot, "session-memory-manager/index.ts")]]) {
     const child = spawnSync(process.execPath, [
       "--import", pathToFileURL(join(root, "tests/fixtures/native-offline-preload.mjs")).href,
       "--import", pathToFileURL(probe).href, join(root, "scripts/superpi.mjs"),

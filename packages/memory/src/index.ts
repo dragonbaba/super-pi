@@ -30,6 +30,7 @@ import { createMemoryReviewHandler } from "./handlers/memory-review.js";
 import { createMemoryCleanupHandler } from "./handlers/memory-cleanup.js";
 import { registerMemoryCommand } from "./handlers/memory-command.js";
 import { createLazySkillsHandler } from "./handlers/skills-command-registration.js";
+import { createLazyBulkMemoryHandler } from "./handlers/memory-bulk-command-registration.js";
 import { createSyncMarkdownMemoriesHandler } from "./handlers/sync-markdown-memories.js";
 import { loadConfig } from "./config.js";
 import { detectProject, detectProjectSkills } from "./project.js";
@@ -173,7 +174,8 @@ export default function (pi: ExtensionAPI) {
   const cleanup = createMemoryCleanupHandler({ store, globalDir, projectsRoot });
   const skills = createLazySkillsHandler(pi, skillStore);
   const sync = createSyncMarkdownMemoriesHandler(dbManager, globalDir, config.projectsMemoryDir, agentRoot);
-  registerMemoryCommand(pi, { store, projectStore, project, globalDir, review, cleanup, sync, skills });
+  const bulk = createLazyBulkMemoryHandler({ store, projectStore, project, globalDir, projectsRoot, config, dbManager });
+  registerMemoryCommand(pi, { store, projectStore, project, globalDir, review, cleanup, sync, skills, bulk });
   // ── 6. Explicit search: JSONL history and the derived memory index. ──
   registerSessionSearchTool(pi);
   registerMemorySearchTool(pi, dbManager, project.name);

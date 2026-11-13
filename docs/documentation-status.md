@@ -11,7 +11,7 @@ accesses authorized workspaces in two sandbox modes. Three other modes use host 
 | MXC migration and route evidence | Delivered history; evidence for the recorded revision |
 | Windows Sandbox VM plans and evidence | Retired history; see the archived acceptance suite below |
 | CodeMode R1–R5, OpenCode OC, upstream V/F and PF external acceptance | Mixed plans and evidence; verify individual items before marking complete |
-| File operations / CodeGraph / memory cleanup | B merged in #296; A candidate in #297, with [validation status](evidence/file-operations-v3-2026-11-13.md); C pending |
+| File operations / CodeGraph / memory cleanup | B merged in #296; A merged in #297 ([evidence and limits](evidence/file-operations-v3-2026-11-13.md)); C implementation and local checks are recorded in [evidence](evidence/memory-bulk-cleanup-2026-11-13.md), with final delivery status in [#298](https://github.com/dragonbaba/super-pi/pull/298) |
 
 ## Windows Sandbox VM retirement
 

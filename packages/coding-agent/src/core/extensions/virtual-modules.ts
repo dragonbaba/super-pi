@@ -9,6 +9,8 @@ import * as _bundledTypeboxValue from "typebox/value";
 // Loaded after loader.ts initializes, so the public entrypoint can re-export
 // extension APIs without creating an eager module initialization cycle.
 import * as _bundledPiCodingAgent from "../../index.ts";
+import * as selectorLoader from "../../modes/interactive/components/selector-loader.ts";
+import * as selectorText from "../../modes/interactive/components/selector-text.ts";
 import * as taskForeground from "../tasks/foreground.ts";
 import * as taskScheduler from "../tasks/scheduler.ts";
 import * as taskRecords from "../tasks/tasks.ts";
@@ -71,6 +73,8 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@super-pi/ai/oauth": _bundledPiAiOauth,
 	"@super-pi/ai/providers/all": _bundledPiAiProviders,
 	"@super-pi/coding-agent": _bundledPiCodingAgent,
+	"@super-pi/coding-agent/internal/ui/selector-loader": selectorLoader,
+	"@super-pi/coding-agent/internal/ui/selector-text": selectorText,
 	"@super-pi/coding-agent/internal/session-lease": sessionLease,
 	"@super-pi/coding-agent/internal/shell-policy/core": shellCore,
 	"@super-pi/coding-agent/internal/shell-policy/permission-bash": shellPermissionBash,

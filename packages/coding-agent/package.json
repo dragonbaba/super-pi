@@ -13,6 +13,18 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"exports": {
+		"./internal/ui/bounded-selector": {
+			"types": "./dist/modes/interactive/components/bounded-selector.d.ts",
+			"import": "./dist/modes/interactive/components/bounded-selector.js"
+		},
+		"./internal/ui/selector-text": {
+			"types": "./dist/modes/interactive/components/selector-text.d.ts",
+			"import": "./dist/modes/interactive/components/selector-text.js"
+		},
+		"./internal/ui/selector-loader": {
+			"types": "./dist/modes/interactive/components/selector-loader.d.ts",
+			"import": "./dist/modes/interactive/components/selector-loader.js"
+		},
 		"./internal/shell-policy/*": {
 			"types": "./dist/core/shell-policy/*.d.ts",
 			"import": "./dist/core/shell-policy/*.js",
