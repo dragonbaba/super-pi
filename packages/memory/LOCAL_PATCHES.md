@@ -30,6 +30,12 @@ commit-by-commit history.
 - Memory review is explicit through the scoped `/memory` menu, uses the
   current model, displays the complete proposal, requires confirmation, and
   revalidates the source snapshot before publication.
+- Bulk memory cleanup is an explicit, lazy `/memory` menu action. Raw fragment
+  ordinals/hashes and whole-file fingerprints bind selection; unselected bytes
+  remain unchanged and conflicts are never rematched/retried. Existing checked
+  publication is shared with normal writes. Temporary project stores use owned
+  coordinator connections and reconcile only affected project search scopes;
+  index failures do not roll back Markdown. No automatic expiry is registered.
 - Recovery artifact cleanup and Markdown reconciliation are explicit actions
   in `/memory`, the sole command registered by this package. Old standalone
   commands and `/memory import` are removed. Index sync reads canonical global

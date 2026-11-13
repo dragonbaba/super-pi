@@ -159,7 +159,7 @@ In host TUI/RPC sessions, Bash and PowerShell can use `background: true` with an
 - Plan mode starts with `/plan` or `--plan` and emphasizes read-only exploration, clarification, and a complete implementation plan. It narrows the available tools until the plan is accepted.
 - Goal mode uses `/goal` to manage a continuing objective, pause, resume, and completion state. Ordered Goal queues and managed-run RPC are experimental and off by default.
 - Sessions support continue, resume, fork, tree navigation, naming, import, and export. Session history is local durable data; each model request still receives only the context selected for that request.
-- Memory separates global memory, project memory, session search, and Skills. It provides a human-reviewed extraction workflow through `/memory-review`. Ordinary memory tool operations follow content checks and the current tool policy; the confirmation flow depends on the entrypoint. Startup does not inject every historical memory into the system prompt.
+- Memory separates global memory, project memory, session search, and Skills. `/memory` provides reviewed extraction and an explicit bulk cleanup list with selection and confirmation; unselected Markdown bytes are preserved. Ordinary memory tool operations follow content checks and the current tool policy. Startup does not inject every historical memory into the system prompt.
 
 Compaction organizes older context when the active model approaches its limit. It preserves a usable continuation boundary, but does not preserve every internal model state or promise identical behavior across providers.
 

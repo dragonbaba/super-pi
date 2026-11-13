@@ -11,7 +11,7 @@ import { deleteSessions, occupiedSessionPaths, deleteSessionTrashCandidates, ins
   type DeletionFailure, type SessionTrashEntry } from "./core.ts";
 import { SUPPORTED_SP_VERSION_PATTERN } from "./regex.ts";
 import { MAX_UI_ERROR, sanitizeSessionText } from "./ui-text.ts";
-import { BoundedMemorySelector, type BoundedSelectorItem } from "./bounded-selector.ts";
+import { loadBoundedSelector, type BoundedSelectorItem } from "@super-pi/coding-agent/internal/ui/selector-loader";
 
 const AGENT_DIR = getAgentDir();
 const TRASH_DIR = join(AGENT_DIR, "@super-pi/memory", "session-trash");
@@ -57,6 +57,7 @@ export async function selectBounded<T>(
   items: readonly BoundedSelectorItem<T>[],
   initialIndex?: number,
 ): Promise<T | undefined> {
+  const { BoundedMemorySelector } = await loadBoundedSelector();
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
     return new BoundedMemorySelector(
       title,
@@ -115,6 +116,7 @@ function deletionSummary(deleted: number, failures: readonly DeletionFailure[]):
 function newestSessionFirst(a: SessionInfo, b: SessionInfo): number { return b.modified.getTime() - a.modified.getTime(); }
 
 async function selectSessions(ctx: ExtensionCommandContext, sessions: SessionInfo[], failures: ReadonlyMap<string, string>, checked: ReadonlySet<string>): Promise<SessionInfo[] | undefined> {
+  const { BoundedMemorySelector } = await loadBoundedSelector();
   const occupied = occupiedSessionPaths(sessions, ctx.sessionManager.getSessionFile(), LEASE_DIR);
   const items: BoundedSelectorItem<SessionInfo>[] = [];
   for (const session of sessions) {

@@ -11,11 +11,11 @@ export async function canonicalMarkdownIdentity(filePath: string): Promise<strin
 
 export async function acquireMarkdownMutationLock(
   filePath: string,
-  options: { staleMs?: number } = {},
+  options: { staleMs?: number; coordinator?: AtomicLockCoordinator } = {},
 ): Promise<AtomicLockLease> {
   const identity = await canonicalMarkdownIdentity(filePath);
   const coordinatorDir = path.dirname(path.dirname(identity));
-  const coordinator = AtomicLockCoordinator.shared(path.join(coordinatorDir, ".pi-hermes-locks.sqlite"));
+  const coordinator = options.coordinator ?? AtomicLockCoordinator.shared(path.join(coordinatorDir, ".pi-hermes-locks.sqlite"));
   const lockKey = `mutation:${identity}`;
   const deadline = Date.now() + MUTATION_WAIT_MS;
   const staleMs = options.staleMs ?? MUTATION_STALE_MS;
@@ -35,7 +35,7 @@ export async function acquireMarkdownMutationLock(
 export async function withMarkdownMutationLock<T>(
   filePath: string,
   operation: () => Promise<T> | T,
-  options: { staleMs?: number } = {},
+  options: { staleMs?: number; coordinator?: AtomicLockCoordinator } = {},
 ): Promise<T> {
   const lease = await acquireMarkdownMutationLock(filePath, options);
   try {

@@ -52,7 +52,8 @@ const HOT_REGEX_FREE_FILES = [
 	"packages/coding-agent/src/core/shell-policy/shell-redirection.ts",
 	"packages/coding-agent/src/core/shell-policy/shell-substitution.ts",
 	"packages/coding-agent/src/core/shell-policy/permission-bash.ts",
-	"packages/extensions/session-memory-manager/bounded-selector.ts",
+	"packages/coding-agent/src/modes/interactive/components/bounded-selector.ts",
+	"packages/coding-agent/src/modes/interactive/components/selector-text.ts",
 	"packages/extensions/session-memory-manager/index.ts",
 	"packages/ai/src/auth/anthropic-subscription.ts",
 	"packages/coding-agent/src/core/shell-policy/timeout-wrapper.ts",
@@ -217,7 +218,7 @@ test("selected hot runtime modules keep regular-expression literals in dedicated
 });
 
 test("session selector hot methods keep callbacks and I/O outside rendering", () => {
-	const file = "packages/extensions/session-memory-manager/bounded-selector.ts";
+	const file = "packages/coding-agent/src/modes/interactive/components/bounded-selector.ts";
 	const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 	const owner = source.statements.find(node => ts.isClassDeclaration(node)) as ts.ClassDeclaration;
 	// Constructor, enableMultiSelect and the explicit selection/deletion callback

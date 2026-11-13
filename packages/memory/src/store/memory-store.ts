@@ -28,6 +28,7 @@ import type { MemoryConfig, MemoryResult, MemorySnapshot, MemoryCategory, Memory
 import { AGENT_ROOT } from "../paths.js";
 import { canonicalMarkdownIdentity, withMarkdownMutationLock } from "./markdown-mutation-lock.js";
 import { AtomicLockCoordinator } from "./atomic-lock-coordinator.js";
+import { assertRawMemoryParent, readRawMemoryFile, removeRawMemorySelections, type RawMemorySelection, type RawMemorySnapshot } from "./raw-memory.js";
 
 const MAX_EXTERNAL_WRITE_RETRIES = 2;
 const RECOVERY_ACTIVE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -112,11 +113,14 @@ export class MemoryStore {
     this.mutationObserver = fn;
   }
 
-  close(): void {
-    for (const file of Object.values(this.storagePaths)) {
+  close(options: { closeSharedCoordinators?: boolean } = {}): void {
+    if (options.closeSharedCoordinators !== false) for (const file of Object.values(this.storagePaths)) {
       AtomicLockCoordinator.closeSharedUnder(path.join(path.dirname(path.dirname(file)), ".pi-hermes-locks.sqlite"));
     }
     this.mutationObserver = null;
+    this.memoryEntries = []; this.userEntries = []; this.failureEntries = [];
+    this.fileFingerprints = {}; this.storagePaths = {}; this.recoveryPrunedAt.clear();
+    this.snapshot = { memory: "", user: "" };
   }
 
   // ─── Path helpers ───
@@ -564,6 +568,35 @@ export class MemoryStore {
     return [...this.entriesFor(target)];
   }
 
+  /** Human-selected raw fragments; no trim/dedup rewrite and no conflict retry.
+   * The caller owns its coordinator, so transient project stores cannot close a
+   * connection shared by an active extension. Frozen prompt snapshots stay frozen. */
+  async removeRawEntries(target: "memory" | "user" | "failure", snapshot: RawMemorySnapshot,
+    selections: readonly RawMemorySelection[], coordinator: AtomicLockCoordinator,
+  ): Promise<{ deleted: number; characters: number; warning?: string }> {
+    const canonical = await canonicalMarkdownIdentity(this.pathFor(target));
+    if (canonical !== snapshot.path) throw new Error("记忆文件路径已变化，跳过整个文件");
+    return withMarkdownMutationLock(snapshot.path, async () => {
+      const raw = await readRawMemoryFile(this.pathFor(target));
+      if (!raw || raw.snapshot.path !== snapshot.path) throw new Error("记忆文件已消失或路径已变化，跳过整个文件");
+      const content = removeRawMemorySelections(raw.bytes, snapshot, selections);
+      if (!selections.length) return { deleted: 0, characters: 0 };
+      const ordinals = new Set<number>(); for (const selection of selections) ordinals.add(selection.ordinal);
+      const deleted = ordinals.size;
+      try { await this.publishBytes(target, snapshot.path, content, snapshot.fingerprint, false, snapshot); }
+      catch (error) { this.fileFingerprints[snapshot.path] = undefined; throw error; }
+      let warning: string | undefined;
+      try {
+        const finalized = await this.finalizeTargetMutation(target, snapshot.path, { success: true }, snapshot);
+        warning = finalized.warning;
+      } catch (error) {
+        this.fileFingerprints[snapshot.path] = undefined;
+        warning = `已写入 Markdown，但内存刷新或搜索索引未同步：${error instanceof Error ? error.message : String(error)}`;
+      }
+      return { deleted, characters: raw.bytes.toString("utf8").length - content.toString("utf8").length, warning };
+    }, { coordinator });
+  }
+
   // ─── Internal helpers ───
 
   /**
@@ -711,9 +744,16 @@ export class MemoryStore {
     return createHash("sha256").update(content).digest("hex");
   }
 
-  private async readFileState(filePath: string): Promise<{ entries: string[]; fingerprint: string }> {
+  private async readFileState(filePath: string, rawParent?: RawMemorySnapshot): Promise<{ entries: string[]; fingerprint: string }> {
     try {
-      const raw = await fs.readFile(filePath);
+      let raw: Buffer;
+      if (rawParent) {
+        await assertRawMemoryParent(rawParent);
+        const checked = await readRawMemoryFile(filePath);
+        if (!checked) return { entries: [], fingerprint: "missing" };
+        if (checked.snapshot.parentDevice !== rawParent.parentDevice || checked.snapshot.parentInode !== rawParent.parentInode) throw new Error("记忆目录身份已变化");
+        raw = checked.bytes;
+      } else raw = await fs.readFile(filePath);
       const content = raw.toString("utf-8");
       const entries = content.trim()
         ? content.split(ENTRY_DELIMITER).map((entry) => entry.trim()).filter(Boolean)
@@ -745,8 +785,9 @@ export class MemoryStore {
     target: "memory" | "user" | "failure",
     storagePath: string,
     result: MemoryResult,
+    rawParent?: RawMemorySnapshot,
   ): Promise<MemoryResult> {
-    const state = await this.readFileState(storagePath);
+    const state = await this.readFileState(storagePath, rawParent);
     this.setEntries(target, deduplicateEntries(state.entries));
     this.fileFingerprints[storagePath] = state.fingerprint;
 
@@ -818,7 +859,7 @@ export class MemoryStore {
   }
 
   /**
-   * Atomic write: temp file + fs.rename().
+   * Checked exclusive publication with displacement recovery.
    * Creates temp files in the same directory as the target to avoid
    * cross-device rename errors (EXDEV) when os.tmpdir() is on a different
    * drive than the memory directory (common on Windows).
@@ -828,6 +869,14 @@ export class MemoryStore {
     const entries = this.entriesFor(target);
     const content = entries.length ? entries.join(ENTRY_DELIMITER) : "";
     const expectedFingerprint = this.fileFingerprints[filePath] ?? "missing";
+    await this.publishBytes(target, filePath, content, expectedFingerprint, true);
+  }
+
+  /** Shared checked publication for normalized tool writes and raw UI removals. */
+  private async publishBytes(target: "memory" | "user" | "failure", filePath: string,
+    content: string | Buffer, expectedFingerprint: string, pruneRecovery: boolean, rawParent?: RawMemorySnapshot,
+  ): Promise<void> {
+    if (rawParent) await assertRawMemoryParent(rawParent);
 
     // Use the memory directory for temp files so rename stays on the same device
     const tmpDir = await fs.mkdtemp(path.join(path.dirname(filePath), ".tmp-"));
@@ -835,8 +884,8 @@ export class MemoryStore {
 
     try {
       await fs.writeFile(tmpPath, content, "utf-8");
-      await this.pruneRecoveryFiles(filePath);
-      const currentState = await this.readFileState(filePath);
+      if (pruneRecovery) await this.pruneRecoveryFiles(filePath);
+      const currentState = await this.readFileState(filePath, rawParent);
       if (currentState.fingerprint !== expectedFingerprint) {
         throw new ExternalMemoryWriteConflict();
       }
@@ -863,7 +912,7 @@ export class MemoryStore {
         }
         let published = false;
         try {
-          const displacedState = await this.readFileState(recoveryPath);
+          const displacedState = await this.readFileState(recoveryPath, rawParent);
           if (displacedState.fingerprint !== expectedFingerprint) {
             throw new ExternalMemoryWriteConflict();
           }
@@ -871,7 +920,7 @@ export class MemoryStore {
           await fs.link(tmpPath, filePath);
           published = true;
 
-          const verifiedDisplacedState = await this.readFileState(recoveryPath);
+          const verifiedDisplacedState = await this.readFileState(recoveryPath, rawParent);
           if (verifiedDisplacedState.fingerprint !== expectedFingerprint) {
             throw new ExternalMemoryWriteConflict();
           }
@@ -910,7 +959,7 @@ export class MemoryStore {
       // the caller retries against disk truth instead of reporting phantom state.
       const publishedFingerprint = this.fingerprint(content);
       this.fileFingerprints[filePath] = publishedFingerprint;
-      const publishedState = await this.readFileState(filePath);
+      const publishedState = await this.readFileState(filePath, rawParent);
       if (publishedState.fingerprint !== publishedFingerprint) {
         this.setEntries(target, deduplicateEntries(publishedState.entries));
         this.fileFingerprints[filePath] = publishedState.fingerprint;
