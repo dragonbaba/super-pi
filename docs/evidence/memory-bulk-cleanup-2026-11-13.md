@@ -16,6 +16,7 @@
 - 实际发布覆盖确认后外部改写、独占 link 竞争及不重试；下一次普通 memory 增改不会恢复已删除条目，包括提交后刷新读取失败的故障。
 - 全局、当前项目、其他项目的真实 SQLite 搜索与 Markdown 对账；链接目录/文件、旧目录、过期列表文件、failure-only 项目及其他项目原索引不被广泛重扫。注入索引不可用后 Markdown 已删、搜索仍旧，手动同步后恢复。
 - 实际构建的 dist 注册/无界面菜单不加载 bulk UI 或共享选择器；真实组件工厂、按键和渲染验证无界面、范围取消、列表 Esc、确认 Esc 和确认删除。取消路径写锁获取次数为 0。
+- 编译后的真实 jiti 加载器显式加载会话管理扩展，曾将内部 UI 名称误拼到 index.js 后。补齐已编译组件目录的内部别名，现有隔离启动器回归增加该扩展，避免只验证原生 dist import 而漏掉源码扩展加载路径。
 - 保留一个活动共享连接和租约，其他项目清理只关闭自己的一个协调器连接，活动连接身份与租约保持。
 
 `packages/memory`：`npm run check` 通过；原有 `npm test` 命令的三个文件共 28 项通过；`npm run benchmark:lifecycle` 注册/启动/关闭为 2.3121 / 3.2888 / 0.9846 ms；`npm run smoke:rpc` 完成 12/12 包构建及真实 RPC 状态/命令查询，仅注册 memory。相关共享选择器回归 7 项、TUI 源码约束与 bundled extension 检查 16 项通过。根目录 TypeScript 检查通过。环境的 typescript-language-server 仅有失效 shim，启动返回 command not found；未声称完成 LSP 诊断。
