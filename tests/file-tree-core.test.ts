@@ -136,6 +136,21 @@ for (const operation of ["copy", "move"] as const) test(`directory ${operation} 
   assert.equal(await readFile(join(f.source, "private"), "utf8"), "private source");
 });
 
+test("native directory move never publishes a readable hardlink through a replaced created parent", async t => {
+  const f = await fixture(t), outside = join(f.root, "unapproved"), sourceFile = join(f.source, "private"), destinationFile = join(f.destination, "private");
+  await mkdir(f.source, { mode: 0o700 }); await mkdir(outside); await writeFile(sourceFile, "private source", { mode: 0o644 });
+  const tree = await prepareTree(await capturePathIdentity(f.source), "move"), parent = await capturePathIdentity(f.root);
+  const originalLink = fsPromises.link, originalOpen = fsPromises.open; let injected = false, linkCalls = 0;
+  function redirect() { if (injected) return; renameSync(f.destination, f.destination + ".original"); symlinkSync(outside, f.destination, process.platform === "win32" ? "junction" : "dir"); injected = true; }
+  t.mock.method(fsPromises, "link", async (source: any, destination: any) => { if (destination === destinationFile) { linkCalls++; redirect(); } return originalLink(source, destination); });
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => { if (path === destinationFile && args[0] === "wx+") redirect(); return (originalOpen as any)(path, ...args); });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = await executeTree(tree, "move", parent, f.destination, parent, current);
+  assert(injected); assert.equal(result.status, "partial", JSON.stringify(result)); assert.equal(result.requiresVerification, true);
+  assert.equal((await readFile(join(outside, "private"))).length, 0, "Unapproved directory must receive no private bytes");
+  assert.equal(await readFile(sourceFile, "utf8"), "private source"); assert.equal(linkCalls, 0, "Directory move preselects checked copy/unlink before effects");
+});
+
 test("directory copy reports partial coverage when a new child appears during execution", async t => {
   const f = await fixture(t); await mkdir(f.source); await writeFile(join(f.source, "file"), "original");
   const tree = await prepareTree(await capturePathIdentity(f.source), "copy"), parent = await capturePathIdentity(f.root);

@@ -8,7 +8,7 @@
 
 新调用不设目标数量上限。内部请求按实际序列化 JSON 分块，最多 4 MiB；回复最多 256 KiB；write/edit 正文合计仍最多 1 MiB。结果日志复用现有会话 custom entries，绑定实际返回的条目 ID、原调用、权限代次和准备清单 Merkle root。无正文或完整 diff 副本。file_result 每页最多 128 条且实际 JSON 不超过 64 KiB，不启动文件 worker，不恢复原生读取版本。
 
-共享的文件创建、树遍历、流式复制与发布 owner 负责两条执行链路；原生同卷 move 保留独占 link → 验证 → unlink，跨卷和 MXC 使用流式复制、目标重读哈希、源身份复核后删源。真实 MXC 在同一挂载和不同授权挂载均拒绝硬链接，故 move 在执行前固定选择 `copy_unlink_verified`，没有失败后回退或重放。目录目标用独占 mkdir，不合并或覆盖已有目录；删源仅用非递归 rmdir。
+共享的文件创建、树遍历、流式复制与发布 owner 负责两条执行链路；原生独立普通文件同卷 move 保留独占 link → 验证 → unlink，目录 move（含同卷）、跨卷和 MXC 使用流式复制、目标重读哈希、源身份复核后删源。目录策略在效果前确定，避免新建父目录在 link 边界被替换时瞬间暴露源内容；增加 I/O，且不承诺保留硬链接拓扑。真实 MXC 在同一挂载和不同授权挂载均拒绝硬链接，故 move 在执行前固定选择 `copy_unlink_verified`，没有失败后回退或重放。目录目标用独占 mkdir，不合并或覆盖已有目录；删源仅用非递归 rmdir。
 
 生产 MXC v2 mutation 分发和独立的 core v2 batch 执行器已退役，随后删除了复制的历史执行器测试 fixture。v1/v2 历史记录解析保留原预算与直接构造的回执夹具。随源码扩展中为旧嵌入 API 保留的兼容实现，在有 SessionFiles 的当前运行时跳过注册；当前 CLI、Codemode 与子代理使用同一个 v3 owner。
 
@@ -91,8 +91,10 @@ CI 工作流及测试运行器与 B 合并基线逐字节一致：Linux 两分�
 
 复制结果观察只归属目标的变更义务，保留每项真实 operation，包括 file_batch 内的 copy；源只被读取，不能修复先前失败的源写入。失败复制的普通回退也归属目标。实际 SDK 覆盖独立 copy 与 batch：复制保留源失败并修复目标失败，真正更新原源目标后才清除该义务，失败复制的成功重试可解除自身目标义务。四个相关文件共 62 项通过、3 项平台/策略跳过，类型检查、coding-agent 构建和 13 项源码约束通过；目录变更注入显式推进 mtime，保持原断言并避免依赖文件系统时钟粒度。
 
-数组 copy 在预检失败、尚无 v3 日志时，由 error-only 的 observeCopyArrayFailure 按原目标建立义务；无法辨认目标时记录调用范围失败。实际 SDK 先复现了失败数组仍可 goal_complete，再验证同一请求的源补齐、全部目标成功后解除对应义务；合法目标名的前导空格保持。该路径不影响执行或预检，不增加数量限制。失败项沿用既有 32 条义务表，不建立额外队列或保留原参数载荷。
+数组 copy/delete/move 在预检失败、尚无 v3 日志时，由 error-only 的 observeArrayPreflightFailure 按原目标建立义务：copy 只记录目标，delete 记录源，move 记录源及目标；无法辨认时记录调用范围失败。实际 SDK 先复现了失败 copy 数组仍可 goal_complete，以及 delete/move 数组成功重试后仍被 cwd 义务阻止，再验证同一请求的源补齐、全部项成功后解除对应义务；合法源/目标名的前导空格保持。该路径不影响执行或预检，不增加数量限制。失败项沿用既有 32 条义务表，不建立额外队列或保留原参数载荷。
 
 MXC publication owner 导出自己的受控候选名格式，显式 /changes 核验仅对已验证 v3 记录接受该格式。真实替换及清理拒绝留下候选后，通过 FileResultWriter → FileChangesV3 重建记录；修复前观察范围构造与实际 verifyChange 均拒绝该生产名称，修复后可读取候选哈希并通过 sandbox 观察配对验证。错误父目录、任意/多余后缀名称和旧 v2 MXC 名称仍拒绝，原生格式保持。该名称修正位于显式核验路径，不触及普通 delta/progress 热路径。三个相关文件共 34 项通过、2 项平台跳过，类型检查、coding-agent 构建和 13 项源码约束通过。
 
-扩展观察链为 tool_execution_start → 调用身份表 → tool_execution_end → 预演判断、已验证 v3 项 operation 或失败数组回退 → 对应目标义务 → 释放输入；正常分支未新增回调/Promise。离线生产 hook/core 探针（非完整 SDK/提供方测量）覆盖 32 start/end、16 项失败数组和 16 copy 终态，保留 16 个源失败、修复 16 个目标失败，0 历史读取和干预记录。48 个输入 WeakRef 在 owner 存活时受控 GC 后存活为 0；显式重置后 16 个义务 WeakRef 存活为 0。累计分配采样估计 154,496 字节，含 inspector/fixture 和 error-only 义务创建，主要位置为 inspector.post、路径规范化、字符串处理；三次采样的最高 heap/RSS 为 56,277,032/168,153,088 字节，非连续峰值，GC 后 heap 为 40,415,416 字节。既有 32 条义务容量未改，该微型样本不用于性能改善比较。
+原生目录 move 在创建的目标目录被替换后的 link 边界注入，修复前留下含 14 字节源正文的外部硬链接。目录策略现于首次效果前固定为检查打开目标、流式复制、重读哈希并复核源后 unlink；修复后不调用路径式 link，外部文件为空，源保留，报告 partial。实际会话日志在 prepared 阶段记录 copy_unlink_verified，正常目录迁移成功；源硬链接别名的内容迁移回归仍通过。四文件回归 68 项通过、1 项平台跳过，另一个原生日志策略回归通过；类型检查、coding-agent 构建及 13 项源码约束通过。目录文件效果不属于正常 delta/progress 热路径，没有重跑大目录测量；准备记录新增的策略为标量，不新增逐项回调。
+
+扩展观察链为 tool_execution_start → 调用身份表 → tool_execution_end → 预演判断、已验证 v3 项 operation 或失败数组回退 → 对应目标义务 → 释放输入；正常分支未新增回调/Promise。离线生产 hook/core 探针（非完整 SDK/提供方测量）覆盖 32 start/end、copy/move/delete 各 16 项失败数组和 16 copy 终态，保留 16 个源失败、修复 16 个目标失败，0 历史读取和干预记录。48 个输入 WeakRef 在 owner 存活时受控 GC 后存活为 0；显式重置后 16 个义务 WeakRef 存活为 0。累计分配采样估计 311,744 字节，含 inspector/fixture 和 error-only 义务创建，主要位置为路径规范化、字符串处理及 inspector.post；三次采样的最高 heap/RSS 为 62,843,000/172,662,784 字节，非连续峰值，GC 后 heap 为 40,422,064 字节。既有 32 条义务容量未改，该微型样本不用于性能改善比较。

@@ -26,6 +26,17 @@ async function fixture(t: test.TestContext) {
 function current(): void {}
 function unexpectedLegacy(): never { throw new Error("v3 must not publish legacy journal records"); }
 
+test("native directory move records its checked copy strategy before effects", async t => {
+  const root = await mkdtemp(join(tmpdir(), "directory-strategy-v3-")), f = nativeFileSession(root), definitions: any = {};
+  t.after(async () => { await f.close(); await rm(root, { recursive: true, force: true }); }); f.files.install(definitions);
+  await mkdir(join(root, "source"), { mode: 0o700 }); await writeFile(join(root, "source/file"), "kept");
+  const result = await f.invoke(definitions, "move", { path: "source", destination: "moved" }); assert.equal(result.isError, false, JSON.stringify(result));
+  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose()); const page = reader.read(result.details.resultRef);
+  const prepared = page.records.find(row => row.record.phase === "prepared")!; assert(prepared);
+  assert.equal(prepared.record.moveStrategy, "copy_unlink_verified"); assert.equal((prepared.record.source as any).directory, true);
+  assert.equal(await readFile(join(root, "moved/file"), "utf8"), "kept"); await assert.rejects(lstat(join(root, "source")), { code: "ENOENT" });
+});
+
 test("bounded native created-parent facts keep complete counts and allow the next batch item", async t => {
   const root = await mkdtemp(join(tmpdir(), "parent-facts-v3-")), f = nativeFileSession(root), definitions: any = {};
   t.after(async () => { await f.close(); await rm(root, { recursive: true, force: true }); }); f.files.install(definitions);

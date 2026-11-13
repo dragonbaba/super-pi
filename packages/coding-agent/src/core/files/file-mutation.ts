@@ -222,7 +222,7 @@ class FileMutationExecution {
     const tree = item.tree;
     return { operation: item.operation, inputHash: item.requestHash, target: item.target, destination: tree?.destination,
       recursive: item.input.recursive, overwrite: item.input.overwrite,
-      moveStrategy: item.remote?.prepared.header.moveStrategy,
+      moveStrategy: item.remote?.prepared.header.moveStrategy ?? (item.operation === "move" && tree?.source.directory ? "copy_unlink_verified" : undefined),
       source: item.identity, sourceParent: tree?.sourceParent ?? item.snapshot?.parent ?? item.remote?.prepared.header.sourceParent ?? item.creation?.ancestor,
       destinationParent: tree?.destinationParent, destinationIdentity: tree?.destinationIdentity,
       previousSha256: tree?.overwriteCommit?.previousSha256 ?? item.snapshot?.receipt.sha256 ?? item.remote?.validated?.previousSha256 ?? item.remote?.prepared.header.text?.previousSha256,

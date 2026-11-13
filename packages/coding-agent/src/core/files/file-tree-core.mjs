@@ -155,7 +155,9 @@ class TreeExecution {
   constructor(tree, operation, sourceParent, destination, destinationParent, authority, signal, moveByCopy) {
     this.tree = tree; this.operation = operation; this.sourceParent = sourceParent; this.destination = destination;
     this.destinationParent = destinationParent; this.authority = authority; this.signal = signal;
-    this.moveByCopy = moveByCopy;
+    // Node's path-based link cannot bind a freshly created tree parent. Choose
+    // checked copy/unlink for a directory before the first effect.
+    this.moveByCopy = moveByCopy || operation === 'move' && tree.entries[0].identity.directory;
     this.created = new Map(); this.groups = new Map(); this.changed = false; this.attempted = false; this.effectPending = false;
     this.files = 0; this.bytes = 0; this.directories = 0; this.sha256 = undefined;
     if (operation !== 'copy') {

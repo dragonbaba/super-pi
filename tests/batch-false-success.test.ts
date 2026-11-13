@@ -113,6 +113,16 @@ test("array copy preflight failure blocks completion until the same destinations
   assert.equal((await f.call("goal_complete", {})).isError, false, "Successful destinations repair the preflight failures");
 });
 
+for (const operation of ["delete", "move"] as const) test(`array ${operation} preflight failure is repaired by a successful retry`, async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, " first-source"), "one");
+  const input = operation === "delete" ? { paths: [" first-source", "later-source"] }
+    : { items: [{ path: " first-source", destination: "first-target" }, { path: "later-source", destination: " later-target" }] };
+  assert.equal((await f.call(operation, input)).isError, true); assert.equal((await f.call("goal_complete", {})).isError, true);
+  writeFileSync(join(f.cwd, "later-source"), "two");
+  const result = await f.call(operation, input); assert.equal(result.isError, false, JSON.stringify(result));
+  assert.equal((await f.call("goal_complete", {})).isError, false, "Successful item paths repair their own failure scopes");
+});
+
 for (const kind of ["preflight", "partial", "unknown", "cancel", "delete", "move", "success", "dry-run"]) test(`R4 default Agent preserves replies and structured goal checks: ${kind}`, async t => {
   const f = await fixture(t); writeFileSync(join(f.cwd, "current"), "before");
   const append = f.manager.appendCustomEntry.bind(f.manager); let fired = false;
