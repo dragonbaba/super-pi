@@ -12,12 +12,14 @@ Native 和 MXC worker manifest 预检原先直接捕获目标父目录身份：�
 
 mkdir 不返回能证明持续所有权的句柄，因此失败时保留无法安全删除的目录，回执和完整父目录 artifact 如实列出，不擅自回滚或重放。已有目标、目录覆盖/合并、BATCH_CONFLICT、受保护路径、源 junction 拒绝和大小写折叠检查继续保留。缺失父目录不能越出工作区；worker 的跨授权工作区清单绑定目标工作区索引。
 
+不确定的 mkdir 错误另保留尝试路径：真实创建后注入 EIO 时，Native 和 worker 都记录无身份的 retained 条目并报告 state_unknown；EACCES 等已知无效果错误不计入该清单。复用父目录在每次后续 mkdir 前重新核对身份；回归在首次检查返回旧身份前把公共父目录换为 workspace 外的 junction，修复前外部目录产生了子目录，修复后在该副作用前拒绝。复用身份引用只在本次 helper 中惰性持有，finally 清空；不改变命令或审批预检。
+
 ## 验证
 
-- 10 个相关回归文件：105 项，104 通过，1 个未配置真实跨卷目录的场景跳过。覆盖 Native/worker 标量、文件/目录、一层/多层父目录，真实会话数组、file_batch、dryRun、workspace/protected/folded 冲突、junction、取消/保留事实、源变化后的下一项，以及两个 worker 工作区。
-- 根 `npm run check` 通过；`npm run build:offline -- --jobs 1` 为 12/12，12,135 ms；三个 worker/core `.mjs` 的 `node --check` 通过。实际生产 LSP runner 对七个变更 TS 文件均收到诊断：0 错误、0 警告、0 提示。
+- 10 个相关回归文件：110 项，109 通过，1 个未配置真实跨卷目录的场景跳过。覆盖 Native/worker 标量、文件/目录、一层/多层父目录，真实会话数组、file_batch、dryRun、workspace/protected/folded 冲突、junction、取消/保留事实、源变化后的下一项、两个 worker 工作区、EIO/EACCES 及公共父目录替换。后五项在修复前为 3 失败、2 通过，修复后 5 通过。
+- 根 `npm run check` 通过；`npm run build:offline -- --jobs 1` 为 12/12，10,552 ms；三个 worker/core `.mjs` 的 `node --check` 通过。实际生产 LSP runner 对七个变更 TS 文件均收到诊断：0 错误、0 警告、0 提示。
 - 改动属于显式文件调用的预备和文件系统提交，不改变 provider delta、终端帧或工具进度热路径。仍检查完整 session → authorization → FileMutation → Native/worker → commit/回执 → release 链，并运行提交源码不变量与现有文件分配基准；没有对象池、每叶回调或全局 scratch。
-- 同机 Node 26.13.0，原有手动基准设 32 个目标；基线/候选都完整执行 copy、move、delete、file_batch 各 32 项，逐项验证效果、分页和 changes，并检查后续编辑与外部变化失效。两者均有 225 个 plan 引用、GC 后 0 保留 plan、532 条历史记录。采样字节 120,795,368 / 121,158,376；观察峰值 heap 47,218,784 / 45,238,272，RSS 154,484,736 / 149,835,776。主要采样来自 V8、fs 身份/错误对象、路径解析及协议解析。四阶段 CPU user/system 总和分别为 610,000/359,000 与 531,000/516,000 微秒。该对照使用双方原已支持的等价正确负载；新增缺失父目录由功能回归覆盖，不用基线失败来宣称加速，也不从小样本宣称性能改善。
+- 同机 Node 26.13.0，原有手动基准设 32 个目标；基线/候选都完整执行 copy、move、delete、file_batch 各 32 项，逐项验证效果、分页和 changes，并检查后续编辑与外部变化失效。两者均有 225 个 plan 引用、GC 后 0 保留 plan、532 条历史记录。采样字节 120,795,368 / 121,167,888；观察峰值 heap 47,218,784 / 45,482,008，RSS 154,484,736 / 152,256,512。主要采样来自 V8、fs 身份/错误对象、路径解析及协议解析。四阶段 CPU user/system 总和分别为 610,000/359,000 与 641,000/406,000 微秒。该对照使用双方原已支持的等价正确负载；新增缺失父目录由功能回归覆盖，不用基线失败来宣称加速，也不从小样本宣称性能改善。
 - 完整根 npm test 使用未修改的原有六个 CI 分片；最终 head 审查和 CI 状态以本 PR 为准。worker 回归替换进程启动，仍经过实际编码/计量/manifest/会话/权限/回执链；不冒充真实 MXC SDK 会话或 5 万文件性能验证。
 
 ## 重跑

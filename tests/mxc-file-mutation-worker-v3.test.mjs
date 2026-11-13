@@ -98,6 +98,29 @@ test('worker parent-creation failure reports the retained directory inventory wi
   assert.equal(parents.created[0].path, join(f.workspace, 'new')); assert.equal(await readFile(join(f.workspace, 'source'), 'utf8'), 'kept');
 });
 
+for (const code of ['EIO', 'EACCES']) test(`worker parent recovery inventory includes only possible mkdir effects for ${code}`, async t => {
+  const f = await fixture(t, [{ operation: 'move', path: 'source', destination: 'new/deep/target' }], 'move');
+  await writeFile(join(f.workspace, 'source'), 'kept'); const prepared = await f.prepare(), validated = await f.validate(prepared);
+  const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`), original = fsPromises.mkdir;
+  t.mock.method(fsPromises, 'mkdir', async (path, ...args) => {
+    if (path === join(f.workspace, 'new')) {
+      if (code === 'EIO') await original(path, ...args);
+      throw Object.assign(new Error('fixture ambiguous parent outcome'), { code });
+    }
+    return original(path, ...args);
+  });
+  syncBuiltinESMExports();
+  let receipt;
+  try { receipt = await f.execute(0, prepared, validated, { effects }); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(receipt.status, code === 'EIO' ? 'state_unknown' : 'failed_no_change');
+  const plan = await readFileWorkerManifest(f.request, f.items[0], 0, prepared[0].manifest);
+  const parents = await readFileParentManifest(f.request, 0, plan.creation, 'created', receipt.createdParents);
+  assert.equal(parents.created.length, code === 'EIO' ? 1 : 0);
+  if (code === 'EIO') { assert.equal(parents.created[0].path, join(f.workspace, 'new')); assert.equal(parents.created[0].identity, undefined); assert.equal(parents.created[0].status, 'retained'); }
+  assert.equal(await readFile(join(f.workspace, 'source'), 'utf8'), 'kept');
+});
+
 test('worker-only v3 preparation is read-only and recursive copy preserves every prepared file', async t => {
   const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }], 'copy');
   await mkdir(join(f.workspace, 'source')); await mkdir(join(f.workspace, 'source/nested'));

@@ -108,6 +108,8 @@ export class FileCreationFailure extends Error {
  * remains read-only; callers retain this complete inventory until publication. */
 export async function executeFileCreationDirectories(plan, assertPathAllowed, signal, sharedDirectories, assertAuthority) {
     const created = [];
+    let reused;
+    let attempted;
     let effectPending = false;
     try {
         await verifyCreationAncestor(plan);
@@ -120,17 +122,22 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
             if (shared) {
                 if (!sameIdentity(shared, await capturePathIdentity(path), false))
                     throw new Error("[STALE_STATE] Shared created parent changed.");
+                (reused ??= []).push(shared);
                 continue;
             }
             await verifyCreatedDirectories(created);
+            if (reused) for (const parent of reused)
+                if (!sameIdentity(parent, await capturePathIdentity(parent.path), false))
+                    throw new Error("[STALE_STATE] Shared created parent changed before descendant creation.");
             assertAuthority?.();
             signal?.throwIfAborted();
+            const record = attempted = { path: resolve(plan.ancestor.canonical, relative(plan.ancestor.path, path)), status: "retained" };
             effectPending = true;
             await mkdir(path); // Nonrecursive and exclusive: a competing directory invalidates this plan.
             effectPending = false;
             // Keep the preparation-owned spelling even if identity capture fails.
-            const record = { path: resolve(plan.ancestor.canonical, relative(plan.ancestor.path, path)), status: "retained" };
             created.push(record);
+            attempted = undefined;
             const identity = await capturePathIdentity(path);
             record.identity = identity;
             record.status = "created";
@@ -138,6 +145,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
         }
         return created;
     } catch (error) {
+        if (effectPending && attempted && !knownNoEffectError(error)) created.push(attempted);
         retainUnprovenDirectories(created);
         const changed = created.length > 0;
         const stateChanged = effectPending && !knownNoEffectError(error) ? "unknown" : changed;
@@ -145,7 +153,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
             operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
             fileCreated: false, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) });
-    }
+    } finally { if (reused) reused.length = 0; attempted = undefined; }
 }
 export async function executeFileCreation(plan, content, assertPathAllowed, signal, beforeExclusiveCreate, sharedDirectories, assertAuthority, structuredFailure = false) {
     let created = [];
