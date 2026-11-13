@@ -65,6 +65,10 @@ export class LspClient {
 	>();
 	#stderr = "";
 	#serverCapabilities: Record<string, unknown> = {};
+	// The tool owner admits MAX_ACTIVE_OPERATIONS total calls: one active turn,
+	// at most MAX_ACTIVE_OPERATIONS - 1 queued. Entries retain no document payload.
+	#diagnosticTurn?: symbol;
+	#diagnosticQueue: Array<{ turn: symbol; resolve: (turn: symbol) => void; reject: (reason: Error) => void }> = [];
 	#adapter: LspServerAdapter;
 	#command: ServerCommand;
 	#cwd: string;
@@ -251,6 +255,23 @@ export class LspClient {
 		this.notify("textDocument/didOpen", {
 			textDocument: { uri, languageId, version: 1, text },
 		});
+	}
+
+	/** Explicit diagnostics-call admission, shared by all leases of this client. */
+	acquireDiagnosticTurn(): Promise<symbol> {
+		if (!this.running) return Promise.reject(new Error(`${this.#adapter.name} LSP server is not running.`));
+		return new Promise((resolve, reject) => {
+			const turn = Symbol("LSP diagnostics");
+			if (this.#diagnosticTurn !== undefined) this.#diagnosticQueue.push({ turn, resolve, reject });
+			else { this.#diagnosticTurn = turn; resolve(turn); }
+		});
+	}
+
+	releaseDiagnosticTurn(turn: symbol): void {
+		if (this.#diagnosticTurn !== turn) return;
+		const next = this.#diagnosticQueue.shift();
+		this.#diagnosticTurn = next?.turn;
+		next?.resolve(next.turn);
 	}
 
 	didClose(uri: string) {
@@ -454,6 +475,9 @@ export class LspClient {
 		this.#diagnosticWaiters.clear();
 		for (const waiter of this.#projectWaiters) waiter.reject(new Error(typeof message === "string" ? message : message("diagnostics")));
 		this.#projectWaiters.clear();
+		this.#diagnosticTurn = undefined;
+		for (const queued of this.#diagnosticQueue) queued.reject(new Error(typeof message === "string" ? message : message("diagnostics")));
+		this.#diagnosticQueue.length = 0;
 	}
 
 	#fail(message: string) {

@@ -1,6 +1,6 @@
 import { defineTool, type ExtensionAPI, type ToolDefinition } from "@super-pi/coding-agent";
 import { Type } from "typebox";
-import { DEFAULT_FILE_LIMIT, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.ts";
+import { DEFAULT_FILE_LIMIT, MAX_ACTIVE_OPERATIONS, MAX_COLLECTED_FILES, MAX_REQUESTED_PATHS } from "./limits.ts";
 import { consumeFixAuthorization } from "./fix-authorization.ts";
 import type { LspClientPool } from "./client-pool.ts";
 import type { LspServerAdapter } from "./types.ts";
@@ -59,7 +59,7 @@ export default function lsp(pi: ExtensionAPI) {
 	function registerTool(tool: ToolDefinition<any, any, any>) {
 		pi.registerTool({ ...tool, async execute(id, params, signal, onUpdate, ctx, executionContext) {
 			assertAvailable(); signal?.throwIfAborted();
-			if (active >= 8) throw new Error("LSP has reached its limit of 8 active operations.");
+			if (active >= MAX_ACTIVE_OPERATIONS) throw new Error(`LSP has reached its limit of ${MAX_ACTIVE_OPERATIONS} active operations.`);
 			if (active++ === 0) idle = new Promise<void>(resolve => { finishIdle = resolve; });
 			const executionSignal = signal ? AbortSignal.any([signal, authority.signal]) : authority.signal;
 			try {

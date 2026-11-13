@@ -10,7 +10,7 @@ function handle(message) {
   if (message.method === 'initialize') send({ id: message.id, result: { capabilities: { diagnosticProvider: {} } } });
   else if (message.method === 'textDocument/didOpen') {
     opened++; active++; peak = Math.max(peak, active);
-    if (active > DIAGNOSTIC_BATCH_SIZE) {
+    if (mode !== 'profile-unbounded' && active > DIAGNOSTIC_BATCH_SIZE) {
       process.stderr.write('fixture: too many simultaneously open documents\n', () => process.exit(23));
     }
   } else if (message.method === 'textDocument/didClose') { closed++; active--; }

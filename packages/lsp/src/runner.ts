@@ -52,6 +52,7 @@ export async function runDiagnostics(
 	for (const file of files) assertBoundedDocument(file);
 
 	let lease: ClientLease | undefined;
+	let diagnosticTurn: symbol | undefined;
 	let aborted = false;
 	let discard: Promise<void> | undefined;
 	const abort = () => {
@@ -67,6 +68,8 @@ export async function runDiagnostics(
 		lease = await pool.acquire(adapter, root, timeoutMs);
 		throwIfAborted(signal, adapter);
 		const client = lease.client;
+		diagnosticTurn = await client.acquireDiagnosticTurn();
+		throwIfAborted(signal, adapter);
 
 		const entries: DiagnosticEntry[] = [];
 		const openedFiles: Array<{ file: string; uri: string }> = [];
@@ -109,6 +112,7 @@ export async function runDiagnostics(
 		}
 	} finally {
 		signal?.removeEventListener("abort", abort);
+		if (lease && diagnosticTurn !== undefined) lease.client.releaseDiagnosticTurn(diagnosticTurn);
 		try {
 			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
 		} finally { ctx.ui.setStatus(statusKey, undefined); }

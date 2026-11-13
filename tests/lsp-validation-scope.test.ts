@@ -20,6 +20,7 @@ import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execut
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { Type } from "typebox";
+import { MAX_ACTIVE_OPERATIONS } from "../packages/lsp/src/limits.ts";
 
 const jiti = createJiti(import.meta.url);
 const { loadRuntime } = await jiti.import<any>("../packages/lsp/src/adapters.ts");
@@ -96,7 +97,7 @@ test("LSP session transitions drain late acquisitions and own services independe
   runInNewContext(code, { module, exports: module.exports, AbortController, AbortSignal, require(name: string) {
     if (name === "@super-pi/coding-agent") return { defineTool: (tool: unknown) => tool };
     if (name === "typebox") return { Type };
-    if (name === "./limits.ts") return { DEFAULT_FILE_LIMIT: 50, MAX_COLLECTED_FILES: 500, MAX_REQUESTED_PATHS: 100 };
+    if (name === "./limits.ts") return { DEFAULT_FILE_LIMIT: 50, MAX_ACTIVE_OPERATIONS, MAX_COLLECTED_FILES: 500, MAX_REQUESTED_PATHS: 100 };
     if (name === "./fix-authorization.ts") return {};
     if (name === "./client-pool.ts") return { LspClientPool };
     if (name === "./adapters.ts") return { loadRuntime };
