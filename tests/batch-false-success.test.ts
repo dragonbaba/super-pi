@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, mock } from "node:test";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "typebox";
@@ -13,6 +13,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { createAssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { isMutationEffectCommit } from "./helpers/file-mutation-progress.ts";
+import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-result-protocol.ts";
 
 async function fixture(t: test.TestContext) {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "sp-false-batch-"))), agentDir = join(root, "agent"), cwd = join(root, "workspace"); mkdirSync(agentDir); mkdirSync(cwd);
@@ -66,6 +67,39 @@ async function fixture(t: test.TestContext) {
   }
   return { cwd, manager, session, runner, call, say, goals: () => goals };
 }
+test("a batch beyond the retired inline count repairs its preflight failure on retry", async t => {
+  const f = await fixture(t), operations = [];
+  for (let index = 0; index < 17; index++) {
+    operations.push({ operation: "copy", path: "source-" + index, destination: "target-" + index });
+    if (index < 16) writeFileSync(join(f.cwd, "source-" + index), String(index));
+  }
+  assert.equal((await f.call("file_batch", { operations })).isError, true); assert.equal((await f.call("goal_complete", {})).isError, true);
+  writeFileSync(join(f.cwd, "source-16"), "16");
+  assert.equal((await f.call("file_batch", { operations })).isError, false);
+  assert.equal((await f.call("goal_complete", {})).isError, false, "No retired 16-item fallback may leave a cwd obligation");
+});
+
+for (const batch of [false, true]) test(`incomplete preparation keeps every requested destination pending, batch=${batch}`, async t => {
+  const f = await fixture(t); writeFileSync(join(f.cwd, "first-source"), "one"); writeFileSync(join(f.cwd, "second-source"), "two");
+  const append = f.manager.appendCustomEntry.bind(f.manager); let failed = false;
+  t.mock.method(f.manager, "appendCustomEntry", function(type: string, data: any) {
+    if (type === FILE_RESULT_ENTRY && !failed) {
+      const payload = JSON.parse(data.payload);
+      if (payload.phase === "prepared" && payload.index === 1) { failed = true; throw Object.assign(new Error("fixture ENOSPC"), { code: "ENOSPC" }); }
+    }
+    return append(type, data);
+  });
+  const items = [{ path: "first-source", destination: " first-copy" }, { path: "second-source", destination: " second-copy" }];
+  const result = await f.call(batch ? "file_batch" : "copy", batch ? { operations: items.map(item => ({ operation: "copy", ...item })) } : { items });
+  assert(failed); assert.equal(result.isError, true); assert.equal(typeof result.details.resultRef, "string");
+  assert.equal(existsSync(join(f.cwd, " first-copy")), false); assert.equal(existsSync(join(f.cwd, " second-copy")), false);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
+  assert.equal((await f.call("copy", items[0])).isError, false);
+  assert.equal((await f.call("goal_complete", {})).isError, true, "Repairing the published preparation cannot erase the unprepared item");
+  assert.equal((await f.call("copy", items[1])).isError, false);
+  assert.equal((await f.call("goal_complete", {})).isError, false, "Both actual destinations now repair the known unstarted work");
+});
+
 for (const batch of [false, true]) test(`successful copy repairs its destination but preserves source failures, batch=${batch}`, async t => {
   const f = await fixture(t), source = join(f.cwd, "source"), destination = join(f.cwd, "copied");
   writeFileSync(source, "before"); writeFileSync(destination, "old");

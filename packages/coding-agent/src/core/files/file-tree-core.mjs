@@ -205,7 +205,7 @@ class TreeExecution {
     let target, published;
     this.attempted = true;
     try {
-      this.effectPending = true; target = await open(destination, 'wx+', process.platform === 'win32' ? undefined : 0o600); this.effectPending = false; this.changed = true;
+      this.effectPending = true; target = await open(destination, 'wx+', 0o600); this.effectPending = false; this.changed = true;
       const info = await target.stat({ bigint: true });
       published = { device: String(info.dev), inode: String(info.ino) };
       await this.checkParent(parent);
@@ -213,9 +213,8 @@ class TreeExecution {
       if (!info.isFile() || info.nlink !== 1n || opened.canonical !== resolve(parent.canonical, basename(destination)) || opened.device !== published.device || opened.inode !== published.inode
         || opened.links !== '1') throw new Error('[STALE_STATE] Opened copy target is outside its prepared parent or has another owner.');
       this.current();
-      // The exclusive candidate starts private, then receives the prepared
-      // access bits through its pinned handle; umask cannot drop executable bits.
-      if (process.platform !== 'win32') await target.chmod(Number(source.mode) & 0o777);
+      // Keep incomplete bytes private, even when the prepared file was public
+      // beneath a private source ancestor. Restore metadata only after hashing.
       const digest = await writeIdentityTo(source, target, this.current, this.signal);
       await target.sync();
       await this.checkParent(parent);
@@ -223,8 +222,16 @@ class TreeExecution {
       if (observed.device !== published.device || observed.inode !== published.inode || observed.size !== entry.identity.size
         || await hashIdentity(observed, this.current, this.signal) !== digest) throw new Error('[STALE_STATE] Copy destination verification failed; source retained.');
       await this.checkSource(entry); this.current();
+      if (this.operation === 'move') await target.utimes((await target.stat()).atime, Number(BigInt(source.mtime)) / 1e9);
+      if (process.platform !== 'win32') await target.chmod(Number(source.mode) & 0o777);
+      await target.sync();
+      await this.checkParent(parent); this.current();
+      const finalized = await capturePathIdentity(destination), pinned = await target.stat({ bigint: true });
+      if (!sameOpened(pinned, finalized) || finalized.device !== published.device || finalized.inode !== published.inode
+        || finalized.canonical !== resolve(parent.canonical, basename(destination)) || finalized.links !== '1') throw new Error('[STALE_STATE] Copy destination changed during metadata finalization; source retained.');
+      await this.checkSource(entry); this.current();
       this.sha256 = digest; this.bytes += Number(entry.identity.size);
-      return observed;
+      return finalized;
     } finally { if (target) await target.close(); }
   }
   async moveFile(entry, destination, parent) {
@@ -254,19 +261,25 @@ class TreeExecution {
     this.current(); this.effectPending = true; await unlink(entry.identity.path); this.effectPending = false; this.files++;
     if (entry.identity.links !== '1') await this.advanceSource(entry, true);
   }
-  async finalizeDirectoryPermissions(index) {
+  async finalizeDirectoryMetadata(index) {
     const entry = this.tree.entries[index], expected = this.created.get(index);
     const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
     await this.checkParent(parent); this.current();
-    const handle = await open(expected.path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+    // Windows needs a writable directory handle for futimes; no path-based
+    // utimes fallback may follow a replaced parent into another tree.
+    const handle = await open(expected.path, (process.platform === 'win32' ? constants.O_RDWR : constants.O_RDONLY)
+      | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
     try {
       const info = await handle.stat({ bigint: true });
       if (!info.isDirectory() || String(info.dev) !== expected.device || String(info.ino) !== expected.inode
         || !sameIdentity(expected, await capturePathIdentity(expected.path), false)) throw new Error('[STALE_STATE] Created directory changed before permission finalization.');
-      this.current(); this.effectPending = true; await handle.chmod(Number(entry.identity.mode) & 0o777); this.effectPending = false;
+      this.current(); this.effectPending = true;
+      if (this.operation === 'move') await handle.utimes(info.atime, Number(BigInt(entry.identity.mtime)) / 1e9);
+      if (process.platform !== 'win32') await handle.chmod(Number(entry.identity.mode) & 0o777);
+      this.effectPending = false;
       const observed = await capturePathIdentity(expected.path);
       if (observed.canonical !== expected.canonical || observed.device !== expected.device || observed.inode !== expected.inode
-        || !observed.directory || (Number(observed.mode) & 0o777) !== (Number(entry.identity.mode) & 0o777)) throw new Error('[STALE_STATE] Created directory permission verification failed.');
+        || !observed.directory || process.platform !== 'win32' && (Number(observed.mode) & 0o777) !== (Number(entry.identity.mode) & 0o777)) throw new Error('[STALE_STATE] Created directory metadata verification failed.');
       this.created.set(index, observed);
     } finally { await handle.close(); }
   }
@@ -294,10 +307,10 @@ class TreeExecution {
           const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
           await this.checkSource(entry, !entry.identity.directory); await this.checkParent(parent);
           if (entry.identity.directory) {
-            // Owner access permits bounded population; group/other permissions
-            // never exceed the source. Restore exact access bits bottom-up.
+            // Keep the whole incomplete tree private. Restore prepared access
+            // bottom-up only after every child's contents have been verified.
             this.current(); this.attempted = true; this.effectPending = true;
-            await mkdir(destination, process.platform === 'win32' ? undefined : { mode: (Number(entry.identity.mode) & 0o777) | 0o700 });
+            await mkdir(destination, { mode: 0o700 });
             this.effectPending = false; this.changed = true;
             await this.checkParent(parent);
             const created = await capturePathIdentity(destination);
@@ -306,9 +319,9 @@ class TreeExecution {
           } else if (this.operation === 'move') await this.moveFile(entry, destination, parent);
           else { await this.copyFile(entry, destination, parent); this.files++; }
         }
-        if (process.platform !== 'win32') {
+        if (process.platform !== 'win32' || this.operation === 'move') {
           for (let index = this.tree.entries.length - 1; index >= 0; index--) {
-            if (this.tree.entries[index].identity.directory) await this.finalizeDirectoryPermissions(index);
+            if (this.tree.entries[index].identity.directory) await this.finalizeDirectoryMetadata(index);
           }
         }
         if (this.operation === 'move' && source.directory) {

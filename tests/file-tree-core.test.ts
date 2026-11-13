@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, writeFile, readFile, lstat, open, symlink, readdir, link, chmod } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, lstat, open, symlink, readdir, link, chmod, utimes, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -20,6 +20,62 @@ async function fixture(t: any) {
   return { root, source, destination };
 }
 const current = () => {};
+
+test("interrupted directory population keeps private candidates and a later move restores access", async t => {
+  const f = await fixture(t), ancestor = join(f.root, "private"), source = join(ancestor, "tree"), nested = join(source, "nested"), target = join(f.destination, "nested", "file");
+  await mkdir(nested, { recursive: true }); await chmod(ancestor, 0o700); await chmod(source, 0o755); await chmod(nested, 0o755);
+  await writeFile(join(nested, "file"), "directory contents"); await chmod(join(nested, "file"), 0o644);
+  const parent = await capturePathIdentity(f.root), sourceParent = await capturePathIdentity(ancestor), controller = new AbortController();
+  const originalOpen = fsPromises.open, originalMkdir = fsPromises.mkdir;
+  const directoryModes: Array<number | undefined> = [], fileModes: Array<number | undefined> = [], earlyModes: number[] = [];
+  let interrupted = false;
+  t.mock.method(fsPromises, "mkdir", async (path: any, options: any) => {
+    if (path === f.destination || path === join(f.destination, "nested")) directoryModes.push(options?.mode);
+    return (originalMkdir as any)(path, options);
+  });
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    const handle = await (originalOpen as any)(path, ...args);
+    if (path === target && args[0] === "wx+" && !interrupted) {
+      fileModes.push(args[1]); const write = handle.write.bind(handle), changeMode = handle.chmod.bind(handle);
+      t.mock.method(handle, "chmod", async (mode: number) => { earlyModes.push(mode); return changeMode(mode); });
+      t.mock.method(handle, "write", async (buffer: Buffer, offset: number, length: number, position: number) => {
+        const result = await write(buffer, offset, Math.min(4, length), position); interrupted = true; controller.abort(); return result;
+      });
+    }
+    return handle;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const tree = await prepareTree(await capturePathIdentity(source), "move");
+  const result = await executeTree(tree, "move", sourceParent, f.destination, parent, current, controller.signal);
+  assert(interrupted); assert.equal(result.status, "partial", JSON.stringify(result)); assert.equal(result.requiresVerification, true);
+  assert.equal(await readFile(target, "utf8"), "dire"); assert.equal(await readFile(join(nested, "file"), "utf8"), "directory contents");
+  assert.deepEqual(directoryModes, [0o700, 0o700]); assert.deepEqual(fileModes, [0o600]); assert.deepEqual(earlyModes, [], "No public file mode before verified content");
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(f.destination)).mode & 0o777, 0o700); assert.equal((await lstat(join(f.destination, "nested"))).mode & 0o777, 0o700);
+    assert.equal((await lstat(target)).mode & 0o777, 0o600);
+  }
+  await rm(f.destination, { recursive: true });
+  const retried = await executeTree(await prepareTree(await capturePathIdentity(source), "move"), "move", sourceParent, f.destination, parent, current);
+  assert.equal(retried.status, "succeeded", JSON.stringify(retried)); assert.equal(await readFile(target, "utf8"), "directory contents");
+  if (process.platform !== "win32") {
+    assert.equal((await lstat(f.destination)).mode & 0o777, 0o755); assert.equal((await lstat(join(f.destination, "nested"))).mode & 0o777, 0o755);
+    assert.equal((await lstat(target)).mode & 0o777, 0o644);
+  }
+});
+
+test("checked moves preserve file and populated directory modification times", async t => {
+  const f = await fixture(t), nested = join(f.source, "nested"), timestamp = new Date("2001-01-01T00:00:00Z");
+  await mkdir(nested, { recursive: true }); await writeFile(join(nested, "file"), "unchanged");
+  for (const path of [join(nested, "file"), nested, f.source]) await utimes(path, timestamp, timestamp);
+  const parent = await capturePathIdentity(f.root), moved = await executeTree(await prepareTree(await capturePathIdentity(f.source), "move"), "move", parent, f.destination, parent, current);
+  assert.equal(moved.status, "succeeded", JSON.stringify(moved));
+  for (const path of [f.destination, join(f.destination, "nested"), join(f.destination, "nested", "file")]) {
+    assert(Math.abs((await lstat(path)).mtimeMs - timestamp.getTime()) < 1, path);
+  }
+  await writeFile(f.source, "cross-volume strategy"); await utimes(f.source, timestamp, timestamp);
+  const file = await executeTree(await prepareTree(await capturePathIdentity(f.source), "move"), "move", parent, f.destination + "-file", parent, current, undefined, true);
+  assert.equal(file.status, "succeeded", JSON.stringify(file)); assert(Math.abs((await lstat(f.destination + "-file")).mtimeMs - timestamp.getTime()) < 1);
+});
 
 for (const boundary of ["parent", "canonical"] as const) test(`delete retains a replacement during its final ${boundary} check`, async t => {
   const f = await fixture(t); await writeFile(f.source, "prepared");

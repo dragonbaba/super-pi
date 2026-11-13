@@ -91,10 +91,20 @@ CI 工作流及测试运行器与 B 合并基线逐字节一致：Linux 两分�
 
 复制结果观察只归属目标的变更义务，保留每项真实 operation，包括 file_batch 内的 copy；源只被读取，不能修复先前失败的源写入。失败复制的普通回退也归属目标。实际 SDK 覆盖独立 copy 与 batch：复制保留源失败并修复目标失败，真正更新原源目标后才清除该义务，失败复制的成功重试可解除自身目标义务。四个相关文件共 62 项通过、3 项平台/策略跳过，类型检查、coding-agent 构建和 13 项源码约束通过；目录变更注入显式推进 mtime，保持原断言并避免依赖文件系统时钟粒度。
 
-数组 copy/delete/move 在预检失败、尚无 v3 日志时，由 error-only 的 observeArrayPreflightFailure 按原目标建立义务：copy 只记录目标，delete 记录源，move 记录源及目标；无法辨认时记录调用范围失败。实际 SDK 先复现了失败 copy 数组仍可 goal_complete，以及 delete/move 数组成功重试后仍被 cwd 义务阻止，再验证同一请求的源补齐、全部项成功后解除对应义务；合法源/目标名的前导空格保持。该路径不影响执行或预检，不增加数量限制。失败项沿用既有 32 条义务表，不建立额外队列或保留原参数载荷。
+数组 copy/delete/move 在预检失败、尚无 v3 日志时，由 error-only 的 observeUnpreparedFileMutationItems 按原目标建立义务：copy 只记录目标，delete 记录源，move 记录源及目标；无法辨认时记录调用范围失败。实际 SDK 先复现了失败 copy 数组仍可 goal_complete，以及 delete/move 数组成功重试后仍被 cwd 义务阻止，再验证同一请求的源补齐、全部项成功后解除对应义务；合法源/目标名的前导空格保持。该路径不影响执行或预检，不增加数量限制。失败项沿用既有 32 条义务表，不建立额外队列或保留原参数载荷。
 
 MXC publication owner 导出自己的受控候选名格式，显式 /changes 核验仅对已验证 v3 记录接受该格式。真实替换及清理拒绝留下候选后，通过 FileResultWriter → FileChangesV3 重建记录；修复前观察范围构造与实际 verifyChange 均拒绝该生产名称，修复后可读取候选哈希并通过 sandbox 观察配对验证。错误父目录、任意/多余后缀名称和旧 v2 MXC 名称仍拒绝，原生格式保持。该名称修正位于显式核验路径，不触及普通 delta/progress 热路径。三个相关文件共 34 项通过、2 项平台跳过，类型检查、coding-agent 构建和 13 项源码约束通过。
 
 原生目录 move 在创建的目标目录被替换后的 link 边界注入，修复前留下含 14 字节源正文的外部硬链接。目录策略现于首次效果前固定为检查打开目标、流式复制、重读哈希并复核源后 unlink；修复后不调用路径式 link，外部文件为空，源保留，报告 partial。实际会话日志在 prepared 阶段记录 copy_unlink_verified，正常目录迁移成功；源硬链接别名的内容迁移回归仍通过。四文件回归 68 项通过、1 项平台跳过，另一个原生日志策略回归通过；类型检查、coding-agent 构建及 13 项源码约束通过。目录文件效果不属于正常 delta/progress 热路径，没有重跑大目录测量；准备记录新增的策略为标量，不新增逐项回调。
 
 扩展观察链为 tool_execution_start → 调用身份表 → tool_execution_end → 预演判断、已验证 v3 项 operation 或失败数组回退 → 对应目标义务 → 释放输入；正常分支未新增回调/Promise。离线生产 hook/core 探针（非完整 SDK/提供方测量）覆盖 32 start/end、copy/move/delete 各 16 项失败数组和 16 copy 终态，保留 16 个源失败、修复 16 个目标失败，0 历史读取和干预记录。48 个输入 WeakRef 在 owner 存活时受控 GC 后存活为 0；显式重置后 16 个义务 WeakRef 存活为 0。累计分配采样估计 311,744 字节，含 inspector/fixture 和 error-only 义务创建，主要位置为路径规范化、字符串处理及 inspector.post；三次采样的最高 heap/RSS 为 62,843,000/172,662,784 字节，非连续峰值，GC 后 heap 为 40,422,064 字节。既有 32 条义务容量未改，该微型样本不用于性能改善比较。
+
+目录填充的中间权限与最终权限分别验证。一个 0700 祖先下的 0755 源树、0644 子文件在写出四字节后取消：修复前目录按源公共权限创建，POSIX 文件权限在流式写入前恢复；现改为目录 0700、文件 0600，文件同步和重读哈希通过后才恢复 rwx，目录从下向上最后恢复。Windows 回归核对真实创建参数、四字节中断及下一次完整迁移；实际 POSIX 权限位断言由 Linux CI 执行，本机没有可用 WSL。现有较早权限记录仅代表当时的最终权限验证，不表示中间阶段已经满足本要求。
+
+实际目录和文件先设置 2001-01-01 修改时间再移动，修复前成功返回但目标时间变为当前时间。共享树执行器现用目标文件句柄和目录句柄恢复准备时的 mtime，目录在填充完成后恢复；Windows 目录必须用可写句柄调用 futimes，不降级为跟随路径的 utimes。时间精度沿用 Node/文件系统，未承诺保留 ctime、ACL、属主。文件元数据恢复后再次核验命名对象、句柄及源身份，复制移动删除源前仍保留最终身份检查。
+
+实际 SDK 在第二条 prepared append 注入 ENOSPC：修复前两项 copy/batch 均未执行，仅修复首个目的地就可 goal_complete。观察器现比较已验证的 visited 与 itemCount，仅对未准备后缀按原输入登记未开始义务；不把目录部分覆盖混作缺失准备，也不把未开始项伪造成未知效果。两目的地各完成后才能解除。另复现并移除了 batch 预检回退中残留的 16 项分支，17 个小文件的失败→同请求成功可正常解除；历史 v1/v2 回执解析范围保持。
+
+新增四个效果/SDK 回归在生产修复前全部失败，修复后通过。七文件相关回归与源码约束 82 通过、1 个 POSIX 平台跳过；后续独立的 17 项 batch 及两项 prepared-ENOSPC 回归 3 通过。类型检查、受影响 coding-agent 构建通过。文件效果与元数据发布不属于普通 delta/progress 热路径；结果观察的共享后缀处理通过同步、无逐项回调/Promise/包装工厂的源码约束。
+
+对应小样本离线生产 hook/core 探针额外覆盖 copy/move/delete/batch 各 8 项未准备后缀；32 start/end、16 copy 终态、64 输入引用和重置后 16 义务引用均释放，0 历史读取/干预。采样估计 465,016 字节，主要位置为路径规范化与 replaceAll；三次采样最高 heap/RSS 为 63,391,176/168,235,008 字节，GC 后 heap 40,452,960 字节，耗时 1.1795 ms，CPU 低于 Windows 计数粒度。不将该数据称为连续峰值、精确分配总量或性能改善。复核命令：`node --experimental-strip-types --test --test-concurrency=1 tests/file-tree-core.test.ts tests/batch-false-success.test.ts tests/file-mutation-v3.test.ts tests/mxc-file-mutation-worker-v3.test.ts tests/file-mutation-source-v3.test.ts tests/source-invariants.test.ts tests/shell-observation-hot-paths.test.ts`；CI/runner 与 B 基线逐字节一致。

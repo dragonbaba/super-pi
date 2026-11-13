@@ -52,6 +52,8 @@
 
 copy/delete/move 数组在明确的 `failed_no_change` 或 `partial` 后继续其余独立目标；`file_batch` 首次失败即停止。取消、撤销授权、权限代次或会话改变、日志或传输丢失以及 `state_unknown` 都停止剩余项。成功项不回滚，也不为恢复回复而重放。目录内部明细只留有界样本；覆盖不完整时须重新列目录核对。`/changes` 按页恢复全部顶层目标；沙箱中的现状核对仍由当前授权下的 MXC 观察入口执行，不回退到宿主读取。
 
+POSIX 复制候选在填充时保持私有：目录 0700、文件 0600，内容验证后恢复源 rwx。目录移动采用验证复制和逐文件删源，在文件写完、目录填充结束后通过已打开句柄恢复原修改时间；保留精度受 Node 与文件系统支持约束，不克隆 ACL、属主或 ctime。中途失败时保留候选并要求核验。
+
 成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。
 
 MXC `grep` 的 `outputMode` 为 `content`（默认，每条匹配行的有界前缀）、`files`（每个匹配文件一个路径）或 `count`（`路径:匹配行数`）。一行重复出现模式仍只计一行。files 在完整文件的 UTF-8/NUL 检查后确认首个匹配即可停止匹配扫描；count 完整统计该文件后才返回数值。`observedRecords/returnedRecords` 在 content 中以匹配行为单位，在 files/count 中以匹配文件为单位。没有完整项目总量或搜索游标；200 条上限按当前模式的记录单位计算。宿主 grep 的既有语义不变。缩小范围可以处理遍历或输出早停。过大、非 UTF-8 或含 NUL 的文件需要适合其容量和编码的读取方式。

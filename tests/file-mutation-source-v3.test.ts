@@ -29,3 +29,16 @@ test("native v3 executor callbacks are created once outside the target loop", ()
     noCallbacks(ts.isArrowFunction(body) ? body.body : body);
   }
 });
+
+test("unprepared result observation uses synchronous paths without per-item callback or wrapper factories", () => {
+  const source = ts.createSourceFile("core.ts", readFileSync("packages/extensions/false-success-guard/core.ts", "utf8"), ts.ScriptTarget.Latest, true);
+  const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "observeUnpreparedFileMutationItems") as ts.FunctionDeclaration;
+  assert(helper?.body);
+  function inspect(node: ts.Node): void {
+    assert(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isNewExpression(node)
+      && !ts.isObjectLiteralExpression(node) && !ts.isAwaitExpression(node), node.getText(source));
+    if (ts.isCallExpression(node)) assert(!["map", "filter", "reduce", "then", "catch", "finally", "bind"].includes(ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : ""));
+    ts.forEachChild(node, inspect);
+  }
+  inspect(helper.body!);
+});

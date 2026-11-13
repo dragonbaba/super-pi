@@ -167,7 +167,7 @@ export function observeToolResult(state: FalseSuccessState, observation: ToolObs
   if (observation.toolName === "file_batch") { observeBatchResult(state, observation); return; }
   if (observation.isError && (observation.toolName === "copy" || observation.toolName === "move" || observation.toolName === "delete")) {
     const items = observation.toolName === "delete" ? observation.input?.paths : observation.input?.items;
-    if (Array.isArray(items)) { observeArrayPreflightFailure(state, observation, items); return; }
+    if (Array.isArray(items)) { observeUnpreparedFileMutationItems(state, observation.toolName, observation.input, observation.cwd ?? process.cwd(), 0); return; }
   }
   if (observation.toolName === "delete" || observation.toolName === "move") { observeNativeResult(state, observation); return; }
   const shell = observation.toolName === "bash" || observation.toolName === "powershell";
@@ -283,31 +283,35 @@ export function observeFileMutationOutcome(state: FalseSuccessState, tool: strin
   if (destination) observeMutationOutcome(state, tool, normalizeAbsolute(destination, destination), status);
 }
 
-/** Error-only fallback before a v3 journal exists; no source is mutated. */
-function observeArrayPreflightFailure(state: FalseSuccessState, observation: ToolObservation, items: readonly unknown[]): void {
-  const tool = observation.toolName, cwd = observation.cwd ?? process.cwd();
-  let known = false, incomplete = items.length === 0;
-  for (const item of items) {
-    if (tool === "delete") {
-      if (typeof item !== "string" || !item) { incomplete = true; continue; }
-      observeMutationOutcome(state, tool, normalizeAbsolute(resolve(cwd, item), cwd), "failed_no_change"); known = true;
-      continue;
-    }
-    const input = item && typeof item === "object" ? item as Record<string, unknown> : undefined;
-    if (!input) { incomplete = true; continue; }
-    if (tool === "move") {
-      if (typeof input.path === "string" && input.path) { observeMutationOutcome(state, tool, normalizeAbsolute(resolve(cwd, input.path), cwd), "failed_no_change"); known = true; }
+/** A prepared-root journal can end before all requested rows were published.
+ * No intent ran for this suffix. Retain its input paths, without inventing
+ * effects or a cwd-level unknown that a normal successful retry cannot repair.
+ * Error-only array preflight failures share the same input ownership rules. */
+export function observeUnpreparedFileMutationItems(state: FalseSuccessState, tool: string, input: Record<string, any>, cwd: string, first: number): void {
+  const items = tool === "file_batch" ? input.operations : tool === "delete" ? input.paths : input.items;
+  if (!Array.isArray(items) || first >= items.length) {
+    observeMutationOutcome(state, tool, normalizeAbsolute(cwd, cwd), "failed_no_change"); return;
+  }
+  let incomplete = false;
+  for (let index = first; index < items.length; index++) {
+    const value = items[index], item = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+    const operation = tool === "file_batch" ? item?.operation : tool;
+    const path = tool === "delete" ? value : item?.path, destination = item?.destination;
+    if (operation !== "copy") {
+      if (typeof path === "string" && path) observeMutationOutcome(state, tool, normalizeAbsolute(resolve(cwd, path), cwd), "failed_no_change");
       else incomplete = true;
     }
-    if (typeof input.destination === "string" && input.destination) { observeMutationOutcome(state, tool, normalizeAbsolute(resolve(cwd, input.destination), cwd), "failed_no_change"); known = true; }
-    else incomplete = true;
+    if (operation === "copy" || operation === "move") {
+      if (typeof destination === "string" && destination) observeMutationOutcome(state, tool, normalizeAbsolute(resolve(cwd, destination), cwd), "failed_no_change");
+      else incomplete = true;
+    }
   }
-  if (!known || incomplete) observeMutationOutcome(state, tool, normalizeAbsolute(cwd, cwd), "failed_no_change");
+  if (incomplete) observeMutationOutcome(state, tool, normalizeAbsolute(cwd, cwd), "failed_no_change");
 }
 
 function observeBatchResult(state: FalseSuccessState, observation: ToolObservation): void {
   const operations = observation.input.operations;
-  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 16) {
+  if (!Array.isArray(operations) || operations.length === 0) {
     if (observation.isError) observeMutationOutcome(state, "file_batch", normalizeAbsolute(observation.cwd ?? process.cwd(), observation.cwd ?? process.cwd()), "failed_no_change");
     return;
   }

@@ -11,6 +11,7 @@ import {
   observeInputBoundary,
   observeToolResult,
   observeFileMutationOutcome,
+  observeUnpreparedFileMutationItems,
   observeVerificationStart,
   resetFalseSuccessState,
   type InterventionAudit,
@@ -89,6 +90,10 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
           for (const record of page.records) {
             allSucceeded &&= record.status === "succeeded";
             observeFileMutationOutcome(state, pending.name, record.target, record.destination, record.status, record.operation);
+          }
+          if (!more && page.visited < page.itemCount) {
+            allSucceeded = false;
+            observeUnpreparedFileMutationItems(state, pending.name, pending.input, ctx.cwd, page.visited);
           }
         } while (more);
         if (event.isError && allSucceeded) observeFileMutationOutcome(state, pending.name, ctx.cwd, undefined, "state_unknown");
