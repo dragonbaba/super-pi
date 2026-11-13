@@ -318,7 +318,6 @@ export class FileResultReader {
   private proofSession = "";
   private proofHistory = -1;
   private proofContext = -1;
-  private proofRequestHash = "";
   private proofCall: any;
   private proofLeaf: string | null = null;
   private proofReadyId = "";
@@ -338,7 +337,6 @@ export class FileResultReader {
     if (this.proofEntry !== reference.entryId || this.proofSession !== sessionId || this.proofHistory !== history || this.proofContext !== context) {
       assertAncestor(session, leaf, reference.entryId);
       this.proofEntry = reference.entryId; this.proofSession = sessionId; this.proofHistory = history; this.proofContext = context;
-      this.proofRequestHash = "";
       this.proofCall = undefined;
       this.proofLeaf = null;
       this.proofReadyId = ""; this.proofReadyHash = "";
@@ -362,7 +360,6 @@ export class FileResultReader {
       this.proofLeaf = leaf;
     }
     const call = this.proofCall ??= assertSourceCall(session, anchor, true);
-    this.proofRequestHash = anchor.requestHash;
     if (call.name !== anchor.operation || call.id !== anchor.toolCallId) throw new Error("[FILE_RESULT_INVALID] Original call identity changed.");
     const rootPayload = parseFileResultPayload(anchor);
     let readyId: string | undefined, readyHash: string | undefined, ready: FileResultPayload | undefined;
@@ -439,6 +436,6 @@ export class FileResultReader {
     sourceCallRetained: this.proofCall !== undefined, sessionRetained: this.session !== undefined }; }
   /** Already authenticated by read(); one source-call slot per reader owner. */
   get sourceCall(): any { return this.proofCall; }
-  dispose(): void { this.session = undefined; this.proofRequestHash = ""; this.proofEntry = ""; this.proofSession = ""; this.proofLeaf = null;
+  dispose(): void { this.session = undefined; this.proofEntry = ""; this.proofSession = ""; this.proofLeaf = null;
     this.proofReadyId = ""; this.proofReadyHash = ""; this.proofCall = undefined; this.cursorKey?.fill(0); this.cursorKey = undefined; }
 }
