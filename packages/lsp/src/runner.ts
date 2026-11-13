@@ -1,10 +1,12 @@
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ClientLease, LspClientPool } from "./client-pool.ts";
+import type { LspClient } from "./lsp-client.ts";
 import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.ts";
-import { DEFAULT_FILE_LIMIT } from "./limits.ts";
+import { DEFAULT_FILE_LIMIT, DIAGNOSTIC_BATCH_SIZE, MIN_DIAGNOSTIC_WAIT_MS, MAX_DIAGNOSTIC_WAIT_MS } from "./limits.ts";
+import { EMPTY_READONLY_ARRAY } from "./collections.ts";
 import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.ts";
 import { capturePathIdentity } from "@super-pi/coding-agent/internal/files/native-file-core";
 import { selectCommitMetadata } from "@super-pi/coding-agent/internal/files/file-commit-metadata";
@@ -13,6 +15,7 @@ import { applyTextEdits, collectWorkspaceEdits, hasOverlappingTextEdits } from "
 import type {
 	CodeAction,
 	DiagnosticEntry,
+	DiagnosticReport,
 	LspServerAdapter,
 	LspTextEdit,
 	StatusContext,
@@ -25,15 +28,76 @@ const MAX_RETAINED_EDIT_ITEMS = 200;
 // Observe early shutdown rejection immediately; the invocation finally awaits and reports it.
 function observeDiscardFailure(): void {}
 
+interface DiagnosticOutcome { path: string; status: string; completion: string; receivedReport: boolean; elapsedMs: number; projectReady: boolean; projectReadyAtCompletion: boolean; projectReadyForMs: number; error?: string; }
+interface DiagnosticBatch { files: number; elapsedMs: number; startedMs: number; projectReadiness: string; }
+interface DiagnosticCollection {
+	client: LspClient; adapter: LspServerAdapter; root: string; files: readonly string[]; signal?: AbortSignal;
+	waitMs?: number; timeoutMs: number; started: number; next: number; active: number; peak: number; submitted: number;
+	stopped: boolean; serverFailed: boolean; hasError: boolean; error?: unknown; failure?: string;
+	entries: Array<DiagnosticEntry | undefined>; outcomes: Array<DiagnosticOutcome | undefined>; batches: DiagnosticBatch[];
+}
+function recordDiagnosticFailure(state: DiagnosticCollection, error: unknown): void {
+	state.stopped = true;
+	if (!state.hasError) { state.hasError = true; state.error = error; }
+	state.failure ??= error instanceof Error ? error.message : String(error);
+	if (!state.client.running) state.serverFailed = true;
+}
+/** One request-owned slot; completion starts another file, never another notification waiter. */
+async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
+	while (!state.stopped && state.next < state.files.length) {
+		const index = state.next++, file = state.files[index], uri = pathToFileURL(file).href;
+		const group = Math.floor(index / DIAGNOSTIC_BATCH_SIZE);
+		const batch = state.batches[group] ??= { files: 0, elapsedMs: 0, startedMs: performance.now() - state.started, projectReadiness: state.client.projectReadiness };
+		let opened = false, text: string | undefined, report: DiagnosticReport | undefined;
+		try {
+			throwIfAborted(state.signal, state.adapter);
+			const readStarted = performance.now();
+			try { text = readBoundedDocument(file); }
+			catch (error) {
+				throwIfAborted(state.signal, state.adapter);
+				if (!state.client.running) throw error;
+				const message = error instanceof Error ? error.message : String(error);
+				state.outcomes[index] = { path: path.relative(state.root, file) || file, status: "unconfirmed", completion: "read_error", receivedReport: false, elapsedMs: performance.now() - readStarted, projectReady: false, projectReadyAtCompletion: state.client.projectReady, projectReadyForMs: state.client.projectReadyForMs, error: message };
+				state.failure ??= message;
+				continue;
+			}
+			state.client.didOpen(uri, text, state.adapter.languageIdFor(file));
+			text = undefined; // No source payload survives the diagnostic await.
+			opened = true; state.active++; state.submitted++; batch.files++;
+			state.peak = Math.max(state.peak, state.active);
+			report = await state.client.collectDiagnosticReport(uri, state.waitMs, state.timeoutMs);
+			throwIfAborted(state.signal, state.adapter);
+			const relativePath = path.relative(state.root, file) || file;
+			state.outcomes[index] = { path: relativePath, status: report.error ? "unconfirmed" : "confirmed", completion: report.completion, receivedReport: report.receivedReport, elapsedMs: report.elapsedMs, projectReady: report.projectReady, projectReadyAtCompletion: report.projectReadyAtCompletion, projectReadyForMs: report.projectReadyForMs, error: report.error };
+			if (!report.error) state.entries[index] = { path: relativePath, uri, diagnostics: report.diagnostics };
+			else state.failure ??= report.error;
+			if (!state.client.running) { state.serverFailed = state.stopped = true; state.failure ??= `${state.adapter.name} LSP server exited during diagnostics.`; }
+		} catch (error) { recordDiagnosticFailure(state, error); }
+		finally {
+			text = undefined; report = undefined;
+			if (opened) {
+				try { if (state.client.running) state.client.didClose(uri); }
+				catch (error) { recordDiagnosticFailure(state, error); }
+				finally { state.active--; }
+			}
+			batch.elapsedMs = performance.now() - state.started - batch.startedMs;
+			batch.projectReadiness = state.client.projectReadiness;
+		}
+	}
+}
+
 export async function runDiagnostics(
 	pool: LspClientPool,
 	adapter: LspServerAdapter,
-	params: { root?: string; paths?: string[]; limit?: number; files?: readonly string[] },
+	params: { root?: string; paths?: string[]; limit?: number; files?: readonly string[]; waitMs?: number },
 	timeoutMs: number,
 	signal: AbortSignal | undefined,
 	ctx: StatusContext,
 	statusKey: string,
 ) {
+	const started = performance.now();
+	if (params.waitMs !== undefined && (!Number.isInteger(params.waitMs) || params.waitMs < MIN_DIAGNOSTIC_WAIT_MS || params.waitMs > MAX_DIAGNOSTIC_WAIT_MS)) throw new Error(`waitMs must be an integer from ${MIN_DIAGNOSTIC_WAIT_MS} to ${MAX_DIAGNOSTIC_WAIT_MS}.`);
+	let effectiveWaitMs = Math.min(params.waitMs ?? adapter.pushDiagnosticsGraceMs ?? timeoutMs, timeoutMs);
 	const root = resolveRoot(params.root);
 	const command = adapter.defaultCommand;
 	const files =
@@ -45,17 +109,20 @@ export async function runDiagnostics(
 			status: "not_checked",
 			command,
 			files,
+			outcomes: [], unconfirmedFiles: [], submittedFiles: 0, requestedFiles: 0,
+			elapsedMs: performance.now() - started, batchCount: 0, batches: [], effectiveWaitMs,
 			summary: { files: 0, diagnostics: 0 },
 		}), isError: true };
 	}
-	for (const file of files) assertBoundedDocument(file);
 
 	let lease: ClientLease | undefined;
+	let diagnosticTurn: symbol | undefined;
+	let executing = false;
 	let aborted = false;
 	let discard: Promise<void> | undefined;
 	const abort = () => {
 		aborted = true;
-		if (lease && !discard) { discard = pool.discard(lease); void discard.catch(observeDiscardFailure); }
+		if (lease && executing && !discard) { discard = pool.discard(lease); void discard.catch(observeDiscardFailure); }
 	};
 	throwIfAborted(signal, adapter);
 	signal?.addEventListener("abort", abort, { once: true });
@@ -66,38 +133,56 @@ export async function runDiagnostics(
 		lease = await pool.acquire(adapter, root, timeoutMs);
 		throwIfAborted(signal, adapter);
 		const client = lease.client;
+		effectiveWaitMs = client.diagnosticWaitMs(params.waitMs, timeoutMs);
+		diagnosticTurn = await client.acquireDiagnosticTurn(signal);
+		throwIfAborted(signal, adapter);
+		executing = true;
 
-		const openedFiles: Array<{ file: string; uri: string }> = [];
+		const state: DiagnosticCollection = { client, adapter, root, files, signal, waitMs: params.waitMs, timeoutMs, started,
+			next: 0, active: 0, peak: 0, submitted: 0, stopped: false, serverFailed: false, hasError: false,
+			entries: new Array(files.length), outcomes: new Array(files.length), batches: [] };
+		const slots: Promise<void>[] = [];
 		try {
-			for (const file of files) {
-				throwIfAborted(signal, adapter);
-				const uri = pathToFileURL(file).href;
-				const text = readBoundedDocument(file);
-				client.didOpen(uri, text, adapter.languageIdFor(file));
-				openedFiles.push({ file, uri });
+			for (let slot = 0; slot < Math.min(DIAGNOSTIC_BATCH_SIZE, files.length); slot++) slots.push(runDiagnosticSlot(state));
+			// Slots own every in-flight file until close, including after another slot fails.
+			await Promise.all(slots);
+			throwIfAborted(signal, adapter);
+			if (state.hasError && !state.serverFailed) throw state.error;
+			let confirmed = 0;
+			for (let index = 0; index < files.length; index++) {
+				if (state.entries[index]) state.entries[confirmed++] = state.entries[index];
+				state.outcomes[index] ??= { path: path.relative(root, files[index]) || files[index], status: "not_started", completion: "server_error", receivedReport: false, elapsedMs: 0, projectReady: false, projectReadyAtCompletion: false, projectReadyForMs: 0 };
 			}
-
-			const entries: DiagnosticEntry[] = await Promise.all(
-				openedFiles.map(async ({ file, uri }) => ({
-					path: path.relative(root, file) || file,
-					uri,
-					diagnostics: await client.diagnostics(uri, true),
-				})),
-			);
-			return textResult(formatDiagnostics(adapter, entries), {
+			state.entries.length = confirmed;
+			const entries = state.entries as DiagnosticEntry[], outcomes = state.outcomes as DiagnosticOutcome[];
+			const unconfirmedFiles: string[] = [];
+			for (const outcome of outcomes) if (outcome.status !== "confirmed") unconfirmedFiles.push(outcome.path);
+			const isError = state.serverFailed || unconfirmedFiles.length > 0;
+			const notice = isError ? `\nUnconfirmed: ${unconfirmedFiles.length} file(s). This is not a complete pass. Confirmed reports are retained; retry only unconfirmedFiles.\n` : "";
+			let text = formatDiagnostics(adapter, entries, MAX_MODEL_OUTPUT_BYTES - Buffer.byteLength(notice));
+			if (isError) {
+				text += notice;
+				let bytes = Buffer.byteLength(text);
+				for (const file of unconfirmedFiles) { const line = `\n${file}`; const size = Buffer.byteLength(line); if (bytes + size > MAX_MODEL_OUTPUT_BYTES) break; text += line; bytes += size; }
+			}
+			return { ...textResult(text, {
 				root,
-				status: "diagnostics_received",
+				status: state.serverFailed ? "failed" : isError ? "partial" : "diagnostics_received",
 				command,
 				files: entries,
+				outcomes, unconfirmedFiles, submittedFiles: state.submitted, requestedFiles: files.length,
+				elapsedMs: performance.now() - started, batchCount: state.batches.length, batches: state.batches, effectiveWaitMs, failure: state.failure,
+				scheduling: "sliding_window", peakOpenDocuments: state.peak,
 				summary: summarize(entries),
-			});
+			}), isError };
 		} finally {
-			for (const { uri } of openedFiles) client.didClose(uri);
+			slots.length = 0; state.files = EMPTY_READONLY_ARRAY;
 		}
 	} finally {
 		signal?.removeEventListener("abort", abort);
+		if (lease && diagnosticTurn !== undefined) lease.client.releaseDiagnosticTurn(diagnosticTurn);
 		try {
-			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
+			if (lease) { if (aborted && executing) await (discard ?? pool.discard(lease)); else pool.release(lease); }
 		} finally { ctx.ui.setStatus(statusKey, undefined); }
 	}
 }
@@ -207,12 +292,6 @@ export async function runFix(
 	}
 }
 
-function assertBoundedDocument(file: string) {
-	if (statSync(file).size > MAX_LSP_DOCUMENT_BYTES) {
-		throw new Error(`LSP document exceeds ${MAX_LSP_DOCUMENT_BYTES} bytes: ${file}. Narrow the requested files.`);
-	}
-}
-
 function readBoundedDocument(file: string) {
 	const fd = openSync(file, "r");
 	try {
@@ -241,7 +320,7 @@ function selectCodeActions(actions: CodeAction[], requestedKind: string) {
 	);
 }
 
-export function formatDiagnostics(adapter: LspServerAdapter, entries: DiagnosticEntry[]) {
+export function formatDiagnostics(adapter: LspServerAdapter, entries: DiagnosticEntry[], maxBytes = MAX_MODEL_OUTPUT_BYTES) {
 	const summary = summarize(entries);
 	const headline = `${adapter.name} LSP diagnostics: ${summary.diagnostics} diagnostic(s) across ${summary.files} file(s).`;
 	if (summary.diagnostics === 0) return headline;
@@ -256,7 +335,7 @@ export function formatDiagnostics(adapter: LspServerAdapter, entries: Diagnostic
 			const source = diagnostic.source ?? adapter.name;
 			const code = diagnostic.code === undefined ? "" : ` ${diagnostic.code}`;
 			const next = `\n${entry.path}:${line}:${column}: ${severity} ${source}${code}: ${diagnostic.message}`;
-			if (Buffer.byteLength(output, "utf8") + Buffer.byteLength(next, "utf8") > MAX_MODEL_OUTPUT_BYTES - 160) break outer;
+			if (Buffer.byteLength(output, "utf8") + Buffer.byteLength(next, "utf8") > maxBytes - 160) break outer;
 			output += next;
 			retained += 1;
 		}
@@ -308,7 +387,7 @@ function throwIfAborted(signal: AbortSignal | undefined, adapter: LspServerAdapt
 	if (signal?.aborted) throw new Error(`${adapter.name} LSP request aborted.`);
 }
 
-export function textResult(text: string, details: unknown) {
+export function textResult<T>(text: string, details: T) {
 	return {
 		content: [{ type: "text" as const, text }],
 		details,

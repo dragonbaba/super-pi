@@ -17,6 +17,7 @@ test("LSP protocol delivery reuses diagnostic settle callbacks without notificat
           assert.equal(ts.isArrayLiteralExpression(child), false, child.getText(source));
           if (ts.isNewExpression(child)) assert.equal(child.expression.getText(source), "Error");
           if (ts.isCallExpression(child)) assert.doesNotMatch(child.expression.getText(source), /\.(then|catch|finally|map|filter|flatMap|bind)$/);
+          if (node.name.getText(source) === "onPublish" && ts.isCallExpression(child)) assert.notEqual(child.expression.getText(source), "setTimeout", "notification delivery must reuse the request-owned settle timer");
           ts.forEachChild(child, visit);
         }
         visit(body);

@@ -10,8 +10,10 @@ import { directoryUri } from "./files.ts";
 import { COMMAND_SCRIPT_PATTERN, LSP_CONTENT_LENGTH_PATTERN } from "./regex.ts";
 import { positionAt } from "./text-edits.ts";
 import { TYPESCRIPT_PROJECT_PROGRESS_TITLE, MAX_PROJECT_PROGRESS_TOKENS, MAX_PROJECT_PROGRESS_TOKEN_CHARS } from "./project-progress.ts";
+import { DIAGNOSTIC_PROJECT_READY_MARGIN_MS } from "./limits.ts";
 import type {
 	CodeAction,
+	DiagnosticReport,
 	JsonRpcMessage,
 	LspDiagnostic,
 	LspLocation,
@@ -41,6 +43,12 @@ const MAX_LSP_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_LSP_BUFFER_BYTES = MAX_LSP_MESSAGE_BYTES + 64 * 1024;
 const MAX_PUBLISHED_DIAGNOSTIC_DOCUMENTS = 256;
 const SHUTDOWN_GRACE_MS = 1_000;
+class LspRequestTimeoutError extends Error {}
+
+interface DiagnosticTurnWaiter {
+	turn: symbol; resolve: (turn: symbol) => void; reject: (reason: unknown) => void;
+	signal?: AbortSignal; cancel: () => void;
+}
 
 export class LspClient {
 	#child?: ChildProcessWithoutNullStreams;
@@ -65,6 +73,10 @@ export class LspClient {
 	>();
 	#stderr = "";
 	#serverCapabilities: Record<string, unknown> = {};
+	// The tool owner admits MAX_ACTIVE_OPERATIONS total calls: one active turn,
+	// at most MAX_ACTIVE_OPERATIONS - 1 queued. Entries retain no document payload.
+	#diagnosticTurn?: symbol;
+	#diagnosticQueue: DiagnosticTurnWaiter[] = [];
 	#adapter: LspServerAdapter;
 	#command: ServerCommand;
 	#cwd: string;
@@ -81,6 +93,7 @@ export class LspClient {
 	#projectProgressSeen = false;
 	#projectProgressOverflow = false;
 	#projectReady = false;
+	#projectReadySince = 0;
 	#projectProgressGeneration = 0;
 	#familyCleanup?: Promise<void>;
 	readonly #onStdout = (chunk: Buffer) => {
@@ -131,6 +144,8 @@ export class LspClient {
 		);
 	}
 	get projectReady(): boolean { return this.#projectReady; }
+	get projectReadyForMs(): number { return this.#projectReady ? performance.now() - this.#projectReadySince : 0; }
+	get supportsPullDiagnostics(): boolean { return Boolean(this.#serverCapabilities.diagnosticProvider); }
 	get projectProgressGeneration(): number { return this.#projectProgressGeneration; }
 	get projectReadiness(): "ready" | "loading" | "unknown" { return this.#projectReady ? "ready" : this.#projectProgressSeen && !this.#projectProgressOverflow ? "loading" : "unknown"; }
 	get projectReadinessDiagnostics() { return { activeTokens: this.#projectProgress.size, waiters: this.#projectWaiters.size, overflow: this.#projectProgressOverflow }; }
@@ -253,6 +268,34 @@ export class LspClient {
 		});
 	}
 
+	/** Explicit diagnostics-call admission, shared by all leases of this client. */
+	acquireDiagnosticTurn(signal?: AbortSignal): Promise<symbol> {
+		if (!this.running) return Promise.reject(new Error(`${this.#adapter.name} LSP server is not running.`));
+		if (signal?.aborted) return Promise.reject(signal.reason);
+		return new Promise((resolve, reject) => {
+			const turn = Symbol("LSP diagnostics");
+			if (this.#diagnosticTurn !== undefined) {
+				const cancel = () => {
+					const index = this.#diagnosticQueue.indexOf(waiter);
+					if (index < 0) return;
+					this.#diagnosticQueue.splice(index, 1);
+					signal?.removeEventListener("abort", cancel); reject(signal?.reason);
+				};
+				const waiter = { turn, resolve, reject, signal, cancel };
+				this.#diagnosticQueue.push(waiter); signal?.addEventListener("abort", cancel, { once: true });
+			}
+			else { this.#diagnosticTurn = turn; resolve(turn); }
+		});
+	}
+
+	releaseDiagnosticTurn(turn: symbol): void {
+		if (this.#diagnosticTurn !== turn) return;
+		const next = this.#diagnosticQueue.shift();
+		this.#diagnosticTurn = next?.turn;
+		next?.signal?.removeEventListener("abort", next.cancel);
+		next?.resolve(next.turn);
+	}
+
 	didClose(uri: string) {
 		try {
 			if (!this.#child) return false;
@@ -265,19 +308,40 @@ export class LspClient {
 		}
 	}
 
-	async diagnostics(uri: string, requirePublication = false) {
+	diagnosticWaitMs(requested: number | undefined, timeoutMs: number): number {
+		return Math.min(requested ?? (this.supportsPullDiagnostics ? timeoutMs : this.#adapter.pushDiagnosticsGraceMs ?? timeoutMs), timeoutMs, this.#timeoutMs);
+	}
+
+	async collectDiagnosticReport(uri: string, waitMs: number | undefined, timeoutMs: number): Promise<DiagnosticReport> {
+		const start = performance.now();
+		const report: DiagnosticReport = { diagnostics: EMPTY_READONLY_ARRAY, receivedReport: false, completion: "report", elapsedMs: 0, projectReady: this.#projectReady, projectReadyAtCompletion: false, projectReadyForMs: 0 };
+		try { report.diagnostics = await this.diagnostics(uri, true, waitMs, report, timeoutMs); }
+		catch (error) { report.error = formatErrorMessage(error); if (error instanceof LspRequestTimeoutError) report.completion = "window_expired"; else if (report.completion !== "window_expired") report.completion = "server_error"; }
+		const completed = performance.now();
+		report.elapsedMs = completed - start;
+		report.projectReadyAtCompletion = this.#projectReady;
+		report.projectReadyForMs = this.#projectReady ? completed - this.#projectReadySince : 0;
+		return report;
+	}
+
+	async diagnostics(uri: string, requirePublication = false, waitMs?: number, observation?: DiagnosticReport, timeoutMs = this.#timeoutMs) {
+		const start = performance.now();
+		timeoutMs = Math.min(timeoutMs, this.#timeoutMs);
+		const effectiveWait = this.diagnosticWaitMs(waitMs, timeoutMs);
 		// Only pull if the server advertised it; otherwise use push diagnostics.
 		if (!this.#serverCapabilities.diagnosticProvider) {
 			return this.#waitForPublishedDiagnostics(
 				uri,
-				this.#adapter.pushDiagnosticsGraceMs
+				(waitMs ?? this.#adapter.pushDiagnosticsGraceMs)
 					? {
 							afterVersion: 0,
 							diagnostics: EMPTY_READONLY_ARRAY,
-							waitMs: this.#adapter.pushDiagnosticsGraceMs,
+							waitMs: effectiveWait,
 							requirePublication,
 						}
 					: undefined,
+				observation,
+				timeoutMs,
 			);
 		}
 		const published = this.#publishedDiagnostics.get(documentUriKey(uri));
@@ -287,18 +351,19 @@ export class LspClient {
 			: (published?.version ?? 0);
 		const response = await this.request("textDocument/diagnostic", {
 			textDocument: { uri },
-		});
+		}, effectiveWait);
 		const result = response.result as { items?: LspDiagnostic[] } | undefined;
 		if (requirePublication && !Array.isArray(result?.items)) {
 			throw new Error(`${this.#adapter.name} LSP returned no full diagnostic report for ${uri}; validation is unconfirmed.`);
 		}
 		const diagnostics = Array.isArray(result?.items) ? result.items : EMPTY_READONLY_ARRAY;
+		if (observation) { observation.receivedReport = true; observation.diagnostics = diagnostics; observation.projectReady = this.#projectReady; }
 		if (diagnostics.length > 0 || !this.#adapter.pullDiagnosticsGraceMs) return diagnostics;
 		return this.#waitForPublishedDiagnostics(uri, {
 			afterVersion,
 			diagnostics,
-			waitMs: this.#adapter.pullDiagnosticsGraceMs,
-		});
+			waitMs: Math.min(effectiveWait, this.#adapter.pullDiagnosticsGraceMs),
+		}, observation, observation ? Math.max(0, timeoutMs - (performance.now() - start)) : this.#timeoutMs);
 	}
 
 	async definition(uri: string, position: LspPosition) {
@@ -454,6 +519,12 @@ export class LspClient {
 		this.#diagnosticWaiters.clear();
 		for (const waiter of this.#projectWaiters) waiter.reject(new Error(typeof message === "string" ? message : message("diagnostics")));
 		this.#projectWaiters.clear();
+		this.#diagnosticTurn = undefined;
+		for (const queued of this.#diagnosticQueue) {
+			queued.signal?.removeEventListener("abort", queued.cancel);
+			queued.reject(new Error(typeof message === "string" ? message : message("diagnostics")));
+		}
+		this.#diagnosticQueue.length = 0;
 	}
 
 	#fail(message: string) {
@@ -469,7 +540,7 @@ export class LspClient {
 		this.#publishedDiagnostics.clear();
 		this.#serverCapabilities = {};
 		this.#stderr = "";
-		this.#projectProgress.clear(); this.#projectProgressSeen = false; this.#projectProgressOverflow = false; this.#projectReady = false;
+		this.#projectProgress.clear(); this.#projectProgressSeen = false; this.#projectProgressOverflow = false; this.#projectReady = false; this.#projectReadySince = 0;
 	}
 
 	private request(method: string, params: unknown, timeoutMs = this.#timeoutMs) {
@@ -479,7 +550,7 @@ export class LspClient {
 			const timeout = setTimeout(() => {
 				this.#pending.delete(id);
 				reject(
-					new Error(
+						new LspRequestTimeoutError(
 						`${this.#adapter.name} LSP request timed out: ${method}.${this.#formatStderr()}`,
 					),
 				);
@@ -592,7 +663,7 @@ export class LspClient {
 	}
 	#beginProjectProgress(token: unknown): void {
 		if (this.#projectProgress.has(token as string | number)) return;
-		this.#projectProgressSeen = true; this.#projectReady = false; this.#projectProgressGeneration++;
+		this.#projectProgressSeen = true; this.#projectReady = false; this.#projectReadySince = 0; this.#projectProgressGeneration++;
 		if ((typeof token !== "string" && typeof token !== "number")
 			|| typeof token === "number" && !Number.isFinite(token)
 			|| typeof token === "string" && token.length > MAX_PROJECT_PROGRESS_TOKEN_CHARS
@@ -606,8 +677,12 @@ export class LspClient {
 		else if (progress.value?.kind === "end" && this.#projectProgress.delete(progress.token as string | number)
 			&& this.#projectProgress.size === 0 && !this.#projectProgressOverflow) {
 			this.#projectReady = true;
+			this.#projectReadySince = performance.now();
 			for (const waiter of this.#projectWaiters) waiter.finish(true);
 		}
+	}
+	#emptyDiagnosticsReady(observation?: DiagnosticReport): boolean {
+		return observation?.projectReady === true || !this.#projectProgressSeen || this.#projectReady && performance.now() - this.#projectReadySince >= DIAGNOSTIC_PROJECT_READY_MARGIN_MS;
 	}
 
 	#recordPublishedDiagnostics(
@@ -625,6 +700,8 @@ export class LspClient {
 	#waitForPublishedDiagnostics(
 		uri: string,
 		fallback?: { afterVersion: number; diagnostics: readonly LspDiagnostic[]; waitMs: number; requirePublication?: boolean },
+		observation?: DiagnosticReport,
+		timeoutMs = this.#timeoutMs,
 	) {
 		// See PUBLISHED_DIAGNOSTICS_SETTLE_MS. Bounded by #timeoutMs.
 		return new Promise<readonly LspDiagnostic[]>((resolve, reject) => {
@@ -649,7 +726,7 @@ export class LspClient {
 				resolve(diagnostics);
 			};
 			const settleLatest = () => {
-				if (latestPublication) settleWith(latestPublication.diagnostics);
+				if (latestPublication && (!fallback || sawNonEmptyPublication)) settleWith(latestPublication.diagnostics);
 			};
 			const fail = (reason: unknown) => {
 				dispose();
@@ -657,6 +734,7 @@ export class LspClient {
 			};
 			const onPublish = (publication: { version: number; diagnostics: readonly LspDiagnostic[] }) => {
 				if (publication.version <= afterVersion) return;
+				if (observation) { observation.receivedReport = true; observation.diagnostics = publication.diagnostics; observation.projectReady = this.#projectReady; }
 				if (fallback && publication.diagnostics.length === 0 && !sawNonEmptyPublication) {
 					// A push response proves availability, but may precede real analysis.
 					// Keep the configured grace window open for a later non-empty report.
@@ -666,13 +744,11 @@ export class LspClient {
 				sawNonEmptyPublication ||= publication.diagnostics.length > 0;
 				latestPublication = publication;
 				if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = undefined; }
-				if (settleTimer) settleTimer.refresh();
-				else settleTimer = setTimeout(
-					settleLatest,
-					this.#adapter.diagnosticsSettleMs ?? PUBLISHED_DIAGNOSTICS_SETTLE_MS,
-				);
+				settleTimer!.refresh();
 			};
 
+			// Allocate once at request setup, never from a diagnostic notification.
+			settleTimer = setTimeout(settleLatest, this.#adapter.diagnosticsSettleMs ?? PUBLISHED_DIAGNOSTICS_SETTLE_MS);
 			const waiter = { onPublish, reject: fail, dispose };
 			const set = this.#diagnosticWaiters.get(uriKey) ?? new Set<typeof waiter>();
 			set.add(waiter);
@@ -681,15 +757,17 @@ export class LspClient {
 			if (fallback) {
 				fallbackTimer = setTimeout(
 					() => {
-						if (fallback.requirePublication && !latestPublication) {
-							fail(new Error(`${this.#adapter.name} LSP did not publish diagnostics for ${uri}; validation is unconfirmed.`));
+						if (observation) observation.completion = "window_expired";
+						if (fallback.requirePublication && (!latestPublication || (latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady(observation)))) {
+							fail(new Error(`${this.#adapter.name} LSP did not confirm a diagnostic report for ${uri}; validation is unconfirmed.`));
 						} else settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
 					},
-					Math.min(fallback.waitMs, this.#timeoutMs),
+					Math.min(fallback.waitMs, timeoutMs),
 				);
 			}
 			overallTimer = setTimeout(() => {
-				if (latestPublication) {
+				if (observation) observation.completion = "window_expired";
+				if (latestPublication && !(fallback?.requirePublication && latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady(observation))) {
 					settleWith(latestPublication.diagnostics);
 				} else if (fallback && !fallback.requirePublication) {
 					settleWith(fallback.diagnostics);
@@ -700,7 +778,7 @@ export class LspClient {
 						),
 					);
 				}
-			}, this.#timeoutMs);
+			}, timeoutMs);
 
 			const existing = this.#publishedDiagnostics.get(uriKey);
 			if (existing) onPublish(existing);

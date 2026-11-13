@@ -69,6 +69,17 @@ export interface DiagnosticEntry {
 	uri: string;
 	diagnostics: readonly LspDiagnostic[];
 }
+/** One explicit file request owns this observation; notifications only update its fields. */
+export interface DiagnosticReport {
+	diagnostics: readonly LspDiagnostic[];
+	receivedReport: boolean;
+	completion: "report" | "window_expired" | "server_error";
+	elapsedMs: number;
+	projectReady: boolean;
+	projectReadyAtCompletion: boolean;
+	projectReadyForMs: number;
+	error?: string;
+}
 
 export interface JsonRpcMessage {
 	jsonrpc?: "2.0";

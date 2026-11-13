@@ -63,6 +63,63 @@ result ID, so their pull responses must contain a full `items` report. Source fi
 retain the previous bounded empty diagnostic context for code actions on silent-clean
 servers; computing a code action does not establish a validation pass.
 
+Diagnostics calls sharing a client take turns. Each call uses a sliding window:
+it opens at most 16 documents and replaces a completed document immediately,
+keeping the same server bound across
+overlapping diagnostics calls. The 200-file collection limit remains the total requested
+scope, independent of this batch size. A missing report, cancellation, or server
+exit makes the call unsuccessful; completed reports remain available for inspection.
+Cold projects may need a longer configured diagnostics grace window. Batching
+limits simultaneous open documents; it does not guarantee a bound on the server's
+retained project memory.
+
+`lsp_diagnostics` accepts optional `waitMs` (integer milliseconds, 1–120,000).
+For push servers it overrides the configured `pushDiagnosticsGraceMs`; without
+either setting, the global request timeout bounds the first report. Pull requests
+keep their global timeout unless `waitMs` is supplied. The effective wait never
+exceeds global `timeout`, including when reusing a client created with an older
+timeout. Global `timeout` defaults to 20 seconds: set a larger `timeout` in
+`pi-lsp.json` before requesting `waitMs` above 20,000. Supplying `waitMs` makes
+clean push-diagnostic files wait the full observation window, even if an empty
+report arrives immediately. Authoritative pull reports and non-empty push reports
+retain their existing completion behavior. Existing post-pull grace and non-empty
+push quiet periods remain bounded by the remaining request time.
+
+The result includes `elapsedMs`, `batchCount`, `batches` (file count, elapsed time,
+project readiness), `effectiveWaitMs`, `scheduling`, `peakOpenDocuments`, and
+per-file `outcomes`. With sliding scheduling, batches are logical groups of up to
+16 inputs in collection order. Their `startedMs` and elapsed spans may overlap;
+they are observation groups, not barriers. Each outcome reports
+`status`, `receivedReport`, `completion` (`report`, `window_expired`, or
+`server_error`, or `read_error`), `elapsedMs`, `projectReady` when its report
+arrived, and `projectReadyAtCompletion`/`projectReadyForMs` at completion (the
+deadline for `window_expired`). Confirmed
+diagnostics stay in `files`; `unconfirmedFiles` lists every path that still needs
+checking, including a suffix not opened after server exit. Missing reports return
+`partial` with `isError: true`; an individual read failure also returns `partial`
+and its error while the remaining files continue. Server exit returns `failed`. Retry only those
+paths explicitly; the tool never retries internally. Cancelling a queued call
+removes only its admission entry and releases its lease, preserving the server
+and the active call. Active cancellation retains its existing client-discard
+behavior.
+
+Project readiness from the navigation client is context, not proof that push
+diagnostics are final. Real TypeScript traces showed empty reports after readiness
+followed by diagnostics more than 800 ms later. This version therefore keeps the
+observation window for empty push reports; it does not claim that project readiness
+removes repeated windows or makes cold startup a one-time wait. Sliding scheduling
+is selected from an equivalent 88-file measurement. At expiry an empty report is
+accepted if the project was ready when that report arrived, or is currently ready
+and has stayed ready for the shared 4,000 ms margin. A new loading cycle resets
+that age while retaining a ready report's confirmation at expiry. The margin exceeds the observed 1.4–3.3 second late-update
+gaps; it is a bounded observation policy, not a finality guarantee. Only when both
+conditions fail does the empty report remain unconfirmed. Calls without report
+observations retain their existing current-readiness check. Servers without a readiness signal retain the
+existing window behavior. Receiving a report is targeted feedback, not a promise
+that the server will never publish a later update. See the
+[timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md)
+for the proposed `geterr/requestCompleted` completion barrier.
+
 Explicit relative roots are resolved from the session workspace; trimmed-empty roots
 use that workspace as well. Nonblank roots preserve their original whitespace.
 Mixed requests return `partial` with `isError: true` and
