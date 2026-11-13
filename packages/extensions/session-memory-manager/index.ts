@@ -141,7 +141,7 @@ async function selectSessions(ctx: ExtensionCommandContext, sessions: SessionInf
 
 export default function sessionMemoryManager(pi: ExtensionAPI): void {
   if (!SUPPORTED_SP_VERSION_PATTERN.test(VERSION)) {
-    console.warn(`@super-pi/session-memory-manager disabled: Pi ${VERSION} is unsupported (requires 1.x or 0.84.x).`);
+    console.warn(`@super-pi/session-memory-manager disabled: Pi ${VERSION} is unsupported (requires the matching Super Pi 1.x host).`);
     return;
   }
   pi.registerCommand("memory-sessions", {

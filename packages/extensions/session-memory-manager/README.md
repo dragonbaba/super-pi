@@ -2,6 +2,8 @@
 
 Manages session files through the existing `/memory-sessions` command. It no longer depends on the retired SQLite session index.
 
+This bundled extension requires the matching Super Pi 1.x host, including its native session-lease and shared UI exports. Its peer/version declaration reflects these host-owned APIs. The 0.84.1 export map predates both interfaces and cannot run the current manager.
+
 ## Commands
 
 - `/memory-sessions` — use arrows to move, Space to check/uncheck, and Delete or the configured session-delete key to delete checked sessions after one confirmation. Enter does not delete. An empty selection does nothing. Esc closes the list.

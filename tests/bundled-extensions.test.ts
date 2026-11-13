@@ -41,7 +41,13 @@ test("bundled reports are removed while retained extensions keep their loading o
   ]) {
     const { SUPPORTED_SP_VERSION_PATTERN: supported } = await import(pathToFileURL(join(root, "packages", relative)).href);
     assert.equal(supported.test(VERSION), true, `${relative} must accept the current host`);
-    assert.equal(supported.test("0.84.1"), true, `${relative} must preserve legacy compatibility`);
+    const legacyCompatible = relative !== "extensions/session-memory-manager/regex.ts";
+    assert.equal(supported.test("0.84.1"), legacyCompatible, `${relative} must match its supported host APIs`);
+    if (!legacyCompatible) {
+      const peer = json(join(extensionRoot, "session-memory-manager/package.json")).peerDependencies["@super-pi/coding-agent"];
+      assert.equal(peer, "^1.0.0");
+      assert.equal(json(join(root, "package-lock.json")).packages["packages/extensions/session-memory-manager"].peerDependencies["@super-pi/coding-agent"], peer);
+    }
     for (const version of ["0.83.1", "0.85.0", "2.0.0", "unknown"]) {
       assert.equal(supported.test(version), false, `${relative} must reject ${version}`);
     }
