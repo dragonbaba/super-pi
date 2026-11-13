@@ -11,8 +11,8 @@ import { captureBuiltArtifacts, captureInstalledDependencies } from "./next-phas
 const candidate = resolve(dirname(fileURLToPath(import.meta.url)), "../.."), baseline = resolve(process.argv[2]), output = resolve(process.argv[3]);
 mkdirSync(output); // Exclusive task directory: an earlier run is never overwritten.
 const cases = [
-  ["success", ["--test", join(candidate, "tests/next-phase-task-matrix.test.ts")], 600000],
-  ["context", ["--test", "--test-name-pattern", "context matrix|overlimit", join(candidate, "tests/next-phase-recovery-matrix.test.ts")], 300000],
+  ["success", ["--test", join(candidate, "scripts/bench/next-phase-task-matrix.ts")], 600000],
+  ["context", ["--test", "--test-name-pattern", "context matrix", join(candidate, "scripts/bench/next-phase-recovery-matrix.ts")], 300000],
   ["io", [join(candidate, "scripts/bench/next-phase-file-io.ts")], 1200000],
   ["spill", [join(candidate, "scripts/bench/next-phase-output-spill.ts")], 300000],
   ["tui", [join(candidate, "scripts/bench/next-phase-tui-boundaries.ts")], 300000],

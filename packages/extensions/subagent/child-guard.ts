@@ -8,8 +8,9 @@ import {
 } from "./child-security.ts";
 import { OUTSIDE_CD_COMMAND_PATTERN } from "./regex.ts";
 import { installChildControl } from "./child-control.ts";
+import { isFileMutationOperation, fileMutationItem, fileMutationItemCount, validateFileMutationTargets } from "../../coding-agent/src/core/files/file-mutation-input.ts";
 
-const FILE_TOOLS = new Set(["read", "write", "edit", "delete", "move", "grep", "find", "ls"]);
+const FILE_TOOLS = new Set(["read", "write", "edit", "copy", "delete", "move", "grep", "find", "ls"]);
 const RECURSIVE_FILE_TOOLS = new Set(["grep", "find", "ls"]);
 type FileInput = { path?: unknown; file_path?: unknown; destination?: unknown };
 
@@ -32,8 +33,12 @@ export default function childGuard(pi: ExtensionAPI): void {
 
 		if (FILE_TOOLS.has(event.toolName) || event.toolName === "file_batch") {
 			const input = event.input as FileInput & { operations?: FileInput[] };
-			const operations = event.toolName === "file_batch" ? input.operations ?? [] : [input];
-			for (const operation of operations) {
+			const mutation = isFileMutationOperation(event.toolName);
+			try { if (mutation) validateFileMutationTargets(event.toolName, input); }
+			catch { return { block: true, reason: "Subagent guard: invalid file target list" }; }
+			const count = mutation ? fileMutationItemCount(event.toolName, input) : 1;
+			for (let index = 0; index < count; index++) {
+				const operation = mutation ? fileMutationItem(event.toolName, input, index) : input;
 				const supplied = typeof operation.path === "string" ? operation.path : operation.file_path;
 				const candidate = typeof supplied === "string" ? supplied : (RECURSIVE_FILE_TOOLS.has(event.toolName) ? "." : undefined);
 				if (candidate === undefined) return { block: true, reason: "Subagent guard: missing file path" };
@@ -41,7 +46,7 @@ export default function childGuard(pi: ExtensionAPI): void {
 					?? (typeof operation.destination === "string" ? sensitivePathReason(operation.destination, workspace) : undefined);
 				if (reason) return { block: true, reason: `Subagent guard: ${reason}` };
 				if (!parentExecution) {
-					try { resolveWorkspacePath(candidate, workspace, false); }
+					try { resolveWorkspacePath(candidate, workspace, false); if (typeof operation.destination === "string") resolveWorkspacePath(operation.destination, workspace, false); }
 					catch { return { block: true, reason: "Subagent guard: path escapes the assigned workspace (including via symlink)" }; }
 				}
 				if (RECURSIVE_FILE_TOOLS.has(event.toolName)) {

@@ -2,7 +2,11 @@ import { Value } from "typebox/value";
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
-import { withFileMutationQueue } from "../tools/file-mutation-queue.ts";
+import { withFileMutationQueues } from "../tools/file-mutation-queue.ts";
+import { prepareNativeTreeOperation, revalidateNativeTreePlan, finalizeNativeTreePlan, executeNativeTreePlan, type NativeTreePlan } from "./native-file-tree.ts";
+import { validateNativeInvocation } from "./file-operation-input.ts";
+import type { PreparedFileWorkerManifest, ValidatedFileWorkerContent } from "./file-worker-plan.mjs";
+import type { ManifestArtifact } from "./file-manifest-artifact.mjs";
 import {
   PublicEditParameters, NativeWriteParameters, validatePublicEditInput,
   type PublicEditInput,
@@ -28,10 +32,10 @@ import {
 import { prepareRevisionMutation, validateWriteContent, type ExactRevisionEdit } from "./revision-mutations.ts";
 
 export const FILE_MUTATION_PROGRESS_ENTRY = "file-mutation-progress-v2";
-export type FileOperation = "edit" | "write" | "delete" | "move";
+export type FileOperation = "edit" | "write" | "copy" | "delete" | "move";
 export interface FileOperationInput {
   path: string; purpose?: string; content?: string; destination?: string; snapshot?: string;
-  edits?: PublicEditInput["edits"];
+  edits?: PublicEditInput["edits"]; recursive?: boolean; overwrite?: boolean;
 }
 export interface PreparedFileItem {
   operation: FileOperation;
@@ -45,12 +49,14 @@ export interface PreparedFileItem {
   identity?: PathIdentity;
   creation?: FileCreationPlan;
   native?: NativePlan;
+  tree?: NativeTreePlan;
+  remote?: { index: number; manifest: Readonly<ManifestArtifact>; prepared: PreparedFileWorkerManifest; validated?: ValidatedFileWorkerContent };
   snapshot?: PreparedSnapshotMutation;
   preview?: ChangePreview;
   artifact?: { bytes: Uint8Array; sha256: string; commit?: FileCommitPlan };
 }
 export interface FileReceipt {
-  mutationReceiptVersion: 2;
+  mutationReceiptVersion: 2 | 3;
   operation: FileOperation;
   target: string;
   destination?: string;
@@ -69,6 +75,10 @@ export interface FileExecutionHooks {
   /** Batch preparation owns origin; per-item commit selection has its own phase. */
   batch?: true;
   continuationOwner?: string;
+  authorizationGeneration?: number;
+  preflightOnly?: boolean;
+  resultReadyHash?: string;
+  resultIntentId?: string;
 }
 
 /** Copy only validated public fields; extension authorization observes the separate original input. */
@@ -79,7 +89,8 @@ function copyInput(operation: FileOperation, raw: unknown): FileOperationInput {
   } else if (operation === "write") {
     if (!Value.Check(NativeWriteParameters, raw)) throw new Error("[TOOL_ARGS_INVALID] Invalid write fields.");
     validateWriteContent(raw.content);
-  } else validateNativeInput(operation, raw);
+  } else if (operation === "copy") validateNativeInvocation(operation, raw);
+  else validateNativeInput(operation, raw);
   const input = raw as FileOperationInput;
   if (!input.path.trim() || input.path.length > 4096 || input.path.includes("\0")) throw new Error("[TOOL_ARGS_INVALID] Expected one literal file path of 1-4096 characters.");
   let edits: PublicEditInput["edits"] | undefined;
@@ -95,27 +106,32 @@ function copyInput(operation: FileOperation, raw: unknown): FileOperationInput {
     Object.freeze(edits);
   }
   return Object.freeze({ path: input.path, purpose: input.purpose, content: input.content,
-    destination: input.destination, snapshot: input.snapshot, edits });
+    destination: input.destination, snapshot: input.snapshot, edits,
+    ...(input.recursive !== undefined ? { recursive: input.recursive } : {}), ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}) });
 }
 
 /** Stable invocation callbacks. Retains only one plan until execution returns. */
 class FileExecution {
+  pending: Promise<FileReceipt> | undefined;
   private readonly service: FileService;
-  private readonly item: PreparedFileItem;
-  private readonly hooks: FileExecutionHooks;
-  private readonly toolCallId: string;
-  private readonly itemId: string;
+  private item!: PreparedFileItem;
+  private hooks!: FileExecutionHooks;
+  private toolCallId = "";
+  private itemId = "";
   private postimage: Buffer | undefined;
   private publication: FileCommitReceipt | CreationResult | undefined;
-  constructor(service: FileService, item: PreparedFileItem, toolCallId: string, itemId: string, hooks: FileExecutionHooks) {
-    this.service = service; this.item = item; this.hooks = hooks; this.toolCallId = toolCallId; this.itemId = itemId;
+  constructor(service: FileService) { this.service = service; }
+  start(item: PreparedFileItem, id: string, itemId: string, hooks: FileExecutionHooks): Promise<FileReceipt> {
+    if (this.pending || this.item) throw new Error("File invocation already has an active effect.");
+    this.item = item; this.hooks = hooks; this.toolCallId = id; this.itemId = itemId;
+    return this.pending = this.runScoped();
   }
   readonly assertCurrent = (): void => {
     this.service.assertPrepared(this.item); this.hooks.signal?.throwIfAborted(); this.hooks.assertCurrent();
   };
   readonly assertPath = async (): Promise<string> => {
     this.assertCurrent();
-    const current = await assessProtectedMutationPath(this.service.cwd, this.item.executionPath);
+    const current = await assessProtectedMutationPath(this.service.cwd, this.item.executionPath, this.item.tree?.protectedPaths[0].followLeaf);
     this.assertCurrent();
     if (!current.canonicalTarget || directoryKey(current.canonicalTarget) !== directoryKey(this.item.target)) throw new Error("[STALE_STATE] Prepared path no longer identifies the approved target.");
     return current.canonicalTarget;
@@ -124,11 +140,20 @@ class FileExecution {
     this.record(this.hooks.batch ? "commit_prepared" : "intent", { strategy: metadata.strategy, compatibilityReason: metadata.reason });
   };
   readonly committedBytes = (bytes: Buffer, commit: FileCommitReceipt): void => { this.postimage = bytes; this.publication = commit; };
+  async runScoped(): Promise<FileReceipt> {
+    try { return await this.run(); }
+    finally {
+      this.service.release(this.item); this.item = undefined!; this.hooks = undefined!;
+      this.toolCallId = ""; this.itemId = ""; this.pending = undefined;
+    }
+  }
   record(phase: string, extra?: Record<string, unknown>): void {
+    // The v3 invocation already published these phases for the entire call.
+    if (this.hooks.batch && (phase === "intent" || phase === "origin")) return;
     const item = this.item;
     this.hooks.record({ toolCallId: this.toolCallId, itemId: this.itemId, phase, operation: item.operation,
-      target: item.target, destination: item.native?.destination, requestHash: item.requestHash,
-      directories: item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined, ...extra });
+      target: item.target, destination: item.tree?.destination ?? item.native?.destination, requestHash: item.requestHash,
+      directories: this.hooks.batch ? undefined : item.creation ? canonicalCreationDirectories(item.creation) : item.operation === "write" ? [] : undefined, ...extra });
   }
   async run(): Promise<FileReceipt> {
     const { item, hooks } = this;
@@ -139,7 +164,8 @@ class FileExecution {
       if (!hooks.batch && !item.native) this.record("origin");
       if (hooks.batch || !item.snapshot) this.record("intent");
       if (hooks.batch) await this.service.revalidate(item, hooks);
-      if (item.artifact) {
+      if (item.tree) receipt = await executeNativeTreePlan(item.tree, this.assertCurrent, hooks.signal);
+      else if (item.artifact) {
         if (createHash("sha256").update(item.artifact.bytes).digest("hex") !== item.artifact.sha256) throw new Error("[STALE_STATE] Artifact changed after preparation");
         const commit = item.artifact.commit ? await commitPreparedFile(item.artifact.commit, item.artifact.bytes,
           { assertPathAllowed: this.assertPath, assertCurrent: this.assertCurrent, signal: hooks.signal }) : undefined;
@@ -171,16 +197,17 @@ class FileExecution {
         if (item.creation && error instanceof Error) {
           try { creationFailure = JSON.parse(error.message); } catch { /* Unstructured errors preceded creation. */ }
         }
-        const changed = creationFailure?.stateChanged === true;
+        const changed = creationFailure?.stateChanged === "unknown" ? "unknown" : creationFailure?.stateChanged === true;
         receipt = { ...creationFailure, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
-          ok: false, status: changed ? "partial" : hooks.signal?.aborted ? "cancelled" : "failed_no_change",
-          stateChanged: changed, requiresVerification: changed,
+          ok: false, status: changed === "unknown" ? "state_unknown" : changed ? "partial" : hooks.signal?.aborted ? "cancelled" : "failed_no_change",
+          stateChanged: changed, requiresVerification: changed !== false,
           cause: creationFailure?.cause ?? (error instanceof Error ? error.message : String(error)) };
       }
     }
     if (receipt.stateChanged !== false || receipt.commit?.retainedTemporary) {
-      this.service.revisions.invalidatePath(item.target);
-      if (item.native?.destination) this.service.revisions.invalidatePath(item.native.destination);
+      if (item.operation !== "copy" || !receipt.ok) this.service.revisions.invalidatePath(item.target);
+      const destination = item.tree?.destination ?? item.native?.destination;
+      if (destination) this.service.revisions.invalidatePath(destination);
     }
     // Persist bounded recovery facts once; preview/diff bodies belong to the tool result.
     try { this.record("result", { mutationReceiptVersion: 2, status: receipt.status, stateChanged: receipt.stateChanged,
@@ -208,6 +235,8 @@ class FileExecution {
 
 /** Session-owned file correctness. Access policy is supplied by the caller's execution boundary. */
 export class FileService {
+  readonly inputKind = "native" as const;
+  readonly copyInput = copyInput;
   readonly revisions: FileRevisions;
   readonly cwd: string;
   readonly sessionId: string;
@@ -227,6 +256,25 @@ export class FileService {
     this.executing.delete(item);
     if (item.snapshot) item.snapshot.byteEdits.length = 0;
     item.artifact = undefined;
+    item.tree = undefined;
+  }
+  /** v3 top-level tree plans and text commit choices are pinned before authorization. */
+  async prepareV3(operation: FileOperation, raw: unknown, signal?: AbortSignal, mode?: "create" | "overwrite", previewBudget = new PreviewBudget()): Promise<PreparedFileItem> {
+    if (operation === "write" || operation === "edit") {
+      const item = await this.prepare(operation, raw, signal, mode, previewBudget);
+      try { if (item.snapshot) item.snapshot.metadata = await selectCommitMetadata(item.snapshot.target); return item; }
+      catch (error) { this.release(item); throw error; }
+    }
+    if (this.closed) throw new Error("File service is closed.");
+    const tree = await prepareNativeTreeOperation(this.cwd, operation, raw, undefined, signal, false);
+    const paths = [tree.source.canonical];
+    if (tree.destination) paths.push(tree.destination);
+    const item: PreparedFileItem = { operation, input: tree.input, target: tree.source.canonical, paths,
+      executionPath: tree.source.path, generation: this.revisions.generation, requestHash: mutationRequestHash(operation, raw),
+      approval: tree.protectedPaths[0], identity: tree.source, tree,
+      preview: { kind: operation === "delete" ? "Deleted" : operation === "move" ? "Moved" : "Copied", bytes: tree.tree.bytes,
+        risk: `${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.skippedLinks} links skipped; source trees and destinations are revalidated before effects.` } };
+    signal?.throwIfAborted(); this.prepared.add(item); this.assertPrepared(item); return item;
   }
   /** Internal byte publication. The caller transfers one private bounded buffer; text tool schemas remain unchanged. */
   async prepareArtifact(target: string, bytes: Uint8Array, expectedSha256: string, before: string | null, signal?: AbortSignal): Promise<PreparedFileItem> {
@@ -260,6 +308,7 @@ export class FileService {
       paths: [assessment.canonicalTarget], generation, requestHash: mutationRequestHash(operation, input),
       approval: { canonicalTarget: assessment.canonicalTarget, protectedRoots: assessment.violations } };
     try {
+      if (operation === "copy") throw new Error("Copy requires v3 preparation.");
       if (operation === "delete" || operation === "move") {
         item.native = await prepareNativeOperation(this.cwd, operation, operation === "move"
           ? { path: input.path, destination: input.destination } : { path: input.path });
@@ -295,9 +344,9 @@ export class FileService {
   async execute(item: PreparedFileItem, toolCallId: string, hooks: FileExecutionHooks, itemId = `${toolCallId}:0`): Promise<FileReceipt> {
     return this.withPreparedItems([item], execute => execute(item, toolCallId, hooks, itemId));
   }
-  /** One bounded lock scope for single operations and batches; no nested acquisition of the same path. */
+  /** One lock scope for all prepared paths; no target count admission limit. */
   async withPreparedItems<T>(items: readonly PreparedFileItem[], run: (execute: ExecutePreparedFile) => Promise<T>): Promise<T> {
-    if (!items.length || items.length > 16) throw new Error("Expected 1-16 prepared file items.");
+    if (!items.length) throw new Error("Expected nonempty prepared file items.");
     const selected = new Set(items);
     if (selected.size !== items.length) throw new Error("Duplicate prepared file item.");
     for (const item of selected) if (this.executing.has(item)) throw new Error("File invocation is already executing.");
@@ -306,42 +355,34 @@ export class FileService {
     for (const item of selected) for (const path of item.paths) paths.add(directoryKey(path));
     const ordered = [...paths].sort();
     let open = true;
-    const running: Promise<FileReceipt>[] = [];
-    const runOne: ExecutePreparedFile = async (item, id, hooks, itemId = `${id}:0`) => {
-      try { return await new FileExecution(this, item, id, itemId, hooks).run(); }
-      finally { this.release(item); }
-    };
+    // One fixed active slot per invocation; callbacks are created once for the
+    // whole call, not once per target. Every effect still owns its OS promises.
+    const execution = new FileExecution(this);
     const execute: ExecutePreparedFile = (item, id, hooks, itemId) => {
-      if (!open || !selected.delete(item)) throw new Error("Prepared file is outside the active lock scope or already consumed.");
-      const pending = runOne(item, id, hooks, itemId);
-      running.push(pending);
-      return pending;
+      if (!open || execution.pending || !selected.delete(item)) throw new Error("Prepared file is outside the active lock scope, already consumed or overlaps an active effect.");
+      return execution.start(item, id, itemId ?? `${id}:0`, hooks);
     };
-    async function acquire(index: number): Promise<T> {
-      if (index < ordered.length) return withFileMutationQueue(ordered[index], () => acquire(index + 1));
+    async function runLocked(): Promise<T> {
       try { return await run(execute); }
       finally {
         open = false;
         // A callback cannot release locks while an already-started OS operation still owns them.
-        let failed = false, failure: unknown;
-        try {
-          for (const pending of running) {
-            try { await pending; } catch (error) { failed = true; failure ??= error; }
-          }
-          if (failed) throw failure;
-        }
-        finally { running.length = 0; }
+        await execution.pending;
       }
     }
-    try { return await acquire(0); }
+    try { return await withFileMutationQueues(ordered, runLocked); }
     finally { open = false; for (const item of selected) this.release(item); selected.clear(); }
   }
   /** Read-only all-item check. Each effect still repeats its own final identity/content checks. */
   async revalidate(item: PreparedFileItem, hooks: FileExecutionHooks): Promise<void> {
     this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
-    const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath);
+    const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath, item.tree?.protectedPaths[0].followLeaf);
     if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Prepared target changed.");
-    if (item.native) await revalidateNativePlan(item.native);
+    if (item.tree) {
+      if (item.tree.deferredCopyHash && !hooks.preflightOnly) item.tree = await finalizeNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
+      else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
+    }
+    else if (item.native) await revalidateNativePlan(item.native);
     else if (item.creation) {
       await verifyCreationAncestor(item.creation);
       const absent = [item.creation.path, ...item.creation.directories];
@@ -361,3 +402,19 @@ export class FileService {
 }
 
 export type ExecutePreparedFile = (item: PreparedFileItem, toolCallId: string, hooks: FileExecutionHooks, itemId?: string) => Promise<FileReceipt>;
+
+/** Both execution environments keep one preparation/journal owner. Only the
+ * environment's service can execute its plans or issue its own continuation. */
+export interface FileMutationService {
+  readonly inputKind?: "native" | "sandbox";
+  copyInput?(operation: FileOperation, raw: unknown): FileOperationInput;
+  readonly cwd: string;
+  readonly sessionId: string;
+  readonly revisions: Pick<FileRevisions, "generation" | "invalidatePath">;
+  beginMutation?(operation: FileOperation | "file_batch", id: string, requestHash: string, input: readonly FileOperationInput[], dryRun: boolean, signal?: AbortSignal): Promise<void>;
+  prepareV3: FileService["prepareV3"];
+  revalidate: FileService["revalidate"];
+  withPreparedItems<T>(items: readonly PreparedFileItem[], run: (execute: ExecutePreparedFile) => Promise<T>, hooks?: FileExecutionHooks): Promise<T>;
+  release: FileService["release"];
+  closeInvocation?(): Promise<void>;
+}

@@ -1,7 +1,7 @@
 # Regression tests and optional measurements
 
 Default Linux and Windows CI runs `npm ci`, `npm run build:offline`, then
-`npm test`, within the unchanged 30-minute job limit. The shared TypeScript
+`npm test -- --keep-going`, within the unchanged 30-minute job limit. The shared TypeScript
 check runs once, on Linux shard 1. Both operating systems still compile and
 exercise their actual runtime paths. Use `npm.cmd` on PowerShell 7 when
 required by execution policy.
@@ -35,8 +35,17 @@ focused work; they are not an additional validation chain before `npm test`.
 The root runner invokes the memory workspace's existing Node test directly
 against the preceding build. Its standalone workspace test still builds when
 that package is tested independently. Native MXC acceptance and allocation
-benchmarks are opt-in and run separately from ordinary CI. `--keep-going` is an explicit
-diagnostic option; routine CI stays fail-fast.
+benchmarks are opt-in and run separately from ordinary CI. The CI workflow uses
+`--keep-going` to collect failures across the complete shard; local runs without
+that option stop scheduling after the first failing file.
+
+For a local change, use Node's existing exact-file test entry point, for example
+`node --experimental-strip-types --test tests/file-mutation-v3.test.ts`.
+Do not automatically run unit, hot,
+contract and the full suite in succession, or repeat full suites just to wait
+for remote CI/review. Start with the relevant small regression and expand only
+for changed behavior or a diagnosed failure. Do not overlap local benchmarks
+with normal development or unrelated work.
 
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
 `SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
@@ -55,6 +64,37 @@ replace resource-lifecycle assertions. START/END lines identify the file,
 elapsed milliseconds, exit code and signal.
 
 ## Consolidated coverage
+
+- Retired v2 mutation executors no longer run through copied test producers:
+  13 MXC cases and four native batch/owner cases were removed with both copied
+  execution fixtures. Historical v1/v2 receipt parsing remains covered by the
+  dedicated receipt/recovery fixtures. Current creation/publication faults,
+  queue ownership, partial outcomes and no replay use the production v3 owners.
+- The default native v3 effect test uses 70 targets to cross inline and page
+  boundaries. The 2,000-row metadata protocol tests remain small and retain
+  the 17/513/2,000 boundaries. The four-operation 2,000-target sampler,
+  50,000-file tree probe and real MXC stress acceptance are outside `tests/`.
+- The 36-session task-cost matrix and 15-session context-cost matrix moved to
+  `scripts/bench/`; their measurements are no longer repeated in ordinary CI.
+  The obsolete 17-item rejection and the duplicate legacy combined matrix were
+  removed. Current whole-call preflight and actual SDK changes/reopen behavior
+  remain in focused production-path regressions.
+
+The following are manual measurements, not a required local test chain:
+
+| Command | Workload |
+| --- | --- |
+| `npm run bench:file-mutations` | Four native operations × 2,000 targets, allocation profile and reference release |
+| `npm run bench:file-tree` | 50,000-file native/MXC directory probe; also requires `SUPERPI_FILE_V3_TREE_STRESS=1` and an explicit environment selection |
+| `npm run test:file-ops:live` | Real MXC stress/probes; also requires the corresponding `SUPERPI_FILE_V3_STRESS=1` or `SUPERPI_FILE_V3_PROBE=1` |
+| `npm run bench:file-task-matrix` | 36-session serializer/task-cost comparison |
+| `npm run bench:file-recovery-matrix` | 15-session context-cost comparison and measurement instrumentation checks |
+
+Use an owned temporary directory and close processes before removing its exact
+identity. These commands do not run as part of `npm test` or the CI workflow.
+For a bounded allocation-contract check, set `SP_FILE_BENCH_TARGETS=32` for
+`bench:file-mutations`; record that smaller workload explicitly and do not
+compare its totals with the 2,000-target measurements as a speedup.
 
 Request-image projection uses the actual OpenAI chat serializer with offline fetch in
 `tests/request-image-budget-session.test.ts`, including 44 valid PNG history blocks,

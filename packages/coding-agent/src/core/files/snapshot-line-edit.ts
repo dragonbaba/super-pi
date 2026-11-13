@@ -918,6 +918,7 @@ export async function resolveSnapshotCanonicalTarget(
   return receipt.canonicalPath;
 }
 export interface PreparedSnapshotMutation {
+  metadata?: CommitMetadata;
   revisions: FileRevisions;
   target: PathIdentity;
   parent: PathIdentity;
@@ -1000,7 +1001,7 @@ export async function executePreparedSnapshotMutation(
   try {
     // One invocation-bound callback, reused by every pre-publication commit check.
     const assertCurrent = (): void => { revisions.assertCurrent(receipt); hooks.assertCurrent?.(); };
-    const metadata = await selectCommitMetadata(plan.target);
+    const metadata = plan.metadata ?? await selectCommitMetadata(plan.target);
     signal?.throwIfAborted(); assertCurrent();
     hooks.commitSelected?.(metadata);
     const commit = await commitPreparedFile({ target: plan.target, parent: plan.parent, previousSha256: receipt.sha256, metadata }, prepared.output, { ...hooks, signal, assertCurrent });

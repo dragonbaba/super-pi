@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getEncoding } from "js-tiktoken";
-import { ALPHA_MODEL, alphaModelRuntime, exposeNativeProtocolForFixture } from "./helpers/next-phase-model.ts";
-import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "./helpers/next-phase-fixture-regex.ts";
+import { ALPHA_MODEL, alphaModelRuntime, exposeNativeProtocolForFixture } from "../../tests/helpers/next-phase-model.ts";
+import { FIXTURE_SNAPSHOT_ID_PATTERN, FIXTURE_SECOND_LINE_ANCHOR_PATTERN } from "../../tests/helpers/next-phase-fixture-regex.ts";
 
 // The same harness can run an untouched parent checkout for interleaved comparisons.
 // Only application module paths change; task data, scheduling and counters do not.

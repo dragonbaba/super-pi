@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { SessionFiles } from "../packages/coding-agent/src/core/files/session-files.ts";
+import { createEventBus } from "../packages/coding-agent/src/core/event-bus.ts";
 import { canonicalSessionDirectory, loadSessionExecutionProfile, saveSessionExecutionProfile, sessionDirectories, WORKSPACE_TOOL_NAMES } from "../packages/coding-agent/src/core/session-execution-profile.ts";
 import { mergeHostPath, refreshedHostEnvironment } from "../packages/coding-agent/src/core/sandbox/host-path.ts";
 import { WorkspaceSandboxTools } from "../packages/coding-agent/src/core/sandbox/workspace-tools.ts";
@@ -115,16 +117,18 @@ test("persistent PATH refresh preserves process precedence without duplicate dir
 });
 
 test("sandbox shell capability comes from the workspace adapter; legacy SDK cannot expose host Bash", async () => {
-  const runtime = createExtensionRuntime(), owner = new WorkspaceSandboxTools(process.cwd(), process.cwd(), "sandbox-write", () => runtime);
+  const runtime = createExtensionRuntime(), files = runtime.nativeFiles = new SessionFiles(runtime, createEventBus());
+  const owner = new WorkspaceSandboxTools(process.cwd(), process.cwd(), "sandbox-write", () => runtime);
   const definitions = owner.install({});
   const policy = new SessionExecutionPolicy(runtime, "sandbox", {}, "sandbox-write");
+  files.setCompatibilityBoundary(policy);
   try {
-    assert.deepEqual(Object.keys(definitions), [...WORKSPACE_TOOL_NAMES]);
+    assert.deepEqual(new Set(Object.keys(definitions)), new Set(WORKSPACE_TOOL_NAMES));
     for (const definition of Object.values(definitions)) { policy.registerDefinition(definition); assert.ok(policy.supports(definition)); }
     assert.equal(definitions.bash, undefined);
     assert.match(definitions.powershell!.description, /PowerShell 7.*MXC/);
     const legacyRuntime = createExtensionRuntime(), legacy = new SessionExecutionPolicy(legacyRuntime, "sandbox");
     try { const bash: any = { name: "bash" }; legacy.registerDefinition(bash); assert.equal(legacy.supports(bash), false); }
     finally { legacy.dispose(); await legacyRuntime.executionBoundary.dispose(); }
-  } finally { await owner.close(); policy.dispose(); await runtime.executionBoundary.dispose(); }
+  } finally { await owner.close(); await files.dispose(); policy.dispose(); await runtime.executionBoundary.dispose(); }
 });

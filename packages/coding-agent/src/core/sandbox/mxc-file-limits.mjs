@@ -7,7 +7,7 @@ export const SEARCH_ROWS = 200;
 export const SEARCH_ENTRIES = 20000;
 export const TEXT_LIMIT = 32768;
 export const SEARCH_EXCERPT = 256;
-export const FILE_PROTOCOL_LIMIT = 256 * 1024;
+export { FILE_RPC_REPLY_BYTES as FILE_PROTOCOL_LIMIT } from '../files/file-operation-limits.mjs';
 export const SEARCH_CLIPPED_MARK = ' ...';
 export const DIRECTORY_READ_BUFFER = 32;
 

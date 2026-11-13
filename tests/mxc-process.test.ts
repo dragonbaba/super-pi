@@ -70,3 +70,15 @@ test("MXC deadline kills its owned process and reports the timeout", async () =>
     assert.equal(result.timedOut, true); assert.equal(child.stopCount, 1); child.assertReleased(); owner.assertStopped();
   } finally { restore(); }
 });
+
+test("controlled file RPC has no shell deadline and remains cancellable through physical cleanup", async () => {
+  const child = new ExecFixture(), restore = installExecFixture(child), owner = new MxcProcess(), controller = new AbortController();
+  try {
+    const pending = owner.run("fixture", [], process.cwd(), {}, controller.signal, 0);
+    const rejected = assert.rejects(pending, /file cancellation/);
+    await child.ready; await nextTurn(); await nextTurn();
+    assert.equal(child.stopCount, 0); assert.equal(owner.diagnostics.active, true);
+    controller.abort(new Error("file cancellation")); await rejected;
+    child.assertReleased(); owner.assertStopped(); assert.equal(owner.diagnostics.retainedStreams, 0);
+  } finally { restore(); }
+});

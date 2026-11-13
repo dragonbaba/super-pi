@@ -6,6 +6,8 @@ import type { Api, Context, Model } from "@super-pi/ai";
 import type { ExtensionContext, ExtensionRuntime } from "./extensions/types.ts";
 import type { ReadonlySessionManager, SessionEntry } from "./session-manager.ts";
 import { raceWithAbortSignal } from "../utils/abort.ts";
+import { FileResultReader } from "./files/file-result-store.ts";
+import { FILE_RESULT_ENTRY, FILE_RESULT_PAGE_RECORDS, fileResultReference, parseFileResultEnvelope } from "./files/file-result-protocol.ts";
 
 /**
  * R6 Auto review (host-auto): an action that host-restricted would ask the user about is
@@ -159,6 +161,42 @@ const MAX_REFERENCE_CHARS = 16384;
 const REFERENCE_WHITESPACE = /\s/u;
 const READ_FILE_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
+/** Approval-only scan. Authenticate current receipts before reading their paths;
+ * retain one reader page and the call IDs encountered within the scan budget. */
+async function* sessionFileWrites(manager: ReadonlySessionManager, signal?: AbortSignal): AsyncGenerator<{ target: string; sha256: string }> {
+  const reader = new FileResultReader(manager), seen = new Set<string>();
+  let entry = manager.getLeafEntry(), scanned = 0;
+  try {
+    while (entry && scanned++ < MAX_FILE_SCAN_ENTRIES) {
+      signal?.throwIfAborted();
+      if (entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY) {
+        const envelope = parseFileResultEnvelope(entry.data), key = `${envelope.callEntryId}:${envelope.toolCallId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const ref = fileResultReference(entry.id, envelope, envelope.hash);
+          let cursor: string | undefined;
+          do {
+            const page = reader.read(ref, cursor, Math.min(FILE_RESULT_PAGE_RECORDS, MAX_FILE_SCAN_ENTRIES - scanned + 1));
+            for (const row of page.records) {
+              signal?.throwIfAborted(); scanned++;
+              const record = row.record;
+              const target = record.operation === "copy" || record.operation === "move" ? record.destination : record.target;
+              if (record.phase === "result" && record.status === "succeeded" && typeof target === "string" && typeof record.sha256 === "string")
+                yield { target, sha256: record.sha256 };
+            }
+            cursor = page.nextCursor ?? undefined;
+          } while (cursor && scanned < MAX_FILE_SCAN_ENTRIES);
+        }
+      } else if (entry.type === "custom" && entry.customType === "file-mutation-progress-v2") {
+        const record = entry.data as { phase?: unknown; status?: unknown; target?: unknown; sha256?: unknown };
+        if (record?.phase === "result" && record.status === "succeeded" && typeof record.target === "string" && typeof record.sha256 === "string")
+          yield { target: record.target, sha256: record.sha256 };
+      }
+      entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
+    }
+  } finally { reader.dispose(); seen.clear(); }
+}
+
 function attachmentPath(value: string): string {
   return process.platform === "win32" ? value.replaceAll("\\", "/") : value;
 }
@@ -221,38 +259,33 @@ export async function autoReviewSessionFiles(manager: ReadonlySessionManager, in
   const root = cwd === undefined ? undefined : attachmentPath(cwd).replace(/\/+$/, "") + "/";
   const seen = new Set<string>();
   let out = "", files = 0, budget = MAX_SESSION_FILE_CHARS;
-  let entry = manager.getLeafEntry();
-  for (let scanned = 0; entry && scanned < MAX_FILE_SCAN_ENTRIES && files < MAX_SESSION_FILES; scanned++) {
+  for await (const data of sessionFileWrites(manager, signal)) {
     signal?.throwIfAborted();
-    const data = entry.type === "custom" && entry.customType === "file-mutation-progress-v2"
-      ? entry.data as { phase?: unknown; status?: unknown; target?: unknown; sha256?: unknown } : undefined;
-    if (data && data.phase === "result" && data.status === "succeeded" && typeof data.target === "string" && typeof data.sha256 === "string") {
-      const target = data.target, key = attachmentPath(target);
-      if (!seen.has(key)) {
-        // The newest write of a path is the one whose hash can still be current.
-        seen.add(key);
-        let referenced = false;
-        for (const text of references) if (mentions(text, key) || root !== undefined && key.startsWith(root) && mentions(text, key.slice(root.length))) {
-          referenced = true; break;
-        }
-        if (referenced) {
-          files++;
-          let body = "(changed or removed since the session wrote it, or unavailable; content not shown)";
-          try {
-            const bytes = await readSessionFile(target, signal);
-            if (bytes !== undefined) {
-              if (createHash("sha256").update(bytes).digest("hex") === data.sha256) {
-                const content = bytes.toString("utf8");
-                body = content.length <= budget ? content : content.slice(0, budget) + "\n… (truncated)";
-                budget -= Math.min(budget, content.length);
-              }
-            } else body = "(too large to show)";
-          } catch { signal?.throwIfAborted(); /* An unavailable file keeps the placeholder. */ }
-          out += `${out ? "\n" : ""}<file path=${JSON.stringify(target)}>\n${body}\n</file>`;
-        }
+    const target = data.target, key = attachmentPath(target);
+    if (!seen.has(key)) {
+      // The newest write of a path is the one whose hash can still be current.
+      seen.add(key);
+      let referenced = false;
+      for (const text of references) if (mentions(text, key) || root !== undefined && key.startsWith(root) && mentions(text, key.slice(root.length))) {
+        referenced = true; break;
+      }
+      if (referenced) {
+        files++;
+        let body = "(changed or removed since the session wrote it, or unavailable; content not shown)";
+        try {
+          const bytes = await readSessionFile(target, signal);
+          if (bytes !== undefined) {
+            if (createHash("sha256").update(bytes).digest("hex") === data.sha256) {
+              const content = bytes.toString("utf8");
+              body = content.length <= budget ? content : content.slice(0, budget) + "\n… (truncated)";
+              budget -= Math.min(budget, content.length);
+            }
+          } else body = "(too large to show)";
+        } catch { signal?.throwIfAborted(); /* An unavailable file keeps the placeholder. */ }
+        out += `${out ? "\n" : ""}<file path=${JSON.stringify(target)}>\n${body}\n</file>`;
       }
     }
-    entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
+    if (files >= MAX_SESSION_FILES) break;
   }
   return out;
 }

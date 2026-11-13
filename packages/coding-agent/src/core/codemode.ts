@@ -181,14 +181,17 @@ export class CodemodeController {
 	}
 	recordInvocation(parent: string | undefined, id: string, name: string, args: unknown): void {
 		const invocation = this.current;
-		if (!parent || parent !== invocation?.context.parentToolCallId || !CODEMODE_MUTATION_NAMES.has(name)) return;
+		if (!parent || !id.startsWith(parent + ":nested:") || !CODEMODE_MUTATION_NAMES.has(name)) return;
 		try {
-			const json = this.serializer.stringify(args, 256 * 1024);
-			if (!json) throw new Error("Nested mutation arguments cannot be persisted");
-			this.saveCall?.({ version: 1, parentToolCallId: parent, call: { type: "toolCall", id, name, arguments: JSON.parse(json) } });
+			// The dispatcher has already validated this ordinary file invocation.
+			// Preserve its complete source once, including delegated child calls;
+			// a display serializer's cap must not become a public target-count cap.
+			this.saveCall?.({ version: 1, parentToolCallId: parent, call: { type: "toolCall", id, name, arguments: structuredClone(args) } });
 		} catch (error) {
-			invocation.failed = true;
-			(invocation.failedRecordings ??= []).push(id);
+			if (invocation && parent === invocation.context.parentToolCallId) {
+				invocation.failed = true;
+				(invocation.failedRecordings ??= []).push(id);
+			}
 			throw error;
 		}
 	}

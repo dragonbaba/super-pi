@@ -23,7 +23,11 @@ const written = await tools.write({ path: "notes.txt", content: "updated", snaps
 await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits: [{ oldText: "updated", newText: "continued" }] });
 ```
 
-新建文件的 MXC `write` 不带 snapshot，成功后同样返回新哈希。`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时读取并核对内容，不能忽略版本检查。MXC 跨调用按内容哈希表示版本，同内容的外部替换沿用既有语义；本次修改期间的固定身份和内容检查仍生效。`file_batch` 的 `details.items` 逐项返回 succeeded/unknown/not_started 与成功项的新哈希；成功项不回滚，失败或不确定项没有新哈希，不自动重放。
+新建文件的 MXC `write` 不带 snapshot，成功后同样返回新哈希。`r.ref` 仅用于展示，不能作为 `snapshot`。哈希过期时读取并核对内容，不能忽略版本检查。MXC 跨调用按内容哈希表示版本，同内容的外部替换沿用既有语义；本次修改期间的固定身份和内容检查仍生效。成功项不回滚，失败或不确定项没有新哈希，不自动重放。
+
+`copy`、`delete`、`move` 和 `file_batch` 不设目标数量上限，新调用共用 v3 会话记录。copy/move 可传 `items`，delete 可传 `paths`，与单值形式互斥；`file_batch` 支持 copy 与递归 delete。全调用预检后一次授权，批量在首个失败后停止，独立数组仅在普通失败后继续。具体目录、链接、跨工作区和停止规则见[文件结果的完整性](execution-environments.md#文件结果的完整性)。
+
+工具先返回完整计数和 `resultRef`。最多 16 个且符合字节预算的小结果附 `details.items`；其他结果标记 `itemsOmitted: true`，须通过 `tools.file_result({ref: result.details.resultRef, cursor, limit: 128})` 按 `nextCursor` 翻页。终态为 `succeeded`、`failed_no_change`、`partial`、`state_unknown`、`cancelled` 或未启动；仅干净成功的文本修改提供可继续使用的新 snapshot。分页限制只控制返回量。`resultRef` 绑定当前会话分支，不能作为 snapshot、文件路径或 Codemode 的展示 `ref`。dryRun 只有汇总与有界样本，没有执行记录引用。
 
 目标已创建后的写入、stat、关闭或发布校验失败，move 已产生目标但未完成源删除，或临时候选未能清理时，MXC 返回 `requiresVerification:true`。这些不确定修改不能靠捕获异常变成可提交 store 的普通部分完成；先核对当前文件。创建前拒绝、旧哈希和目标冲突等明确未进入发布的失败仍可正常处理。
 

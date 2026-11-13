@@ -31,8 +31,9 @@
 | 文本读取 | 单文件 2 MiB（字节）；单次至多 2,000 行和 32,768 UTF-16 code units 正文；返回完整文件字节的 SHA-256 snapshot |
 | 图片读取 | 按签名识别 JPEG、PNG、GIF、WebP、BMP；单图 16 MiB，独立字节附件，不放进 stdout/base64 文本窗口 |
 | 搜索 | `ls` 列路径，`find` / `grep` 为字面子串；200 条记录、32,768 UTF-16 code units 正文（含路径与分隔符）、20,000 遍历项；grep 单行前缀最多 256 UTF-16 code units；完整 JSON 加换行在 256 KiB 字节内；达到预算应缩小范围 |
-| 文本修改 | 单文件写入/编辑 1 MiB；覆盖和编辑需要读取或干净自提交返回的 SHA-256 snapshot；成功后返回新哈希；原子替换前后校验版本 |
-| 文件移动/批量 | 文件移动不覆盖目标；每批最多 16 项，可含不同工作区；跨工作区 move 不隐式复制删除；失败可能已有部分操作完成 |
+| 文本修改 | 单次调用写入/编辑正文合计 1 MiB；覆盖和编辑需要读取或干净自提交返回的 SHA-256 snapshot；成功后返回新哈希；原子替换前后校验版本 |
+| 复制/删除/移动/批量 | 不设目标数量上限；全调用预检和一次授权后逐项执行。copy/move 支持文件与目录、不同授权工作区；move 使用校验复制后删源。目录不覆盖或合并；失败可能已有部分操作完成 |
+| 文件操作传输与查询 | 内部分块请求最多 4 MiB、回复最多 256 KiB（实际 JSON 字节）。`file_result` 每页最多 128 条、64 KiB；这些预算不限制原调用的目标总数 |
 | 命令 | 原样传入 PowerShell 7；默认 30 秒、最多 120 秒；串行执行；stdout/stderr 各保留末尾 32 KiB |
 | 生命周期 | Windows Job 管理执行器和后代进程；完成、超时、取消均等待物理清理；不能确认清理则禁止复用 |
 | 网络和 UI | 默认禁网；按用户决定共享宿主剪贴板；独立 desktop，禁用输入注入；模型 provider 仍在宿主通信 |
@@ -40,6 +41,18 @@
 `target`、`.venv`、`__pycache__`、`node_modules` 都是普通工作区目录：已有内容可访问，新内容留在宿主项目。`sandboxPrivateDirectories` 和“仅 VM 保留、不写回”的规则已退役，旧字段不再生效。关闭会话只清理本次运行器的临时资源，不删除工作区依赖和产物。命令失败、超时或取消不回滚已发生的修改，也不自动重跑。
 
 ### 文件结果的完整性
+
+`copy` / `move` 接受单值 `path` + `destination` 或非空 `items: [{path, destination}]`；`delete` 接受 `path` 或非空 `paths`，两种形式互斥。copy 默认不覆盖，`overwrite: true` 只替换已有普通文件；删除非空目录须用 `recursive: true`。copy 跳过目录内链接并计数，move 预检拒绝含链接或特殊文件的源树；recursive delete 只删除链接本身。包含 `.git` / `.sp` 的目录树在预检时整体拒绝。`dryRun` 完整预检，返回总数、总字节和有界路径样本，不写变更记录；正式执行重新预检并授权。
+
+这些工具和 `file_batch` 的新调用均返回 v3 汇总：`succeeded`、`failed`、`partial`、`unknown`、`cancelled`、`notStarted`、`coverageComplete` 和 `resultRef`。小结果附 `details.items`；大结果明确 `itemsOmitted: true`。用 `file_result({ref: resultRef, cursor?, limit?})` 查询当前会话分支的记录，按 `nextCursor` 续页。引用与 Codemode 的展示 `ref` 不同，既不读取任意宿主文件，也不签发文件读取版本。历史 v1/v2 会话保留原有读取预算。
+
+查询页的 `coverageComplete` 表示已读完一个已结束调用的完整记录链；`pageComplete` 表示已到链尾，`callComplete` 表示调用发布了结束记录。它们不证明所有文件操作成功或目录内部覆盖完整；须同时检查各项终态、`requiresVerification` 和该项的 `coverageComplete`，以及原工具结果的汇总。
+
+显式允许子代理使用 `file_result` 时，它可查询本次任务自己委派操作产生的结果，包括被省略的大结果；不能查询父会话的其他调用。委派结果的查询能力随该任务 owner 结束而失效，本地子会话记录仍遵循自己的分支边界。
+
+copy/delete/move 数组在明确的 `failed_no_change` 或 `partial` 后继续其余独立目标；`file_batch` 首次失败即停止。取消、撤销授权、权限代次或会话改变、日志或传输丢失以及 `state_unknown` 都停止剩余项。成功项不回滚，也不为恢复回复而重放。目录内部明细只留有界样本；覆盖不完整时须重新列目录核对。`/changes` 按页恢复全部顶层目标；沙箱中的现状核对仍由当前授权下的 MXC 观察入口执行，不回退到宿主读取。
+
+POSIX 复制候选在填充时保持私有：目录 0700、文件 0600，内容验证后恢复源 rwx。目录移动采用验证复制和逐文件删源，在文件写完、目录填充结束后通过已打开句柄恢复原修改时间；保留精度受 Node 与文件系统支持约束，不克隆 ACL、属主或 ctime。中途失败时保留候选并要求核验。
 
 成功返回只表示调用正常结束。`details.search` 的版本为 1，区分 `scanComplete`（当前模式的扫描自然结束）、`coverageComplete`（范围完整覆盖）、`outputTruncated`（已观察记录未全部显示）、`excerptTruncated`（显示了行首片段）。`stopReason` 为 `none`、`row-limit`、`text-limit` 或 `entry-limit`。过大、非 UTF-8、含 NUL 的候选文件分别计入 `skippedTooLarge`、`skippedNonUtf8`、`skippedNul`；目录扫描结束也可能存在这些覆盖缺口。`.git/.sp` 子项和链接的既有遍历排除独立计数，不当成覆盖异常；显式读取规则不变。I/O 错误仍返回失败。
 

@@ -8,15 +8,19 @@ const MAX_RECOVERY_EDITS = 20;
 const MAX_RECOVERY_EDIT_BYTES = 256 * 1024;
 const MAX_RECOVERY_MUTATION_BYTES = 1024 * 1024;
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
+import { captureTreeIdentity } from "./file-tree-core.mjs";
+import { FILE_OBSERVATION_HASH_BYTES } from "./file-operation-limits.mjs";
 import { boundBatchIntents, collectStructuredMutationReceipts, recentMutationEntries, isBoundedMutationEntryId } from "./change-receipts.ts";
 import { batchExpandedSummary, verificationSummary, displayMetadata } from "./change-preview.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
+import { FileChangesV3, type FileChangesPageV3 } from "./file-changes-v3.ts";
 import { parseSnapshotLineReference } from "./snapshot-line-protocol.ts";
 import { SHA256_PATTERN as SHA256, CHANGE_ID_CONTROL_PATTERN, OBSERVATION_UNSIGNED_INTEGER_PATTERN, OBSERVATION_SIGNED_INTEGER_PATTERN, RETAINED_COMMIT_NAME_PATTERN, SNAPSHOT_ID_REGEX, SNAPSHOT_LINE_REFERENCE_REGEX } from "./regex.ts";
+import { MXC_RETAINED_COMMIT_NAME_PATTERN } from "./mxc-file-publication.mjs";
 
 export const CHANGE_VERIFICATION_ENTRY = "file-change-verification-v1";
 const MAX_CHANGES = 128;
-const MAX_VERIFY_BYTES = 32 * 1024 * 1024;
+const MAX_VERIFY_BYTES = FILE_OBSERVATION_HASH_BYTES;
 const CHANGE_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const OBSERVATION_SCOPE = "Filesystem observation only; not a semantic/test result, proof of earlier side effects, or permission to replay.";
 const MAX_RECOVERY_ARGUMENT_BYTES = 4 * 1024 * 1024;
@@ -128,11 +132,13 @@ function validateRecoveryArguments(call: any, budget: RecoveryArgumentBudget): b
 }
 
 export interface ChangeRecord {
+  receiptVersion?: 1 | 2 | 3;
   entryId: string; toolCallId: string; itemId: string; operation: string;
   /** Unique, request-bound entry in this branch; absent when reconstruction is unsafe. */
   requestEntryId?: string;
   target: string; destination?: string; status: string; preview: boolean;
   original?: any; item?: any; postimage?: string; sourceIdentity?: { device: string; inode: string };
+  destinationPostimage?: string;
   receipt?: any;
   reason?: string;
   unavailable?: string;
@@ -605,11 +611,45 @@ export function collectChanges(branch: readonly any[], cwd: string): ChangeRecor
 
 export interface ChangeObservation { path: string; exists: boolean; identity?: PathIdentity; sha256?: string; hashOmitted?: string }
 
+/** Fixed receipt-derived scope, shared with sandbox verification. No arbitrary
+ * worker path or model-authored verification scope is accepted. */
+export function fileChangeObservationTargets(record: ChangeRecord): Array<{ path: string; hash: boolean }> {
+  if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
+  const paths = [{ path: record.target, hash: Boolean(record.postimage) }];
+  if (record.destination) paths.push({ path: record.destination, hash: Boolean(record.destinationPostimage) });
+  const temporary = retainedTemporary(record); if (temporary) paths.push({ path: temporary, hash: true });
+  for (const path of retainedParents(record)) paths.push({ path, hash: false });
+  return paths;
+}
+
+export function acceptFileChangeObservations(record: ChangeRecord, observations: readonly ChangeObservation[]) {
+  const targets = fileChangeObservationTargets(record);
+  if (observations.length !== targets.length) throw new Error("Incomplete sandbox verification scope.");
+  for (let index = 0; index < targets.length; index++) {
+    const value = observations[index], target = targets[index];
+    if (!validObservation(value, target.path) || value.identity?.canonical !== (value.exists ? target.path : undefined)
+      || !target.hash && (value.sha256 !== undefined || value.hashOmitted !== undefined)
+      || target.hash && value.exists && !value.identity?.directory && !("symbolicLink" in value.identity!) && !value.sha256 && !value.hashOmitted)
+      throw new Error("Invalid or unpaired sandbox verification observation.");
+  }
+  let index = 0;
+  const source = observations[index++], destination = record.destination ? observations[index++] : undefined;
+  const temporary = retainedTemporary(record) ? observations[index++] : undefined;
+  const parents = observations.slice(index);
+  return { source, destination, temporary, parents,
+    postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
+    destinationPostimageMatches: record.destinationPostimage && destination?.sha256 ? record.destinationPostimage === destination.sha256 : undefined,
+    destinationIdentityMatches: record.sourceIdentity && destination?.identity
+      ? record.sourceIdentity.device === destination.identity.device && record.sourceIdentity.inode === destination.identity.inode : undefined,
+    scope: OBSERVATION_SCOPE };
+}
+
 function retainedTemporary(record: ChangeRecord): string | undefined {
   const path = record.receipt?.commit?.retainedTemporary;
   if (path === undefined) return undefined;
-  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.target)
-    || !RETAINED_COMMIT_NAME_PATTERN.test(basename(path))) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  if (typeof path !== "string" || path.length > 4096 || !isAbsolute(path) || dirname(path) !== dirname(record.destination ?? record.target)) throw new Error("Retained candidate path cannot be safely reconstructed.");
+  const name = basename(path);
+  if (!RETAINED_COMMIT_NAME_PATTERN.test(name) && !(record.receiptVersion === 3 && MXC_RETAINED_COMMIT_NAME_PATTERN.test(name))) throw new Error("Retained candidate path cannot be safely reconstructed.");
   return path;
 }
 
@@ -629,10 +669,10 @@ function retainedParents(record: ChangeRecord): string[] {
   return paths;
 }
 
-async function observe(path: string, hash: boolean, assertAllowed: (() => Promise<void>) & { assertCurrent?: () => void }): Promise<ChangeObservation> {
+async function observe(path: string, hash: boolean, assertAllowed: (() => Promise<void>) & { assertCurrent?: () => void }, v3 = false): Promise<ChangeObservation> {
   await assertAllowed();
   let identity: PathIdentity;
-  try { identity = await capturePathIdentity(path); }
+  try { identity = v3 ? await captureTreeIdentity(path) : await capturePathIdentity(path); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await assertAllowed();
@@ -642,7 +682,7 @@ async function observe(path: string, hash: boolean, assertAllowed: (() => Promis
   }
   if (identity.canonical !== path) throw new Error("Recorded canonical target now resolves elsewhere.");
   const observation: ChangeObservation = { path, exists: true, identity };
-  if (!hash || identity.directory) return observation;
+  if (!hash || identity.directory || "symbolicLink" in identity) return observation;
   if (Number(identity.size) > MAX_VERIFY_BYTES) return { ...observation, hashOmitted: "Content exceeds the 32 MiB verification bound." };
   await assertAllowed();
   const handle = await open(path, "r");
@@ -669,8 +709,9 @@ async function observe(path: string, hash: boolean, assertAllowed: (() => Promis
 
 export async function verifyChange(record: ChangeRecord, assertAllowed: (() => Promise<void>) & { assertCurrent?: () => void }) {
   if (record.preview || record.unavailable || !record.original) throw new Error("This record cannot authorize verification; no change was replayed.");
-  const source = await observe(record.target, Boolean(record.postimage), assertAllowed);
-  const destination = record.destination ? await observe(record.destination, false, assertAllowed) : undefined;
+  const v3 = record.receiptVersion === 3;
+  const source = await observe(record.target, Boolean(record.postimage), assertAllowed, v3);
+  const destination = record.destination ? await observe(record.destination, Boolean(record.destinationPostimage), assertAllowed, v3) : undefined;
   const retained = retainedTemporary(record);
   const temporary = retained ? await observe(retained, true, assertAllowed) : undefined;
   const parents: ChangeObservation[] = [];
@@ -680,7 +721,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   // Recheck all identities, including metadata-only and oversized files.
   for (const observation of [source, ...(destination ? [destination] : []), ...(temporary ? [temporary] : []), ...parents]) {
     if (observation.identity) {
-      if (!sameIdentity(observation.identity, await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
+      if (!sameIdentity(observation.identity, v3 ? await captureTreeIdentity(observation.path) : await capturePathIdentity(observation.path))) throw new Error("Object changed before observation was accepted.");
     } else {
       try { await lstat(observation.path); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
@@ -692,6 +733,7 @@ export async function verifyChange(record: ChangeRecord, assertAllowed: (() => P
   assertAllowed.assertCurrent?.();
   return { source, destination, temporary, parents,
     postimageMatches: record.postimage && source.sha256 ? record.postimage === source.sha256 : undefined,
+    destinationPostimageMatches: record.destinationPostimage && destination?.sha256 ? record.destinationPostimage === destination.sha256 : undefined,
     destinationIdentityMatches: record.sourceIdentity && destination?.identity
       ? record.sourceIdentity.device === destination.identity.device && record.sourceIdentity.inode === destination.identity.inode : undefined,
     scope: OBSERVATION_SCOPE };
@@ -702,19 +744,22 @@ function boundedString(value: unknown, label: string, max = 8192): string {
   return value;
 }
 
-function draftOperation(record: ChangeRecord): unknown {
+function draftOperation(record: ChangeRecord, v3 = false): unknown {
   const input = record.original;
   const path = boundedString(record.target, "Recorded target", 4096);
   if (!isAbsolute(path)) throw new Error("Draft needs a recorded absolute target; originating cwd cannot be guessed.");
   if (record.operation === "write") return { operation: "write", path,
-    mode: record.batchSize === undefined ? record.receipt?.commit ? "overwrite" : "create" : input.mode,
+    mode: v3 ? input.mode ?? (input.snapshot !== undefined || record.receipt?.commit ? "overwrite" : "create")
+      : record.batchSize === undefined ? record.receipt?.commit ? "overwrite" : "create" : input.mode,
     content: boundedString(input.content, "Content") };
-  if (record.operation === "delete") return { operation: "delete", path };
+  if (record.operation === "delete") return { operation: "delete", path, ...(v3 && input.recursive !== undefined ? { recursive: input.recursive } : {}) };
   if (record.operation === "move") return { operation: "move", path, destination: boundedString(record.destination, "Recorded destination", 4096) };
+  if (v3 && record.operation === "copy") return { operation: "copy", path, destination: boundedString(record.destination, "Recorded destination", 4096),
+    ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}) };
   if (!Array.isArray(input.edits) || input.edits.length > 20) throw new Error("Original edit parameters cannot be reconstructed.");
   const changes = [];
   for (const edit of input.edits) {
-    if (input.snapshot) {
+    if (input.snapshot && !(v3 && SHA256.test(input.snapshot))) {
       if (edit.newLines !== undefined && (!Array.isArray(edit.newLines) || edit.newLines.length > 200)) throw new Error("Snapshot replacement exceeds draft bound.");
       const newLines: string[] | undefined = edit.newLines === undefined ? undefined : [];
       if (newLines) for (const line of edit.newLines) newLines.push(boundedString(line, "Replacement line", 2048));
@@ -735,6 +780,20 @@ export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: 
     if (record.batchSize !== undefined && record.batchSize !== records.length) throw new Error("Batch history is incomplete in the bounded window; unable to reconstruct remaining work.");
     if (!record.preview && (record.unavailable || !record.original)) throw new Error("Original request or matching preparation is missing/ambiguous; unable to reconstruct remaining work.");
   }
+  return formatRemainingDraft(records, verifiedItems, false);
+}
+
+/** A v3 page's validated records are a selected scope, never a claim that the
+ * historical v1/v2 window contains a complete batch. Keep all body budgets. */
+export function remainingDraftPageV3(page: FileChangesPageV3, verifiedItems: ReadonlySet<string>): string {
+  if (page.version !== 3) throw new Error("Expected a v3 changes page.");
+  const draft = `Selected page only: ${page.records.length} targets; ${page.visited}/${page.itemCount} visited.${page.hasMore ? " More pages remain; open them separately." : ""}\n\n`
+    + formatRemainingDraft(page.records, verifiedItems, true);
+  if (Buffer.byteLength(draft) > 48 * 1024) throw new Error("Complete remaining page exceeds the 48 KiB draft bound; select fewer items or supply a fresh request.");
+  return draft;
+}
+
+function formatRemainingDraft(records: readonly ChangeRecord[], verifiedItems: ReadonlySet<string>, v3: boolean): string {
   const parts: string[] = [];
   let bytes = 0;
   for (const record of records) {
@@ -745,7 +804,7 @@ export function remainingDraft(records: readonly ChangeRecord[], verifiedItems: 
     }
     if (record.status !== "failed_no_change" && record.status !== "not_started") continue;
     if (!record.original || record.unavailable) throw new Error(record.unavailable ?? "Original parameters are unavailable; supply a fresh request.");
-    const text = JSON.stringify(draftOperation(record), null, 2);
+    const text = JSON.stringify(draftOperation(record, v3), null, 2);
     bytes += Buffer.byteLength(text);
     if (bytes > 48 * 1024) throw new Error("Remaining request exceeds the draft bound; select a smaller set or supply a fresh request.");
     parts.push(text);
@@ -891,7 +950,87 @@ export class ChangeViewer {
     rowsMaterialized: this.rowsMaterialized, graphemesVisited: this.graphemesVisited, lifecycleReferences: Number(Boolean(this.tui)) + Number(Boolean(this.done)) }; }
 }
 
-export interface ObservationPermissions { authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }> }
+export interface ObservationPermissions {
+  readonly fileObservationEnvironment?: "sandbox" | "trusted-host";
+  observeFileChange?(ctx: ExtensionContext, record: ChangeRecord): Promise<Awaited<ReturnType<typeof verifyChange>>>;
+  authorizeFileObservation(ctx: ExtensionContext, paths: readonly string[]): Promise<(() => Promise<void>) & { assertCurrent(): void }>;
+}
+
+async function observeCurrentChange(permissions: ObservationPermissions, ctx: ExtensionContext, record: ChangeRecord) {
+  if (permissions.fileObservationEnvironment === "sandbox") {
+    if (!permissions.observeFileChange) throw new Error("[SANDBOX_UNSUPPORTED] Current-state verification requires the sandbox file backend; no host observation was performed.");
+    return permissions.observeFileChange(ctx, record);
+  }
+  const paths = record.destination ? [record.target, record.destination] : [record.target];
+  for (const path of retainedParents(record)) paths.push(path);
+  const temporary = retainedTemporary(record); if (temporary) paths.push(temporary);
+  const assertAllowed = await permissions.authorizeFileObservation(ctx, paths);
+  const observation = await verifyChange(record, assertAllowed); assertAllowed.assertCurrent(); return observation;
+}
+
+async function placeChangesDraft(ctx: ExtensionContext, owner: FileChangesV3, draft: string): Promise<void> {
+  const previous = ctx.ui.getEditorText();
+  const choice = previous ? await ctx.ui.select("Keep current input or place page draft", ["Append draft", "Replace editor", "Cancel"]) : "Replace editor";
+  owner.assertCurrent();
+  if (choice !== "Append draft" && choice !== "Replace editor") return;
+  if (ctx.ui.getEditorText() !== previous) throw new Error("Editor changed while the draft was prepared; existing input was preserved.");
+  ctx.ui.setEditorText(choice === "Append draft" ? `${previous}\n\n${draft}` : draft);
+}
+
+async function showV3ChangeItems(pi: Pick<ExtensionAPI, "appendEntry">, permissions: ObservationPermissions, ctx: ExtensionContext, owner: FileChangesV3): Promise<void> {
+  let page = owner.nextItems();
+  const verified = new Set<string>();
+  for (;;) {
+    const labels: string[] = [];
+    for (const record of page.records) labels.push(`${displayMetadata(record.itemId)} [${record.status}] ${record.operation} ${displayMetadata(record.target)}`);
+    const next = "Next target page", draft = "Draft remaining work on this page", back = "Back to calls";
+    if (page.hasMore) labels.push(next);
+    labels.push(draft, back);
+    const selected = await ctx.ui.select(`File changes: ${page.visited}/${page.itemCount} targets visited${page.hasMore ? "; more pages" : ""}${page.callComplete ? "" : "; interrupted journal"}`, labels);
+    owner.assertCurrent();
+    if (selected === undefined || selected === back) return;
+    if (selected === next) { page = owner.nextItems(); verified.clear(); continue; }
+    if (selected === draft) { await placeChangesDraft(ctx, owner, remainingDraftPageV3(page, verified)); continue; }
+    const index = labels.indexOf(selected); if (index < 0 || index >= page.records.length) continue;
+    const record = page.records[index];
+    const action = await ctx.ui.select(displayMetadata(record.itemId), ["View", "Verify current state", "Back to page"]); owner.assertCurrent();
+    if (action === "View") {
+      const text = `${displayMetadata(record.itemId)} [${record.status}]\nRequest entry: ${record.requestEntryId}\nRecord entry: ${record.entryId}\n`
+        + `Target: ${displayMetadata(record.target)}${record.destination ? "\nDestination: " + displayMetadata(record.destination) : ""}\n`
+        + `Options: ${JSON.stringify({ recursive: record.original.recursive, overwrite: record.original.overwrite, mode: record.original.mode })}\n`
+        + displayMetadata(JSON.stringify(record.receipt ?? { status: "not_started", stateChanged: false }, null, 2));
+      await showChangeViewer(ctx, text); owner.assertCurrent();
+    } else if (action === "Verify current state") {
+      const observation = await observeCurrentChange(permissions, ctx, record); owner.assertCurrent();
+      pi.appendEntry(CHANGE_VERIFICATION_ENTRY, { version: 1, sessionId: ctx.sessionManager.getSessionId(), sourceEntryId: record.entryId,
+        itemId: record.itemId, toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...observation });
+      verified.add(record.itemId);
+      await showChangeViewer(ctx, verificationSummary(observation)); owner.assertCurrent();
+    }
+  }
+}
+
+async function showV3Changes(pi: Pick<ExtensionAPI, "appendEntry">, permissions: ObservationPermissions, ctx: ExtensionContext, args: string): Promise<boolean> {
+  const owner = new FileChangesV3(ctx.sessionManager);
+  try {
+    if (args.trim().startsWith("file-result-v3:")) { owner.open(args.trim()); await showV3ChangeItems(pi, permissions, ctx, owner); return true; }
+    let calls = await owner.calls(ctx.signal);
+    if (!calls.length) return false;
+    for (;;) {
+      const labels: string[] = [];
+      for (const call of calls) labels.push(`${displayMetadata(call.toolCallId)}: ${call.operation}, ${call.itemCount} targets${call.complete ? "" : " (interrupted)"}`);
+      const older = "Older file calls", legacy = "Legacy changes (v1/v2 history)";
+      if (owner.hasMoreCalls) labels.push(older);
+      labels.push(legacy);
+      const selected = await ctx.ui.select("Session file calls (v3)", labels); owner.assertCurrent();
+      if (selected === undefined) return true;
+      if (selected === legacy) return false;
+      if (selected === older) { calls = await owner.calls(ctx.signal); continue; }
+      const index = labels.indexOf(selected); if (index < 0 || index >= calls.length) continue;
+      owner.open(calls[index].ref); await showV3ChangeItems(pi, permissions, ctx, owner); owner.closeItems();
+    }
+  } finally { owner.dispose(); }
+}
 
 function assertBoundedChangesSessionId(sessionId: unknown): asserts sessionId is string {
   if (typeof sessionId !== "string" || sessionId.length < 1 || sessionId.length > 256) throw new Error("Session ID exceeds recovery bounds; changes are unavailable for this history.");
@@ -908,11 +1047,12 @@ async function showChangeViewer(ctx: ExtensionContext, text: string): Promise<vo
 }
 
 export function registerChanges(pi: Pick<ExtensionAPI, "registerCommand" | "appendEntry">, permissions: ObservationPermissions): void {
-  pi.registerCommand("changes", { description: "View Session file changes, verify current state, or draft remaining work", async handler(_args, ctx) {
+  pi.registerCommand("changes", { description: "Page Session file changes, verify current state, or draft a selected remaining page; accepts resultRef", async handler(args, ctx) {
     if (!ctx.hasUI || !ctx.isIdle()) { ctx.ui.notify("/changes needs an idle Session with dialog UI.", "warning"); return; }
     const sessionId = ctx.sessionManager.getSessionId();
     try {
       assertBoundedChangesSessionId(sessionId);
+      if (await showV3Changes(pi, permissions, ctx, args)) return;
       const branch = recentMutationEntries(ctx.sessionManager);
       const records = collectChanges(branch, ctx.cwd);
       if (!records.length) { ctx.ui.notify("No reconstructable changes in the bounded Session history (512 entries). Missing history cannot be recreated.", "info"); return; }
@@ -932,12 +1072,7 @@ export function registerChanges(pi: Pick<ExtensionAPI, "registerCommand" | "appe
         await showChangeViewer(ctx, text);
       } else if (action === "Verify current state") {
         if (record.preview || record.unavailable) throw new Error(record.unavailable ?? "Preview is not a mutation receipt. Execute a newly prepared request first.");
-        const paths = record.destination ? [record.target, record.destination] : [record.target];
-        paths.push(...retainedParents(record));
-        const temporary = retainedTemporary(record); if (temporary) paths.push(temporary);
-        const assertAllowed = await permissions.authorizeFileObservation(ctx, paths); assertChangesSession(ctx, sessionId);
-        const observation = await verifyChange(record, assertAllowed); assertChangesSession(ctx, sessionId);
-        assertAllowed.assertCurrent();
+        const observation = await observeCurrentChange(permissions, ctx, record); assertChangesSession(ctx, sessionId);
         pi.appendEntry(CHANGE_VERIFICATION_ENTRY, { version: 1, sessionId, sourceEntryId: record.entryId, itemId: record.itemId,
           toolCallId: record.toolCallId, observedAt: new Date().toISOString(), ...observation });
         const text = verificationSummary(observation);

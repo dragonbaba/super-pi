@@ -1991,6 +1991,8 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
+	/** Native file journal publication; the public extension appendEntry stays void. */
+	appendFileEntry?: (customType: string, data: unknown) => string;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;

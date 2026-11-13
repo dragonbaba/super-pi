@@ -1,4 +1,5 @@
 import { recentMutationEntries } from "../mutation-guard-write/session-evidence.ts";
+import { FileChangesV3 } from "@super-pi/coding-agent/internal/files/file-changes-v3";
 import { SHELL_TASK_RESULT_EVENT } from "../managed-tasks.ts";
 import type { ExtensionAPI, ToolResultEvent } from "@super-pi/coding-agent";
 import {
@@ -9,6 +10,8 @@ import {
   goalCompletionIntervention,
   observeInputBoundary,
   observeToolResult,
+  observeFileMutationOutcome,
+  observeUnpreparedFileMutationItems,
   observeVerificationStart,
   resetFalseSuccessState,
   type InterventionAudit,
@@ -76,6 +79,29 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
     const pending = pendingMutations.get(event.toolCallId);
     pendingMutations.delete(event.toolCallId);
     if (!pending || pending.name !== event.toolName) return;
+    const details = event.result.details as { mutationReceiptVersion?: unknown; resultRef?: unknown; preview?: unknown } | undefined;
+    if (!event.isError && pending.input?.dryRun === true && details?.mutationReceiptVersion === 3 && details.preview === true) return;
+    if (details?.mutationReceiptVersion === 3 && typeof details.resultRef === "string") {
+      const changes = new FileChangesV3(ctx.sessionManager);
+      try {
+        changes.open(details.resultRef); let more: boolean, allSucceeded = true;
+        do {
+          const page = changes.nextItems(); more = page.hasMore;
+          for (const record of page.records) {
+            allSucceeded &&= record.status === "succeeded";
+            observeFileMutationOutcome(state, pending.name, record.target, record.destination, record.status, record.operation);
+          }
+          if (!more && page.visited < page.itemCount) {
+            allSucceeded = false;
+            observeUnpreparedFileMutationItems(state, pending.name, pending.input, ctx.cwd, page.visited);
+          }
+        } while (more);
+        if (event.isError && allSucceeded) observeFileMutationOutcome(state, pending.name, ctx.cwd, undefined, "state_unknown");
+      } catch {
+        observeFileMutationOutcome(state, pending.name, ctx.cwd, undefined, "state_unknown");
+      } finally { changes.dispose(); }
+      return;
+    }
     observeToolResult(state, { toolName: pending.name, toolCallId: event.toolCallId, input: pending.input,
       isError: event.isError, details: event.result.details, cwd: ctx.cwd, branch: recentMutationEntries(ctx.sessionManager) });
   });
@@ -99,7 +125,7 @@ export default function falseSuccessGuard(pi: ExtensionAPI): void {
   });
 }
 
-function isNativeOrBatch(name: string): boolean { return name === "file_batch" || name === "delete" || name === "move"; }
+function isNativeOrBatch(name: string): boolean { return name === "file_batch" || name === "copy" || name === "delete" || name === "move" || name === "write" || name === "edit"; }
 
 function collectText(
   content: ReadonlyArray<{ type: string; text?: string }>,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, writeFile, stat, link } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -9,11 +9,8 @@ import { FileService, type FileExecutionHooks } from "../packages/coding-agent/s
 import { issueSnapshotForRead } from "../packages/coding-agent/src/core/files/snapshot-line-edit.ts";
 import { createReadToolDefinition } from "../packages/coding-agent/src/core/tools/read.ts";
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
-import { FileBatch } from "../packages/coding-agent/src/core/files/file-batch.ts";
-import { renderBatchResult } from "../packages/coding-agent/src/core/files/file-results.ts";
-import { releaseBatchRenderState } from "../packages/coding-agent/src/core/files/change-preview.ts";
-import { collectChanges, verifyChange } from "../packages/coding-agent/src/core/files/changes.ts";
 import { SessionFiles } from "../packages/coding-agent/src/core/files/session-files.ts";
+import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { getSessionFiles, NATIVE_FILE_REVISION } from "../packages/coding-agent/src/core/files/file-host.ts";
 import { attachPermissionPathApproval, mutationRequestHash } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -69,9 +66,11 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
   t.after(async () => { await disposeNativeFileWorker(); assert.equal(dirname(cwd), parent); await rm(cwd, { recursive: true }); });
   async function exercise() {
     const runtime = createExtensionRuntime(), events = createEventBus();
+    const manager = SessionManager.inMemory(cwd);
     let records = 0; runtime.appendEntry = () => { records++; };
+    runtime.appendFileEntry = (kind, data) => { records++; return manager.appendCustomEntry(kind, data); };
     const owner = runtime.nativeFiles = new SessionFiles(runtime, events);
-    const ctx = { cwd, sessionManager: { getSessionId: () => "owner-session" } } as ExtensionContext;
+    const ctx = { cwd, sessionManager: manager } as unknown as ExtensionContext;
     const tools: Record<string, ToolDefinition<any, any>> = { read: createReadToolDefinition(cwd) };
     owner.install(tools);
     const refs: WeakRef<object>[] = [new WeakRef(owner), new WeakRef(runtime), new WeakRef(ctx), new WeakRef(tools), new WeakRef(events)];
@@ -84,6 +83,7 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
       refs.push(new WeakRef(invocation), new WeakRef(input)); return invocation;
     }
     async function run(id: string, input: Record<string, unknown>, name = "write") {
+      manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name, arguments: input }], timestamp: 0 } as any);
       const invocation = await prepare(id, input, name), approved = invocation.consume(input, id, name);
       const result = await tools[name].execute(id, approved, undefined, undefined, ctx);
       refs.push(new WeakRef(approved as object), new WeakRef(result)); return result;
@@ -94,10 +94,10 @@ test("native file owner releases prepared, approved, revoked and resetting invoc
       const read = await tools.read.execute("read", { path: "a.txt" }, undefined, undefined, ctx);
       const revision = (read as unknown as { [NATIVE_FILE_REVISION]: string })[NATIVE_FILE_REVISION];
       const canonical = await realpath(join(cwd, "a.txt"));
-      assert.equal(owner.hasRevision(revision, canonical, "owner-session"), true);
+      assert.equal(owner.hasRevision(revision, canonical, manager.getSessionId()), true);
       assert.equal(owner.getDiagnostics().revisions, 1);
       assert.equal((await run("edit", { path: "a.txt", edits: [{ oldText: "source", newText: "changed" }] }, "edit")).isError, false);
-      assert.equal(owner.hasRevision(revision, canonical, "owner-session"), false, "a cached display cannot outlive its native file revision");
+      assert.equal(owner.hasRevision(revision, canonical, manager.getSessionId()), false, "a cached display cannot outlive its native file revision");
       const changed = { path: "tampered.txt", content: "before" }, pending = await prepare("tamper", changed);
       changed.content = "after"; assert.throws(() => pending.consume(changed, "tamper", "write"), /STALE_STATE/);
       const abandoned = { path: "abandoned.txt", content: "x" }, abandonedCall = await prepare("abandon", abandoned);
@@ -220,200 +220,13 @@ test("native file service keeps confirmed effects when result recording fails", 
   assert.ok(f.entries.some(entry => entry.phase === "intent"));
 });
 
-test("native batches preflight every independent item and share bounded previews and parent ownership", { timeout: 10_000 }, async t => {
-  const f = await fixture(t);
-  const operations = [
-    { operation: "write", mode: "create", path: "new/deep/a", content: "a\n" },
-    { operation: "write", mode: "create", path: "new/deep/b", content: "b\n" },
-  ];
-  const preview = new FileBatch(f.service, "preview", { operations, dryRun: true });
-  await preview.prepare();
-  const shown = await preview.execute(f.hooks);
-  assert.deepEqual(shown.details.items.map(item => item.status), ["preview", "preview"]);
-  await assert.rejects(stat(join(f.cwd, "new")), { code: "ENOENT" });
-  assert.equal(f.entries.length, 0);
-  const batch = new FileBatch(f.service, "batch", { operations });
-  await batch.prepare(); operations[0].content = "mutated";
-  const result = await batch.execute(f.hooks);
-  assert.equal(result.details.succeeded, 2, JSON.stringify(result));
-  assert.equal((result.details.items[0].receipt as any).creation.createdDirectories.length, 2);
-  assert.equal((result.details.items[1].receipt as any).creation.createdDirectories.length, 0);
-  assert.equal(await readFile(join(f.cwd, "new/deep/a"), "utf8"), "a\n");
-  assert.equal(batch.items.length, 0);
-  await assert.rejects(batch.execute(f.hooks), /released/u);
-  await f.capture(join(f.cwd, "new/deep/a"));
-  await f.capture(join(f.cwd, "new/deep/b"));
-  const edits = new FileBatch(f.service, "edits", { operations: [
-    { operation: "edit", path: "new/deep/a", edits: [{ oldText: "a", newText: "A" }] },
-    { operation: "write", mode: "overwrite", path: "new/deep/b", content: "B\n" },
-  ] });
-  await edits.prepare(); assert.equal((await edits.execute(f.hooks)).details.succeeded, 2);
-  assert.ok(f.entries.every(entry => entry.diff === undefined && entry.patch === undefined), "history contains bounded facts, never diff bodies");
-  for (const invalid of [
-    [{ operation: "write", mode: "create", path: "untouched/a", content: "x" }, { operation: "delete", path: "missing" }],
-    [{ operation: "write", mode: "create", path: "untouched/a", content: "x" }, { operation: "write", mode: "create", path: "untouched/a/b", content: "x" }],
-  ]) {
-    const rejected = new FileBatch(f.service, "invalid", { operations: invalid });
-    await assert.rejects(rejected.prepare(), /Preflight failed/u);
-    assert.equal(rejected.items.length, 0);
-    await assert.rejects(stat(join(f.cwd, "untouched")), { code: "ENOENT" });
-  }
-  await link(join(f.cwd, "new/deep/a"), join(f.cwd, "alias"));
-  await assert.rejects(new FileBatch(f.service, "alias", { operations: [
-    { operation: "delete", path: "new/deep/a" }, { operation: "delete", path: "alias" },
-  ] }).prepare(), /share a file identity/u);
-  const bounded = new FileBatch(f.service, "bounded", { operations: Array.from({ length: 16 }, (_, index) =>
-    ({ operation: "write", mode: "create", path: `bounded/${index}`, content: "line\n".repeat(300) })), dryRun: true });
-  await bounded.prepare();
-  let bytes = 0, lines = 0;
-  for (const item of bounded.items) { bytes += Buffer.byteLength(item.preview?.diff ?? ""); lines += (item.preview?.diff?.split("\n").length ?? 0); }
-  assert.ok(bytes <= 64 * 1024); assert.ok(lines <= 400);
-  bounded.release(); assert.equal(bounded.items.length, 0);
-});
-
-test("native batches keep completed effects on failure, cancellation, clear and failed recording", { timeout: 10_000 }, async t => {
-  const f = await fixture(t);
-  for (const mode of ["changed", "cancelled", "cleared", "recording"] as const) {
-    const operations = [0, 1, 2].map(index => ({ operation: "write", mode: "create", path: `${mode}-${index}`, content: "kept" }));
-    const batch = new FileBatch(f.service, mode, { operations }); await batch.prepare();
-    const controller = new AbortController();
-    let revoked = false;
-    const result = await batch.execute({ signal: controller.signal, assertCurrent() { if (revoked) throw new Error("revoked after effect"); }, record(entry) {
-      f.entries.push(entry);
-      if (entry.phase === "result" && entry.itemId === `${mode}:0`) {
-        if (mode === "cancelled") controller.abort();
-        if (mode === "changed") revoked = true;
-        if (mode === "cleared") f.service.clear();
-        if (mode === "recording") throw new Error("record unavailable");
-      }
-    } });
-    assert.deepEqual(result.details.items.map(item => item.status), mode === "recording"
-      ? ["partial", "not_started", "not_started"]
-      : ["succeeded", mode === "cancelled" ? "cancelled" : "failed_no_change", "not_started"]);
-    assert.equal(result.details.items[0].stateChanged, true);
-    assert.equal(await readFile(join(f.cwd, `${mode}-0`), "utf8"), "kept");
-    await assert.rejects(stat(join(f.cwd, `${mode}-1`)), { code: "ENOENT" });
-  }
-  await writeFile(join(f.cwd, "source"), "old"); await f.capture(join(f.cwd, "source"));
-  const stale = new FileBatch(f.service, "stale", { operations: [
-    { operation: "write", mode: "create", path: "must-stay-absent", content: "x" },
-    { operation: "edit", path: "source", edits: [{ oldText: "old", newText: "new" }] },
-  ] });
-  await stale.prepare(); await writeFile(join(f.cwd, "source"), "external");
-  const result = await stale.execute(f.hooks);
-  assert.deepEqual(result.details.items.map(item => item.status), ["not_started", "failed_no_change"]);
-  await assert.rejects(stat(join(f.cwd, "must-stay-absent")), { code: "ENOENT" });
-});
-
-test("native service facts reconstruct standalone and partial batch history without granting replay", { timeout: 10_000 }, async t => {
-  const f = await fixture(t), branch: any[] = [];
-  function append(entry: object) { branch.push({ ...entry, id: `entry-${branch.length}`, timestamp: new Date().toISOString() }); }
-  const hooks: FileExecutionHooks = { assertCurrent() {}, record(data) { append({ type: "custom", customType: "file-mutation-progress-v2", data }); } };
-  async function call(operation: "write" | "edit" | "delete" | "move", input: any, id: string) {
-    append({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: operation, arguments: input }] } });
-    const receipt = await f.service.execute(await f.service.prepare(operation, input), id, hooks);
-    append({ type: "message", message: { role: "toolResult", toolName: operation, toolCallId: id, details: receipt } });
-    const record = collectChanges(branch, f.cwd).find(record => record.toolCallId === id)!;
-    assert.ok(record); assert.equal(record.unavailable, undefined, JSON.stringify(record));
-    assert.equal(record.status, receipt.status);
-    return record;
-  }
-  await call("write", { path: "source", content: "first\n" }, "created");
-  await f.capture(join(f.cwd, "source"));
-  await call("edit", { path: "source", edits: [{ oldText: "first", newText: "edited" }] }, "edited");
-  await f.capture(join(f.cwd, "source"));
-  const overwrite = await call("write", { path: "source", content: "overwritten\n" }, "overwrite");
-  const observe = Object.assign(async () => {}, { assertCurrent() {} });
-  const verified = await verifyChange(overwrite, observe);
-  assert.ok(verified, "explicit current-state observation returns a fact, never replays the call");
-  await call("move", { path: "source", destination: "destination" }, "move");
-  await call("delete", { path: "destination" }, "delete");
-  await writeFile(join(f.cwd, "batch-source"), "before\n"); await f.capture(join(f.cwd, "batch-source"));
-  const input = { operations: [
-    { operation: "edit", path: "batch-source", edits: [{ oldText: "before", newText: "after" }] },
-    { operation: "write", path: "batch-new", mode: "create", content: "new\n" },
-    { operation: "write", path: "batch-last", mode: "create", content: "last\n" },
-  ] };
-  const id = "batch-history";
-  append({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "file_batch", arguments: input }] } });
-  const batch = new FileBatch(f.service, id, input); await batch.prepare();
-  const controller = new AbortController();
-  const result = await batch.execute({ ...hooks, signal: controller.signal, record(data) {
-    hooks.record(data); if (data.phase === "result" && data.itemId === `${id}:0`) controller.abort();
-  } });
-  append({ type: "message", message: { role: "toolResult", toolName: "file_batch", toolCallId: id, details: result.details, isError: result.isError } });
-  const records = collectChanges(branch, f.cwd).filter(record => record.toolCallId === id);
-  assert.equal(records.length, 3);
-  for (const record of records) assert.equal(record.unavailable, undefined, JSON.stringify(record));
-  assert.deepEqual(records.map(record => record.status), ["succeeded", "cancelled", "not_started"]);
-  assert.equal(await readFile(join(f.cwd, "batch-source"), "utf8"), "after\n");
-  await assert.rejects(stat(join(f.cwd, "batch-new")), { code: "ENOENT" });
-});
-
-test("native file service releases invocation plans and owners after completion, rejection and disposal", { timeout: 15_000 }, async t => {
-  const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
-  async function exercise() {
-    const cleanup: (() => unknown)[] = [];
-    const f = await fixture({ after: (fn: () => unknown) => cleanup.push(fn) } as unknown as test.TestContext);
-    const references: WeakRef<object>[] = [new WeakRef(f.service), new WeakRef(f.service.revisions), new WeakRef(f.entries)];
-    await inspector.post("HeapProfiler.startSampling", { samplingInterval: 1024, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-    try {
-      for (let index = 0; index < 8; index++) {
-        const path = join(f.cwd, `file-${index}.txt`);
-        const create = await f.service.prepare("write", { path, content: "source\n" });
-        references.push(new WeakRef(create), new WeakRef(create.input));
-        const pending = f.service.execute(create, `create-${index}`, f.hooks);
-        await assert.rejects(f.service.execute(create, "duplicate", f.hooks), /already executing/u);
-        assert.equal((await pending).status, "succeeded");
-        await f.capture(path);
-        const edit = await f.service.prepare("edit", { path, edits: [{ oldText: "source", newText: "changed" }] });
-        references.push(new WeakRef(edit), new WeakRef(edit.input), new WeakRef(edit.snapshot!), new WeakRef(edit.snapshot!.receipt));
-        const hooks = { ...f.hooks, assertCurrent() { throw new Error("revoked"); } };
-        references.push(new WeakRef(hooks));
-        const rejected = await f.service.execute(edit, `edit-${index}`, hooks);
-        references.push(new WeakRef(rejected));
-        assert.equal(rejected.stateChanged, false); assert.equal(edit.snapshot!.byteEdits.length, 0);
-        assert.throws(() => f.service.assertPrepared(edit), /released/u);
-      }
-      assert.equal(f.entries.filter(entry => entry.phase === "result").length, 16);
-      let batchCompleted = 0;
-      for (const mode of ["complete", "release", "cancel"] as const) {
-        const batch = new FileBatch(f.service, mode, { operations: [0, 1].map(index =>
-          ({ operation: "write", mode: "create", path: `${mode}/${index}`, content: "batch source\n" })) });
-        references.push(new WeakRef(batch), new WeakRef(batch.input), new WeakRef(batch.input.operations));
-        await batch.prepare();
-        for (const item of batch.items) references.push(new WeakRef(item), new WeakRef(item.input));
-        if (mode === "release") { batch.release(); continue; }
-        const controller = new AbortController();
-        const hooks = { signal: controller.signal, assertCurrent() {}, record(entry: Record<string, unknown>) {
-          if (mode === "cancel" && entry.phase === "result") controller.abort();
-        } };
-        const result = await batch.execute(hooks);
-        batchCompleted += result.details.succeeded;
-        assert.equal(result.details.succeeded, mode === "complete" ? 2 : 1);
-        references.push(new WeakRef(hooks), new WeakRef(result), new WeakRef(result.details.items));
-        const context: any = { state: {}, lastComponent: undefined };
-        const options = { expanded: true, isPartial: false };
-        for (let frame = 0; frame < 24; frame++) {
-          const previous = context.lastComponent;
-          context.lastComponent = renderBatchResult(result, options as never, {} as never, context);
-          if (previous) assert.equal(context.lastComponent, previous);
-          assert.ok(context.lastComponent.render(100).length <= 400);
-        }
-        references.push(new WeakRef(context.state), new WeakRef(context.lastComponent));
-        releaseBatchRenderState(context.state);
-        assert.equal(context.state.batchComponent, undefined);
-        assert.equal(batch.items.length, 0);
-      }
-      const { profile } = await inspector.post("HeapProfiler.stopSampling");
-      let sampled = 0; const nodes = [profile.head];
-      while (nodes.length) { const node = nodes.pop()!; sampled += node.selfSize; for (const child of node.children) nodes.push(child); }
-      return { references, sampled, batchCompleted };
-    } finally { while (cleanup.length) await cleanup.pop()!(); }
-  }
-  const { references, sampled, batchCompleted } = await exercise();
-  assert.ok(sampled <= 16 * 1024 * 1024, "fixed service allocation envelope for single operations and three two-item batches");
-  for (let index = 0; index < 4; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
-  assert.equal(references.filter(reference => reference.deref()).length, 0);
-  t.diagnostic(JSON.stringify({ prepared: 22, completed: 8, revoked: 8, batches: 3, batchCompleted, renderCalls: 48, renderOwners: 2, duplicateExecutions: 0, references: references.length, live: 0, sampledMainThreadBytes: sampled }));
+test("copy preserves the unchanged source read version and invalidates an overwritten destination", async t => {
+  const f = await fixture(t), sourcePath = join(f.cwd, "copy-source"), destination = join(f.cwd, "copy-target");
+  await writeFile(sourcePath, "source"); await writeFile(destination, "old");
+  const source = await f.capture(sourcePath), previous = await f.capture(destination);
+  assert(f.service.revisions.get(source.snapshot)); assert(f.service.revisions.get(previous.snapshot));
+  const plan = await f.service.prepareV3("copy", { path: sourcePath, destination, overwrite: true }); await f.service.revalidate(plan, f.hooks);
+  const receipt = await f.service.execute(plan, "copy", f.hooks);
+  assert.equal(receipt.status, "succeeded", JSON.stringify(receipt)); assert.equal(await readFile(destination, "utf8"), "source");
+  assert(f.service.revisions.get(source.snapshot)); assert.equal(f.service.revisions.get(previous.snapshot), undefined);
 });

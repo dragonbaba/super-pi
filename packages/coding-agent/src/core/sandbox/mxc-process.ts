@@ -33,7 +33,7 @@ export class MxcOutputTail {
   get truncated(): boolean { return this.seen > this.length; }
 }
 
-export interface MxcProcessResult { code: number; stdout: string; stderr: string; truncated: boolean; timedOut: boolean; }
+export interface MxcProcessResult { code: number; stdout: string; stderr: string; truncated: boolean; timedOut: boolean; stdoutBytes?: number; stderrBytes?: number; }
 
 /** One invocation owns one Job, deadline and pair of byte rings through physical cleanup. */
 export class MxcProcess {
@@ -67,7 +67,9 @@ export class MxcProcess {
       child.stdout!.on("data", this.onStdout); child.stderr!.on("data", this.onStderr);
       child.on("exit", this.stop);
       signal.addEventListener("abort", this.stop, { once: true });
-      timer = setTimeout(this.expire, timeoutMs);
+      // Controlled file RPCs use the invocation signal rather than a shell
+      // deadline. The SDK defines zero as no absolute execution timeout.
+      if (timeoutMs > 0) timer = setTimeout(this.expire, timeoutMs);
       const waiting = waitForChildProcess(child);
       if (signal.aborted) this.stop();
       const code = await waiting;
@@ -77,6 +79,7 @@ export class MxcProcess {
         throw new Error(failure ?? this.job.dispatchError ?? this.job.launchError!.message);
       signal.throwIfAborted();
       return { code: code ?? 1, stdout: this.stdout.finish(), stderr: this.stderr.finish(),
+        stdoutBytes: this.stdout.seen, stderrBytes: this.stderr.seen,
         truncated: this.stdout.truncated || this.stderr.truncated, timedOut: this.timedOut };
     } finally {
       clearTimeout(timer); signal.removeEventListener("abort", this.stop); this.stop();

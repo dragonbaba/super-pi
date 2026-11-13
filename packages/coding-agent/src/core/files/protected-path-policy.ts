@@ -1,5 +1,5 @@
 import { realpath } from "node:fs/promises";
-import { dirname, isAbsolute, parse, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, parse, relative, resolve } from "node:path";
 
 const WORKSPACE_METADATA_ROOTS = [".git", ".sp"] as const;
 
@@ -43,6 +43,10 @@ export async function canonicalizeProspectivePath(candidate: string): Promise<st
     }
   }
 }
+/** Unlink removes this name, including a symlink/junction, rather than its target. */
+export async function canonicalizeMutationLeaf(target: string): Promise<string> {
+  return resolve(await canonicalizeProspectivePath(dirname(target)), basename(target));
+}
 
 export interface ProtectedMutationAssessment {
   canonicalTarget?: string;
@@ -50,7 +54,7 @@ export interface ProtectedMutationAssessment {
 }
 
 /** Apply the same protected-root boundary used by high-risk Bash mutations. */
-export async function assessProtectedMutationPath(cwd: string, target: string): Promise<ProtectedMutationAssessment> {
+export async function assessProtectedMutationPath(cwd: string, target: string, followLeaf = true): Promise<ProtectedMutationAssessment> {
   let workspace: string;
   let canonical: string;
   try {
@@ -59,7 +63,7 @@ export async function assessProtectedMutationPath(cwd: string, target: string): 
     return { violations: ["unverifiable_workspace"] };
   }
   try {
-    canonical = await canonicalizeProspectivePath(target);
+    canonical = followLeaf ? await canonicalizeProspectivePath(target) : await canonicalizeMutationLeaf(target);
   } catch {
     return { violations: ["unverifiable_target"] };
   }

@@ -15,6 +15,8 @@ import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
 import { emitSessionShutdownEvent } from "../packages/coding-agent/src/core/extensions/runner.ts";
 import { getToolPath } from "../packages/coding-agent/src/utils/tools-manager.ts";
+import { FileResultWriter } from "../packages/coding-agent/src/core/files/file-result-store.ts";
+import { mutationRequestHash } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 
 const owned = createOwnedTaskFixture("subagent-parent-execution-"), agentDir = join(owned.root, "agent");
 const keys = ["TMP", "TEMP", "TMPDIR", "SP_CODING_AGENT_DIR", "SP_SOURCE_LAUNCHER", "SP_BUNDLED_AGENTS_DIR", "SP_OFFLINE"];
@@ -26,7 +28,7 @@ process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("fixtures/subagent-parent
 delete process.env.SP_BUNDLED_AGENTS_DIR;
 mkdirSync(join(agentDir, "agents"), { recursive: true }); mkdirSync(join(agentDir, "config"));
 writeFileSync(join(agentDir, "agents", "reader.md"), "---\nname: reader\ndescription: Owned fixture\n---\nRead the assigned fixture.");
-writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,find,write,edit,delete,move,file_batch,bash,powershell\n---\nExecute the assigned fixture.");
+writeFileSync(join(agentDir, "agents", "writer.md"), "---\nname: writer\ndescription: Owned fixture\ntools: read,find,write,edit,delete,move,file_batch,file_result,bash,powershell\n---\nExecute the assigned fixture.");
 const { default: subagent } = await import("../packages/extensions/subagent/index.ts");
 test.after(async () => {
   await disposeNativeFileWorker();
@@ -83,6 +85,31 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
 }
 
 const liveSandbox = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
+
+test("real child pages only its own delegated omitted results and rejects another parent call", { timeout: 60000 }, async t => {
+  const f = await fixture(t), manager = f.session.sessionManager, input = { path: join(f.cwd, "parent-only") };
+  const callEntryId = manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "other-task", name: "delete", arguments: input }], timestamp: 0 } as any);
+  const writer = new FileResultWriter({ callEntryId, toolCallId: "other-task", operation: "delete", requestHash: mutationRequestHash("delete", input), itemCount: 1 },
+    (kind, data) => manager.appendCustomEntry(kind, data), manager);
+  const prepared = writer.prepare(0, { operation: "delete", target: input.path, inputHash: mutationRequestHash("delete", input) });
+  writer.ready(); writer.intent(0, prepared); writer.result(0, { operation: "delete", target: input.path, status: "failed_no_change", stateChanged: false });
+  const foreign = writer.finish(); writer.dispose();
+  const result = await f.run(`const operations=[];for(let i=0;i<70;i++)operations.push({operation:"write",path:"delegated/"+i,mode:"create",content:"own"});
+const r=await tools.file_batch({operations});if(!r.details.itemsOmitted)throw new Error("expected omitted results");
+let cursor, outcomes=0;do{const page=await tools.file_result({ref:r.details.resultRef,cursor,limit:128});for(const row of page.details.records)if(row.record.phase==="result"){if(row.record.status!=="succeeded")throw new Error("lost delegated outcome");outcomes++;}cursor=page.details.nextCursor??undefined;}while(cursor);
+if(outcomes!==70)throw new Error("incomplete delegated outcomes");
+const denied=await callTool("file_result",{ref:${JSON.stringify(foreign)}},{allowFailure:true});if(!denied.isError)throw new Error("foreign parent journal exposed");console.log({delegatedOutcomes:outcomes,foreignDenied:denied.isError});`, "writer");
+  assert.equal((result as any)?.isError, true, "Cross-task journal access closes the delegated channel");
+  assert.match(JSON.stringify(result), /FILE_RESULT_BRANCH/);
+  const observed = await f.observations(), calls = observed.filter(entry => entry.event === "result" && entry.name === "file_result");
+  let outcomes = 0;
+  for (const call of calls) if (!call.isError) {
+    const page = JSON.parse(call.content.find((part: any) => part.type === "text").text);
+    for (const row of page.records) if (row.record.phase === "result") { assert.equal(row.record.status, "succeeded"); outcomes++; }
+  }
+  assert.equal(outcomes, 70, JSON.stringify(calls));
+  assert.equal(await fs.readFile(join(f.cwd, "delegated", "69"), "utf8"), "own"); assert.equal(f.requests, 2);
+});
 test("PowerShell-only MXC roles keep writer admission and never expose Bash", async () => {
   const { assertSubagentBatchPreflight, effectiveTools } = await import("../packages/extensions/subagent/index.ts");
   const agent: any = { name: "shell", source: "user", tools: ["powershell"] };
@@ -167,7 +194,7 @@ test("real CLI children inherit explicit host mode across all global defaults an
       assert.equal((result as any)?.isError, false, JSON.stringify(result));
       const entries = await f.observations();
       assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "host-write");
-      assert.deepEqual(entries.find(entry => entry.event === "runtime"), { event: "runtime", parent: true, files: false, tasks: false, permissions: false });
+      assert.deepEqual(entries.find(entry => entry.event === "runtime"), { event: "runtime", parent: true, files: true, tasks: false, permissions: false });
       const calls = entries.filter(entry => entry.event === "result" && entry.name !== "codemode");
       assert.deepEqual(calls.map(entry => entry.name), ["read", "grep", "find", "ls"]);
       for (const call of calls) {

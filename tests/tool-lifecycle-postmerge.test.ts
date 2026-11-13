@@ -183,7 +183,7 @@ test("postmerge preflight adds zero argument-wrapper allocations", () => {
  const pending = runnerSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "PendingToolAuthorization") as ts.ClassDeclaration;
  const handoff = pending.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(runnerSource) === "consume") as ts.MethodDeclaration;
  let shellConsumes = 0, batchConsumes = 0, batchBranches = 0;
- const fileBranch = 'name === "file_batch" || name === "edit" || name === "write" || name === "delete" || name === "move"';
+ const fileBranch = 'name === "file_batch" || name === "edit" || name === "write" || name === "copy" || name === "delete" || name === "move"';
  function countTerminalConsume(node: ts.Node): void {
   if (ts.isIfStatement(node) && node.expression.getText(runnerSource) === fileBranch) batchBranches++;
   if (ts.isCallExpression(node) && node.expression.getText(runnerSource) === "authority.consume") {

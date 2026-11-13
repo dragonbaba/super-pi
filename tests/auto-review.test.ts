@@ -11,6 +11,8 @@ import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execut
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { AutoReviewBreaker, autoReviewSessionFiles, autoReviewTranscript, parseAutoReviewVerdict, runAutoReview } from "../packages/coding-agent/src/core/auto-review.ts";
+import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
+import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
 
 test("auto review verdicts, breaker and trimmed transcript", () => {
   assert.deepEqual(parseAutoReviewVerdict("APPROVE: runs the tests the user asked for"), { approved: true, reason: "runs the tests the user asked for" });
@@ -83,6 +85,33 @@ test("auto review sees a session-written file that the request runs, and only wh
     if (content.length === boundary.length) { assert.match(attachment, /truncated/); assert.ok(attachment.length < 49000); }
     else { assert.match(attachment, /too large/); assert.doesNotMatch(attachment, /xxxx/); }
   }
+});
+
+test("auto review authenticates paged v3 writes and copy/move destinations", async t => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-v3-"))), f = nativeFileSession(root), definitions: any = {};
+  t.after(async () => { await f.close(); await disposeNativeFileWorker(); await fs.rm(root, { recursive: true, force: true }); });
+  f.files.install(definitions);
+  const operations = [];
+  for (let index = 0; index < 70; index++) operations.push({ operation: "write", path: `build-${index}.py`, mode: "create", content: `print(${index})\n` });
+  assert.equal((await f.invoke(definitions, "file_batch", { operations })).isError, false);
+  assert.match(await autoReviewSessionFiles(f.manager, { command: "python build-0.py" }, root), /print\(0\)/);
+  for (const operation of ["copy", "move"]) {
+    const destination = `${operation}.py`;
+    const result = await f.invoke(definitions, operation, { path: "build-69.py", destination });
+    assert.equal(result.isError, false);
+    const attachment = await autoReviewSessionFiles(f.manager, { command: `python ${destination}` }, root);
+    if (!result.details.sha256) {
+      assert.equal(attachment, "", "A native hard-link move without a content hash cannot authenticate an attachment");
+      continue;
+    }
+    assert.match(attachment, /print\(69\)/, operation);
+    await fs.writeFile(path.join(root, destination), "changed");
+    assert.match(await autoReviewSessionFiles(f.manager, { command: `python ${destination}` }, root), /changed or removed/);
+  }
+  const entry = f.manager.getEntries().find(entry => entry.type === "custom" && entry.customType === "file-mutation-progress-v3");
+  assert(entry?.type === "custom");
+  (entry.data as any).hash = "0".repeat(64);
+  await assert.rejects(autoReviewSessionFiles(f.manager, { command: "python build-0.py" }, root), /FILE_RESULT/);
 });
 
 test("auto attachment identities preserve case and non-regular handles are never read", async t => {

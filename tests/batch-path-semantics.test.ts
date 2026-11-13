@@ -218,7 +218,7 @@ for (const action of ["failure", "cancel"]) test(`@ partial batch ${action} reta
 for (const action of ["failure", "cancel"]) test(`@ creation ${action} after mkdir reports retained directories`, async t => {
   const f = await tracedFixture(t);
   if (action === "cancel") active!.afterMkdir = () => f.agent.abort();
-  else active!.beforeOpen = () => { throw new Error("injected open failure"); };
+  else active!.beforeOpen = () => { throw Object.assign(new Error("injected open denial"), { code: "EACCES" }); };
   const result = await f.call("file_batch", { operations: ["file", "later"].map(path => ({ operation: "write", mode: "create", path: `@new/${path}`, content: path })) });
   assert.equal(result.isError, true); const items = (result.details as any).items;
   assert.equal(items[0].status, "partial"); assert.equal(items[0].stateChanged, true); assert.equal(items[1].status, "not_started");

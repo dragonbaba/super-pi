@@ -606,7 +606,13 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private createSessionRuntime(): ExtensionRuntime {
 		const runtime = createExtensionRuntime();
 		this.pendingTaskRuntime = runtime;
-		if (this.parentExecution) { runtime.parentExecution = this.parentExecution; return runtime; }
+		if (this.parentExecution) {
+			runtime.parentExecution = this.parentExecution;
+			// Child result queries have only the child's SessionManager. Workspace
+			// mutations retain their existing parent dispatch and authorization.
+			runtime.nativeFiles = new SessionFiles(runtime, this.eventBus);
+			return runtime;
+		}
 		runtime.nativeTasks = new SessionTasks(runtime, this.eventBus);
 		runtime.nativeFiles = new SessionFiles(runtime, this.eventBus);
 		const settings = this.settingsManager.getGlobalSettings();

@@ -19,7 +19,7 @@ import { FileCommitError, commitFailure, type CommitMetadata } from "./file-comm
 
 // Default extensions load in separate module-cache scopes; share only the private key, not authority state.
 import { FileBatchParameters, copyBatchInput as copyInput, assertIndependent, type BatchInput } from "@super-pi/coding-agent/internal/files/file-batch-protocol";
-export { FileBatchParameters, MAX_BATCH_ITEMS } from "@super-pi/coding-agent/internal/files/file-batch-protocol";
+export { FileBatchParameters } from "@super-pi/coding-agent/internal/files/file-batch-protocol";
 type Operation = BatchInput["operations"][number]["operation"];
 const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
 const EXECUTION = Symbol("file-batch-execution");

@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, parse } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
+import { stripVTControlCharacters } from "node:util";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { alphaSession } from "./helpers/alpha-session.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -29,6 +30,7 @@ async function fixture(t: test.TestContext, config: ExecutionPermissions = {}) {
   for (const path of [workspace, outside, added]) await fs.mkdir(path);
   const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(workspace);
   runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
+  runtime.appendFileEntry = (type, data) => manager.appendCustomEntry(type, data);
   const owner = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "trusted-host", config, "host-write", [added]);
   const files = runtime.nativeFiles = new SessionFiles(runtime, createEventBus()); files.setCompatibilityBoundary(owner);
   const definitions: Record<string, any> = { read: createReadToolDefinition(workspace) }; files.install(definitions);
@@ -39,16 +41,20 @@ async function fixture(t: test.TestContext, config: ExecutionPermissions = {}) {
   let sequence = 0;
   function event(toolName: string, input: object): any { return { type: "tool_call", toolCallId: String(++sequence), toolName, input }; }
   async function call(toolName: string, input: object, afterAuthorize?: () => Promise<void>) {
-    const request = event(toolName, input), grant = await owner.authorize(request, ctx, definitions[toolName]);
+    const request = event(toolName, input);
+    manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: request.toolCallId, name: toolName, arguments: input }], timestamp: 0 } as any);
+    let invocation: Awaited<ReturnType<SessionFiles["prepareInvocation"]>>;
     try {
-      await afterAuthorize?.();
-      const invocation = (await files.prepareInvocation(request, ctx))!;
+      const grant = await owner.authorize(request, ctx, definitions[toolName], false, async () => {
+        invocation = await files.prepareInvocation(request, ctx); return invocation?.describePreflight;
+      });
       try {
+      await afterAuthorize?.();
         grant.consume(input, request.toolCallId, toolName);
-        const approved = invocation.consume(input, request.toolCallId, toolName);
+        const approved = invocation!.consume(input, request.toolCallId, toolName);
         return await definitions[toolName].execute(request.toolCallId, approved, ctx.signal, undefined, ctx);
-      } finally { invocation.release(); }
-    } finally { grant.release(); }
+      } finally { grant.release(); }
+    } finally { invocation?.release(); }
   }
   async function read(path: string) {
     const input = { path }, request = event("read", input), grant = await owner.authorize(request, ctx, definitions.read);
@@ -75,6 +81,27 @@ test("native delete/move and mixed batches ask once outside; primary and added w
   const count = f.dialogs.length;
   assert.equal((await f.call("file_batch", input)).isError, false);
   assert.equal(f.dialogs.length, count + 1); assert.match(f.dialogs.at(-1)!, /工作区内/); assert.match(f.dialogs.at(-1)!, /工作区外/);
+});
+
+test("tree mutations honor descendant denies and explicit asks before any effect", async t => {
+  for (const operation of ["delete", "move", "copy"] as const) for (const batch of [false, true]) for (const decision of ["deny", "ask"] as const) {
+    const source = "tree", destination = "target", rulePath = join(operation === "copy" ? destination : source, "keep.txt");
+    const f = await fixture(t, { rules: [{ tool: operation, path: rulePath, decision }] });
+    await fs.mkdir(join(f.workspace, source)); await fs.writeFile(join(f.workspace, source, "keep.txt"), "keep");
+    const item = { path: source, ...(operation === "delete" ? { recursive: true } : { destination }) };
+    if (decision === "deny") {
+      await assert.rejects(f.call(batch ? "file_batch" : operation, batch ? { operations: [{ operation, ...item }] } : item), /Explicitly denied/);
+      assert.equal(await fs.readFile(join(f.workspace, source, "keep.txt"), "utf8"), "keep");
+      await assert.rejects(fs.stat(join(f.workspace, destination)), { code: "ENOENT" }); assert.equal(f.dialogs.length, 0);
+    } else {
+      const result = await f.call(batch ? "file_batch" : operation, batch ? { operations: [{ operation, ...item }] } : item);
+      assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(f.dialogs.length, 1, `${operation}, batch=${batch}`);
+    }
+  }
+  const f = await fixture(t, { rules: [{ tool: "file_batch", path: "tree/keep.txt", decision: "deny" }] });
+  await fs.mkdir(join(f.workspace, "tree")); await fs.writeFile(join(f.workspace, "tree/keep.txt"), "keep");
+  await assert.rejects(f.call("file_batch", { operations: [{ operation: "delete", path: "tree", recursive: true }] }), /Explicitly denied/);
+  assert.equal(await fs.readFile(join(f.workspace, "tree/keep.txt"), "utf8"), "keep");
 });
 
 test("denied batches have no partial effects; missing UI/never require approval without persistent refusals", async t => {
@@ -133,7 +160,8 @@ test("external existing write/edit/LSP and mixed batches are blocked; previews a
 
 test("new external file authority cannot become overwrite if a file appears before preparation", async t => {
   const f = await fixture(t), target = join(f.outside, "race.txt");
-  await assert.rejects(f.call("write", { path: target, content: "unexpected overwrite" }, async () => { await fs.writeFile(target, "appeared"); await f.read(target); }), /TARGET_APPEARED|STALE_STATE/);
+  const result = await f.call("write", { path: target, content: "unexpected overwrite" }, async () => { await fs.writeFile(target, "appeared"); await f.read(target); });
+  assert.equal(result.isError, true); assert.match(result.details.reason, /TARGET_APPEARED|STALE_STATE/);
   assert.equal(await fs.readFile(target, "utf8"), "appeared");
 });
 
@@ -148,8 +176,9 @@ test("a batch binds every approved canonical path across the dialog", async t =>
     await fs.unlink(link); await fs.symlink(f.outside, link, process.platform === "win32" ? "junction" : "dir"); return choices[0];
   };
   try {
-    await assert.rejects(f.call("file_batch", { operations: [{ operation: "delete", path: first },
-      { operation: "delete", path: join(link, "nested", "keep.txt") }] }), /STALE_STATE/);
+    const result = await f.call("file_batch", { operations: [{ operation: "delete", path: first },
+      { operation: "delete", path: join(link, "nested", "keep.txt") }] });
+    assert.equal(result.isError, true); assert.match(result.details.reason, /STALE_STATE/); assert.equal(result.details.succeeded, 0);
     assert.equal(await fs.readFile(first, "utf8"), "first");
     assert.equal(await fs.readFile(join(f.outside, "nested", "keep.txt"), "utf8"), "keep");
   } finally { await fs.unlink(link); }
@@ -175,7 +204,12 @@ test("production selector allows and refuses external deletes and renders sensit
   const ui = await alphaSession({ mode: "fullscreen", fixtureRoot: uiRoot });
   assert.equal(await ui.mode.init(), true); f.ctx.ui = ui.internal.createExtensionUIContext();
   let promptFrames = 0, noticeFrames = 0;
-  ui.sink.physicalMarker = text => { if (text.includes("允许这次操作")) promptFrames++; if (text.includes("禁止 delete")) noticeFrames++; };
+  ui.sink.physicalMarker = text => {
+    const plain = stripVTControlCharacters(text);
+    if (plain.includes("允许这次操作")) promptFrames++;
+    // Long task-owned Windows paths can wrap the operation onto the next row.
+    if (/禁止\s+delete/u.test(plain)) noticeFrames++;
+  };
   try {
     for (const allow of [true, false]) {
       const target = join(f.outside, allow ? "allow.txt" : "deny.txt"); await fs.writeFile(target, "owned");

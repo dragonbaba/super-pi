@@ -11,12 +11,18 @@ import { workspaceInput } from "../../packages/coding-agent/src/core/sandbox/wor
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from "../../packages/coding-agent/src/utils/image-signature.mjs";
 import { removeOwnedFixture } from "./owned-fixture-cleanup.ts";
 import * as limits from "../../packages/coding-agent/src/core/sandbox/mxc-file-limits.mjs";
+import { MxcFilePublication, publishedDigest } from "../../packages/coding-agent/src/core/files/mxc-file-publication.mjs";
+import { FILE_RPC_REQUEST_BYTES } from "../../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 
-// Exercise the actual controlled worker without claiming this fixture proves OS isolation.
-const source = ts.createSourceFile("worker.mjs", fs.readFileSync("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs", "utf8"), ts.ScriptTarget.Latest, true);
+// Execute only the current read worker. This VM fixture does not prove OS isolation.
+function compileWorker(file: string) {
+const source = ts.createSourceFile("worker.mjs", fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
 const body = "const { FILE_LIMIT, IMAGE_LIMIT, READ_LINES, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, DIRECTORY_READ_BUFFER, normalizeReadOffset, normalizeReadLimit } = limits;\n"
-  + source.statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText(source)).join("\n");
-const execute = new Function("fs", "path", "createHash", "randomUUID", "isUtf8", "process", "console", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "limits", body);
+  + `const FILE_RPC_REQUEST_BYTES = ${FILE_RPC_REQUEST_BYTES};\n`
+  + source.statements.filter(node => !ts.isImportDeclaration(node) && !ts.isExportDeclaration(node)).map(node => node.getText(source)).join("\n") + "\nrunFileWorker();";
+return new Function("fs", "path", "createHash", "randomUUID", "isUtf8", "process", "console", "detectSupportedImageMimeType", "IMAGE_TYPE_SNIFF_BYTES", "limits", "MxcFilePublication", "publishedDigest", body);
+}
+const execute = compileWorker("packages/coding-agent/src/core/sandbox/mxc-file-worker.mjs");
 
 export function mxcFileFixture(t: TestContext, temporary = os.tmpdir()) {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(temporary, "mxc-file-")));
@@ -30,8 +36,12 @@ export function mxcFileFixture(t: TestContext, temporary = os.tmpdir()) {
     fs.writeFileSync(requestFile, JSON.stringify({ id: randomUUID().replaceAll("-", ""), workspaces: [input, additional],
       exchange, mode, operation, input: inputArgs, maxWriteBytes: 1024 * 1024 }));
     let reply: any;
+    class ControlledPublication extends MxcFilePublication {
+      constructor(target: string, fd: number, before: any, sha: string) { super(target, fd, before, sha, undefined, io); }
+    }
     execute(io, path, createHash, randomUUID, isUtf8, { argv: ["node", "worker", requestFile], exitCode: 0 },
-      { log(text: string) { reply = JSON.parse(text); } }, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES, limits);
+      { log(text: string) { reply = JSON.parse(text); } }, detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES, limits,
+      ControlledPublication, (target: any, identity: any, digest: any, size: any) => publishedDigest(target, identity, digest, size, io));
     return reply;
   }
   function attach(owner: WorkspaceSandboxTools, mode: string) {
