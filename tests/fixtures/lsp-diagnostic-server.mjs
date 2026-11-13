@@ -1,14 +1,36 @@
 // Protocol/status fixture only. This process does not analyze HTML or JavaScript.
 import { spawn } from "node:child_process";
+import { TYPESCRIPT_PROJECT_PROGRESS_TITLE } from "../../packages/lsp/src/project-progress.ts";
 const mode = process.argv[2];
 const ownedChild = mode === "owned-descendant" ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true }) : undefined;
 let buffer = Buffer.alloc(0);
+let navigationReady = false, progressCreated = false;
 function send(message) {
   const body = JSON.stringify({ jsonrpc: "2.0", ...message });
   process.stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
 }
 function handle(message) {
-  if (message.method === "initialize") send({ id: message.id, result: { capabilities: mode.startsWith("push") ? {} : { diagnosticProvider: {} } } });
+  if (message.id === "project-load" && !message.method) {
+    send({ method: "$/progress", params: { token: "project-load", value: { kind: "begin", title: TYPESCRIPT_PROJECT_PROGRESS_TITLE } } });
+    if (mode === "navigation-ready") setTimeout(() => {
+      navigationReady = true;
+      send({ method: "$/progress", params: { token: "project-load", value: { kind: "end" } } });
+    }, 60);
+  } else if (message.method === "textDocument/didOpen" && mode.startsWith("navigation-")) {
+    if (mode === "navigation-unsupported" && !progressCreated) {
+      progressCreated = true;
+      send({ method: "$/progress", params: { token: "unrelated", value: { kind: "begin", title: "Formatting one document" } } });
+      send({ method: "$/progress", params: { token: "unrelated", value: { kind: "end" } } });
+    }
+    if (mode !== "navigation-unsupported" && !progressCreated) {
+      progressCreated = true;
+      send({ id: "project-load", method: "window/workDoneProgress/create", params: { token: "project-load" } });
+    }
+  } else if (message.method === "textDocument/references" || message.method === "textDocument/definition") {
+    const uri = message.params.textDocument.uri;
+    const location = { uri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } };
+    send({ id: message.id, result: navigationReady ? [location, { uri: uri.replace(/example\.ts$/, "definition.ts"), range: location.range }] : [location] });
+  } else if (message.method === "initialize") send({ id: message.id, result: { capabilities: mode.startsWith("push") ? {} : { diagnosticProvider: {} } } });
   else if (message.method === "textDocument/diagnostic") {
     if (mode === "error") send({ id: message.id, error: { code: -32603, message: "synthetic diagnostic failure" } });
     else send({ id: message.id, result: mode === "missing-report" ? {} : { kind: "full", items: [] } });

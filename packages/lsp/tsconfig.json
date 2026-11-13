@@ -9,7 +9,9 @@
     "skipLibCheck": true,
     "paths": {
       "typebox": ["../../node_modules/typebox/build/index.d.mts"],
-      "@super-pi/coding-agent": ["../coding-agent/dist/index.d.ts"]
+      "@super-pi/coding-agent": ["../coding-agent/dist/index.d.ts"],
+      "@super-pi/coding-agent/internal/files/*": ["../coding-agent/src/core/files/*.ts"],
+      "@super-pi/coding-agent/internal/windows-shell-job": ["../coding-agent/src/utils/windows-shell-job.ts"]
     },
     "typeRoots": [
       "../../node_modules/@types"

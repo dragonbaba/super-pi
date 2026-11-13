@@ -5,7 +5,7 @@ import ts from "typescript";
 
 test("LSP protocol delivery reuses diagnostic settle callbacks without notification arrays or promise tails", () => {
   const source = ts.createSourceFile("lsp-client.ts", readFileSync(new URL("../packages/lsp/src/lsp-client.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
-  const names = new Set(["#onStdout", "#onStderr", "#onData", "#handleMessage", "#recordPublishedDiagnostics", "#send", "documentUriKey", "onPublish"]);
+  const names = new Set(["#onStdout", "#onStderr", "#onData", "#handleMessage", "#recordPublishedDiagnostics", "#beginProjectProgress", "#recordProjectProgress", "#send", "documentUriKey", "onPublish"]);
   let audited = 0;
   function audit(node) {
     if (node.name && names.has(node.name.getText(source))) {
@@ -25,9 +25,13 @@ test("LSP protocol delivery reuses diagnostic settle callbacks without notificat
     ts.forEachChild(node, audit);
   }
   audit(source); assert.equal(audited, names.size);
-  // start, request, shutdown, #waitForClose and initial diagnostic waiter setup are lifecycle/call boundaries.
+  // start, request, shutdown, #waitForClose, waitForProjectReadiness and initial
+  // diagnostic waiter setup are lifecycle/call boundaries. Progress-token Set
+  // entries belong to project setup/end; ordinary report delivery creates none.
   assert.match(source.text, /setTimeout\(\s*settleLatest,/);
   assert.match(source.text, /this\.#publishedDiagnostics\.size >= MAX_PUBLISHED_DIAGNOSTIC_DOCUMENTS/);
+  assert.match(source.text, /this\.#projectProgress\.size >= MAX_PROJECT_PROGRESS_TOKENS/);
+  assert.match(source.text, /this\.#projectProgress\.clear\(\)/);
 });
 
 test("LSP source reads own one capped buffer and no per-read allocation or asynchronous tail", () => {

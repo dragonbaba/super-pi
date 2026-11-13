@@ -12,6 +12,7 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { setImmediate as tick } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import * as projectProgress from "../packages/lsp/src/project-progress.ts";
 import * as path from "node:path";
 import * as url from "node:url";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
@@ -47,6 +48,39 @@ function tools(boundary?: SessionExecutionBoundary, factory = extension) {
   factory({ registerExecutionOwner: boundary ? (name: string, owner: any) => boundary.register(name, owner) : undefined, registerTool(tool: any) { registered.set(tool.name, tool); }, registerCommand() {}, on(name: string, fn: any) { events.set(name, fn); } });
   return { registered, events };
 }
+
+test("LSP internal source definitions resolve to source under NodeNext ESM", () => {
+  const configPath = resolve("packages/lsp/tsconfig.json"), read = ts.readConfigFile(configPath, ts.sys.readFile);
+  assert.equal(read.error, undefined);
+  const config = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath));
+  for (const [specifier, expected] of [
+    ["@super-pi/coding-agent/internal/files/file-commit", "packages/coding-agent/src/core/files/file-commit.ts"],
+    ["@super-pi/coding-agent/internal/windows-shell-job", "packages/coding-agent/src/utils/windows-shell-job.ts"],
+  ]) {
+    const result = ts.resolveModuleName(specifier, resolve("packages/lsp/src/runner.ts"), config.options, ts.sys, undefined, undefined, ts.ModuleKind.ESNext);
+    assert.equal(resolve(result.resolvedModule!.resolvedFileName), resolve(expected));
+  }
+});
+
+test("navigation waits for project progress completion before presenting complete references", async () => {
+  const f = fixture("navigation-ready"), pool = new LspClientPool();
+  writeFileSync(join(f.root, "definition.ts"), "export const n = 1;");
+  try {
+    const result = await runNavigation(pool, f.adapters[0], { root: f.root, path: "example.ts", line: 1, symbol: "n", action: "references" }, 2500, undefined, { ui: { setStatus() {} } }, "lsp");
+    assert.equal(result.details.total, 2); assert.equal(result.details.projectReady, true);
+    assert.equal(result.details.results.some((item: any) => item.path === "definition.ts"), true);
+    assert.doesNotMatch(result.content[0].text, /may be incomplete/);
+  } finally { await pool.shutdownAll(); f.release(); }
+});
+
+for (const mode of ["navigation-stalled", "navigation-unsupported"]) test(`navigation labels unconfirmed project readiness for ${mode}`, async () => {
+  const f = fixture(mode), pool = new LspClientPool();
+  try {
+    const result = await runNavigation(pool, f.adapters[0], { root: f.root, path: "example.ts", line: 1, symbol: "n", action: "references" }, 500, undefined, { ui: { setStatus() {} } }, "lsp");
+    assert.equal(result.details.total, 1); assert.equal(result.details.projectReady, false);
+    assert.match(result.content[0].text, /project.*loading.*results may be incomplete/i);
+  } finally { await pool.shutdownAll(); f.release(); }
+});
 
 test("LSP session transitions drain late acquisitions and own services independently", { timeout: 12000 }, async t => {
   const profiler = new InspectorSession(); profiler.connect(); t.after(() => profiler.disconnect());
@@ -154,7 +188,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
   const poolCode = ts.transpileModule(readFileSync(new URL("../packages/lsp/src/client-pool.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   const inspector = new InspectorSession(); inspector.connect(); t.after(() => inspector.disconnect());
   const refs: WeakRef<object>[] = [];
-  let publishes = 0, peakTimers = 0, settleCallbacks = 0, settleTimers = 0;
+  let publishes = 0, progressReports = 0, peakTimers = 0, settleCallbacks = 0, settleTimers = 0;
   async function exercise(kind: "normal" | "held" | "spawn-error" | "late-start" | "group-denied") {
     const timers = new Set<any>(), callbacks = new Set<Function>(), children: any[] = [];
     let kills = 0;
@@ -189,6 +223,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
         if (name === "./collections.ts") return { EMPTY_READONLY_ARRAY: [] };
         if (name === "./files.ts") return { directoryUri: () => "file:///fixture/" };
         if (name === "./regex.ts") return { COMMAND_SCRIPT_PATTERN: /\.(?:bat|cmd)$/iu, LSP_CONTENT_LENGTH_PATTERN: /Content-Length:\s*(\d+)/iu };
+        if (name === "./project-progress.ts") return projectProgress;
         if (name === "./text-edits.ts") return {};
         throw new Error(name);
       },
@@ -220,6 +255,25 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
       for (let i = 0; i < 1000; i++) { child.stdout.emit("data", frame); publishes++; }
       assert.equal(callbacks.size, 1, "one stable settle callback per diagnostic operation"); settleCallbacks += callbacks.size;
       const settle = [...timers].find(timer => timer.ms === 7); timers.delete(settle); settle.fn(); await diagnostics;
+      function progress(kind: string, token = "loading") {
+        const body = JSON.stringify({ jsonrpc: "2.0", method: "$/progress", params: { token, value: { kind, ...(kind === "begin" ? { title: projectProgress.TYPESCRIPT_PROJECT_PROGRESS_TITLE } : {}) } } });
+        return Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+      }
+      child.stdout.emit("data", progress("begin"));
+      const readiness = client.waitForProjectReadiness(500);
+      const report = progress("report");
+      for (let index = 0; index < 100; index++) { child.stdout.emit("data", report); progressReports++; }
+      assert.deepEqual({ ...client.projectReadinessDiagnostics }, { activeTokens: 1, waiters: 1, overflow: false });
+      child.stdout.emit("data", progress("end")); assert.equal(await readiness, true);
+      assert.equal(client.projectReadinessDiagnostics.waiters, 0);
+      if (kind === "normal") {
+        for (let index = 0; index <= projectProgress.MAX_PROJECT_PROGRESS_TOKENS; index++) child.stdout.emit("data", progress("begin", `overflow-${index}`));
+        assert.equal(client.projectReadinessDiagnostics.activeTokens, projectProgress.MAX_PROJECT_PROGRESS_TOKENS);
+        for (let index = 0; index <= projectProgress.MAX_PROJECT_PROGRESS_TOKENS; index++) child.stdout.emit("data", progress("end", `overflow-${index}`));
+        assert.equal(client.projectReady, false); assert.equal(client.projectReadinessDiagnostics.overflow, true);
+      }
+      child.stdout.emit("data", progress("begin", "cancelled-loading"));
+      const cancelledReadiness = assert.rejects(client.waitForProjectReadiness(500), /cancel|exited|closed/);
       let completed = false;
       const stopping = client.shutdown(); assert.equal(client.shutdown(), stopping, "concurrent cleanup shares ownership");
       const stopped = stopping.then(() => { completed = true; }, (error: unknown) => { throw error; });
@@ -235,6 +289,8 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
         await assert.rejects(stopped, /LSP_CLEANUP_UNCONFIRMED/);
         await assert.rejects(client.shutdown(), /LSP_CLEANUP_UNCONFIRMED/, "failed family cleanup must remain closed");
       } else await stopped;
+      await cancelledReadiness;
+      assert.deepEqual({ ...client.projectReadinessDiagnostics }, { activeTokens: 0, waiters: 0, overflow: false });
     }
     assert.equal(timers.size, 0);
     for (const stream of [child, child.stdin, child.stdout, child.stderr]) assert.deepEqual(stream.eventNames(), []);
@@ -284,7 +340,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
   for (let i = 0; i < 3; i++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
   assert.equal(refs.filter(ref => ref.deref()).length, 0);
   assert.equal(settleTimers, 3);
-  t.diagnostic(JSON.stringify({ publishes, settleCallbacks, settleTimers, peakTimers, references: refs.length, liveReferences: 0, timersAfterCleanup: 0, sampledBytesIncludingFixtures: sampled }));
+  t.diagnostic(JSON.stringify({ publishes, progressReports, settleCallbacks, settleTimers, peakTimers, references: refs.length, liveReferences: 0, timersAfterCleanup: 0, sampledBytesIncludingFixtures: sampled }));
 });
 
 test("configured route is explicit about zero files and unsupported HTML; no client acquisition", async () => {

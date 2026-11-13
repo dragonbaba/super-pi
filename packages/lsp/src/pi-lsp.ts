@@ -218,7 +218,7 @@ export default function lsp(pi: ExtensionAPI) {
 	const lspNavigateTool = defineTool({
 		name: "lsp_navigate",
 		label: "LSP: Navigate",
-		description: "Navigate symbols through a reusable configured LSP client.",
+		description: "Navigate symbols through a reusable configured LSP client. Waits for recognized project readiness; unconfirmed readiness is explicitly marked as potentially incomplete.",
 		promptSnippet: "Navigate symbols through LSP",
 		promptGuidelines: [
 			"Use LSP for symbols and text search for literals/config; read a returned target before explaining or editing it.",
