@@ -5,7 +5,6 @@ export interface TreeIdentity extends PathIdentity { symbolicLink?: true; }
 export interface TreeEntry { identity: TreeIdentity; parent: number; }
 export interface TreePreparation { readonly entries: readonly TreeEntry[]; readonly files: number; readonly directories: number; readonly skippedLinks: number; readonly bytes: number; readonly unlinkFiles?: number; }
 export function capturePathIdentity(path: string): Promise<PathIdentity>;
-export function captureDestinationParent(destination: string): Promise<PathIdentity>;
 export function pathIdentityFromStat(path: string, canonical: string, info: BigIntStats, symbolicLink?: boolean): TreeIdentity;
 export function captureTreeIdentity(path: string): Promise<TreeIdentity>;
 export function sameIdentity(a: PathIdentity, b: PathIdentity, metadata?: boolean): boolean;

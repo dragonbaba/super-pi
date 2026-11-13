@@ -115,7 +115,7 @@ export class FileMutation {
       if (tree?.destination) text += ` → ${displayMetadata(tree.destination)}`;
       if (tree) text += `; ${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.bytes} bytes, ${tree.tree.skippedLinks} skipped links`
         + (item.input.recursive ? "; recursive" : "") + (item.input.overwrite ? `; overwrite existing regular file (${tree.destinationIdentity?.size ?? "0"} bytes)` : "; exclusive destination");
-      if (item.creation) text += `; new file, ${item.creation.directories.length} missing parent directories`;
+      if (item.creation) text += `; ${tree ? "destination" : "new file"}, ${item.creation.directories.length} missing parent directories`;
       const metadata = item.snapshot?.metadata ?? tree?.overwriteCommit?.metadata;
       if (metadata) text += `; ${metadata.strategy}${metadata.reason ? ": " + displayMetadata(boundedReason(metadata.reason)) : ""}`;
     }
@@ -297,7 +297,7 @@ class FileMutationExecution {
       if (typeof receipt.files === "number") this.files += receipt.files;
       else if ((item.operation === "write" || item.operation === "edit") && receipt.stateChanged === true) this.files++;
       if (typeof receipt.directories === "number") this.directories += receipt.directories;
-      else if (receipt.creation) {
+      if (receipt.creation) {
         const creation = receipt.creation as { createdDirectoryCount?: number; createdDirectories?: unknown[] };
         this.directories += creation.createdDirectoryCount ?? creation.createdDirectories?.length ?? 0;
       }

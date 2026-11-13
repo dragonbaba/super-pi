@@ -1,3 +1,5 @@
+import fsPromises from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, realpath, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -9,6 +11,7 @@ import { capturePathIdentity } from "../packages/coding-agent/src/core/files/fil
 import { runFileMutationRequest } from "../packages/coding-agent/src/core/sandbox/mxc-file-mutation-worker.mjs";
 import { runFileObservationRequest } from "../packages/coding-agent/src/core/sandbox/mxc-file-observation-worker.mjs";
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { FileResultReader } from "../packages/coding-agent/src/core/files/file-result-store.ts";
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import fsSync from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -122,4 +125,51 @@ test("sandbox failed preparation artifact cleanup permits the next independent r
   assert.equal(f.owned.size, 0); await assert.rejects(readFile(join(f.cwd, "refused")), { code: "ENOENT" });
   const next = await f.call("write", { path: "next", content: "kept" });
   assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(await readFile(join(f.cwd, "next"), "utf8"), "kept"); assert.equal(f.owned.size, 0);
+});
+
+{ const operation = 'move' as const; test(`sandbox ${operation} arrays share missing parents after a read-only dryRun`, async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.cwd, "first"), "one"); await writeFile(join(f.cwd, "second"), "two");
+  const input = { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] };
+  const preview = await f.call(operation, { ...input, dryRun: true });
+  assert.equal(preview.isError, false, JSON.stringify(preview)); assert.equal(preview.details.directories, 2);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false); await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
+  const applied = await f.call(operation, input);
+  assert.equal(applied.isError, false, JSON.stringify(applied)); assert.equal(applied.details.succeeded, 2); assert.equal(applied.details.directories, 2);
+  assert.equal(await readFile(join(f.cwd, "new/deep/first"), "utf8"), "one"); assert.equal(await readFile(join(f.cwd, "new/deep/second"), "utf8"), "two");
+  assert.equal(f.owned.size, 0);
+}); }
+
+test("sandbox file_batch shares write-created parents with later copy and directory move", async t => {
+  const f = await fixture(t); await writeFile(join(f.cwd, "copy-source"), "copy bytes");
+  await mkdir(join(f.cwd, "move-source")); await writeFile(join(f.cwd, "move-source/payload"), "move bytes");
+  const result = await f.call("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "new/deep/written", content: "written" },
+    { operation: "copy", path: "copy-source", destination: "new/deep/copied" },
+    { operation: "move", path: "move-source", destination: "new/deep/moved" },
+  ] });
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 3); assert.equal(result.details.directories, 3);
+  assert.equal(await readFile(join(f.cwd, "new/deep/copied"), "utf8"), "copy bytes");
+  assert.equal(await readFile(join(f.cwd, "new/deep/moved/payload"), "utf8"), "move bytes"); assert.equal(f.owned.size, 0);
+});
+
+test("sandbox array continues after a source changes following parent creation", async t => {
+  const f = await fixture(t); await writeFile(join(f.cwd, "first"), "one"); await writeFile(join(f.cwd, "second"), "two");
+  const original = fsPromises.mkdir;
+  t.mock.method(fsPromises, "mkdir", async (path: any, ...args: any[]) => {
+    const result = await original(path, ...args);
+    if (path === join(f.cwd, "new/deep")) await writeFile(join(f.cwd, "first"), "external change");
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await f.call("copy", { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] });
+    assert.equal(result.details.partial, 1); assert.equal(result.details.unknown, 0); assert.equal(result.details.succeeded, 1);
+    const reader = new FileResultReader(f.manager); t.after(() => reader.dispose());
+    const failed = reader.read(result.details.resultRef).records.find(row => row.record.phase === "result" && row.record.index === 0)!;
+    const creation = failed.record.creation as any;
+    assert.equal(creation.createdDirectoryCount, 2); assert.equal(creation.createdDirectories.length, 2);
+    assert.equal(await readFile(join(f.cwd, "new/deep/second"), "utf8"), "two"); await assert.rejects(lstat(join(f.cwd, "new/deep/first")), { code: "ENOENT" });
+    assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });

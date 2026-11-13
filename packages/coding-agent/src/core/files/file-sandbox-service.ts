@@ -151,10 +151,10 @@ export class SandboxFileService implements FileMutationService {
           requestHash: input.inputHash, generation: this.generation, approval: { canonicalTarget: header.target, protectedRoots: [] }, identity: header.source,
           creation: prepared.creation, remote: { index, manifest, prepared },
           preview: { kind: input.operation === "copy" ? "Copied" : input.operation === "move" ? "Moved" : input.operation === "delete" ? "Deleted" : header.creation ? "Added" : "Modified",
-            bytes: header.tree?.bytes ?? header.text?.bytes } };
+            bytes: header.tree?.bytes ?? header.text?.bytes, plannedDirectories: prepared.creation?.directories } };
         if (input.operation === "copy" || input.operation === "move" || input.operation === "delete") item.tree = Object.freeze({ operation: input.operation, cwd: this.cwd,
           input: item.input, source: header.source!, sourceParent: header.sourceParent!, tree: prepared.tree!, destination: header.destination,
-          destinationParent: header.destinationParent, destinationIdentity: header.destinationIdentity,
+          destinationParent: header.destinationParent, destinationIdentity: header.destinationIdentity, creation: prepared.creation,
           protectedPaths: Object.freeze([{ canonicalTarget: header.target, protectedRoots: [] }]) } satisfies NativeTreePlan);
         this.rows[index] = { item, input, prepared }; this.indexes.set(item, index);
       }
@@ -215,9 +215,11 @@ export class SandboxFileService implements FileMutationService {
         const creation = receipt.creation as { bytes: number; addedLines?: number; createdDirectoryCount?: number; manifestSha256?: string };
         if (creation.createdDirectoryCount !== parents.created.length) throw new Error("[FILE_RPC_INVALID] Created-parent counts differ from the complete inventory.");
         receipt.creation = { ...summarizeCreatedDirectories(creation, parents.created), manifestSha256: receipt.createdParents.sha256 };
-        if (receipt.status === "succeeded") for (const parent of parents.created) {
-          if (parent.status !== "created" || !parent.identity) throw new Error("[FILE_RPC_INVALID] Successful creation lost its pinned parent identity.");
-          hooks.sharedDirectories?.set(directoryKey(parent.path), parent.identity);
+        for (const parent of parents.created) {
+          if (receipt.status === "succeeded" && (parent.status !== "created" || !parent.identity)) throw new Error("[FILE_RPC_INVALID] Successful creation lost its pinned parent identity.");
+          // A later independent item may reuse a retained, observed parent even
+          // if this item failed after mkdir. Its identity is rechecked in-worker.
+          if (parent.status !== "removed" && parent.identity) hooks.sharedDirectories?.set(directoryKey(parent.path), parent.identity);
         }
       }
       // The shared journal owner records effects before exposing SHA continuation.

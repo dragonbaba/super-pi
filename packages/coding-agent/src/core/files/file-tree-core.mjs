@@ -15,14 +15,6 @@ export function pathIdentityFromStat(path, canonical, info, symbolicLink = false
     mtime: String(info.mtimeNs), ctime: String(info.ctimeNs), mode: String(info.mode), links: String(info.nlink), directory: info.isDirectory(),
     ...(symbolicLink ? { symbolicLink: true } : {}) });
 }
-/** Preserve filesystem failures other than an absent copy/move destination parent. */
-export async function captureDestinationParent(destination) {
-  try { return await capturePathIdentity(dirname(destination)); }
-  catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    throw Object.assign(new Error('[destination_parent_missing] Copy/move requires an existing destination parent directory. Create the parent directory with the authorized shell, then retry.'), { code: 'destination_parent_missing' });
-  }
-}
 export function sameIdentity(a, b, metadata = true) {
   return a.canonical === b.canonical && a.device === b.device && a.inode === b.inode && a.directory === b.directory
     && a.mode === b.mode && Boolean(a.symbolicLink) === Boolean(b.symbolicLink)

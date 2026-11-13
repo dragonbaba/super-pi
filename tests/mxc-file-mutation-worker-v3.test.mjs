@@ -40,7 +40,7 @@ async function fixture(t, operations, operation = 'file_batch') {
       { readyHash: 'a'.repeat(64), intentId: '12345678' });
     assert(reply.ok, JSON.stringify(reply)); return reply.items[0].receipt;
   }
-  return { root, workspace, exchange, request, items, owned, prepare, validate, execute, rpc };
+  return { root, workspace, exchange, request, items, prepare, validate, execute, rpc };
 }
 
 test('worker-only v3 preparation is read-only and recursive copy preserves every prepared file', async t => {
@@ -114,32 +114,28 @@ test('worker-only creation shares deep parent identities through temporary byte-
   assert.equal(await readFile(join(f.workspace, deep, 'second'), 'utf8'), 'second');
 });
 
-for (const operation of ['copy', 'move']) for (const depth of [1, 3]) for (const directory of [false, true]) {
-  test(`worker manifest ${operation} explains ${depth} missing destination parents for a ${directory ? 'directory' : 'file'}`, async t => {
-    const prefix = depth === 1 ? 'missing' : 'missing/deep/parent';
-    const f = await fixture(t, [{ operation, path: 'source', destination: `${prefix}/target` }], operation), source = join(f.workspace, 'source');
-    if (directory) { await mkdir(source); await writeFile(join(source, 'payload'), 'kept'); } else await writeFile(source, 'kept');
-    const reply = await f.rpc('prepare', 0, f.items, f.owned);
-    assert.equal(reply.ok, false); assert.equal(reply.noEffects, true);
-    assert.match(reply.error, /\[destination_parent_missing\].*Create.*parent/i);
-    await assert.rejects(lstat(join(f.workspace, 'missing')), { code: 'ENOENT' });
-    assert.equal(await readFile(directory ? join(source, 'payload') : source, 'utf8'), 'kept');
-  });
-}
-for (const operation of ['copy', 'move']) for (const preview of [false, true]) test(`worker ${operation} batch preparation ${preview ? 'preview' : 'apply'} has no earlier parent effects`, async t => {
-  const f = await fixture(t, [{ operation: 'write', path: 'missing/seed', mode: 'create', content: 'first' }, { operation, path: 'source', destination: 'missing/target' }]);
-  await writeFile(join(f.workspace, 'source'), 'kept');
-  const reply = await f.rpc('prepare', 0, f.items, f.owned, { preview });
-  assert.equal(reply.ok, false); assert.equal(reply.noEffects, true); assert.match(reply.error, /\[destination_parent_missing\]/);
-  await assert.rejects(lstat(join(f.workspace, 'missing')), { code: 'ENOENT' });
-  assert.equal(await readFile(join(f.workspace, 'source'), 'utf8'), 'kept');
+test('worker scalar copy and directory move create missing parents, with existing-parent controls', async t => {
+  for (const scenario of [{ operation: 'copy', directory: false, parent: 'new', depth: 1 }, { operation: 'move', directory: true, parent: 'many/deep/parents', depth: 3 }]) {
+    const f = await fixture(t, [{ operation: scenario.operation, path: 'source', destination: `${scenario.parent}/target` }], scenario.operation);
+    if (scenario.directory) { await mkdir(join(f.workspace, 'source')); await writeFile(join(f.workspace, 'source/payload'), 'kept'); } else await writeFile(join(f.workspace, 'source'), 'kept');
+    const prepared = await f.prepare(), validated = await f.validate(prepared);
+    const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`);
+    const result = await f.execute(0, prepared, validated, { effects });
+    assert.equal(result.status, 'succeeded', JSON.stringify(result)); assert.equal(result.creation.createdDirectoryCount, scenario.depth);
+    assert.equal(await readFile(join(f.workspace, scenario.parent, 'target', ...(scenario.directory ? ['payload'] : [])), 'utf8'), 'kept');
+    const control = await fixture(t, [{ operation: scenario.operation, path: 'source', destination: 'existing/target' }], scenario.operation);
+    await writeFile(join(control.workspace, 'source'), 'control'); await mkdir(join(control.workspace, 'existing'));
+    const cp = await control.prepare(), cv = await control.validate(cp), receipt = await control.execute(0, cp, cv);
+    assert.equal(receipt.status, 'succeeded'); assert.equal(receipt.creation, undefined);
+  }
 });
-test('worker rejects missing destination parents outside its workspace without creating them', async t => {
-  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: '../escape/target' }], 'copy');
-  await writeFile(join(f.workspace, 'source'), 'kept');
-  const reply = await f.rpc('prepare', 0, f.items, f.owned);
-  assert.equal(reply.ok, false); assert.equal(reply.noEffects, true);
-  await assert.rejects(lstat(join(f.root, 'escape')), { code: 'ENOENT' });
+test('worker missing parents outside the assigned workspace refuse equally for write, copy and move', async t => {
+  for (const operation of ['write', 'copy', 'move']) {
+    const f = await fixture(t, [{ operation, path: operation === 'write' ? '../outside/new/file' : 'source', ...(operation === 'write' ? { content: 'kept', mode: 'create' } : { destination: '../outside/new/file' }) }], operation);
+    await writeFile(join(f.workspace, 'source'), 'kept');
+    await assert.rejects(f.prepare(), /FILE_WORKSPACE_PATH|workspace/i);
+    await assert.rejects(lstat(join(f.root, 'outside')), { code: 'ENOENT' });
+  }
 });
 for (const operation of ['move', 'delete']) test(`worker-only recursive ${operation} validates complete nested coverage`, async t => {
   const input = { operation, path: 'source', ...(operation === 'move' ? { destination: 'target' } : { recursive: true }) };
