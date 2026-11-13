@@ -42,6 +42,8 @@ export interface LspDiagnostic {
 	codeDescription?: { href?: string };
 	source?: string;
 	message: string;
+	tags?: number[];
+	relatedInformation?: Array<{ location: LspLocation; message: string }>;
 }
 
 export interface LspTextEdit {
@@ -73,11 +75,11 @@ export interface DiagnosticEntry {
 export interface DiagnosticReport {
 	diagnostics: readonly LspDiagnostic[];
 	receivedReport: boolean;
-	completion: "report" | "window_expired" | "server_error";
+	completion: "report" | "window_expired" | "server_error" | "request_failed";
 	elapsedMs: number;
-	projectReady: boolean;
-	projectReadyAtCompletion: boolean;
-	projectReadyForMs: number;
+	projectReady?: boolean;
+	projectReadyAtCompletion?: boolean;
+	projectReadyForMs?: number;
 	error?: string;
 }
 
@@ -114,6 +116,15 @@ export interface InternalLspServer extends ConfiguredLspServer {
 	isDefault?: boolean;
 }
 
+/** A tsserver-compatible synchronous diagnostics bridge, declared by its adapter. */
+export interface SynchronousDiagnostics {
+	command: string;
+	requests: readonly [string, string, string];
+	maxConcurrentFiles: number;
+}
+
+export type DiagnosticPath = "publish" | "pull" | "sync-request";
+
 export interface LspServerAdapter {
 	name: string;
 	isDefault: boolean;
@@ -126,6 +137,7 @@ export interface LspServerAdapter {
 	diagnosticsSettleMs?: number;
 	pushDiagnosticsGraceMs?: number;
 	pullDiagnosticsGraceMs?: number;
+	synchronousDiagnostics?: SynchronousDiagnostics;
 	isSupportedFile: (filePath: string) => boolean;
 	languageIdFor: (filePath: string) => string;
 }

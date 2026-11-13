@@ -146,6 +146,14 @@ export class LspClient {
 	get projectReady(): boolean { return this.#projectReady; }
 	get projectReadyForMs(): number { return this.#projectReady ? performance.now() - this.#projectReadySince : 0; }
 	get supportsPullDiagnostics(): boolean { return Boolean(this.#serverCapabilities.diagnosticProvider); }
+	supportsExecuteCommand(command: string): boolean {
+		const provider = this.#serverCapabilities.executeCommandProvider as { commands?: unknown } | undefined;
+		return Array.isArray(provider?.commands) && provider.commands.includes(command);
+	}
+	async executeCommand(command: string, args: readonly unknown[], timeoutMs = this.#timeoutMs): Promise<unknown> {
+		const response = await this.request("workspace/executeCommand", { command, arguments: args }, timeoutMs);
+		return response.result;
+	}
 	get projectProgressGeneration(): number { return this.#projectProgressGeneration; }
 	get projectReadiness(): "ready" | "loading" | "unknown" { return this.#projectReady ? "ready" : this.#projectProgressSeen && !this.#projectProgressOverflow ? "loading" : "unknown"; }
 	get projectReadinessDiagnostics() { return { activeTokens: this.#projectProgress.size, waiters: this.#projectWaiters.size, overflow: this.#projectProgressOverflow }; }

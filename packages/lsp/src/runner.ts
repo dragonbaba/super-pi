@@ -7,6 +7,7 @@ import type { LspClient } from "./lsp-client.ts";
 import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.ts";
 import { DEFAULT_FILE_LIMIT, DIAGNOSTIC_BATCH_SIZE, MIN_DIAGNOSTIC_WAIT_MS, MAX_DIAGNOSTIC_WAIT_MS } from "./limits.ts";
 import { EMPTY_READONLY_ARRAY } from "./collections.ts";
+import { collectSynchronousDiagnostics } from "./synchronous-diagnostics.ts";
 import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.ts";
 import { capturePathIdentity } from "@super-pi/coding-agent/internal/files/native-file-core";
 import { selectCommitMetadata } from "@super-pi/coding-agent/internal/files/file-commit-metadata";
@@ -16,6 +17,8 @@ import type {
 	CodeAction,
 	DiagnosticEntry,
 	DiagnosticReport,
+	DiagnosticPath,
+	SynchronousDiagnostics,
 	LspServerAdapter,
 	LspTextEdit,
 	StatusContext,
@@ -28,12 +31,13 @@ const MAX_RETAINED_EDIT_ITEMS = 200;
 // Observe early shutdown rejection immediately; the invocation finally awaits and reports it.
 function observeDiscardFailure(): void {}
 
-interface DiagnosticOutcome { path: string; status: string; completion: string; receivedReport: boolean; elapsedMs: number; projectReady: boolean; projectReadyAtCompletion: boolean; projectReadyForMs: number; error?: string; }
-interface DiagnosticBatch { files: number; elapsedMs: number; startedMs: number; projectReadiness: string; }
+interface DiagnosticOutcome { path: string; status: string; completion: string; receivedReport: boolean; elapsedMs: number; diagnosticPath: DiagnosticPath; projectReady?: boolean; projectReadyAtCompletion?: boolean; projectReadyForMs?: number; error?: string; }
+interface DiagnosticBatch { files: number; elapsedMs: number; startedMs: number; projectReadiness?: string; }
 interface DiagnosticCollection {
 	client: LspClient; adapter: LspServerAdapter; root: string; files: readonly string[]; signal?: AbortSignal;
 	waitMs?: number; timeoutMs: number; started: number; next: number; active: number; peak: number; submitted: number;
 	stopped: boolean; serverFailed: boolean; hasError: boolean; error?: unknown; failure?: string;
+	diagnosticPath: DiagnosticPath; synchronousDiagnostics?: SynchronousDiagnostics;
 	entries: Array<DiagnosticEntry | undefined>; outcomes: Array<DiagnosticOutcome | undefined>; batches: DiagnosticBatch[];
 }
 function recordDiagnosticFailure(state: DiagnosticCollection, error: unknown): void {
@@ -47,7 +51,7 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 	while (!state.stopped && state.next < state.files.length) {
 		const index = state.next++, file = state.files[index], uri = pathToFileURL(file).href;
 		const group = Math.floor(index / DIAGNOSTIC_BATCH_SIZE);
-		const batch = state.batches[group] ??= { files: 0, elapsedMs: 0, startedMs: performance.now() - state.started, projectReadiness: state.client.projectReadiness };
+		const batch = state.batches[group] ??= { files: 0, elapsedMs: 0, startedMs: performance.now() - state.started };
 		let opened = false, text: string | undefined, report: DiagnosticReport | undefined;
 		try {
 			throwIfAborted(state.signal, state.adapter);
@@ -57,7 +61,9 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 				throwIfAborted(state.signal, state.adapter);
 				if (!state.client.running) throw error;
 				const message = error instanceof Error ? error.message : String(error);
-				state.outcomes[index] = { path: path.relative(state.root, file) || file, status: "unconfirmed", completion: "read_error", receivedReport: false, elapsedMs: performance.now() - readStarted, projectReady: false, projectReadyAtCompletion: state.client.projectReady, projectReadyForMs: state.client.projectReadyForMs, error: message };
+				const outcome: DiagnosticOutcome = { path: path.relative(state.root, file) || file, status: "unconfirmed", completion: "read_error", receivedReport: false, elapsedMs: performance.now() - readStarted, diagnosticPath: state.diagnosticPath, error: message };
+				if (state.diagnosticPath !== "sync-request") { outcome.projectReady = false; outcome.projectReadyAtCompletion = state.client.projectReady; outcome.projectReadyForMs = state.client.projectReadyForMs; }
+				state.outcomes[index] = outcome;
 				state.failure ??= message;
 				continue;
 			}
@@ -65,10 +71,14 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 			text = undefined; // No source payload survives the diagnostic await.
 			opened = true; state.active++; state.submitted++; batch.files++;
 			state.peak = Math.max(state.peak, state.active);
-			report = await state.client.collectDiagnosticReport(uri, state.waitMs, state.timeoutMs);
+			report = state.synchronousDiagnostics
+				? await collectSynchronousDiagnostics(state.client, file, state.synchronousDiagnostics, state.timeoutMs, state.adapter.initialization)
+				: await state.client.collectDiagnosticReport(uri, state.waitMs, state.timeoutMs);
 			throwIfAborted(state.signal, state.adapter);
 			const relativePath = path.relative(state.root, file) || file;
-			state.outcomes[index] = { path: relativePath, status: report.error ? "unconfirmed" : "confirmed", completion: report.completion, receivedReport: report.receivedReport, elapsedMs: report.elapsedMs, projectReady: report.projectReady, projectReadyAtCompletion: report.projectReadyAtCompletion, projectReadyForMs: report.projectReadyForMs, error: report.error };
+			const outcome: DiagnosticOutcome = { path: relativePath, status: report.error ? "unconfirmed" : "confirmed", completion: report.completion, receivedReport: report.receivedReport, elapsedMs: report.elapsedMs, diagnosticPath: state.diagnosticPath, error: report.error };
+			if (state.diagnosticPath !== "sync-request") { outcome.projectReady = report.projectReady; outcome.projectReadyAtCompletion = report.projectReadyAtCompletion; outcome.projectReadyForMs = report.projectReadyForMs; }
+			state.outcomes[index] = outcome;
 			if (!report.error) state.entries[index] = { path: relativePath, uri, diagnostics: report.diagnostics };
 			else state.failure ??= report.error;
 			if (!state.client.running) { state.serverFailed = state.stopped = true; state.failure ??= `${state.adapter.name} LSP server exited during diagnostics.`; }
@@ -81,7 +91,7 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 				finally { state.active--; }
 			}
 			batch.elapsedMs = performance.now() - state.started - batch.startedMs;
-			batch.projectReadiness = state.client.projectReadiness;
+			if (state.diagnosticPath !== "sync-request") batch.projectReadiness = state.client.projectReadiness;
 		}
 	}
 }
@@ -97,7 +107,7 @@ export async function runDiagnostics(
 ) {
 	const started = performance.now();
 	if (params.waitMs !== undefined && (!Number.isInteger(params.waitMs) || params.waitMs < MIN_DIAGNOSTIC_WAIT_MS || params.waitMs > MAX_DIAGNOSTIC_WAIT_MS)) throw new Error(`waitMs must be an integer from ${MIN_DIAGNOSTIC_WAIT_MS} to ${MAX_DIAGNOSTIC_WAIT_MS}.`);
-	let effectiveWaitMs = Math.min(params.waitMs ?? adapter.pushDiagnosticsGraceMs ?? timeoutMs, timeoutMs);
+	let effectiveWaitMs: number | "not_applicable" = Math.min(params.waitMs ?? adapter.pushDiagnosticsGraceMs ?? timeoutMs, timeoutMs);
 	const root = resolveRoot(params.root);
 	const command = adapter.defaultCommand;
 	const files =
@@ -111,6 +121,7 @@ export async function runDiagnostics(
 			files,
 			outcomes: [], unconfirmedFiles: [], submittedFiles: 0, requestedFiles: 0,
 			elapsedMs: performance.now() - started, batchCount: 0, batches: [], effectiveWaitMs,
+			diagnosticPath: undefined as DiagnosticPath | undefined, diagnosticConcurrency: 0,
 			summary: { files: 0, diagnostics: 0 },
 		}), isError: true };
 	}
@@ -133,17 +144,22 @@ export async function runDiagnostics(
 		lease = await pool.acquire(adapter, root, timeoutMs);
 		throwIfAborted(signal, adapter);
 		const client = lease.client;
-		effectiveWaitMs = client.diagnosticWaitMs(params.waitMs, timeoutMs);
+		const declared = adapter.synchronousDiagnostics;
+		const synchronousDiagnostics = declared && client.supportsExecuteCommand(declared.command) ? declared : undefined;
+		const diagnosticPath: DiagnosticPath = synchronousDiagnostics ? "sync-request" : client.supportsPullDiagnostics ? "pull" : "publish";
+		const diagnosticConcurrency = Math.min(DIAGNOSTIC_BATCH_SIZE, Math.max(1, synchronousDiagnostics?.maxConcurrentFiles ?? DIAGNOSTIC_BATCH_SIZE));
+		effectiveWaitMs = synchronousDiagnostics ? "not_applicable" : client.diagnosticWaitMs(params.waitMs, timeoutMs);
 		diagnosticTurn = await client.acquireDiagnosticTurn(signal);
 		throwIfAborted(signal, adapter);
 		executing = true;
 
 		const state: DiagnosticCollection = { client, adapter, root, files, signal, waitMs: params.waitMs, timeoutMs, started,
+			diagnosticPath, synchronousDiagnostics,
 			next: 0, active: 0, peak: 0, submitted: 0, stopped: false, serverFailed: false, hasError: false,
 			entries: new Array(files.length), outcomes: new Array(files.length), batches: [] };
 		const slots: Promise<void>[] = [];
 		try {
-			for (let slot = 0; slot < Math.min(DIAGNOSTIC_BATCH_SIZE, files.length); slot++) slots.push(runDiagnosticSlot(state));
+			for (let slot = 0; slot < Math.min(diagnosticConcurrency, files.length); slot++) slots.push(runDiagnosticSlot(state));
 			// Slots own every in-flight file until close, including after another slot fails.
 			await Promise.all(slots);
 			throwIfAborted(signal, adapter);
@@ -151,7 +167,11 @@ export async function runDiagnostics(
 			let confirmed = 0;
 			for (let index = 0; index < files.length; index++) {
 				if (state.entries[index]) state.entries[confirmed++] = state.entries[index];
-				state.outcomes[index] ??= { path: path.relative(root, files[index]) || files[index], status: "not_started", completion: "server_error", receivedReport: false, elapsedMs: 0, projectReady: false, projectReadyAtCompletion: false, projectReadyForMs: 0 };
+				if (!state.outcomes[index]) {
+					const outcome: DiagnosticOutcome = { path: path.relative(root, files[index]) || files[index], status: "not_started", completion: "server_error", receivedReport: false, elapsedMs: 0, diagnosticPath };
+					if (diagnosticPath !== "sync-request") { outcome.projectReady = false; outcome.projectReadyAtCompletion = false; outcome.projectReadyForMs = 0; }
+					state.outcomes[index] = outcome;
+				}
 			}
 			state.entries.length = confirmed;
 			const entries = state.entries as DiagnosticEntry[], outcomes = state.outcomes as DiagnosticOutcome[];
@@ -172,6 +192,7 @@ export async function runDiagnostics(
 				files: entries,
 				outcomes, unconfirmedFiles, submittedFiles: state.submitted, requestedFiles: files.length,
 				elapsedMs: performance.now() - started, batchCount: state.batches.length, batches: state.batches, effectiveWaitMs, failure: state.failure,
+				diagnosticPath, diagnosticConcurrency, syncRequestFallback: declared && !synchronousDiagnostics ? "command_not_advertised" : undefined,
 				scheduling: "sliding_window", peakOpenDocuments: state.peak,
 				summary: summarize(entries),
 			}), isError };
