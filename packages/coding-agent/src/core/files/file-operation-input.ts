@@ -6,7 +6,7 @@ import { parse } from "node:path";
 
 export type NativeFileOperation = "copy" | "delete" | "move";
 const Path = Type.String({ minLength: 1, maxLength: 4096 });
-const Destination = { ...Path, description: "Missing parent directories inside the workspace are prepared and created after authorization. Failures report retained parents; overwrite behavior is operation-specific." };
+const Destination = Type.String({ minLength: 1, maxLength: 4096, description: "Destination parent directory must already exist. Missing parents return destination_parent_missing; create them with the authorized shell before retrying." });
 const Purpose = Type.Optional(Type.String({ maxLength: 800 }));
 const DryRun = Type.Optional(Type.Boolean({ description: "Read-only whole-call preflight; apply always prepares again and requires current authorization." }));
 const Pair = Type.Object({ path: Path, destination: Destination }, { additionalProperties: false });

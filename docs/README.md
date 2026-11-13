@@ -30,7 +30,6 @@
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、读取与修改、失败处理、工具发现和分支存储。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
-- [复制/移动的缺失父目录](evidence/post-review-file-parents-2026-11-13.md)：复用 write 的建目录身份清单、共享父目录和失败回执。
 - [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 在 #296、A 在 #297 已审核、通过原有 CI 并合并，见[B 的证据](evidence/codegraph-retirement-2026-11-12.md)和[A 的证据](evidence/file-operations-v3-2026-11-13.md)。C 的批量清理实现及本机验证见[C 的证据](evidence/memory-bulk-cleanup-2026-11-13.md)，最终交付状态见[PR #298](https://github.com/dragonbaba/super-pi/pull/298)。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。
 - [默认 Codemode 方案](codemode-default-execution-plan.md)：默认工具入口、官方 1.0.0 借鉴、PR 划分和性能契约；[执行记录](codemode-default-execution-log.md) 给出实际验证及限制。
@@ -57,6 +56,8 @@
 - [SDK 源码入口](../packages/coding-agent/src/core/sdk.ts)：嵌入式 session 创建和扩展绑定的类型入口。
 
 ## 开发和性能契约
+
+- [copy/move 缺失父目录修复记录](evidence/post-review-file-parents-2026-11-13.md)：明确错误码与提示、Native/MXC 一致性，以及自动创建方案因目录身份竞态而回退的理由。
 
 - [性能文档索引](performance/README.md)：性能设计、验证和历史候选。
 - [Super Pi 性能优化与进一步验证方案](super-pi-performance-followup-plan.md)：PF00–PF08 的基线复核、启动/关闭、TUI、前缀与缓存检测，以及性能和 PR 门禁；PF00、PF01、[PF02-A 版本入口](performance/pf02-version-entry-validation.md)、[PF02-V 验证前置](performance/pf02-task-temp-validation.md)、[PF02-B 默认扩展启动](performance/pf02-bundled-startup-validation.md)、[PF03 复杂 Markdown](performance/pf03-complex-markdown-validation.md)、[PF04-A 缓存统计口径](performance/pf04-cache-overlap-validation.md)、[PF04-B 请求响应归因](performance/pf04-request-attribution-validation.md)、[PF05 增量统计](performance/pf05-incremental-stats-validation.md)、[PF06 同次前缀构建去重](performance/pf06-prefix-dedup-validation.md)、[PF07 关闭与活动资源](performance/pf07-shutdown-validation.md)已交付；[PF08 集成与交付](performance/pf08-integration-validation.md)记录最终本地验证、构建、PR 状态入口及保留的 V/E 限制。

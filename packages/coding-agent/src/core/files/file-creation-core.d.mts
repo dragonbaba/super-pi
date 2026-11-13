@@ -12,8 +12,6 @@ export function canonicalCreationDirectories(plan: FileCreationPlan): string[];
 export function prepareFileCreation(path: string, createOnly?: boolean, maxDirectories?: number): Promise<FileCreationPlan | undefined>;
 export function verifyCreationAncestor(plan: FileCreationPlan): Promise<void>;
 export function addedContentSummary(content: string): { bytes: number; addedLines?: number };
-export function executeFileCreationDirectories(plan: FileCreationPlan, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
-  sharedDirectories?: Map<string, PathIdentity>, assertAuthority?: () => void): Promise<CreatedDirectory[]>;
 export function executeFileCreation(plan: FileCreationPlan, content: string | Uint8Array, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
   beforeExclusiveCreate?: (path: string) => void | Promise<void>, sharedDirectories?: Map<string, PathIdentity>, assertAuthority?: () => void,
   structuredFailure?: boolean): Promise<CreationResult>;

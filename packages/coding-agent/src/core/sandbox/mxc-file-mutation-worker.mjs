@@ -2,9 +2,8 @@
 import fs from 'node:fs';
 import { lstat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { dirname } from 'node:path';
 import { capturePathIdentity, captureTreeIdentity, sameIdentity, executeTree, hashIdentity, boundedReason } from '../files/file-tree-core.mjs';
-import { executeFileCreation, executeFileCreationDirectories, directoryKey, originalCreatedFileIdentity, FileCreationFailure, summarizeCreatedDirectories as creationSummary } from '../files/file-creation-core.mjs';
+import { executeFileCreation, originalCreatedFileIdentity, FileCreationFailure, summarizeCreatedDirectories as creationSummary } from '../files/file-creation-core.mjs';
 import { prepareFileWorkerManifest, readFileWorkerManifest, revalidateFileWorkerManifest, readFileParentManifest, writeFileParentManifest } from '../files/file-worker-plan.mjs';
 import { workspaceFilePath } from '../files/file-workspace-path.mjs';
 import { MxcFilePublication } from '../files/mxc-file-publication.mjs';
@@ -100,23 +99,14 @@ class WorkerItemExecution {
       const prepared = this.prepared = await readFileWorkerManifest(request, item, index, control.manifest);
       const header = prepared.header;
       if (control.shared) {
-        need(prepared.creation, 'Shared parents require an immutable creation plan');
+        need(prepared.creation, 'Only exclusive text creation may carry shared parents');
         this.shared = (await readFileParentManifest(request, index, prepared.creation, 'shared', control.shared)).shared;
       }
       this.controlAccepted = true;
       const verified = await revalidateFileWorkerManifest(request, item, prepared, false, this.shared);
       if (header.destinationIdentity) need(control.validated && control.validated.sourceSha256 === verified.sourceSha256
         && control.validated.previousSha256 === verified.previousSha256, 'Copy content no longer matches the globally validated preimages');
-      let destinationParent = header.destinationParent;
-      if (prepared.creation && !header.text) {
-        if (prepared.creation.directories.length) need(control.effects, 'Missing preassigned created-parent output');
-        this.shared ??= new Map();
-        createdParents = await executeFileCreationDirectories(prepared.creation, this.assertCreationPath, undefined, this.shared, this.current);
-        await revalidateFileWorkerManifest(request, item, prepared, false, this.shared);
-        destinationParent = await capturePathIdentity(dirname(header.destination));
-        need(destinationParent.directory && directoryKey(destinationParent.canonical) === directoryKey(dirname(header.destination)), 'Created destination parent changed');
-      }
-      if (prepared.creation && header.text) {
+      if (prepared.creation) {
         if (prepared.creation.directories.length) need(control.effects, 'Missing preassigned created-parent output');
         need(typeof item.content === 'string' && createHash('sha256').update(item.content).digest('hex') === header.text.nextSha256, 'Prepared creation content changed');
         this.effectsPossible = true;
@@ -143,9 +133,8 @@ class WorkerItemExecution {
         // the already verified copy/unlink strategy before the first effect;
         // never retry a failed or possibly completed publication.
         this.effectsPossible = true;
-        receipt = await executeTree(prepared.tree, item.operation, header.sourceParent, header.destination, destinationParent, this.current, undefined, true);
+        receipt = await executeTree(prepared.tree, item.operation, header.sourceParent, header.destination, header.destinationParent, this.current, undefined, true);
       }
-      if (createdParents?.length && receipt.stateChanged === false) { receipt.stateChanged = true; receipt.status = 'partial'; receipt.requiresVerification = true; }
     } catch (error) {
       if (error instanceof FileCreationFailure) {
         const facts = error.facts; createdParents = facts.createdDirectories;
@@ -156,11 +145,8 @@ class WorkerItemExecution {
           stateChanged: publication.outcome === 'unknown' ? 'unknown' : publication.outcome === 'committed', requiresVerification: publication.requiresVerification || publication.retainedTemporary !== undefined,
           commit: { strategy: 'staged_replace', outcome: publication.outcome, fileSynced: publication.outcome === 'committed', directorySynced: false, retainedTemporary: publication.retainedTemporary },
           reason: boundedReason(String(error.message)) };
-      } else {
-        const parentChanged = !!createdParents?.length;
-        receipt = { status: this.effectsPossible ? 'state_unknown' : parentChanged ? 'partial' : 'failed_no_change', stateChanged: this.effectsPossible ? 'unknown' : parentChanged,
-          requiresVerification: this.effectsPossible || parentChanged || undefined, stopInvocation: !this.controlAccepted || undefined, reason: boundedReason(String(error.message)) };
-      }
+      } else receipt = { status: this.effectsPossible ? 'state_unknown' : 'failed_no_change', stateChanged: this.effectsPossible ? 'unknown' : false,
+        requiresVerification: this.effectsPossible || undefined, stopInvocation: !this.controlAccepted || undefined, reason: boundedReason(String(error.message)) };
     }
     try {
       if (this.publication) {
@@ -172,7 +158,7 @@ class WorkerItemExecution {
         receipt.createdParents = await writeFileParentManifest(request, index, this.prepared.creation, control.effects, 'created', createdParents);
         receipt.creation = creationSummary(creationResult ?? { bytes: 0 }, createdParents);
         if (receipt.creation.createdDirectoriesOmitted) receipt.coverageComplete = false;
-      } else if (createdParents) receipt.creation = creationSummary(creationResult ?? { bytes: 0 }, createdParents);
+      } else if (creationResult) receipt.creation = creationSummary(creationResult, createdParents);
       const header = this.prepared?.header;
       return { ...receipt, mutationReceiptVersion: 3, operation: item.operation, target: header?.target ?? workspaceFilePath(request.workspaces, item.workspaceIndex, item.path, item.operation === 'copy'),
         destination: header?.destination, ok: receipt.status === 'succeeded' };

@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
-import fsPromises from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -27,58 +25,20 @@ async function fixture(t: test.TestContext) {
 }
 function current(): void {}
 function unexpectedLegacy(): never { throw new Error("v3 must not publish legacy journal records"); }
-
-for (const operation of ["copy", "move"] as const) test(`native ${operation} arrays share approved missing parents and dryRun creates nothing`, async t => {
-  const { cwd: root } = await fixture(t), f = nativeFileSession(root), definitions: any = {};
-  t.after(() => f.close()); f.files.install(definitions);
-  await writeFile(join(root, "first"), "one"); await writeFile(join(root, "second"), "two");
-  const input = { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] };
-  const preview = await f.invoke(definitions, operation, { ...input, dryRun: true });
-  assert.equal(preview.isError, false, JSON.stringify(preview)); assert.equal(preview.details.preview, true);
-  assert.equal(preview.details.directories, 2); assert.equal(preview.details.resultRef, undefined);
-  await assert.rejects(lstat(join(root, "new")), { code: "ENOENT" });
-  const applied = await f.invoke(definitions, operation, input);
-  assert.equal(applied.isError, false, JSON.stringify(applied)); assert.equal(applied.details.succeeded, 2); assert.equal(applied.details.directories, 2);
-  assert.equal(await readFile(join(root, "new/deep/first"), "utf8"), "one"); assert.equal(await readFile(join(root, "new/deep/second"), "utf8"), "two");
-  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose());
-  const rows = reader.read(applied.details.resultRef).records;
-  assert.equal(rows.filter(row => row.record.phase === "prepared" && row.record.plannedDirectoryCount === 2).length, 2);
-});
-
-test("native file_batch write, copy and move share one planned parent inventory", async t => {
-  const { cwd: root, service } = await fixture(t), f = nativeFileSession(root), definitions: any = {};
-  t.after(() => f.close()); f.files.install(definitions);
-  await writeFile(join(root, "copy-source"), "copy bytes"); await mkdir(join(root, "move-source")); await writeFile(join(root, "move-source/payload"), "move bytes");
-  const description = new FileMutation(service, "describe", "copy", { path: "copy-source", destination: "new/deep/copied" });
-  await description.prepare(); assert.match(description.describePreflight(), /destination, 2 missing parent directories/); description.release();
-  const result = await f.invoke(definitions, "file_batch", { operations: [
-    { operation: "write", path: "new/deep/written", mode: "create", content: "written" },
-    { operation: "copy", path: "copy-source", destination: "new/deep/copied" },
-    { operation: "move", path: "move-source", destination: "new/deep/moved" },
-  ] });
-  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 3); assert.equal(result.details.directories, 3);
-  assert.equal(await readFile(join(root, "new/deep/written"), "utf8"), "written");
-  assert.equal(await readFile(join(root, "new/deep/copied"), "utf8"), "copy bytes");
-  assert.equal(await readFile(join(root, "new/deep/moved/payload"), "utf8"), "move bytes");
-});
-
-test("native array continues after a source changes following parent creation", async t => {
-  const { cwd: root } = await fixture(t), f = nativeFileSession(root), definitions: any = {};
-  t.after(() => f.close()); f.files.install(definitions);
-  await writeFile(join(root, "first"), "one"); await writeFile(join(root, "second"), "two");
-  const original = fsPromises.mkdir;
-  t.mock.method(fsPromises, "mkdir", async (path: any, ...args: any[]) => {
-    const result = await original(path, ...args);
-    if (path === join(root, "new/deep")) await writeFile(join(root, "first"), "external change");
-    return result;
+for (const operation of ["copy", "move"] as const) for (const batch of [false, true]) for (const dryRun of [false, true]) {
+  test(`${operation} ${batch ? "file_batch" : "array"} ${dryRun ? "dryRun" : "apply"} rejects missing parents before earlier effects`, async t => {
+    const f = await fixture(t); await writeFile(join(f.cwd, "source"), "kept");
+    const input = batch ? { dryRun, operations: [
+      { operation: "write", path: "missing/seed", mode: "create", content: "first" },
+      { operation, path: "source", destination: "missing/target" },
+    ] } : { dryRun, items: [{ path: "source", destination: "first" }, { path: "source", destination: "missing/deep/target" }] };
+    const mutation = f.mutation(batch ? "file_batch" : operation, input);
+    await assert.rejects(mutation.prepare(), /\[destination_parent_missing\]/);
+    await assert.rejects(lstat(join(f.cwd, "missing")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(f.cwd, "first")), { code: "ENOENT" });
+    assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "kept");
   });
-  syncBuiltinESMExports();
-  try {
-    const result = await f.invoke(definitions, "copy", { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] });
-    assert.equal(result.details.partial, 1); assert.equal(result.details.unknown, 0); assert.equal(result.details.succeeded, 1);
-    assert.equal(await readFile(join(root, "new/deep/second"), "utf8"), "two"); await assert.rejects(lstat(join(root, "new/deep/first")), { code: "ENOENT" });
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
-});
+}
 
 test("native directory move records its checked copy strategy before effects", async t => {
   const root = await mkdtemp(join(tmpdir(), "directory-strategy-v3-")), f = nativeFileSession(root), definitions: any = {};

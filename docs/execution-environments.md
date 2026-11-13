@@ -42,7 +42,7 @@
 
 ### 文件结果的完整性
 
-`copy` / `move` 的目标父目录缺失时，会复用 `write` 的只读建目录清单，在同一次审批中展示数量，并在授权后逐级独占创建。只允许在工作区内创建缺失父目录，受保护路径、目录覆盖/合并、源链接和大小写折叠冲突仍按原规则拒绝。数组或 `file_batch` 中前项已创建的公共父目录通过身份清单供后项复用；`dryRun` 不创建目录。若失败或取消发生在建目录之后，回执列出保留目录并报告部分或未知效果；不会擅自删除无法证明所有权的目录，也不重放已完成项。
+`copy` / `move` 要求目标父目录已存在。Native 和 MXC 对缺失父目录统一返回 `[destination_parent_missing]`，提示先通过当前授权允许的 shell 创建目录，再重试。单值、数组、`file_batch` 和 `dryRun` 都在只读预检阶段报告；不会为这些操作创建父目录。`file_batch` 中前面的 write 所计划创建的目录也尚未落盘，因此不能作为后面 copy/move 的已有父目录。write 自身的建目录行为不变。
 
 `copy` / `move` 接受单值 `path` + `destination` 或非空 `items: [{path, destination}]`；`delete` 接受 `path` 或非空 `paths`，两种形式互斥。copy 默认不覆盖，`overwrite: true` 只替换已有普通文件；删除非空目录须用 `recursive: true`。copy 跳过目录内链接并计数，move 预检拒绝含链接或特殊文件的源树；recursive delete 只删除链接本身。包含 `.git` / `.sp` 的目录树在预检时整体拒绝。`dryRun` 完整预检，返回总数、总字节和有界路径样本，不写变更记录；正式执行重新预检并授权。
 

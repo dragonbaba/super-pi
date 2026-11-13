@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sandboxFileSession } from "./helpers/sandbox-file-session.ts";
@@ -11,7 +11,6 @@ import { runFileObservationRequest } from "../packages/coding-agent/src/core/san
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import fsSync from "node:fs";
-import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 
 async function fixture(t: test.TestContext, changeReply?: (request: any, reply: any) => void) {
@@ -41,49 +40,6 @@ async function fixture(t: test.TestContext, changeReply?: (request: any, reply: 
   cleanup = async () => { await owner.close(); await f.close(); assert.equal(owned.size, 0); };
   return { ...f, cwd, definitions, owner, sends, owned, call: (name: string, input: any) => f.invoke(definitions, name, input) };
 }
-
-for (const operation of ["copy", "move"] as const) test(`sandbox ${operation} arrays share missing parents after a read-only dryRun`, async t => {
-  const f = await fixture(t);
-  await writeFile(join(f.cwd, "first"), "one"); await writeFile(join(f.cwd, "second"), "two");
-  const input = { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] };
-  const preview = await f.call(operation, { ...input, dryRun: true });
-  assert.equal(preview.isError, false, JSON.stringify(preview)); assert.equal(preview.details.directories, 2);
-  assert.equal(f.sends.some(row => row.phase === "execute"), false); await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
-  const applied = await f.call(operation, input);
-  assert.equal(applied.isError, false, JSON.stringify(applied)); assert.equal(applied.details.succeeded, 2); assert.equal(applied.details.directories, 2);
-  assert.equal(await readFile(join(f.cwd, "new/deep/first"), "utf8"), "one"); assert.equal(await readFile(join(f.cwd, "new/deep/second"), "utf8"), "two");
-  assert.equal(f.owned.size, 0);
-});
-
-test("sandbox file_batch shares write-created parents with later copy and directory move", async t => {
-  const f = await fixture(t); await writeFile(join(f.cwd, "copy-source"), "copy bytes");
-  await mkdir(join(f.cwd, "move-source")); await writeFile(join(f.cwd, "move-source/payload"), "move bytes");
-  const result = await f.call("file_batch", { operations: [
-    { operation: "write", mode: "create", path: "new/deep/written", content: "written" },
-    { operation: "copy", path: "copy-source", destination: "new/deep/copied" },
-    { operation: "move", path: "move-source", destination: "new/deep/moved" },
-  ] });
-  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 3); assert.equal(result.details.directories, 3);
-  assert.equal(await readFile(join(f.cwd, "new/deep/copied"), "utf8"), "copy bytes");
-  assert.equal(await readFile(join(f.cwd, "new/deep/moved/payload"), "utf8"), "move bytes"); assert.equal(f.owned.size, 0);
-});
-
-test("sandbox array continues after a source changes following parent creation", async t => {
-  const f = await fixture(t); await writeFile(join(f.cwd, "first"), "one"); await writeFile(join(f.cwd, "second"), "two");
-  const original = fsPromises.mkdir;
-  t.mock.method(fsPromises, "mkdir", async (path: any, ...args: any[]) => {
-    const result = await original(path, ...args);
-    if (path === join(f.cwd, "new/deep")) await writeFile(join(f.cwd, "first"), "external change");
-    return result;
-  });
-  syncBuiltinESMExports();
-  try {
-    const result = await f.call("copy", { items: [{ path: "first", destination: "new/deep/first" }, { path: "second", destination: "new/deep/second" }] });
-    assert.equal(result.details.partial, 1); assert.equal(result.details.unknown, 0); assert.equal(result.details.succeeded, 1);
-    assert.equal(await readFile(join(f.cwd, "new/deep/second"), "utf8"), "two"); await assert.rejects(lstat(join(f.cwd, "new/deep/first")), { code: "ENOENT" });
-    assert.equal(f.owned.size, 0);
-  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
-});
 
 test("sandbox v3 uses the session journal and SHA continuation without native versions", async t => {
   const f = await fixture(t);
