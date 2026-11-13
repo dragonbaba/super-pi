@@ -98,7 +98,7 @@ test('raw deletion skips a stale file and never retries a publication conflict',
     await writeFile(file, 'old\n§\nkeep'); const current = await readRawMemoryFile(file);
     const link = fsPromises.link; let publications = 0;
     t.mock.method(fsPromises, 'link', async (source, destination) => {
-      if (destination === file && source.endsWith('write.tmp')) { publications++; await writeFile(file, 'concurrent writer'); }
+      if (destination === current.snapshot.path && source.endsWith('write.tmp')) { publications++; await writeFile(file, 'concurrent writer'); }
       return link(source, destination);
     });
     syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
@@ -114,7 +114,7 @@ test('a post-publication refresh failure cannot resurrect removed memory on the 
     await writeFile(file, 'removed entry\n§\nkept entry'); await store.loadFromDisk();
     const raw = await readRawMemoryFile(file), readState = store.readFileState.bind(store); let reads = 0;
     t.mock.method(store, 'readFileState', async (current, rawParent) => {
-      if (current === file && rawParent && ++reads === 3) throw new Error('fixture refresh read failed');
+      if (current === raw.snapshot.path && rawParent && ++reads === 3) throw new Error('fixture refresh read failed');
       return readState(current, rawParent);
     });
     const result = await store.removeRawEntries('memory', raw.snapshot, [raw.snapshot.entries[0]], coordinator);
@@ -188,9 +188,9 @@ test('all-project bulk includes orphan/failure-only identities, skips links and 
     await writeFile(join(f.options.projectsRoot, stale, 'MEMORY.md'), 'remove stale\n§\nkeep stale');
     await fsPromises.symlink(outside, join(f.options.projectsRoot, 'linked--' + 'e'.repeat(24)), process.platform === 'win32' ? 'junction' : 'dir');
     await fsPromises.symlink(join(outside, 'MEMORY.md'), join(f.options.projectsRoot, failures, 'MEMORY.md'), 'file');
-    const originalOpen = fsPromises.open;
+    const originalOpen = fsPromises.open, canonicalLegacy = await realpath(legacy), canonicalOutside = await realpath(outside);
     t.mock.method(fsPromises, 'open', async (file, ...args) => {
-      assert.ok(!String(file).startsWith(legacy) && !String(file).startsWith(outside), 'Excluded content must not be opened');
+      assert.ok(!String(file).startsWith(canonicalLegacy) && !String(file).startsWith(canonicalOutside), 'Excluded content must not be opened');
       return originalOpen(file, ...args);
     });
     syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
@@ -230,7 +230,7 @@ test('transient project cleanup closes its own coordinator and preserves a live 
   let lease, shared;
   try {
     await mkdir(directory); await writeFile(join(directory, 'MEMORY.md'), 'remove\n§\nkeep');
-    shared = AtomicLockCoordinator.shared(join(f.options.projectsRoot, '.pi-hermes-locks.sqlite'));
+    shared = AtomicLockCoordinator.shared(join(await realpath(f.options.projectsRoot), '.pi-hermes-locks.sqlite'));
     lease = shared.tryAcquire('live-owner', { staleMs: 300000 }); assert.ok(lease);
     const connection = shared.cachedDb, closed = [], close = AtomicLockCoordinator.prototype.close;
     const closing = t.mock.method(AtomicLockCoordinator.prototype, 'close', function() { closed.push(this); return close.call(this); });

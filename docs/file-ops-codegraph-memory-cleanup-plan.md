@@ -2,7 +2,7 @@
 
 - 日期：2026-11-12（同日第三版，补齐第二轮审阅发现的实施边界）
 - 源码基线：`main` = `104355803`
-- 状态：B 已在 [PR #296](https://github.com/dragonbaba/super-pi/pull/296) 合并为 `f6fe77936da78244128e265802325a86cf76d401`。A 已在 [PR #297](https://github.com/dragonbaba/super-pi/pull/297) 完成最终提交 `903f0f6` 的无发现审核和六个原有 CI 分片，合并为 `5df268b5568266508461e62c8b29044b4f1c7648`；本地 main 同步后 12 包串行离线构建通过，见[A 的证据与测量限制](evidence/file-operations-v3-2026-11-13.md)。C 的原始字节删除、跨项目对账和懒加载多选已实施，正在交付验证，见[C 的候选证据](evidence/memory-bulk-cleanup-2026-11-13.md)；最终审核和 CI 尚未完成。三项各自一个 PR，按第 5 节逐项交付。
+- 状态：B 已在 [PR #296](https://github.com/dragonbaba/super-pi/pull/296) 合并为 `f6fe77936da78244128e265802325a86cf76d401`。A 已在 [PR #297](https://github.com/dragonbaba/super-pi/pull/297) 完成最终提交 `903f0f6` 的无发现审核和六个原有 CI 分片，合并为 `5df268b5568266508461e62c8b29044b4f1c7648`；本地 main 同步后 12 包串行离线构建通过，见[A 的证据与测量限制](evidence/file-operations-v3-2026-11-13.md)。C 的原始字节删除、跨项目对账和懒加载多选已实施，在 [PR #298](https://github.com/dragonbaba/super-pi/pull/298) 交付，见[C 的验证证据](evidence/memory-bulk-cleanup-2026-11-13.md)；最终提交的审核、CI 和合并状态以对应 PR 为准。三项各自一个 PR，按第 5 节逐项交付。
 - 建议顺序：B（CodeGraph 退役，纯删除）→ A（文件工具）→ C（记忆批量清理）。
 - 测试清理范围（2026-11-13，用户要求）：仅清理无关、过期、重复测试；CI 工作流和测试运行机制保持原样，不修改分片、并发、Node 参数、失败收集或运行入口。不自动重跑大规模压测；规模测量保留手动入口，沿用已取得证据。真实 MXC 50,000 文件仅复制完成，未完成的移动/删除不算通过。审核意见须先核实生产路径及复现或反例，不借修复收紧模型脚本/命令预检。审核与最终提交 CI 门禁仍保留。
 
