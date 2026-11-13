@@ -7,3 +7,5 @@ export const MAX_ACTIVE_OPERATIONS = 8;
 export const DIAGNOSTIC_BATCH_SIZE = 16;
 export const MIN_DIAGNOSTIC_WAIT_MS = 1;
 export const MAX_DIAGNOSTIC_WAIT_MS = 120_000;
+// Real TypeScript traces showed post-ready empty-to-nonempty gaps up to 3.3s.
+export const DIAGNOSTIC_PROJECT_READY_MARGIN_MS = 4_000;

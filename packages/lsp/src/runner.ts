@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,7 +28,7 @@ const MAX_RETAINED_EDIT_ITEMS = 200;
 // Observe early shutdown rejection immediately; the invocation finally awaits and reports it.
 function observeDiscardFailure(): void {}
 
-interface DiagnosticOutcome { path: string; status: string; completion: string; receivedReport: boolean; elapsedMs: number; projectReady: boolean; }
+interface DiagnosticOutcome { path: string; status: string; completion: string; receivedReport: boolean; elapsedMs: number; projectReady: boolean; projectReadyAtCompletion: boolean; projectReadyForMs: number; error?: string; }
 interface DiagnosticBatch { files: number; elapsedMs: number; startedMs: number; projectReadiness: string; }
 interface DiagnosticCollection {
 	client: LspClient; adapter: LspServerAdapter; root: string; files: readonly string[]; signal?: AbortSignal;
@@ -51,7 +51,16 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 		let opened = false, text: string | undefined, report: DiagnosticReport | undefined;
 		try {
 			throwIfAborted(state.signal, state.adapter);
-			text = readBoundedDocument(file);
+			const readStarted = performance.now();
+			try { text = readBoundedDocument(file); }
+			catch (error) {
+				throwIfAborted(state.signal, state.adapter);
+				if (!state.client.running) throw error;
+				const message = error instanceof Error ? error.message : String(error);
+				state.outcomes[index] = { path: path.relative(state.root, file) || file, status: "unconfirmed", completion: "read_error", receivedReport: false, elapsedMs: performance.now() - readStarted, projectReady: false, projectReadyAtCompletion: state.client.projectReady, projectReadyForMs: state.client.projectReadyForMs, error: message };
+				state.failure ??= message;
+				continue;
+			}
 			state.client.didOpen(uri, text, state.adapter.languageIdFor(file));
 			text = undefined; // No source payload survives the diagnostic await.
 			opened = true; state.active++; state.submitted++; batch.files++;
@@ -59,7 +68,7 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 			report = await state.client.collectDiagnosticReport(uri, state.waitMs, state.timeoutMs);
 			throwIfAborted(state.signal, state.adapter);
 			const relativePath = path.relative(state.root, file) || file;
-			state.outcomes[index] = { path: relativePath, status: report.error ? "unconfirmed" : "confirmed", completion: report.completion, receivedReport: report.receivedReport, elapsedMs: report.elapsedMs, projectReady: report.projectReady };
+			state.outcomes[index] = { path: relativePath, status: report.error ? "unconfirmed" : "confirmed", completion: report.completion, receivedReport: report.receivedReport, elapsedMs: report.elapsedMs, projectReady: report.projectReady, projectReadyAtCompletion: report.projectReadyAtCompletion, projectReadyForMs: report.projectReadyForMs, error: report.error };
 			if (!report.error) state.entries[index] = { path: relativePath, uri, diagnostics: report.diagnostics };
 			else state.failure ??= report.error;
 			if (!state.client.running) { state.serverFailed = state.stopped = true; state.failure ??= `${state.adapter.name} LSP server exited during diagnostics.`; }
@@ -105,7 +114,6 @@ export async function runDiagnostics(
 			summary: { files: 0, diagnostics: 0 },
 		}), isError: true };
 	}
-	for (const file of files) assertBoundedDocument(file);
 
 	let lease: ClientLease | undefined;
 	let diagnosticTurn: symbol | undefined;
@@ -143,7 +151,7 @@ export async function runDiagnostics(
 			let confirmed = 0;
 			for (let index = 0; index < files.length; index++) {
 				if (state.entries[index]) state.entries[confirmed++] = state.entries[index];
-				state.outcomes[index] ??= { path: path.relative(root, files[index]) || files[index], status: "not_started", completion: "server_error", receivedReport: false, elapsedMs: 0, projectReady: false };
+				state.outcomes[index] ??= { path: path.relative(root, files[index]) || files[index], status: "not_started", completion: "server_error", receivedReport: false, elapsedMs: 0, projectReady: false, projectReadyAtCompletion: false, projectReadyForMs: 0 };
 			}
 			state.entries.length = confirmed;
 			const entries = state.entries as DiagnosticEntry[], outcomes = state.outcomes as DiagnosticOutcome[];
@@ -281,12 +289,6 @@ export async function runFix(
 		try {
 			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
 		} finally { ctx.ui.setStatus(statusKey, undefined); }
-	}
-}
-
-function assertBoundedDocument(file: string) {
-	if (statSync(file).size > MAX_LSP_DOCUMENT_BYTES) {
-		throw new Error(`LSP document exceeds ${MAX_LSP_DOCUMENT_BYTES} bytes: ${file}. Narrow the requested files.`);
 	}
 }
 

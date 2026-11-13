@@ -95,7 +95,7 @@ test('cancelling a queued call drains admission before the active call finishes,
   } finally { resume(); try { await pool.shutdownAll(); } finally { removeOwnedFixture(f.root); } }
 });
 for (const cancel of [false, true]) {
-  test(`a ${cancel ? 'cancellation' : 'read failure'} before refill drains open slots and permits the next request`, async () => {
+  test(`a ${cancel ? 'cancellation stops refill' : 'read failure preserves other files'} and permits the next request`, async () => {
     const f = fixture(), pool = new LspClientPool(), controller = new AbortController();
     try {
       const lease = await pool.acquire(f.adapter, f.root, 5000), client = lease.client;
@@ -112,12 +112,24 @@ for (const cancel of [false, true]) {
         }
         return result;
       };
-      await assert.rejects(runDiagnostics(pool, f.adapter, { root: f.root, files: f.files }, 5000, controller.signal, ctx, 'batch'), cancel ? /cancel|abort|closed|stopping/i : /ENOENT/);
-      assert.equal(opened, DIAGNOSTIC_BATCH_SIZE, 'no additional document opens after failure/cancellation');
-      if (cancel) assert.equal(client.running, false);
-      else {
+      const work = runDiagnostics(pool, f.adapter, { root: f.root, files: f.files }, 5000, controller.signal, ctx, 'batch');
+      if (cancel) {
+        await assert.rejects(work, /cancel|abort|closed|stopping/i);
+        assert.equal(opened, DIAGNOSTIC_BATCH_SIZE, 'no additional document opens after cancellation');
+        assert.equal(client.running, false);
+      } else {
+        const partial = await work;
+        assert.equal(partial.isError, true); assert.equal(partial.details.status, 'partial');
+        assert.equal(partial.details.summary.files, MAX_COLLECTED_FILES - 1);
+        assert.equal(partial.details.submittedFiles, MAX_COLLECTED_FILES - 1);
+        const missing = f.files[DIAGNOSTIC_BATCH_SIZE].slice(f.root.length + 1);
+        assert.deepEqual(partial.details.unconfirmedFiles, [missing]);
+        assert.equal(partial.details.outcomes[DIAGNOSTIC_BATCH_SIZE].completion, 'read_error');
+        assert.match(partial.details.outcomes[DIAGNOSTIC_BATCH_SIZE].error!, /ENOENT/);
+        assert.equal(partial.details.files.at(-1)?.path, f.files.at(-1)!.slice(f.root.length + 1));
         const stats = JSON.parse((await client.workspaceSymbols('stats'))[0].name);
-        assert.equal(stats.active, 0); assert.equal(stats.closed, DIAGNOSTIC_BATCH_SIZE);
+        assert.equal(stats.active, 0); assert.equal(stats.closed, MAX_COLLECTED_FILES - 1);
+        assert.equal(stats.peak, DIAGNOSTIC_BATCH_SIZE);
       }
       const next = await runDiagnostics(pool, f.adapter, { root: f.root, files: [f.files[0]] }, 5000, undefined, ctx, 'batch');
       assert.equal(next.details.summary.files, 1);

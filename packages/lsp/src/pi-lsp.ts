@@ -25,7 +25,7 @@ const DiagnosticsParameters = Type.Object({
 		maximum: MAX_COLLECTED_FILES,
 	})),
 	server: ServerParameter,
-	waitMs: Type.Optional(Type.Integer({ minimum: MIN_DIAGNOSTIC_WAIT_MS, maximum: MAX_DIAGNOSTIC_WAIT_MS, description: "Per-file first-report wait in milliseconds; defaults to server grace and is capped by global timeout. Empty push reports remain provisional for the observation window; readiness alone does not prove diagnostics complete." })),
+	waitMs: Type.Optional(Type.Integer({ minimum: MIN_DIAGNOSTIC_WAIT_MS, maximum: MAX_DIAGNOSTIC_WAIT_MS, description: "Per-file first-report wait in milliseconds; defaults to server grace and is capped by global timeout (20 seconds by default). Increase configuration timeout before requesting waitMs above 20000. When waitMs is supplied, clean push-diagnostic files wait the full window. Empty reports require sufficient current project readiness at expiry." })),
 });
 
 const SingleFileParameters = {
@@ -171,7 +171,7 @@ export default function lsp(pi: ExtensionAPI) {
 				: `Scope: ${submittedFiles} file(s) submitted, limited to the selected route and file limit. Embedded languages, unmatched files and browser/runtime behavior are not established by this result.`);
 			return { ...runner.textResult(sections.join("\n\n---\n\n"), {
 				root,
-				status: serverFailed ? "failed" : submittedFiles === 0 ? "not_checked" : incomplete || diagnosticFailure ? "partial" : "diagnostics_received",
+				status: serverFailed ? "failed" : unconfirmedFiles.length > 0 ? "partial" : submittedFiles === 0 ? "not_checked" : incomplete || diagnosticFailure ? "partial" : "diagnostics_received",
 				unconfirmedFiles, elapsedMs, batchCount,
 				submittedFiles,
 				uncoveredFiles,

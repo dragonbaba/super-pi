@@ -57,7 +57,7 @@
 
 ## 开发和性能契约
 
-- [LSP 大批量诊断修复记录](evidence/post-review-lsp-diagnostics-2026-11-14.md)：88 文件的 tsserver OOM 复现、分批开关文档、服务器退出与部分结果的回归及剩余限制。
+- [LSP 大批量诊断修复记录](evidence/post-review-lsp-diagnostics-2026-11-14.md)：88 文件的 tsserver OOM 复现、16 文档滑动窗口、到期就绪余量、逐文件失败与部分结果续查。
 
 - [性能文档索引](performance/README.md)：性能设计、验证和历史候选。
 - [Super Pi 性能优化与进一步验证方案](super-pi-performance-followup-plan.md)：PF00–PF08 的基线复核、启动/关闭、TUI、前缀与缓存检测，以及性能和 PR 门禁；PF00、PF01、[PF02-A 版本入口](performance/pf02-version-entry-validation.md)、[PF02-V 验证前置](performance/pf02-task-temp-validation.md)、[PF02-B 默认扩展启动](performance/pf02-bundled-startup-validation.md)、[PF03 复杂 Markdown](performance/pf03-complex-markdown-validation.md)、[PF04-A 缓存统计口径](performance/pf04-cache-overlap-validation.md)、[PF04-B 请求响应归因](performance/pf04-request-attribution-validation.md)、[PF05 增量统计](performance/pf05-incremental-stats-validation.md)、[PF06 同次前缀构建去重](performance/pf06-prefix-dedup-validation.md)、[PF07 关闭与活动资源](performance/pf07-shutdown-validation.md)已交付；[PF08 集成与交付](performance/pf08-integration-validation.md)记录最终本地验证、构建、PR 状态入口及保留的 V/E 限制。

@@ -78,8 +78,12 @@ For push servers it overrides the configured `pushDiagnosticsGraceMs`; without
 either setting, the global request timeout bounds the first report. Pull requests
 keep their global timeout unless `waitMs` is supplied. The effective wait never
 exceeds global `timeout`, including when reusing a client created with an older
-timeout. Existing post-pull grace and non-empty push quiet periods remain bounded
-by the remaining request time.
+timeout. Global `timeout` defaults to 20 seconds: set a larger `timeout` in
+`pi-lsp.json` before requesting `waitMs` above 20,000. Supplying `waitMs` makes
+clean push-diagnostic files wait the full observation window, even if an empty
+report arrives immediately. Authoritative pull reports and non-empty push reports
+retain their existing completion behavior. Existing post-pull grace and non-empty
+push quiet periods remain bounded by the remaining request time.
 
 The result includes `elapsedMs`, `batchCount`, `batches` (file count, elapsed time,
 project readiness), `effectiveWaitMs`, `scheduling`, `peakOpenDocuments`, and
@@ -87,10 +91,13 @@ per-file `outcomes`. With sliding scheduling, batches are logical groups of up t
 16 inputs in collection order. Their `startedMs` and elapsed spans may overlap;
 they are observation groups, not barriers. Each outcome reports
 `status`, `receivedReport`, `completion` (`report`, `window_expired`, or
-`server_error`), `elapsedMs` and readiness when its report arrived. Confirmed
+`server_error`, or `read_error`), `elapsedMs`, `projectReady` when its report
+arrived, and `projectReadyAtCompletion`/`projectReadyForMs` at completion (the
+deadline for `window_expired`). Confirmed
 diagnostics stay in `files`; `unconfirmedFiles` lists every path that still needs
 checking, including a suffix not opened after server exit. Missing reports return
-`partial` with `isError: true`; server exit returns `failed`. Retry only those
+`partial` with `isError: true`; an individual read failure also returns `partial`
+and its error while the remaining files continue. Server exit returns `failed`. Retry only those
 paths explicitly; the tool never retries internally. Cancelling a queued call
 removes only its admission entry and releases its lease, preserving the server
 and the active call. Active cancellation retains its existing client-discard
@@ -101,8 +108,12 @@ diagnostics are final. Real TypeScript traces showed empty reports after readine
 followed by diagnostics more than 800 ms later. This version therefore keeps the
 observation window for empty push reports; it does not claim that project readiness
 removes repeated windows or makes cold startup a one-time wait. Sliding scheduling
-is selected from an equivalent 88-file measurement. A known pre-readiness empty publication remains
-unconfirmed at the deadline. Servers without a readiness signal retain the
+is selected from an equivalent 88-file measurement. At expiry an empty report is
+accepted only if the project is currently ready and has stayed ready for the shared
+4,000 ms margin, whether the report arrived before or after readiness. A new loading
+cycle resets that age. The margin exceeds the observed 1.4–3.3 second late-update
+gaps; it is a bounded observation policy, not a finality guarantee. Still loading
+or insufficient readiness age remains unconfirmed. Servers without a readiness signal retain the
 existing window behavior. Receiving a report is targeted feedback, not a promise
 that the server will never publish a later update. See the
 [timing and signal evidence](../../docs/evidence/post-review-lsp-diagnostics-2026-11-14.md)

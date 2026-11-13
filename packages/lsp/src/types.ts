@@ -76,6 +76,8 @@ export interface DiagnosticReport {
 	completion: "report" | "window_expired" | "server_error";
 	elapsedMs: number;
 	projectReady: boolean;
+	projectReadyAtCompletion: boolean;
+	projectReadyForMs: number;
 	error?: string;
 }
 

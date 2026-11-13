@@ -13,6 +13,7 @@ import { setImmediate as tick } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import * as projectProgress from "../packages/lsp/src/project-progress.ts";
+import * as diagnosticLimits from "../packages/lsp/src/limits.ts";
 import * as path from "node:path";
 import * as url from "node:url";
 import { SessionExecutionBoundary } from "../packages/coding-agent/src/core/execution-boundary.ts";
@@ -226,6 +227,7 @@ test("LSP cleanup retains failed processes, waits for close and releases bounded
         if (name === "./files.ts") return { directoryUri: () => "file:///fixture/" };
         if (name === "./regex.ts") return { COMMAND_SCRIPT_PATTERN: /\.(?:bat|cmd)$/iu, LSP_CONTENT_LENGTH_PATTERN: /Content-Length:\s*(\d+)/iu };
         if (name === "./project-progress.ts") return projectProgress;
+        if (name === "./limits.ts") return diagnosticLimits;
         if (name === "./text-edits.ts") return {};
         throw new Error(name);
       },

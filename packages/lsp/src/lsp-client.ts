@@ -10,6 +10,7 @@ import { directoryUri } from "./files.ts";
 import { COMMAND_SCRIPT_PATTERN, LSP_CONTENT_LENGTH_PATTERN } from "./regex.ts";
 import { positionAt } from "./text-edits.ts";
 import { TYPESCRIPT_PROJECT_PROGRESS_TITLE, MAX_PROJECT_PROGRESS_TOKENS, MAX_PROJECT_PROGRESS_TOKEN_CHARS } from "./project-progress.ts";
+import { DIAGNOSTIC_PROJECT_READY_MARGIN_MS } from "./limits.ts";
 import type {
 	CodeAction,
 	DiagnosticReport,
@@ -92,6 +93,7 @@ export class LspClient {
 	#projectProgressSeen = false;
 	#projectProgressOverflow = false;
 	#projectReady = false;
+	#projectReadySince = 0;
 	#projectProgressGeneration = 0;
 	#familyCleanup?: Promise<void>;
 	readonly #onStdout = (chunk: Buffer) => {
@@ -142,6 +144,7 @@ export class LspClient {
 		);
 	}
 	get projectReady(): boolean { return this.#projectReady; }
+	get projectReadyForMs(): number { return this.#projectReady ? performance.now() - this.#projectReadySince : 0; }
 	get supportsPullDiagnostics(): boolean { return Boolean(this.#serverCapabilities.diagnosticProvider); }
 	get projectProgressGeneration(): number { return this.#projectProgressGeneration; }
 	get projectReadiness(): "ready" | "loading" | "unknown" { return this.#projectReady ? "ready" : this.#projectProgressSeen && !this.#projectProgressOverflow ? "loading" : "unknown"; }
@@ -311,10 +314,13 @@ export class LspClient {
 
 	async collectDiagnosticReport(uri: string, waitMs: number | undefined, timeoutMs: number): Promise<DiagnosticReport> {
 		const start = performance.now();
-		const report: DiagnosticReport = { diagnostics: EMPTY_READONLY_ARRAY, receivedReport: false, completion: "report", elapsedMs: 0, projectReady: this.#projectReady };
+		const report: DiagnosticReport = { diagnostics: EMPTY_READONLY_ARRAY, receivedReport: false, completion: "report", elapsedMs: 0, projectReady: this.#projectReady, projectReadyAtCompletion: false, projectReadyForMs: 0 };
 		try { report.diagnostics = await this.diagnostics(uri, true, waitMs, report, timeoutMs); }
 		catch (error) { report.error = formatErrorMessage(error); if (error instanceof LspRequestTimeoutError) report.completion = "window_expired"; else if (report.completion !== "window_expired") report.completion = "server_error"; }
-		report.elapsedMs = performance.now() - start;
+		const completed = performance.now();
+		report.elapsedMs = completed - start;
+		report.projectReadyAtCompletion = this.#projectReady;
+		report.projectReadyForMs = this.#projectReady ? completed - this.#projectReadySince : 0;
 		return report;
 	}
 
@@ -534,7 +540,7 @@ export class LspClient {
 		this.#publishedDiagnostics.clear();
 		this.#serverCapabilities = {};
 		this.#stderr = "";
-		this.#projectProgress.clear(); this.#projectProgressSeen = false; this.#projectProgressOverflow = false; this.#projectReady = false;
+		this.#projectProgress.clear(); this.#projectProgressSeen = false; this.#projectProgressOverflow = false; this.#projectReady = false; this.#projectReadySince = 0;
 	}
 
 	private request(method: string, params: unknown, timeoutMs = this.#timeoutMs) {
@@ -657,7 +663,7 @@ export class LspClient {
 	}
 	#beginProjectProgress(token: unknown): void {
 		if (this.#projectProgress.has(token as string | number)) return;
-		this.#projectProgressSeen = true; this.#projectReady = false; this.#projectProgressGeneration++;
+		this.#projectProgressSeen = true; this.#projectReady = false; this.#projectReadySince = 0; this.#projectProgressGeneration++;
 		if ((typeof token !== "string" && typeof token !== "number")
 			|| typeof token === "number" && !Number.isFinite(token)
 			|| typeof token === "string" && token.length > MAX_PROJECT_PROGRESS_TOKEN_CHARS
@@ -671,8 +677,12 @@ export class LspClient {
 		else if (progress.value?.kind === "end" && this.#projectProgress.delete(progress.token as string | number)
 			&& this.#projectProgress.size === 0 && !this.#projectProgressOverflow) {
 			this.#projectReady = true;
+			this.#projectReadySince = performance.now();
 			for (const waiter of this.#projectWaiters) waiter.finish(true);
 		}
+	}
+	#emptyDiagnosticsReady(): boolean {
+		return !this.#projectProgressSeen || this.#projectReady && performance.now() - this.#projectReadySince >= DIAGNOSTIC_PROJECT_READY_MARGIN_MS;
 	}
 
 	#recordPublishedDiagnostics(
@@ -748,7 +758,7 @@ export class LspClient {
 				fallbackTimer = setTimeout(
 					() => {
 						if (observation) observation.completion = "window_expired";
-						if (fallback.requirePublication && (!latestPublication || (latestPublication.diagnostics.length === 0 && this.#projectProgressSeen && !(observation?.projectReady ?? this.#projectReady)))) {
+						if (fallback.requirePublication && (!latestPublication || (latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady()))) {
 							fail(new Error(`${this.#adapter.name} LSP did not confirm a diagnostic report for ${uri}; validation is unconfirmed.`));
 						} else settleWith(latestPublication?.diagnostics ?? fallback.diagnostics);
 					},
@@ -757,7 +767,7 @@ export class LspClient {
 			}
 			overallTimer = setTimeout(() => {
 				if (observation) observation.completion = "window_expired";
-				if (latestPublication && !(fallback?.requirePublication && latestPublication.diagnostics.length === 0 && this.#projectProgressSeen && !(observation?.projectReady ?? this.#projectReady))) {
+				if (latestPublication && !(fallback?.requirePublication && latestPublication.diagnostics.length === 0 && !this.#emptyDiagnosticsReady())) {
 					settleWith(latestPublication.diagnostics);
 				} else if (fallback && !fallback.requirePublication) {
 					settleWith(fallback.diagnostics);
