@@ -63,6 +63,14 @@ result ID, so their pull responses must contain a full `items` report. Source fi
 retain the previous bounded empty diagnostic context for code actions on silent-clean
 servers; computing a code action does not establish a validation pass.
 
+Diagnostics open, await reports for, and close at most 16 documents at a time on
+the selected server. The 200-file collection limit remains the total requested
+scope, independent of this batch size. A missing report, cancellation, or server
+exit fails the call; completed earlier batches do not establish a complete pass.
+Cold projects may need a longer configured diagnostics grace window. Batching
+limits simultaneous open documents; it does not guarantee a bound on the server's
+retained project memory.
+
 Explicit relative roots are resolved from the session workspace; trimmed-empty roots
 use that workspace as well. Nonblank roots preserve their original whitespace.
 Mixed requests return `partial` with `isError: true` and

@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ClientLease, LspClientPool } from "./client-pool.ts";
+import type { LspClient } from "./lsp-client.ts";
 import { collectSupportedFiles, resolveRoot, resolveSupportedFile } from "./files.ts";
-import { DEFAULT_FILE_LIMIT } from "./limits.ts";
+import { DEFAULT_FILE_LIMIT, DIAGNOSTIC_BATCH_SIZE } from "./limits.ts";
 import { assertFixAuthorization, type FixAuthorization } from "./fix-authorization.ts";
 import { capturePathIdentity } from "@super-pi/coding-agent/internal/files/native-file-core";
 import { selectCommitMetadata } from "@super-pi/coding-agent/internal/files/file-commit-metadata";
@@ -67,23 +68,34 @@ export async function runDiagnostics(
 		throwIfAborted(signal, adapter);
 		const client = lease.client;
 
+		const entries: DiagnosticEntry[] = [];
 		const openedFiles: Array<{ file: string; uri: string }> = [];
+		const pending: Promise<DiagnosticEntry>[] = [];
 		try {
-			for (const file of files) {
+			for (let offset = 0; offset < files.length; offset += DIAGNOSTIC_BATCH_SIZE) {
 				throwIfAborted(signal, adapter);
-				const uri = pathToFileURL(file).href;
-				const text = readBoundedDocument(file);
-				client.didOpen(uri, text, adapter.languageIdFor(file));
-				openedFiles.push({ file, uri });
+				try {
+					const end = Math.min(offset + DIAGNOSTIC_BATCH_SIZE, files.length);
+					for (let index = offset; index < end; index++) {
+						throwIfAborted(signal, adapter);
+						const file = files[index];
+						const uri = pathToFileURL(file).href;
+						const text = readBoundedDocument(file);
+						client.didOpen(uri, text, adapter.languageIdFor(file));
+						openedFiles.push({ file, uri });
+					}
+					for (const opened of openedFiles) pending.push(collectDiagnosticEntry(client, root, opened.file, opened.uri));
+					const batch = await Promise.all(pending);
+					throwIfAborted(signal, adapter);
+					if (!client.running) throw new Error(`${adapter.name} LSP server exited during diagnostics; validation is unconfirmed.`);
+					for (const entry of batch) entries.push(entry);
+				} finally {
+					pending.length = 0;
+					try { for (const { uri } of openedFiles) if (client.running) client.didClose(uri); }
+					finally { openedFiles.length = 0; }
+				}
 			}
 
-			const entries: DiagnosticEntry[] = await Promise.all(
-				openedFiles.map(async ({ file, uri }) => ({
-					path: path.relative(root, file) || file,
-					uri,
-					diagnostics: await client.diagnostics(uri, true),
-				})),
-			);
 			return textResult(formatDiagnostics(adapter, entries), {
 				root,
 				status: "diagnostics_received",
@@ -92,7 +104,8 @@ export async function runDiagnostics(
 				summary: summarize(entries),
 			});
 		} finally {
-			for (const { uri } of openedFiles) client.didClose(uri);
+			pending.length = 0;
+			openedFiles.length = 0;
 		}
 	} finally {
 		signal?.removeEventListener("abort", abort);
@@ -100,6 +113,11 @@ export async function runDiagnostics(
 			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
 		} finally { ctx.ui.setStatus(statusKey, undefined); }
 	}
+}
+
+// Explicit diagnostics-call setup; protocol notification delivery remains callback-stable.
+async function collectDiagnosticEntry(client: LspClient, root: string, file: string, uri: string): Promise<DiagnosticEntry> {
+	return { path: path.relative(root, file) || file, uri, diagnostics: await client.diagnostics(uri, true) };
 }
 
 export async function runFix(
