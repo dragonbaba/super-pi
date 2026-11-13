@@ -35,6 +35,8 @@ Use **同步搜索索引** to reconcile current Markdown into search, a **整理
 
 **批量清理记忆** opens a list for user preferences, global/current-project memory or corrections, or all canonical projects. Choose all entries, an age in days since modification, or expired temporary failures; these choices only preselect rows. Space toggles rows and Delete opens a confirmation with entry/file/character totals. Unknown dates remain manually selectable, and durable corrections are excluded from the temporary-failure preset. Nothing is deleted without the interactive terminal and final confirmation.
 
+The all-projects scan skips a project directory that disappears after enumeration and continues with the remaining projects. Other directory inspection errors are reported rather than silently omitted.
+
 Cleanup removes selected raw fragments without trimming, deduplicating or rewriting unselected bytes. A changed file is skipped as a whole. All-project cleanup includes hashed project identities even when their original root is gone, excludes linked files/directories and reports excluded legacy directories. Markdown deletion survives search-index failure; the report warns that search may remain stale and points to **同步搜索索引**. The current session's startup digest stays frozen. Existing checked publication/recovery behavior remains; this feature creates no recycle directory or second canonical index.
 
 ## Upgrade Notes
