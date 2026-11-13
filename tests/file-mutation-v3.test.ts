@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
@@ -35,7 +35,7 @@ test("native outside-workspace parent preparation retains write's authorization 
   for (const operation of ["copy", "move"] as const) {
     const item = await service.prepareV3(operation, { path: "source", destination: join(f.cwd, `outside/new/${operation}`) });
     assert.deepEqual(item.tree!.protectedPaths[1].protectedRoots, write.approval.protectedRoots);
-    assert(item.paths.includes(join(f.cwd, `outside/new/${operation}`))); service.release(item);
+    assert(item.paths.includes(join(dirname(write.target), operation))); service.release(item);
   }
   service.release(write); await assert.rejects(lstat(join(f.cwd, "outside")), { code: "ENOENT" });
 });
