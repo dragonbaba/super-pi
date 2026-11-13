@@ -50,9 +50,23 @@
 
 ## R3：中转 Opus 5.5 基础调用复测
 
-按授权复测配置中的 superapi-claude/claude-opus-5-5，使用正常 ModelRuntime 认证入口，未修改个人配置。仅一次原生 `/v1/messages` 请求：145 B 合成纯文本 JSON、thinking disabled、maxTokens=128、maxRetries=0。最新返回 HTTP 403、application/json、new_api_error，原因是当前凭据无权访问所选上游分组；没有 Cloudflare challenge，没有模型输出。此前 503/model_not_found 是初始审计的历史观测，不能沿用为最新状态。证据不包含私人分组、request ID 或凭据。
+初次复测配置中的 superapi-claude/claude-opus-5-5，使用正常 ModelRuntime 认证入口，145 B 合成纯文本 JSON、thinking disabled、maxTokens=128、maxRetries=0，返回过中转分组权限 403。该结果及更早的 503/model_not_found 均为历史观测。
 
-探针在基础调用失败处停止，未发送后续工具、thinking 或图片请求。Claude 的签名保留、未改前缀续接、旧 tool_result/图片改写负例均尚未验证；未实施 Anthropic 历史投影，也未替换模型、凭据或分组冒充通过。上游授权恢复后，按方案 R3 的相同 system/tools/历史与显式 prefix_mismatch_behavior 对照继续；Gemini 继续暂停真实测试。本项仅更新复测证据和文档，未触及热路径，跳过新增分配基准。
+用户切换分组后，在同一 main 104355803a9c 构建上再次授权复测，未修改个人配置。GET /v1/models 返回 200、4 个模型并列有目标 ID；这不证明生成通道可用。三个生成对照均为 /v1/messages、合成短文本、maxTokens=128，无请求自动重试：
+
+| 对照 | 实际结果 |
+| --- | --- |
+| 原生 SDK、thinking disabled、stream:true、145 B | 外层 HTTP 200/text/event-stream；流内 error 报告上游 HTTP 400；无文本、thinking、工具输出，usage 为 0 |
+| 同一 SDK、去掉可选 thinking 字段、stream:true、114 B | 外层 HTTP 200/text/event-stream；探针 45 秒总 deadline 到达时 aborted，无模型输出 |
+| 直接最小非流式请求、无 thinking、stream:false、115 B | 探针 45 秒总 deadline 到达时 TimeoutError，无完整响应 |
+
+旧 403 未重现。去掉 thinking 字段也未完成，尚不能把原因归为该字段；流内错误没有给出具体上游拒绝参数，当前无法进一步确认是模型映射、通道转换还是上游校验。45 秒是探针 deadline，不宣称服务永远不能响应。证据不包含私人分组、request ID 或凭据。
+
+探针在基础调用失败处停止，未发送后续工具、启用 thinking 或图片请求。Claude 的签名保留、未改前缀续接、旧 tool_result/图片改写负例均尚未验证；未实施 Anthropic 历史投影，也未替换模型或凭据冒充通过。基础生成恢复后，按方案 R3 的相同 system/tools/历史与显式 prefix_mismatch_behavior 对照继续；Gemini 继续暂停真实测试。本项仅更新复测证据和文档，未触及热路径，跳过新增分配基准。
+
+DeepSeek 对照核实：当前内置 provider 为单 Chat adapter、旧目录两模型为 text-only；官方 Chat 与 Responses 均提供当前 Flash 的图像/工具输入，Responses 不支持服务端续接且仅回放明文 reasoning。仓库 Responses serializer 保持图片与 function_call_output 的直接关联，Chat 将工具图片放到额外 user 消息。正常 ModelRuntime 仅核对官方认证是否已配置，结果 false，未读取或发送其他 provider 的 key，没有真实 DeepSeek 请求或速度/质量结论。建议保留现有 Chat 默认，后续增加可选内置 Responses 并独立验证目录、profile、reasoning、配对和 usage；当前没有修改生产代码。依据与链接见方案 9.1。
+
+本次复跑日志与最小对照脚本位于 `.task-tmp/deepseek-claude-472e97d3/`；原生基础脚本复用此前审计根。先将子进程 TMP/TEMP/TMPDIR 指向本次任务根，再执行 `node .task-tmp/responses-claude-d3182d90/claude-live.mjs`、`node .task-tmp/deepseek-claude-472e97d3/claude-minimal.mjs` 和 `node .task-tmp/responses-claude-d3182d90/relay-models.mjs`。真实认证仍走本机正常入口，不复制 key 到脚本或证据。
 
 探针位于任务临时目录，保留给本机复跑；源码路径固定在该目录内，不含 key 或私人会话。复跑先将子进程 TMP/TEMP/TMPDIR 指向任务根：
 
