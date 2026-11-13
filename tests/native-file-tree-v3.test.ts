@@ -14,6 +14,19 @@ async function fixture(t: any) {
   return root;
 }
 const current = () => {};
+test("native scalar copy creates one parent and directory move creates several, with existing-parent controls", async t => {
+  const root = await fixture(t);
+  for (const scenario of [{ operation: "copy", directory: false, parent: "new", depth: 1 }, { operation: "move", directory: true, parent: "many/deep/parents", depth: 3 }] as const) {
+    const source = join(root, `${scenario.operation}-source`);
+    if (scenario.directory) { await mkdir(source); await writeFile(join(source, "payload"), "kept"); } else await writeFile(source, "kept");
+    const result = await executeNativeTreePlan(await prepareNativeTreeOperation(root, scenario.operation, { path: source, destination: `${scenario.parent}/target` }), current);
+    assert.equal(result.status, "succeeded"); assert.equal((result.creation as any).createdDirectories.length, scenario.depth);
+    assert.equal(await readFile(join(root, scenario.parent, "target", ...(scenario.directory ? ["payload"] : [])), "utf8"), "kept");
+    await writeFile(join(root, "control-source"), "control");
+    const control = await executeNativeTreePlan(await prepareNativeTreeOperation(root, scenario.operation, { path: "control-source", destination: `${scenario.parent}/control` }), current);
+    assert.equal(control.status, "succeeded"); assert.equal(control.creation, undefined);
+  }
+});
 test("native tree owner supports recursive copy/move/delete with v3 outcomes", async t => {
   const root = await fixture(t); await mkdir(join(root, "source", "nested"), { recursive: true }); await writeFile(join(root, "source", "nested", "file"), "data");
   const copied = await executeNativeTreePlan(await prepareNativeTreeOperation(root, "copy", { path: "source", destination: "copied" }), current);

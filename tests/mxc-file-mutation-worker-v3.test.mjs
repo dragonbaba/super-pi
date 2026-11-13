@@ -114,6 +114,29 @@ test('worker-only creation shares deep parent identities through temporary byte-
   assert.equal(await readFile(join(f.workspace, deep, 'second'), 'utf8'), 'second');
 });
 
+test('worker scalar copy and directory move create missing parents, with existing-parent controls', async t => {
+  for (const scenario of [{ operation: 'copy', directory: false, parent: 'new', depth: 1 }, { operation: 'move', directory: true, parent: 'many/deep/parents', depth: 3 }]) {
+    const f = await fixture(t, [{ operation: scenario.operation, path: 'source', destination: `${scenario.parent}/target` }], scenario.operation);
+    if (scenario.directory) { await mkdir(join(f.workspace, 'source')); await writeFile(join(f.workspace, 'source/payload'), 'kept'); } else await writeFile(join(f.workspace, 'source'), 'kept');
+    const prepared = await f.prepare(), validated = await f.validate(prepared);
+    const effects = await createOwnedManifestFile(f.exchange, `${f.request.id}-1.manifest`);
+    const result = await f.execute(0, prepared, validated, { effects });
+    assert.equal(result.status, 'succeeded', JSON.stringify(result)); assert.equal(result.creation.createdDirectoryCount, scenario.depth);
+    assert.equal(await readFile(join(f.workspace, scenario.parent, 'target', ...(scenario.directory ? ['payload'] : [])), 'utf8'), 'kept');
+    const control = await fixture(t, [{ operation: scenario.operation, path: 'source', destination: 'existing/target' }], scenario.operation);
+    await writeFile(join(control.workspace, 'source'), 'control'); await mkdir(join(control.workspace, 'existing'));
+    const cp = await control.prepare(), cv = await control.validate(cp), receipt = await control.execute(0, cp, cv);
+    assert.equal(receipt.status, 'succeeded'); assert.equal(receipt.creation, undefined);
+  }
+});
+test('worker missing parents outside the assigned workspace refuse equally for write, copy and move', async t => {
+  for (const operation of ['write', 'copy', 'move']) {
+    const f = await fixture(t, [{ operation, path: operation === 'write' ? '../outside/new/file' : 'source', ...(operation === 'write' ? { content: 'kept', mode: 'create' } : { destination: '../outside/new/file' }) }], operation);
+    await writeFile(join(f.workspace, 'source'), 'kept');
+    await assert.rejects(f.prepare(), /FILE_WORKSPACE_PATH|workspace/i);
+    await assert.rejects(lstat(join(f.root, 'outside')), { code: 'ENOENT' });
+  }
+});
 for (const operation of ['move', 'delete']) test(`worker-only recursive ${operation} validates complete nested coverage`, async t => {
   const input = { operation, path: 'source', ...(operation === 'move' ? { destination: 'target' } : { recursive: true }) };
   const f = await fixture(t, [input], operation);

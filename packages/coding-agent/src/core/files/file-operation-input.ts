@@ -6,9 +6,10 @@ import { parse } from "node:path";
 
 export type NativeFileOperation = "copy" | "delete" | "move";
 const Path = Type.String({ minLength: 1, maxLength: 4096 });
+const Destination = { ...Path, description: "Missing destination parents are prepared and created after authorization, using the same backend workspace and protected-path rules as write. Failures report retained parents; overwrite behavior is operation-specific." };
 const Purpose = Type.Optional(Type.String({ maxLength: 800 }));
 const DryRun = Type.Optional(Type.Boolean({ description: "Read-only whole-call preflight; apply always prepares again and requires current authorization." }));
-const Pair = Type.Object({ path: Path, destination: Path }, { additionalProperties: false });
+const Pair = Type.Object({ path: Path, destination: Destination }, { additionalProperties: false });
 const Recursive = Type.Optional(Type.Boolean({ description: "Required to remove a nonempty directory. Links are removed without following their targets." }));
 const Overwrite = Type.Optional(Type.Boolean({ description: "Replace an existing ordinary file through the metadata commit owner. Directories are never overwritten or merged." }));
 const PAIR_FORMS = [
@@ -17,13 +18,13 @@ const PAIR_FORMS = [
 ];
 // Typed fields stay at the root so the existing bounded argument repair can
 // resolve their schema; anyOf enforces mutually exclusive scalar/array forms.
-export const CopyParameters = Type.Object({ path: Type.Optional(Path), destination: Type.Optional(Path),
+export const CopyParameters = Type.Object({ path: Type.Optional(Path), destination: Type.Optional(Destination),
   items: Type.Optional(Type.Array(Pair, { minItems: 1 })), overwrite: Overwrite, dryRun: DryRun, purpose: Purpose }, { additionalProperties: false, anyOf: PAIR_FORMS });
 export const DeleteParameters = Type.Object({ path: Type.Optional(Path), paths: Type.Optional(Type.Array(Path, { minItems: 1 })),
   recursive: Recursive, dryRun: DryRun, purpose: Purpose }, { additionalProperties: false, anyOf: [
     { required: ["path"], not: { required: ["paths"] } }, { required: ["paths"], not: { required: ["path"] } },
   ] });
-export const MoveParameters = Type.Object({ path: Type.Optional(Path), destination: Type.Optional(Path),
+export const MoveParameters = Type.Object({ path: Type.Optional(Path), destination: Type.Optional(Destination),
   items: Type.Optional(Type.Array(Pair, { minItems: 1 })), dryRun: DryRun, purpose: Purpose }, { additionalProperties: false, anyOf: PAIR_FORMS });
 export interface NativeFileItemInput { path: string; destination?: string; purpose?: string; recursive?: boolean; overwrite?: boolean; }
 export interface NativeFileInvocationInput {
