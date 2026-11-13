@@ -2,6 +2,8 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ClientLease, LspClientPool } from "./client-pool.ts";
+import type { LspClient } from "./lsp-client.ts";
+import { PROJECT_READY_TIMEOUT_MS } from "./project-progress.ts";
 import { EMPTY_READONLY_ARRAY } from "./collections.ts";
 import { resolveRoot, resolveSupportedFile } from "./files.ts";
 import { IDENTIFIER_CHARACTER_PATTERN, LINE_BREAK_PATTERN, SYMBOL_SPEC_PATTERN } from "./regex.ts";
@@ -82,19 +84,16 @@ export async function runNavigation(
 		throwIfAborted(signal, adapter);
 		if (text !== undefined) lease.client.didOpen(uri, text, adapter.languageIdFor(file));
 		try {
-			let items: readonly NormalizedNavigationItem[];
-			if (params.action === "workspace_symbols") {
-				const symbols = await lease.client.workspaceSymbols(query!);
-				items = normalizeSymbols(symbols, root, query!);
-			} else {
-				const locations =
-					params.action === "definition"
-						? await lease.client.definition(uri, position!)
-						: params.action === "implementation"
-							? await lease.client.implementation(uri, position!)
-							: await lease.client.references(uri, position!, params.includeDeclaration ?? true);
-				items = normalizeLocations(locations, root);
+			const client = lease.client, readyAtStart = client.projectReady, generation = client.projectProgressGeneration;
+			const readyDeadline = performance.now() + Math.min(timeoutMs, PROJECT_READY_TIMEOUT_MS);
+			let items = await queryNavigation(client, params, root, uri, position, query);
+			let projectReady = await awaitProjectReadiness(client, readyDeadline, signal, adapter);
+			if (projectReady && (!readyAtStart || generation !== client.projectProgressGeneration)) {
+				const refreshedGeneration = client.projectProgressGeneration;
+				items = await queryNavigation(client, params, root, uri, position, query);
+				projectReady = client.projectReady && refreshedGeneration === client.projectProgressGeneration;
 			}
+			throwIfAborted(signal, adapter);
 			const deduped = dedupe(items);
 			const shown = deduped.slice(0, maxResults);
 			const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
@@ -102,7 +101,8 @@ export async function runNavigation(
 				? `, line adjusted ${params.line}→${resolvedLine}`
 				: "";
 			const summary = `${adapter.name} ${params.action}: ${deduped.length} result(s)${deduped.length > shown.length ? `, showing ${shown.length}` : ""} (${lease.reused ? "warm" : "cold"}${adjustment}, ${elapsedMs} ms).`;
-			return textResult([summary, ...shown.map(formatItem)].join("\n"), {
+			const readinessNotice = projectReady ? "" : "\nProject is still loading or readiness was not reported; results may be incomplete.";
+			return textResult([summary + readinessNotice, ...shown.map(formatItem)].join("\n"), {
 				action: params.action,
 				server: adapter.name,
 				root,
@@ -113,16 +113,36 @@ export async function runNavigation(
 				total: deduped.length,
 				truncated: deduped.length > shown.length,
 				reusedClient: lease.reused,
+				projectReady,
+				projectReadiness: lease.client.projectReadiness,
+				potentiallyIncomplete: !projectReady,
 				elapsedMs,
 			});
 		} finally {
-			if (text !== undefined) lease.client.didClose(uri);
+			if (text !== undefined && lease.client.running) lease.client.didClose(uri);
 		}
 	} finally {
 		signal?.removeEventListener("abort", abort);
 		try {
 			if (lease) { if (aborted) await (discard ?? pool.discard(lease)); else pool.release(lease); }
 		} finally { ctx.ui.setStatus(statusKey, undefined); }
+	}
+}
+
+async function queryNavigation(client: LspClient, params: NavigationParams, root: string, uri: string, position: ResolvedSymbolPosition | undefined, query: string | undefined): Promise<readonly NormalizedNavigationItem[]> {
+	if (params.action === "workspace_symbols") return normalizeSymbols(await client.workspaceSymbols(query!), root, query!);
+	const locations = params.action === "definition" ? await client.definition(uri, position!)
+		: params.action === "implementation" ? await client.implementation(uri, position!)
+			: await client.references(uri, position!, params.includeDeclaration ?? true);
+	return normalizeLocations(locations, root);
+}
+
+async function awaitProjectReadiness(client: LspClient, deadline: number, signal: AbortSignal | undefined, adapter: LspServerAdapter): Promise<boolean> {
+	for (;;) {
+		throwIfAborted(signal, adapter);
+		const ready = await client.waitForProjectReadiness(Math.max(0, deadline - performance.now()));
+		throwIfAborted(signal, adapter);
+		if (!ready || client.projectReady) return ready;
 	}
 }
 

@@ -9,6 +9,7 @@ import { EMPTY_READONLY_ARRAY } from "./collections.ts";
 import { directoryUri } from "./files.ts";
 import { COMMAND_SCRIPT_PATTERN, LSP_CONTENT_LENGTH_PATTERN } from "./regex.ts";
 import { positionAt } from "./text-edits.ts";
+import { TYPESCRIPT_PROJECT_PROGRESS_TITLE, MAX_PROJECT_PROGRESS_TOKENS, MAX_PROJECT_PROGRESS_TOKEN_CHARS } from "./project-progress.ts";
 import type {
 	CodeAction,
 	JsonRpcMessage,
@@ -75,6 +76,12 @@ export class LspClient {
 	#startupController?: AbortController;
 	#windowsJob?: WindowsShellJob;
 	#processGroup?: number;
+	#projectProgress = new Set<string | number>();
+	#projectWaiters = new Set<{ finish: (ready: boolean) => void; reject: (reason: Error) => void }>();
+	#projectProgressSeen = false;
+	#projectProgressOverflow = false;
+	#projectReady = false;
+	#projectProgressGeneration = 0;
 	#familyCleanup?: Promise<void>;
 	readonly #onStdout = (chunk: Buffer) => {
 		try { this.#onData(chunk); }
@@ -122,6 +129,26 @@ export class LspClient {
 		return Boolean(
 			!this.#stopping && child && !child.killed && child.exitCode === null && child.signalCode === null,
 		);
+	}
+	get projectReady(): boolean { return this.#projectReady; }
+	get projectProgressGeneration(): number { return this.#projectProgressGeneration; }
+	get projectReadiness(): "ready" | "loading" | "unknown" { return this.#projectReady ? "ready" : this.#projectProgressSeen && !this.#projectProgressOverflow ? "loading" : "unknown"; }
+	get projectReadinessDiagnostics() { return { activeTokens: this.#projectProgress.size, waiters: this.#projectWaiters.size, overflow: this.#projectProgressOverflow }; }
+	/** One explicit navigation request owns its deadline/callbacks. Normal progress
+	 * reports allocate no waiter, timer, callback, Promise or state wrapper. */
+	waitForProjectReadiness(timeoutMs: number): Promise<boolean> {
+		if (!this.running) return Promise.reject(new Error(`${this.#adapter.name} LSP is not running.`));
+		if (this.#projectReady) return Promise.resolve(true);
+		if (timeoutMs <= 0) return Promise.resolve(false);
+		return new Promise<boolean>((resolve, reject) => {
+			const dispose = () => { clearTimeout(timer); this.#projectWaiters.delete(waiter); };
+			const finish = (ready: boolean) => { dispose(); resolve(ready); };
+			const fail = (reason: Error) => { dispose(); reject(reason); };
+			const expire = () => finish(false);
+			const waiter = { finish, reject: fail };
+			const timer = setTimeout(expire, Math.min(timeoutMs, this.#timeoutMs));
+			this.#projectWaiters.add(waiter);
+		});
 	}
 
 	start(): Promise<void> {
@@ -190,6 +217,7 @@ export class LspClient {
 			workspaceFolders,
 			initializationOptions: this.#adapter.initialization ?? {},
 			capabilities: {
+				window: { workDoneProgress: true },
 				textDocument: {
 					codeAction: {
 						dynamicRegistration: false,
@@ -424,6 +452,8 @@ export class LspClient {
 			}
 		}
 		this.#diagnosticWaiters.clear();
+		for (const waiter of this.#projectWaiters) waiter.reject(new Error(typeof message === "string" ? message : message("diagnostics")));
+		this.#projectWaiters.clear();
 	}
 
 	#fail(message: string) {
@@ -439,6 +469,7 @@ export class LspClient {
 		this.#publishedDiagnostics.clear();
 		this.#serverCapabilities = {};
 		this.#stderr = "";
+		this.#projectProgress.clear(); this.#projectProgressSeen = false; this.#projectProgressOverflow = false; this.#projectReady = false;
 	}
 
 	private request(method: string, params: unknown, timeoutMs = this.#timeoutMs) {
@@ -535,6 +566,7 @@ export class LspClient {
 			return;
 		}
 
+		if (message.method === "$/progress") { this.#recordProjectProgress(message.params); return; }
 		if (message.method === "textDocument/publishDiagnostics") {
 			const params = message.params as { uri?: string; diagnostics?: LspDiagnostic[] } | undefined;
 			// A missing/null payload is not an empty diagnostic report.
@@ -556,6 +588,25 @@ export class LspClient {
 
 		if (Object.hasOwn(message, "id") && message.method) {
 			this.#respondToServerRequest(message);
+		}
+	}
+	#beginProjectProgress(token: unknown): void {
+		if (this.#projectProgress.has(token as string | number)) return;
+		this.#projectProgressSeen = true; this.#projectReady = false; this.#projectProgressGeneration++;
+		if ((typeof token !== "string" && typeof token !== "number")
+			|| typeof token === "number" && !Number.isFinite(token)
+			|| typeof token === "string" && token.length > MAX_PROJECT_PROGRESS_TOKEN_CHARS
+			|| this.#projectProgress.size >= MAX_PROJECT_PROGRESS_TOKENS) { this.#projectProgressOverflow = true; return; }
+		this.#projectProgress.add(token);
+	}
+	#recordProjectProgress(params: unknown): void {
+		if (!params || typeof params !== "object") return;
+		const progress = params as { token?: unknown; value?: { kind?: string; title?: string } };
+		if (progress.value?.kind === "begin" && progress.value.title === TYPESCRIPT_PROJECT_PROGRESS_TITLE) this.#beginProjectProgress(progress.token);
+		else if (progress.value?.kind === "end" && this.#projectProgress.delete(progress.token as string | number)
+			&& this.#projectProgress.size === 0 && !this.#projectProgressOverflow) {
+			this.#projectReady = true;
+			for (const waiter of this.#projectWaiters) waiter.finish(true);
 		}
 	}
 
@@ -657,6 +708,9 @@ export class LspClient {
 	}
 
 	#respondToServerRequest(message: JsonRpcMessage) {
+		if (message.method === "window/workDoneProgress/create") {
+			this.#send({ jsonrpc: "2.0", id: message.id, result: null }); return;
+		}
 		if (message.method === "workspace/configuration") {
 			const params = message.params as { items?: Array<{ section?: string }> } | undefined;
 			this.#send({

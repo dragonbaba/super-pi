@@ -36,6 +36,10 @@ There is no dedicated `--no-lsp` switch. `--no-extensions` suppresses automatic 
 
 Navigation output is normalized to project-relative `path:line:column` locations where possible and reports whether the call used a cold or warm client. Invalid query/line/symbol input is rejected before any LSP process starts; position anchors larger than 2 MiB are rejected. Immutable empty LSP results share one frozen readonly sentinel, and per-document published diagnostics are evicted on `didClose`.
 
+Cold navigation waits for recognized project initialization progress and refreshes the read-only query after loading. The readiness deadline is bounded by the call timeout and at most 10 seconds; it is event driven, with no fixed sleep. `projectReady`, `projectReadiness` and `potentiallyIncomplete` describe the observed state separately from result truncation. If loading never finishes, or the server has no recognized readiness signal, output explicitly says that the project may still be loading and results may be incomplete. Currently the recognized signal is typescript-language-server's JS/TS initialization progress; unrelated work-done progress, such as document formatting, does not establish readiness. Progress metadata is client owned, bounded, and released on completion/failure/shutdown; capacity overflow remains unconfirmed.
+
+This repository's LSP tsconfig resolves the internal file modules and Windows job types to their actual `.ts` sources for navigation. Runtime package exports continue to use built output. The public coding-agent package mapping retains its existing declaration boundary.
+
 ## Configuration
 
 Configuration remains compatible with upstream and is resolved in this order:
