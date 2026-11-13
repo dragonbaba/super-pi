@@ -53,7 +53,9 @@ export async function listBulkMemory(options: BulkMemoryOptions, scope: BulkMemo
     const names = await fs.readdir(options.projectsRoot);
     for (const name of names) {
       const directory = path.join(options.projectsRoot, name);
-      const state = await fs.lstat(directory);
+      let state;
+      try { state = await fs.lstat(directory); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
       if (!state.isDirectory() || state.isSymbolicLink()) continue;
       if (!PROJECT_ID_PATTERN.test(name)) { result.legacyDirectories++; continue; }
       await add(resolveAuthoritativeProjectFile(options.projectsRoot, name, MEMORY_FILE), "memory", name, name);

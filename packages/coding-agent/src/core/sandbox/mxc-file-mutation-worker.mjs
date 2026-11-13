@@ -1,9 +1,8 @@
 // This module executes only in the controlled worker. Importing it has no effects.
 import fs from 'node:fs';
-import { lstat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
-import { capturePathIdentity, captureTreeIdentity, sameIdentity, executeTree, hashIdentity, boundedReason } from '../files/file-tree-core.mjs';
+import { capturePathIdentity, executeTree, hashIdentity, boundedReason } from '../files/file-tree-core.mjs';
 import { executeFileCreation, executeFileCreationDirectories, directoryKey, originalCreatedFileIdentity, FileCreationFailure, summarizeCreatedDirectories as creationSummary } from '../files/file-creation-core.mjs';
 import { prepareFileWorkerManifest, readFileWorkerManifest, revalidateFileWorkerManifest, readFileParentManifest, writeFileParentManifest } from '../files/file-worker-plan.mjs';
 import { workspaceFilePath } from '../files/file-workspace-path.mjs';

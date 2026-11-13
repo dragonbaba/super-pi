@@ -10,7 +10,7 @@ import { consumePermissionPathApproval, mutationRequestHash, type PermissionPath
 import { MutationWriteGuard, resolveToolPath, sha256, type GuardedEdit, type MutationEditAuthorization, type MutationPathApproval } from "./core.ts";
 import { prepareFileCreation, verifyCreationAncestor, directoryKey, canonicalCreationDirectories, type FileCreationPlan } from "./file-creation.ts";
 import { selectCommitMetadata } from "./file-commit-metadata.ts";
-import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity, type MutationStatus } from "./native-file-core.ts";
+import { capturePathIdentity, sameIdentity, prepareNativeOperation, revalidateNativePlan, executeNativePlan, type NativePlan, type PathIdentity } from "./native-file-core.ts";
 import { prepareSnapshotLineMutation, executePreparedSnapshotMutation, type PreparedSnapshotMutation, type SnapshotLineEdit } from "./snapshot-line-edit.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { withMutationPaths, MUTATION_PROGRESS_ENTRY } from "./native-tools.ts";

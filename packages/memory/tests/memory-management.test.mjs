@@ -176,6 +176,40 @@ test('bulk global/current scopes reconcile search and keep exact unselected byte
   } finally { f.close(); }
 });
 
+test('all-project bulk skips a directory removed after enumeration and still reports other stat errors', async t => {
+  const f = await bulkFixture('bulk-enumeration-race');
+  const gone = join(f.options.projectsRoot, 'gone--' + 'b'.repeat(24));
+  try {
+    await mkdir(gone);
+    await writeFile(join(f.options.project.memoryDir, 'MEMORY.md'), 'surviving project memory');
+    const originalReaddir = fsPromises.readdir;
+    let enumerated = false;
+    t.mock.method(fsPromises, 'readdir', async (directory, ...args) => {
+      const names = await originalReaddir(directory, ...args);
+      if (directory === f.options.projectsRoot && !enumerated) {
+        enumerated = true;
+        assert.ok(names.includes(basename(gone)));
+        await fsPromises.rmdir(gone);
+      }
+      return names;
+    });
+    syncBuiltinESMExports();
+    const list = await listBulkMemory(f.options, 'all-projects');
+    assert.equal(enumerated, true);
+    assert.deepEqual(list.rows.map(row => row.entry.summary), ['surviving project memory']);
+    assert.equal(list.warnings.length, 0);
+    const originalLstat = fsPromises.lstat;
+    const denied = Object.assign(new Error('fixture stat denied'), { code: 'EACCES' });
+    t.mock.method(fsPromises, 'lstat', async (directory, ...args) => {
+      if (directory === f.options.project.memoryDir) throw denied;
+      return originalLstat(directory, ...args);
+    });
+    syncBuiltinESMExports();
+    await assert.rejects(listBulkMemory(f.options, 'all-projects'), error => error === denied);
+    assert.equal(await readFile(join(f.options.project.memoryDir, 'MEMORY.md'), 'utf8'), 'surviving project memory');
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); f.close(); }
+});
+
 test('all-project bulk includes orphan/failure-only identities, skips links and stale files, and reconciles only affected scopes', async t => {
   const f = await bulkFixture('bulk-projects'), orphan = 'orphan--' + 'b'.repeat(24), failures = 'failures--' + 'c'.repeat(24), stale = 'stale--' + 'd'.repeat(24);
   const outside = join(root, 'bulk-outside'), legacy = join(f.options.projectsRoot, 'old-basename');

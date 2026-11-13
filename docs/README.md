@@ -41,7 +41,7 @@
 - [Goal mode](../packages/goal/README.md)：持续目标、预算、暂停/恢复和实验队列。
 - [Plan mode](../packages/plan-mode/README.md)：只读探索、结构化提问、计划确认和实现交接。
 - [MCP bridge](../packages/mcp-bridge/README.md)：stdio、Streamable HTTP、SSE、配置和可信 server 边界。
-- [Memory](../packages/memory/README.md)：项目/全局记忆、会话搜索、Skills 和人工审阅的记忆提取流程；普通工具操作的确认方式取决于入口。
+- [Memory](../packages/memory/README.md)：项目/全局记忆、会话搜索、Skills 和人工审阅的记忆提取流程；普通工具操作的确认方式取决于入口。[审核后扫描竞态与无用符号修复](evidence/post-review-memory-scan-2026-11-13.md)记录后续验证。
 
 这些包的加载和可用性由 `.sp/config/settings.json`、全局/项目配置、项目可信度和 CLI 选项共同决定；源码中存在不等于每次运行都启用。
 
