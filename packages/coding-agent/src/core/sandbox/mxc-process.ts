@@ -47,7 +47,10 @@ export class MxcProcess {
   private cleanupFailure?: string;
   private readonly onStdout = (chunk: Buffer): void => { this.stdout!.append(chunk); };
   private readonly onStderr = (chunk: Buffer): void => { this.stderr!.append(chunk); };
-  private readonly stop = (): void => { if (this.job) this.cleanup ??= this.job.stop(); };
+  private readonly stop = (): Promise<string | undefined> | undefined => {
+    if (this.job) return this.cleanup ??= this.job.stop();
+    return this.cleanup;
+  };
   private readonly expire = (): void => { this.timedOut = true; this.stop(); };
   get diagnostics() { return { active: this.active, retainedStreams: Number(!!this.stdout) + Number(!!this.stderr), child: !!this.child, job: !!this.job, cleanupFailure: this.cleanupFailure }; }
   assertStopped(): void {
@@ -73,8 +76,7 @@ export class MxcProcess {
       const waiting = waitForChildProcess(child);
       if (signal.aborted) this.stop();
       const code = await waiting;
-      this.stop();
-      const failure = await this.cleanup;
+      const failure = await this.stop();
       if (failure || this.job.launchError || this.job.dispatchError)
         throw new Error(failure ?? this.job.dispatchError ?? this.job.launchError!.message);
       signal.throwIfAborted();
@@ -82,9 +84,9 @@ export class MxcProcess {
         stdoutBytes: this.stdout.seen, stderrBytes: this.stderr.seen,
         truncated: this.stdout.truncated || this.stderr.truncated, timedOut: this.timedOut };
     } finally {
-      clearTimeout(timer); signal.removeEventListener("abort", this.stop); this.stop();
+      clearTimeout(timer); signal.removeEventListener("abort", this.stop);
       try {
-        const failure = await this.cleanup;
+        const failure = await this.stop();
         if (failure) { this.cleanupFailure = failure; throw new Error(failure); }
       } catch (error) {
         this.cleanupFailure ??= error instanceof Error ? error.message : String(error); throw error;

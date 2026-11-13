@@ -91,7 +91,6 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { readShellExecution, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import {
 	type CompactionResult,
-	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
