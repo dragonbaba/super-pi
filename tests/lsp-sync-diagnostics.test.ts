@@ -31,6 +31,8 @@ test('conversion matches language-server positions, severity, source, tags and r
   assert.equal(result[0].code, 123); assert.equal(result[0].source, 'custom'); assert.deepEqual(result[0].tags, [1, 2]);
   assert.deepEqual(result[0].relatedInformation, [{ message: 'related', location: { uri: pathToFileURL(file).href, range: { start: { line: 2, character: 1 }, end: { line: 2, character: 3 } } } }]);
   assert.deepEqual(raw, before); assert.deepEqual(convertTypeScriptDiagnostics([]), []);
+	assert.deepEqual(convertTypeScriptDiagnostics(raw, [123]), []);
+	assert.equal(convertTypeScriptDiagnostics(raw, ['123']).length, raw.length);
   assert.throws(() => convertTypeScriptDiagnostics([{ ...raw[0], start: { line: 0, offset: 1 } }]), /position/);
   assert.equal(typescriptDiagnosticsCapability('typescript', 'node'), capability);
   assert.equal(typescriptDiagnosticsCapability('alias', 'D:/bin/typescript-language-server.cmd'), capability);
@@ -48,6 +50,22 @@ test('declared and advertised bridge uses all three sync requests with no wait o
     assert.equal(Object.hasOwn(outcome, 'projectReady'), false); assert.equal(Object.hasOwn(outcome, 'projectReadyAtCompletion'), false); assert.equal(Object.hasOwn(outcome, 'projectReadyForMs'), false);
     const stats = await f.stats(); assert.deepEqual(stats.counts, [1, 1, 1]); assert.equal(stats.active, 0);
   } finally { await f.close(); }
+});
+
+test('configured ignored codes match publication suppression and changing configuration preserves the next call', async () => {
+	const f = fixture();
+	try {
+		for (const ignored of [true, false]) {
+			const adapter = { ...f.adapter, initialization: { diagnostics: { ignoredCodes: [ignored ? 9001 : 9002] } } };
+			const result = await runDiagnostics(f.pool, adapter as any, { root: f.root, paths: ['good.ts'] }, 5000, undefined, f.ctx, 'ignored-codes');
+			assert.equal(result.isError, false); assert.equal(result.details.summary.files, 1);
+			assert.equal(result.details.summary.diagnostics, ignored ? 0 : 1);
+			assert.equal(result.details.diagnosticPath, 'sync-request');
+			const lease = await f.pool.acquire(adapter as any, f.root, 5000);
+			try { assert.deepEqual(JSON.parse((await lease.client.workspaceSymbols('stats'))[0].name).counts, [1, 1, 1]); }
+			finally { f.pool.release(lease); }
+		}
+	} finally { await f.close(); }
 });
 
 test('a reused sync client uses the current global timeout after configuration increases', async () => {

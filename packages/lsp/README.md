@@ -80,6 +80,8 @@ Each opened document requests `syntacticDiagnosticsSync`,
 `semanticDiagnosticsSync`, and `suggestionDiagnosticsSync`; all three must succeed
 before the file is confirmed. The measured TypeScript bound is one open document,
 within the shared 16-document maximum. Other adapters retain their current routes.
+Configured `initialization.diagnostics.ignoredCodes` suppresses the same codes
+on the sync path as on the language server's publishing path.
 If the command is not advertised, the client uses the existing publish/pull path
 and records `syncRequestFallback: "command_not_advertised"`. A failed sync request
 does not retry or fall back to a publication window.

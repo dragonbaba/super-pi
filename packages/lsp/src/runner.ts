@@ -72,7 +72,7 @@ async function runDiagnosticSlot(state: DiagnosticCollection): Promise<void> {
 			opened = true; state.active++; state.submitted++; batch.files++;
 			state.peak = Math.max(state.peak, state.active);
 			report = state.synchronousDiagnostics
-				? await collectSynchronousDiagnostics(state.client, file, state.synchronousDiagnostics, state.timeoutMs)
+				? await collectSynchronousDiagnostics(state.client, file, state.synchronousDiagnostics, state.timeoutMs, state.adapter.initialization)
 				: await state.client.collectDiagnosticReport(uri, state.waitMs, state.timeoutMs);
 			throwIfAborted(state.signal, state.adapter);
 			const relativePath = path.relative(state.root, file) || file;

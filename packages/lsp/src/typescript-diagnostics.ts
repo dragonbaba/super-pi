@@ -30,11 +30,12 @@ function position(value: unknown): LspPosition {
 
 /** Matches typescript-language-server 5.3's category mapping, including its
  * conservative Error default. Input and source files are never modified. */
-export function convertTypeScriptDiagnostics(values: readonly unknown[]): readonly LspDiagnostic[] {
+export function convertTypeScriptDiagnostics(values: readonly unknown[], ignoredCodes: readonly unknown[] = EMPTY_READONLY_ARRAY): readonly LspDiagnostic[] {
 	if (values.length === 0) return EMPTY_READONLY_ARRAY;
 	const result: LspDiagnostic[] = [];
 	for (const value of values) {
 		const item = record(value);
+		if (item.code !== undefined && ignoredCodes.includes(item.code)) continue;
 		if (typeof item.text !== "string") throw new Error("Invalid tsserver diagnostic message.");
 		if (item.code !== undefined && typeof item.code !== "number" && typeof item.code !== "string") throw new Error("Invalid tsserver diagnostic code.");
 		const diagnostic: LspDiagnostic = {
