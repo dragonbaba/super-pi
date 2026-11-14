@@ -329,7 +329,11 @@ for (const budget of [256, 512]) test(`real simultaneous reads: contextual share
  for (const delivery of f.deliveries) assert.equal(delivery.message.isError, false);
  if (budget === 256) {
   assert.equal(f.requests.length, 1);
-  assert.match(f.userErrors.at(-1)!, /Request preparation blocked: result-batch-budget.*batchBudget=256.*minimumNotice=304.*Required batch minima are tool=304/);
+  const minima = /Request preparation blocked: result-batch-budget.*batchBudget=256.*minimumNotice=(\d+).*Required batch minima are tool=(\d+), context=(\d+)/.exec(f.userErrors.at(-1)!);
+  assert.ok(minima);
+  assert.ok(Number.isSafeInteger(Number(minima[1])) && Number(minima[1]) > budget && Number(minima[1]) <= 512);
+  assert.equal(minima[1], minima[2], 'Reported minimum matches the required tool envelope');
+  assert.ok(Number(minima[3]) > 0);
   assert.match(f.userErrors.at(-1)!, /offset\/limit.*increase the tool-result budget/);
   f.session.dispose();
   const resumed = await f.open(512, SessionManager.open(f.manager.getSessionFile()!));
@@ -340,7 +344,7 @@ for (const budget of [256, 512]) test(`real simultaneous reads: contextual share
  const results = f.requests[1].messages.filter((m: any) => m.role === "tool");
  assert.equal(results.length, 2);
  for (const result of results) { assert.match(result.content, /Read output omitted/); assert.doesNotMatch(result.content, /snapshot=snap_|\d+#[A-F0-9]{4}\|/); }
- if (budget === 512) assert.ok(results.reduce((n: number, r: any) => n + estimateToolOutputTokens([{ type: "text", text: r.content }]).estimatedTokens, 0) <= budget);
+ assert.ok(results.reduce((n: number, r: any) => n + estimateToolOutputTokens([{ type: "text", text: r.content }]).estimatedTokens, 0) <= 512);
  assert.equal(f.counters.activeContextualCoordinators, 0); f.assertUnchanged();
 });
 

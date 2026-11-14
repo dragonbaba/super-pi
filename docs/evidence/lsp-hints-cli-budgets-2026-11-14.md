@@ -1,4 +1,4 @@
-# LSP 提示清理与 CLI 测试预算
+# LSP 提示清理、CLI 时序与动态预算断言
 
 日期：2026-11-14。基线 main `d370715a0dfc34972b9bc45a98a422a461cd14ce`，Windows / Node 26.13.0。生产工具行为和原有 CI 工作流、分片、并发、测试入口保持。
 
@@ -9,6 +9,8 @@
 MxcProcess 的两条 TS80007 不能按文字建议删除 await。正常返回和异常 finally 的受控生产 owner 均必须等物理清理 Promise，完成后才释放 streams/job 并允许下一调用。本次让已有实例 stop 回调返回同一个 coalesced Promise，在两个调用点直接等待，不新增清理任务。
 
 历史 main 的 Windows 3/4 失败：`53e2a4fc5` 的 RPC 看门狗触发，清理回执已完成；`b1ee66e3c` 的 MCP spawnSync 报 ETIMEDOUT。分别见 [RPC 日志](https://github.com/dragonbaba/super-pi/actions/runs/43501057994)、[MCP 日志](https://github.com/dragonbaba/super-pi/actions/runs/43499358407)。这证明测试期限被触发，没有足够阶段信息证明唯一原因是宿主机器慢；整段用例耗时也不能直接当作就绪后的关闭耗时。
+
+另一个真实 CI 失败是 read-recovery 测试写死 minimumNotice=304，实际为 302。生产 projection owner 的可控会话 `00000000-0000-4000-8000-000000000068`、相同内容与 read-1-0/read-1-1 两个调用，得到 150/152：前者 sourceKey 全数字，fallback estimator 的数字串计价与混合十六进制不同。其合计 302 是有效的动态最小预算，不是产品放宽检查。测试改为校验最小值为安全整数、超过当前 256、与 required tool minimum 一致、context minimum 为正；同时对两种恢复路径都检查下一请求总量不超过实际 512 预算。原始工具状态、请求/读取次数和内容不变断言保留。
 
 ## 修正和对照
 

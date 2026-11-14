@@ -36,7 +36,7 @@
 - [默认 Codemode 方案](codemode-default-execution-plan.md)：默认工具入口、官方 1.0.0 借鉴、PR 划分和性能契约；[执行记录](codemode-default-execution-log.md) 给出实际验证及限制。
 - [Project Context](../packages/project-context/README.md)：项目身份、规则与轻量索引；CodeGraph 集成已退役，旧索引和用户技能保留。
 - [LSP](../packages/lsp/README.md)：诊断、source fix 和符号导航的配置与边界；[冷启动导航就绪验证](evidence/post-review-lsp-readiness-2026-11-14.md)说明加载信号、超时标注与源码定义。
-- [LSP 提示与 CLI 测试时序](evidence/lsp-hints-cli-budgets-2026-11-14.md)：完整参数传递链清理、保留 MXC 清理等待及有界启动/关闭预算。
+- [LSP 提示与测试稳定性](evidence/lsp-hints-cli-budgets-2026-11-14.md)：完整参数传递链清理、保留 MXC 清理等待、有界启动/关闭预算及动态 read 提示预算断言。
 - [Tool classification](../packages/tool-classification/README.md)：初始工具面、延迟工具搜索和按需激活。
 - [Dynamic instructions](../packages/dynamic-instructions/README.md)：工作区规则和 Skills catalog 的增量更新。
 - [Goal mode](../packages/goal/README.md)：持续目标、预算、暂停/恢复和实验队列。
