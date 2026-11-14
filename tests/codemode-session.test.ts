@@ -123,6 +123,24 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
 
+test("Codemode forwards explicit risk review separately from tool arguments and failure handling", async t => {
+  const observed: Array<{ review: boolean | undefined; input: unknown }> = [];
+  let effects = 0;
+  const extension: InlineExtension = pi => {
+    pi.registerTool({ name: "risk_probe", label: "Risk probe", description: "Controlled opaque effect", parameters: Type.Object({}),
+      execute: async () => { effects++; return { content: [], details: {} }; } });
+    pi.on("tool_call", event => { if (event.toolName === "risk_probe") observed.push({ review: event.review, input: event.input }); });
+  };
+  const f = await fixture(t, {}, [extension]);
+  const outcome = await f.run(['await callTool("risk_probe",{}); await callTool("risk_probe",{},{review:true,allowFailure:true}); await callTool("risk_probe",{},{review:false});']);
+  assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results));
+  assert.deepEqual(observed, [{ review: false, input: {} }, { review: true, input: {} }, { review: false, input: {} }]);
+  assert.equal(effects, 3);
+  const invalid = await f.run(['await callTool("risk_probe",{},{review:"yes"});']);
+  assert.equal(invalid.results.at(-1)?.isError, true); assert.equal(effects, 3);
+  assert.match(JSON.stringify(invalid.results.at(-1)?.content), /boolean allowFailure and review/);
+});
+
 test("allSettled native reads retain both successful bodies and commit handled statuses without rereads",async t=>{
   const f=await fixture(t);
   writeFileSync(join(f.cwd,"a.txt"),"FIRST_SUCCESS_BODY\n");writeFileSync(join(f.cwd,"b.txt"),"SECOND_SUCCESS_BODY\n");
@@ -1595,7 +1613,7 @@ async function readPages(format) {
     const end=Number(header[2]), total=Number(header[3]);
     body+=page.slice(header[0].length,header[0].length+end-offset);
     maxPage=Math.max(maxPage,page.length);pages++;
-    if(end===total) break;
+    if(end===total) { if(!page.includes("Tool documentation complete")) throw new Error("missing complete-page marker"); break; }
     if(end<=offset || !page.includes("offset:"+end)) throw new Error("missing continuation");
     offset=end;
   }

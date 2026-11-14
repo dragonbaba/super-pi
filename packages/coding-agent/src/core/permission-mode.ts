@@ -6,7 +6,7 @@ export const PERMISSION_MODE_LABELS: Readonly<Record<SessionPermissionMode, stri
   "read-only": "只读（沙箱）",
   "sandbox-write": "沙箱读写",
   "host-restricted": "宿主机受限",
-  // R6: host-restricted whose asks are first reviewed by the session model.
+  // Auto selects recognized effects and main-model review requests; ordinary queries do not review.
   "host-auto": "宿主机受限 · Auto 审查",
   // Stored `host-write` records keep their meaning: full host access.
   "host-write": "宿主机完全权限",
@@ -18,7 +18,7 @@ export function assertPermissionMode(value: unknown): asserts value is SessionPe
 export function isHostPermissionMode(mode: SessionPermissionMode | undefined): mode is "host-restricted" | "host-auto" | "host-write" {
   return mode === "host-restricted" || mode === "host-auto" || mode === "host-write";
 }
-/** Host-restricted rules: Auto changes who answers an ask, never what asks. */
+/** These host modes share path/shell analysis; Auto independently selects risk review. */
 export function isRestrictedHostMode(mode: SessionPermissionMode | undefined): mode is "host-restricted" | "host-auto" {
   return mode === "host-restricted" || mode === "host-auto";
 }

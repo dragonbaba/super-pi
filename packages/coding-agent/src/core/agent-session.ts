@@ -1237,6 +1237,7 @@ export class AgentSession {
 					toolCallId: toolCall.id,
 					parentToolCallId,
 					nestedIssuedAt,
+					review: toolCall.review,
 					input: args as Record<string, unknown>,
 				}, context.tools?.find(tool => tool.name === toolCall.name)?.execute === this._toolRegistry.get(toolCall.name)?.execute
 					? this._toolDefinitions.get(toolCall.name)?.definition : undefined, signal);
