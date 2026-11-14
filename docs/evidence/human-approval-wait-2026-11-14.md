@@ -25,9 +25,11 @@
 
 沙箱联网等待、取消/切换后的迟到授权、项目信任的三种 UI 等待均先复现失败再修复。下一次联网请求仍询问，active/queued/reservations 均为 0。项目信任回答后只恢复剩余预算：100 ms 中先用 20 ms，人工等待 24 小时，随后 79 ms 尚未超时、再 1 ms 正确失败。过期 handler 不能再打开审批窗，新的信任判断可正常批准。全屏权限测试验证 3 次真实渲染、明确取消后再询问、零对话计时器及零取消监听器。
 
+宿主文件权限的真实删除/拒绝测试同样验证无倒计时，并在文件准备完成、真实 UI 已打开后再操作，替代固定次数的事件循环轮询。允许时文件实际删除，拒绝时原文件保留；关闭后 selector/overlay、详情和终端引用、取消监听器均释放，敏感目标仍拒绝执行。
+
 - `npm run check`：通过。
-- 原生权限、Auto、沙箱联网、信任 hook、全屏权限、共享 TUI/RPC、RPC client 和 source invariants：构建后 143 通过、1 项 POSIX FIFO 平台跳过。
-- CodeMode D4 串行子调用/审批计时、`ask_user` 阻断和嵌套交互边界：6 通过；合计 149 通过、1 跳过、0 失败。
+- 原生权限、Auto、沙箱联网、信任 hook、全屏权限、共享 TUI/RPC、RPC client、宿主文件权限和 source invariants：构建后 152 通过、1 项 POSIX FIFO 平台跳过。
+- CodeMode D4 串行子调用/审批计时、`ask_user` 阻断和嵌套交互边界：6 通过；合计 158 通过、1 跳过、0 失败。
 - `npm run build:offline`：12/12 包成功；CLI 离线版本返回 `1.0.0`。构建产物核对原生、沙箱、TUI、RPC 均已去除人工交互期限；AST 核对直接设置对话 timeout 的调用点为 0。
 
 均为离线受控验证，未重放真实用户会话或清理命令；运行中的 Super Pi 需重启以加载新的原生授权模块。
@@ -35,7 +37,7 @@
 重跑入口：
 
 ```powershell
-node --experimental-strip-types --test tests/native-execution-policy.test.ts tests/auto-review.test.ts tests/sandbox-stop-network.test.ts tests/extension-hook-timeout.test.ts tests/session-permission-modes.test.ts tests/source-invariants.test.ts tests/permission-interaction.test.ts tests/rpc-client-dispatch.test.ts
+node --experimental-strip-types --test tests/native-execution-policy.test.ts tests/auto-review.test.ts tests/sandbox-stop-network.test.ts tests/extension-hook-timeout.test.ts tests/session-permission-modes.test.ts tests/source-invariants.test.ts tests/permission-interaction.test.ts tests/rpc-client-dispatch.test.ts tests/host-file-permissions.test.ts
 node --experimental-strip-types --test --test-name-pattern="F-C6 D4|ask_user|interaction boundaries" tests/codemode-recovery/execution.regression.ts tests/interactive-control-images.test.ts tests/nested-tool-dispatch.test.ts
 ```
 
