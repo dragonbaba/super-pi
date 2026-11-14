@@ -224,23 +224,16 @@ So the package is intentionally hybrid:
 
 ### Runtime smoke
 
-- `npm run smoke`
-
-Verifies imports/loadability.
+Current offline commands are maintained in [the package testing section](README.md#testing)
+and run from the monorepo root. They exercise the actual adapter and lifecycle with
+synthetic transport; this package has no standalone smoke npm script.
 
 ### Live end-to-end test
 
-- `npm run test:live`
-
-Implemented in:
-- `tests/live/openai-compaction-rpc-live.ts`
-
-This is a black-box integration test that drives real `pi --mode rpc` sessions and validates:
-
-- same-session continuity after compaction
-- model switch away and back
-- fork after compaction
-- resume/reload after compaction
+The former standalone RPC live test is not shipped in this checkout. Its intended
+same-session, model-switch, fork and resume checks remain real-provider acceptance
+requirements, not results proved by the offline contracts. No `test:live` npm
+script is available here; real calls require separate authorization.
 
 ### Controlled native-vs-text benchmark
 
@@ -257,4 +250,4 @@ If you are new to the repo, read in this order:
 3. `src/index.ts`
 4. `src/remote-compaction.ts`
 5. `src/openai-ws-stream.ts`
-6. `tests/live/openai-compaction-rpc-live.ts`
+6. [Current offline contracts](README.md#testing)

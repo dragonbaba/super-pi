@@ -1,7 +1,5 @@
 <div align="center">
 
-![Pi Hermes Memory](docs/images/pi_memory.png)
-
 # 🧠 Pi Hermes Memory
 
 **Persistent memory + session search + secret scanning for Pi**
@@ -71,7 +69,10 @@ Cleanup removes selected raw fragments without trimming, deduplicating or rewrit
 
 ### Session Lifecycle
 
-![Session Lifecycle](docs/images/session-lifecycle.svg)
+At session start, the extension reads the active canonical memory and prepares its
+bounded digest. Explicit mutations publish Markdown and reconcile search state;
+shutdown closes only opened SQLite and owned Markdown coordinators. The lifecycle
+is registered in [src/index.ts](src/index.ts).
 
 ### Memory + Skills Architecture
 
@@ -83,13 +84,9 @@ The extension manages three types of knowledge:
 | **User Profile** (USER.md) | Who you are — name, preferences, communication style | 5,000 chars max | Searchable by default |
 | **Skills** (Pi-native `SKILL.md`) | Procedures — *how* to do something, reusable across sessions | Unlimited | Discoverable by Pi + manageable via the `skill_manage` tool |
 
-![Memory + Skills Architecture](docs/images/memory-architecture.svg)
-
 ### Security: Content Scanning
 
 Every write — memory and skills — passes through a scanner before being accepted. This prevents the LLM from being tricked into storing malicious content that could later be surfaced through search or legacy prompt injection.
-
-![Security: Content Scanning](docs/images/security-flow.svg)
 
 ## Development
 
@@ -484,7 +481,10 @@ The `sessions.db` SQLite database holds the derived memory index used by `memory
 
 ## Architecture
 
-![Source Architecture](docs/images/source-architecture.svg)
+Canonical Markdown is owned by [MemoryStore](src/store/memory-store.ts); SQLite
+is a derived search index. Registration and lifecycle stay in
+[src/index.ts](src/index.ts). See [local changes](LOCAL_PATCHES.md) for this
+checkout's behavior and upstream adoption boundaries.
 
 ## Credits
 
@@ -501,4 +501,4 @@ MIT
 
 ---
 
-**[Full Roadmap →](docs/ROADMAP.md)** · **[Changelog →](CHANGELOG.md)**
+**[Local changes →](LOCAL_PATCHES.md)** · **[Current verification →](../../docs/testing.md)**

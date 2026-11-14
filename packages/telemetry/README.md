@@ -20,7 +20,7 @@ Applications can use the in-memory reference or provide an adapter for OpenTelem
 - [Adapter Contract](#adapter-contract)
 - [No-op Context](#no-op-context)
 - [In-Memory Reference Adapter](#in-memory-reference-adapter)
-- [Adapter Conformance](#adapter-conformance)
+- [Adapter Conformance](#testing-subpath)
 - [Typed Schemas](#typed-schemas)
   - [Start and Completion Attributes](#start-and-completion-attributes)
 - [Schema Metadata](#schema-metadata)
@@ -129,7 +129,7 @@ An adapter implements `TelemetryContext` and bridges the generic API to its back
 - ignore calls made after settlement;
 - ignore a failed recording call atomically, suppress backend failures, and still execute the business callback exactly once.
 
-Adapters may activate backend-native ambient context internally for automatic instrumentation, but pi code always propagates the parent through `TelemetryContext` arguments. Exporter buffering, flushing, sampling, backend IDs, and backend-specific context objects belong to the adapter. Use the [adapter conformance suite](#adapter-conformance) to check these observable semantics.
+Adapters may activate backend-native ambient context internally for automatic instrumentation, but pi code always propagates the parent through `TelemetryContext` arguments. Exporter buffering, flushing, sampling, backend IDs, and backend-specific context objects belong to the adapter. Use the [adapter conformance suite](#testing-subpath) to check these observable semantics.
 
 ## No-op Context
 

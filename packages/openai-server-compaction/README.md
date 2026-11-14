@@ -215,23 +215,16 @@ If something goes wrong:
 
 ## Testing
 
-Smoke test (offline, verifies imports and key algorithms):
+Run the maintained offline contracts from the monorepo root:
 
 ```bash
-npm run smoke
+node --experimental-strip-types --test tests/provider-contract/openai-remote-compaction-fallback.contract.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts
 ```
 
-Live end-to-end test (requires working Pi + OpenAI auth):
-
-```bash
-npm run test:live
-```
-
-Override the test model:
-
-```bash
-SP_OPENAI_SERVER_COMPACTION_TEST_MODEL=openai-codex/gpt-5.6-sol npm run test:live
-```
+These contracts use synthetic responses and verify fallback, cancellation and
+continuation lifecycle. The former standalone `smoke` and `test:live` npm scripts
+are not provided by this checkout. Offline success does not establish real-provider
+continuity; real calls require separately authorized manual acceptance.
 
 The focused cache-rewarm matrix is intentionally kept outside this installed package and every Pi auto-load path. Run it explicitly from `~/.sp/agent/experiments/codex-cache-tail/` when live evidence is needed; see that folder's README. It consumes quota and can wait in real time for idle-window cells. Normal Pi never discovers or imports the observer.
 
