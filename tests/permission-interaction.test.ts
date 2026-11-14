@@ -574,6 +574,28 @@ test("real interactive selection isolates cancellation, late clicks and disposal
 	assert.equal(mode.extensionSelectorCancel, undefined);
 });
 
+for (const method of ["select", "input", "confirm"] as const) test(`TUI human ${method} ignores legacy dialog timeouts`, async t => {
+ const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+ const { Container } = await import("@super-pi/tui");
+ const mode: any = Object.create(InteractiveMode.prototype);
+ mode.ui = { terminal: { rows: 24, columns: 80 }, setFocus() {}, requestRender() {}, showOverlay() { return { hide() {} }; } };
+ mode.editor = new Container(); mode.editorContainer = new Container(); mode.disposeActiveSelector = () => {};
+ const abort = new AbortController();
+ t.after(() => { abort.abort(); mode.cancelExtensionDialogs(); });
+ t.mock.timers.enable({ apis: ["setInterval"] });
+ const opts = { signal: abort.signal, timeout: 10 };
+ const operation = method === "select" ? mode.showExtensionSelector("Choose", ["Approve"], opts)
+  : method === "input" ? mode.showExtensionInput("Answer", undefined, opts) : mode.showExtensionConfirm("Confirm", "Continue?", opts);
+ let settled = false;
+ const pending = operation.finally(() => { settled = true; });
+ t.mock.timers.tick(24 * 60 * 60 * 1000); await tick();
+ assert.equal(settled, false);
+ if (method === "input") { mode.extensionInput.handleInput("answer"); mode.extensionInput.handleInput("\r"); }
+ else { mode.extensionSelector.render(80); mode.extensionSelector.handleInput("\x1b[A"); mode.extensionSelector.handleInput("\r"); }
+ assert.equal(await pending, method === "input" ? "answer" : method === "confirm" ? true : "Approve");
+ assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+});
+
 test("details cache survives navigation, escapes controls, and releases on close", () => {
 	const terminal = { rows: 10, columns: 40 };
 	let selected = 0; let cancelled = 0;
@@ -1086,14 +1108,25 @@ test("RPC revocation dismisses only the matching client prompt", async () => {
 });
 
 
-test("RPC timeout and failed output release their existing request owner", async t => {
+test("RPC human requests ignore legacy timeouts and release on response, abort or failed output", async t => {
  const { createRpcDialogPromise } = await import("../packages/coding-agent/src/modes/rpc/rpc-mode.ts");
  t.mock.timers.enable({ apis: ["setTimeout"] });
  const pending = new Map<string, any>(); const events: any[] = [];
- const result = createRpcDialogPromise(pending, event => events.push(event), { timeout: 10 }, undefined, { method: "select" }, () => "unused");
- t.mock.timers.tick(10); assert.equal(await result, undefined);
- assert.equal(events[1].method, "dismiss"); assert.equal(events[1].reason, "timeout");
- assert.equal(pending.size, 0);
+ for (const method of ["select", "input", "confirm"]) {
+  const abort = new AbortController(); let settled = false;
+  const result = createRpcDialogPromise(pending, event => events.push(event), { signal: abort.signal, timeout: 10 }, undefined,
+   { method }, () => "answered").finally(() => { settled = true; });
+  const request = events.at(-1);
+  t.mock.timers.tick(24 * 60 * 60 * 1000); await Promise.resolve();
+  assert.equal(settled, false); assert.equal(pending.size, 1);
+  pending.get(request.id).resolve({}); assert.equal(await result, "answered");
+  assert.equal(pending.size, 0); assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+  const cancelled = createRpcDialogPromise(pending, event => events.push(event), { signal: abort.signal, timeout: 10 }, undefined,
+   { method }, () => "unused");
+  abort.abort(); assert.equal(await cancelled, undefined);
+  assert.equal(events.at(-1).method, "dismiss"); assert.equal(events.at(-1).reason, "aborted");
+  assert.equal(pending.size, 0); assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+ }
  await assert.rejects(createRpcDialogPromise(pending, () => { throw new Error("controlled output failure"); }, undefined, undefined, { method: "select" }, () => undefined), /output failure/);
  assert.equal(pending.size, 0);
 });

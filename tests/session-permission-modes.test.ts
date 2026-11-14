@@ -106,44 +106,43 @@ test("permissions menu exposes exactly five modes and never switches after cance
   } finally { await fixture.release(); }
 });
 
-test("native approval UI cancels on Escape and a real countdown, then asks again without retained dialog state", { timeout: 8000 }, async t => {
+test("native approval UI has no countdown and releases cancelled dialogs before asking again", { timeout: 8000 }, async t => {
   const fixture = await alphaSession({ mode: "fullscreen" });
   const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(fixture.root);
   runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
   const owner = new SessionExecutionPolicy(runtime, "trusted-host", { rules: [{ tool: "powershell", decision: "ask" }] }, "host-write");
-  const ui = fixture.internal.createExtensionUIContext(); let shortDeadline = false, prompts = 0, visibleFrames = 0;
+  const ui = fixture.internal.createExtensionUIContext(); let prompts = 0, visibleFrames = 0;
   let opened: (() => void) | undefined;
   fixture.sink.physicalMarker = text => { if (text.includes("允许这次操作")) visibleFrames++; };
   const ctx: any = { cwd: fixture.root, hasUI: true, sessionManager: manager, signal: runtime.executionBoundary.signal,
     ui: { select(title: string, choices: string[], opts: any) {
-      prompts++; assert.equal(opts.timeout, 60000);
-      const result = ui.select(title, choices, { ...opts, timeout: shortDeadline ? 1 : opts.timeout });
+      prompts++; assert.equal(opts.timeout, undefined);
+      const result = ui.select(title, choices, opts);
       opened?.(); return result;
     } } };
   const event: any = { type: "tool_call", toolName: "powershell", toolCallId: "ui-approval", input: { command: "Write-Output fixture" } };
   fixture.internal.ui.start();
   try {
-    for (const action of ["escape", "timeout", "allow"]) {
-      shortDeadline = action === "timeout";
+    for (const action of ["escape", "cancel", "allow"]) {
       const ready = new Promise<void>(resolve => { opened = resolve; });
       const pending = owner.authorize(event, ctx);
       const cancelled = action === "allow" ? undefined : assert.rejects(pending, /APPROVAL_CANCELLED/);
       await Promise.race([ready, pending]); opened = undefined;
       fixture.internal.ui.renderNow(true); await fixture.internal.ui.flushTerminalFrames();
-      const component = fixture.internal.extensionSelector, countdown = component.countdown;
-      assert.ok(component); assert.ok(countdown); assert.equal(getEventListeners(ctx.signal, "abort").length, 1);
+      const component = fixture.internal.extensionSelector;
+      assert.ok(component); assert.equal(component.countdown, undefined); assert.equal(getEventListeners(ctx.signal, "abort").length, 1);
       if (action === "escape") component.handleInput("\x1b");
+      else if (action === "cancel") component.cancel();
       else if (action === "allow") { component.handleInput("\x1b[A"); component.handleInput("\r"); }
       if (cancelled) await cancelled;
       else (await pending).release();
-      assert.equal(countdown.intervalId, undefined); assert.equal(countdown.tui, undefined);
       assert.equal(component.details, undefined); assert.equal(component.terminal, undefined);
       assert.equal(fixture.internal.extensionSelector, undefined); assert.equal(fixture.internal.extensionSelectorOverlay, undefined);
       assert.equal(getEventListeners(ctx.signal, "abort").length, 0);
       assert.deepEqual(owner.listRefusals(ctx), []);
     }
     assert.equal(prompts, 3); assert.ok(visibleFrames > 0); assert.equal(manager.getEntryCount(), 0);
-    t.diagnostic(JSON.stringify({ prompts, escaped: 1, realCountdownExpired: 1, approved: 1, persistedRefusals: 0, dialogTimers: 0, abortListeners: 0, visibleFrames }));
+    t.diagnostic(JSON.stringify({ prompts, escaped: 1, cancelled: 1, approved: 1, persistedRefusals: 0, dialogTimers: 0, abortListeners: 0, visibleFrames }));
   } finally { owner.dispose(); await runtime.executionBoundary.dispose(); fixture.sink.physicalMarker = undefined; await fixture.release(); }
 });
 

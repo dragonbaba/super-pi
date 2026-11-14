@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
 import { ExtensionRunner } from "../packages/coding-agent/src/core/extensions/runner.ts";
@@ -382,6 +383,69 @@ test("legacy grants are not widened after an explicit refusal", async t => {
     await assert.rejects(f.owner.authorize(f.event("powershell", { command: "another" }), f.ctx, d), /LEGACY_PERMISSION_MIGRATION/);
 });
 
+for (const action of ["allow", "explain", "cancel", "abort"] as const) test(`native human approval waits without a deadline: ${action}`, { timeout: 10000 }, async t => {
+    const { InteractiveMode } = await import("../packages/coding-agent/src/modes/interactive/interactive-mode.ts");
+    const { Container } = await import("@super-pi/tui");
+    const { initTheme } = await import("../packages/coding-agent/src/modes/interactive/theme/theme.ts");
+    initTheme("dark");
+    const f = await fixture(t, { rules: [{ tool: "controlled", decision: "ask" }] }, "trusted-host", "host-write");
+    const mode: any = Object.create(InteractiveMode.prototype);
+    mode.ui = { terminal: { rows: 24, columns: 80 }, setFocus() {}, requestRender() {}, showOverlay() { return { hide() {} }; } };
+    mode.editor = new Container(); mode.editorContainer = new Container();
+    mode.disposeActiveSelector = () => {};
+    const abort = new AbortController();
+    f.ctx.signal = abort.signal; f.ctx.hasUI = true;
+    t.after(() => { abort.abort(); mode.cancelExtensionDialogs(); });
+    let shown!: () => void, inputShown!: () => void;
+    const visible = new Promise<void>(resolve => { shown = resolve; });
+    const inputVisible = new Promise<void>(resolve => { inputShown = resolve; });
+    f.ctx.ui.select = (title: string, choices: string[], opts: any) => {
+        const pending = mode.showExtensionSelector(title, choices, opts); shown(); return pending;
+    };
+    f.ctx.ui.input = (title: string, placeholder: string | undefined, opts: any) => {
+        const pending = mode.showExtensionInput(title, placeholder, opts); inputShown(); return pending;
+    };
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    let settled = false;
+    const run = f.owner.authorize(f.event("controlled", {}), f.ctx).then(
+        grant => { grant.release(); return "allowed"; },
+        error => error.message,
+    ).finally(() => { settled = true; });
+    await visible;
+    const selector = mode.extensionSelector;
+    t.mock.timers.tick(24 * 60 * 60 * 1000);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(settled, false, "absence must not cancel approval or grant execution");
+    assert.equal(mode.extensionSelector, selector);
+    assert.deepEqual(f.owner.listRefusals(f.ctx), []);
+    if (action === "abort") abort.abort();
+    else if (action === "cancel") selector.cancel();
+    else {
+        selector.render(80);
+        if (action === "allow") selector.handleInput("\x1b[A");
+        else { selector.handleInput("\x1b[B"); selector.handleInput("\x1b[B"); }
+        selector.handleInput("\r");
+        if (action === "explain") {
+            await inputVisible;
+            const input = mode.extensionInput;
+            t.mock.timers.tick(24 * 60 * 60 * 1000);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            assert.equal(settled, false, "a refusal explanation also waits for the user");
+            assert.equal(mode.extensionInput, input);
+            input.handleInput("Keep this request blocked"); input.handleInput("\r");
+        }
+    }
+    const result = await run;
+    if (action === "allow") assert.equal(result, "allowed");
+    else if (action === "explain") assert.match(result, /User declined.*Keep this request blocked/);
+    else if (action === "cancel") assert.match(result, /APPROVAL_CANCELLED/);
+    else assert.match(result, /abort/i);
+    assert.equal(mode.extensionSelector, undefined);
+    assert.equal(mode.extensionInput, undefined);
+    if (action !== "abort") assert.equal(f.owner.listRefusals(f.ctx).length, action === "explain" ? 1 : 0);
+    assert.equal(getEventListeners(abort.signal, "abort").length, 0, "closed dialogs release their cancellation listeners");
+});
+
 test("cancelled approvals never persist; explicit reasons and revocations survive disk restore", async t => {
     const f = await fixture(t, { rules: [{ tool: "powershell", decision: "ask" }] }, "trusted-host", "host-write");
     const manager = SessionManager.create(f.root, path.join(f.root, "history"));
@@ -390,10 +454,12 @@ test("cancelled approvals never persist; explicit reasons and revocations surviv
     f.runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
     let selection: number | undefined, explanation: string | undefined, prompts = 0;
     f.ctx.ui.select = async (_title: string, choices: string[], options: any) => {
-        prompts++; assert.equal(options.timeout, 60000); assert.equal(options.kind, "permission");
+        prompts++; assert.equal(options.timeout, undefined); assert.equal(options.kind, "permission");
         assert.match(options.details, /cwd:/); return selection === undefined ? undefined : choices[selection];
     };
-    f.ctx.ui.input = async () => explanation;
+    f.ctx.ui.input = async (_title: string, _placeholder: string | undefined, options: any) => {
+        assert.equal(options.timeout, undefined); return explanation;
+    };
     const event = f.event("powershell", { command: "Write-Output fixture" });
     await assert.rejects(f.owner.authorize(event, f.ctx), /APPROVAL_CANCELLED/);
     selection = 2;

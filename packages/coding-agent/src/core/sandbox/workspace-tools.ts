@@ -30,7 +30,7 @@ const NETWORK_FAILURE = /ENOTFOUND|EAI_AGAIN|getaddrinfo|Could not resolve (?:ho
 const PATH_NOT_FOUND = /cannot find (?:the )?path|No such file or directory|system cannot find|ENOENT|is not recognized as|does not exist|找不到/i;
 const ACCESS_DENIED = /Access (?:to the path .{0,512} )?is denied|EACCES|EPERM|Permission denied|Read-only file system|UnauthorizedAccess|拒绝访问/i;
 const NETWORK_CHOICES = ["允许本会话联网", "拒绝"];
-const NETWORK_TIMEOUT_MS = 60000, MAX_DIALOG_COMMAND = 4000;
+const MAX_DIALOG_COMMAND = 4000;
 const NETWORK_STATUS_KEY = "sandbox-network";
 /** Output names `key` with either separator (`c:\\program files\\x`, `c:/program files/x`). */
 function mentionsPath(output: string, key: string): boolean {
@@ -155,8 +155,9 @@ export class WorkspaceSandboxTools {
   /** One dialog per recognized network command while offline; consent lasts for the session. */
   private async requestNetwork(ctx: ExtensionContext, network: string, command: string, signal: AbortSignal): Promise<void> {
     const shown = command.length > MAX_DIALOG_COMMAND ? command.slice(0, MAX_DIALOG_COMMAND) + "…" : command;
-    const selected = await ctx.ui.select("允许本会话的沙箱联网？", NETWORK_CHOICES, { signal, timeout: NETWORK_TIMEOUT_MS, kind: "permission",
+    const selected = await ctx.ui.select("允许本会话的沙箱联网？", NETWORK_CHOICES, { signal, kind: "permission",
       details: "命令：" + shown + "\n识别为联网命令：" + network + "\n沙箱当前禁止联网。允许后，后续进程按联网策略运行，直到本会话结束；全局 sandboxNetwork 设置不变。" });
+    signal.throwIfAborted();
     if (selected !== NETWORK_CHOICES[0]) throw new Error("[SANDBOX_NETWORK_DECLINED] 用户没有允许本会话的沙箱联网，命令未执行（" + network
       + "）。不要换写法或改用其他联网方式重试；请告知用户，等待下一步指令。");
     await this.backend.enableSessionNetwork();

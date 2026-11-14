@@ -285,7 +285,7 @@ export class SubagentParentClient {
         return new Promise((resolve, reject) => {
             this.resolve = resolve; this.reject = reject; this.signal = signal;
             signal?.addEventListener("abort", this.aborted, { once: true });
-            // Tool requests use the parent's task deadline, so a 60s approval can complete.
+            // Only initialization has a client deadline; tool requests await the parent's decision.
             if (kind === "ready") this.timer = setTimeout(SubagentParentClient.timeout, READY_TIMEOUT_MS, this);
             try {
                 if (!process.connected || !process.send) throw new Error("Parent workspace channel is unavailable");
