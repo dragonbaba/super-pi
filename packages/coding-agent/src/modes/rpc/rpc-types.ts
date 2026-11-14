@@ -234,7 +234,7 @@ export type RpcResponse =
 // Extension UI Events (stdout)
 // ============================================================================
 
-/** Emitted when an extension needs user input */
+/** Emitted when an extension needs user input. Legacy timeout fields remain compatible but are no longer emitted. */
 export type RpcExtensionUIRequest =
 	/** Close only the UI request with this existing id; no response is required. Late responses have no authority. */
 	| { type: "extension_ui_request"; id: string; method: "dismiss"; reason: "aborted" | "timeout" }

@@ -3,8 +3,8 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { setImmediate as tick } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
+import { getEventListeners } from "node:events";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { alphaSession } from "./helpers/alpha-session.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -202,7 +202,12 @@ test("agent directory modifications ask even inside add-dir; deletes refuse, exp
 test("production selector allows and refuses external deletes and renders sensitive notifications", { timeout: 10000 }, async t => {
   const f = await fixture(t), uiRoot = join(f.root, "ui"); await fs.mkdir(uiRoot);
   const ui = await alphaSession({ mode: "fullscreen", fixtureRoot: uiRoot });
-  assert.equal(await ui.mode.init(), true); f.ctx.ui = ui.internal.createExtensionUIContext();
+  assert.equal(await ui.mode.init(), true);
+  const productionUI = ui.internal.createExtensionUIContext();
+  let opened: (() => void) | undefined;
+  f.ctx.ui = { ...productionUI, select(...args: Parameters<typeof productionUI.select>) {
+    const pending = productionUI.select(...args); opened?.(); return pending;
+  } };
   let promptFrames = 0, noticeFrames = 0;
   ui.sink.physicalMarker = text => {
     const plain = stripVTControlCharacters(text);
@@ -213,16 +218,19 @@ test("production selector allows and refuses external deletes and renders sensit
   try {
     for (const allow of [true, false]) {
       const target = join(f.outside, allow ? "allow.txt" : "deny.txt"); await fs.writeFile(target, "owned");
+      const visible = new Promise<void>(resolve => { opened = resolve; });
       const pending = f.call("delete", { path: target });
       const refused = allow ? undefined : assert.rejects(pending, /User declined/);
-      // Filesystem resolution precedes the dialog. Yield until the production selector exists.
-      for (let index = 0; index < 1000 && !ui.internal.extensionSelector; index++) await tick();
-      const selector = ui.internal.extensionSelector; assert.ok(selector); const countdown = selector.countdown;
+      // Filesystem preparation finishes before UI selection; wait for that actual boundary.
+      await Promise.race([visible, pending]); opened = undefined;
+      const selector = ui.internal.extensionSelector; assert.ok(selector); assert.equal(selector.countdown, undefined);
       ui.internal.ui.renderNow(true); await ui.internal.ui.flushTerminalFrames();
       selector.handleInput(allow ? "\x1b[A" : "\x1b[B"); selector.handleInput("\r");
       if (refused) { await refused; assert.equal(await fs.readFile(target, "utf8"), "owned"); }
       else { assert.equal((await pending).isError, false); await assert.rejects(fs.stat(target), { code: "ENOENT" }); }
-      assert.equal(ui.internal.extensionSelector, undefined); assert.equal(countdown.intervalId, undefined);
+      assert.equal(ui.internal.extensionSelector, undefined); assert.equal(ui.internal.extensionSelectorOverlay, undefined);
+      assert.equal(selector.details, undefined); assert.equal(selector.terminal, undefined);
+      assert.equal(getEventListeners(f.ctx.signal, "abort").length, 0);
     }
     await assert.rejects(f.owner.authorize(f.event("delete", { path: f.workspace }), f.ctx), /workspace_root/);
     ui.internal.ui.renderNow(true); await ui.internal.ui.flushTerminalFrames();

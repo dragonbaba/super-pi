@@ -54,6 +54,7 @@ import type {
 	MessageUpdateEvent,
 	MessageRenderer,
 	ProjectTrustContext,
+	ProjectTrustHandler,
 	ProjectTrustEvent,
 	ProjectTrustEventResult,
 	ProviderConfig,
@@ -361,16 +362,11 @@ export async function emitProjectTrustEvent(
 
 		for (const handler of handlers) {
 			try {
-				const handlerPromise = handler(event, ctx);
 				let handlerResult: ProjectTrustEventResult;
-				if (timeoutMs > 0 && handlerPromise && typeof (handlerPromise as PromiseLike<unknown>).then === "function") {
+				if (timeoutMs > 0) {
 					const timeoutError = new ExtensionHookTimeoutError(ext.path, event.type, timeoutMs);
-					let handle: unknown;
-					const timeout = new Promise<never>((_resolve, reject) => {
-						handle = scheduler.schedule(() => reject(timeoutError), timeoutMs);
-					});
 					try {
-						handlerResult = (await Promise.race([handlerPromise, timeout])) as ProjectTrustEventResult;
+						handlerResult = await invokeProjectTrustHook(handler as ProjectTrustHandler, event, ctx, scheduler, timeoutError);
 					} catch (error) {
 						if (error !== timeoutError) throw error;
 						errors.push({
@@ -382,11 +378,9 @@ export async function emitProjectTrustEvent(
 						// project_trust is a safety decision: timeout is always fail-closed.
 						// JavaScript promises cannot be forcibly cancelled; any late result is ignored.
 						return { result: { trusted: "no" }, errors };
-					} finally {
-						if (handle !== undefined) scheduler.cancel(handle);
 					}
 				} else {
-					handlerResult = (await handlerPromise) as ProjectTrustEventResult;
+					handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
 				}
 				if (handlerResult.trusted === "undecided") {
 					continue;
@@ -403,6 +397,38 @@ export async function emitProjectTrustEvent(
 		}
 	}
 	return { errors };
+}
+
+/** Bootstrap hooks share the tool hook's machine clock; human decisions suspend it. */
+async function invokeProjectTrustHook(handler: ProjectTrustHandler, event: ProjectTrustEvent, ctx: ProjectTrustContext,
+	scheduler: ExtensionRunnerScheduler, timeoutError: ExtensionHookTimeoutError): Promise<ProjectTrustEventResult> {
+	const owners = new Set<ToolCallDeadline>();
+	const deadline = new ToolCallDeadline(owners, scheduler, timeoutError);
+	owners.add(deadline);
+	const ui = Object.create(ctx.ui) as ProjectTrustContext["ui"];
+	let selecting = false;
+	const waitForSelection = async <T>(show: () => Promise<T>): Promise<T> => {
+		deadline.assertCurrent();
+		if (selecting) throw new Error("Another project trust dialog is active");
+		selecting = true;
+		deadline.pause();
+		try {
+			const result = await deadline.trackDialog(show());
+			deadline.assertCurrent();
+			return result;
+		} finally { selecting = false; deadline.resume(); }
+	};
+	ui.select = (title, options, opts) => waitForSelection(() => ctx.ui.select(title, options,
+		{ ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+	ui.input = (title, placeholder, opts) => waitForSelection(() => ctx.ui.input(title, placeholder,
+		{ ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+	ui.confirm = (title, message, opts) => waitForSelection(() => ctx.ui.confirm(title, message,
+		{ ...opts, signal: opts?.signal ? AbortSignal.any([opts.signal, deadline.controller.signal]) : deadline.controller.signal }));
+	try {
+		const result = await Promise.race([deadline.trackHandler(handler(event, { ...ctx, ui })), deadline.cancelled]);
+		deadline.assertCurrent();
+		return result as ProjectTrustEventResult;
+	} finally { deadline.dispose(); }
 }
 
 const noOpUIContext: ExtensionUIContext = {

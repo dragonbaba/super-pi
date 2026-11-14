@@ -102,17 +102,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
 		select: (title, options, opts) =>
-			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
 		confirm: (title, message, opts) =>
-			createRpcDialogPromise(pendingExtensionRequests, output, opts, false, { method: "confirm", title, message, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, false, { method: "confirm", title, message }, (r) =>
 				"cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false,
 			),
 
 		input: (title, placeholder, opts) =>
-			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "input", title, placeholder, timeout: opts?.timeout }, (r) =>
+			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "input", title, placeholder }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,
 			),
 
@@ -839,7 +839,7 @@ function escapeRpcApprovalControl(character: string): string {
 
 
 /** @internal Existing RPC request owner; exported only for direct lifecycle fixtures. */
-/** Helper for dialog methods with signal/timeout support */
+/** Human dialogs wait for a response or explicit cancellation; legacy timeouts are ignored. */
 export function createRpcDialogPromise<T>(
  pendingExtensionRequests: Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>,
  output: (value: object) => void,
@@ -852,25 +852,18 @@ export function createRpcDialogPromise<T>(
 
 	const id = crypto.randomUUID();
 	return new Promise((resolve, reject) => {
-		let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
 		const cleanup = () => {
-			if (timeoutId) clearTimeout(timeoutId);
 			opts?.signal?.removeEventListener("abort", onAbort);
 			pendingExtensionRequests.delete(id);
 		};
 
-		const dismiss = (reason: "aborted" | "timeout") => {
+		const dismiss = (reason: "aborted") => {
 			cleanup();
 			try { output({ type: "extension_ui_request", id, method: "dismiss", reason }); resolve(defaultValue); }
 			catch (error) { reject(error); }
 		};
 		const onAbort = () => dismiss("aborted");
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-		if (opts?.timeout) {
-			timeoutId = setTimeout(() => dismiss("timeout"), opts.timeout);
-		}
 
 		pendingExtensionRequests.set(id, {
 			resolve: (response: RpcExtensionUIResponse) => {

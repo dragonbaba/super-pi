@@ -3049,7 +3049,7 @@ export class InteractiveMode {
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			try {
 				component = new ExtensionSelectorComponent(title, options, finish, onAbort,
-					{ tui: this.ui, timeout: opts?.timeout, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
+					{ tui: this.ui, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
 				this.extensionSelector = component;
 				this.extensionSelectorCancel = onAbort;
 				this.programStatus?.setBlocked("extension-dialog", blockedKind, statusTitle);
@@ -3147,7 +3147,7 @@ export class InteractiveMode {
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			try {
 				component = new ExtensionInputComponent(title, placeholder, finish, onAbort,
-					{ tui: this.ui, timeout: opts?.timeout });
+					{ tui: this.ui });
 				this.extensionInput = component;
 				this.extensionInputCancel = onAbort;
 				this.programStatus?.setBlocked("extension-dialog", "question", title);

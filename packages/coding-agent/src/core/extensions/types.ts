@@ -106,7 +106,7 @@ export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
 export interface ExtensionUIDialogOptions {
 	/** AbortSignal to programmatically dismiss the dialog. */
 	signal?: AbortSignal;
-	/** Timeout in milliseconds. Dialog auto-dismisses with live countdown display. */
+	/** @deprecated Accepted for compatibility; human dialogs ignore timeouts. Use signal for explicit cancellation. */
 	timeout?: number;
 }
 

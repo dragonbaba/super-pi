@@ -165,15 +165,64 @@ test("a fail-closed tool_execution_end timeout still reaches later handlers and 
 	assert.deepEqual(calls.slice(3), ["turn"]);
 });
 
+for (const method of ["select", "input", "confirm"] as const) test(`project_trust suspends its machine deadline during human ${method}`, async () => {
+    const runtime = createExtensionRuntime(), scheduler = new FakeScheduler();
+    let answer!: (value: any) => void;
+    const show = () => new Promise<any>(resolve => { answer = resolve; });
+    const extension = await loadExtensionFromFactory(pi => {
+        pi.on("project_trust", async (_event, ctx) => {
+            if (method === "select") await ctx.ui.select("Trust?", ["yes", "no"]);
+            else if (method === "input") await ctx.ui.input("Trust?");
+            else await ctx.ui.confirm("Trust?", "Allow project resources");
+            return { trusted: "yes" };
+        });
+    }, cwd, createEventBus(), runtime);
+    let settled = false;
+    const pending = emitProjectTrustEvent({ extensions: [extension], errors: [], runtime }, { type: "project_trust", cwd },
+        { cwd, mode: "tui", hasUI: true, ui: { select: show, input: show, confirm: show, notify() {} } },
+        { scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } }).finally(() => { settled = true; });
+    scheduler.advanceBy(24 * 60 * 60 * 1000); await tick();
+    assert.equal(settled, false, "machine work deadlines must not decide a human trust prompt");
+    answer(method === "confirm" ? true : "yes");
+    const outcome = await pending;
+    assert.equal(outcome.result?.trusted, "yes"); assert.deepEqual(outcome.errors, []);
+    assert.equal(scheduler.highWaterMark.current, 0);
+});
+
+test("project_trust resumes its remaining machine deadline after a human answer", async () => {
+    const runtime = createExtensionRuntime(), scheduler = new FakeScheduler();
+    let answer!: () => void, shown!: () => void;
+    const visible = new Promise<void>(resolve => { shown = resolve; });
+    const extension = await loadExtensionFromFactory(pi => {
+        pi.on("project_trust", async (_event, ctx) => {
+            scheduler.advanceBy(20);
+            await ctx.ui.confirm("Trust?", "Allow project resources");
+            await new Promise(() => {});
+            return { trusted: "yes" };
+        });
+    }, cwd, createEventBus(), runtime);
+    let settled = false;
+    const pending = emitProjectTrustEvent({ extensions: [extension], errors: [], runtime }, { type: "project_trust", cwd },
+        { cwd, mode: "tui", hasUI: true, ui: { confirm: () => { shown(); return new Promise<boolean>(resolve => { answer = () => resolve(true); }); } } } as never,
+        { scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } }).finally(() => { settled = true; });
+    await visible; scheduler.advanceBy(24 * 60 * 60 * 1000); answer(); await tick();
+    scheduler.advanceBy(79); await tick(); assert.equal(settled, false);
+    scheduler.advanceBy(1);
+    const outcome = await pending;
+    assert.equal(outcome.result?.trusted, "no"); assert.match(outcome.errors[0]?.error ?? "", /timed out after 100ms/);
+    assert.equal(scheduler.highWaterMark.current, 0);
+});
+
 test("project_trust uses the safety timeout, fails closed, and ignores a late allow result", async () => {
 	const scheduler = new FakeScheduler();
 	let releaseLate = () => {};
 	const late = new Promise<void>((resolve) => { releaseLate = resolve; });
-	let fallbackCalls = 0;
+	let fallbackCalls = 0, dialogCalls = 0;
 	const runtime = createExtensionRuntime();
 	const extension = await loadExtensionFromFactory((pi) => {
-		pi.on("project_trust", async () => {
+		pi.on("project_trust", async (_event, ctx) => {
 			await late;
+			await ctx.ui.confirm("Trust?", "Allow project resources");
 			return { trusted: "yes" };
 		});
 		pi.on("project_trust", () => {
@@ -181,10 +230,11 @@ test("project_trust uses the safety timeout, fails closed, and ignores a late al
 			return { trusted: "yes" };
 		});
 	}, cwd, createEventBus(), runtime);
+	const context = { cwd, mode: "tui", hasUI: true, ui: { confirm: async () => { dialogCalls++; return true; } } } as never;
 	const resultPromise = emitProjectTrustEvent(
 		{ extensions: [extension], errors: [], runtime },
 		{ type: "project_trust", cwd },
-		{ cwd, mode: "print", hasUI: false, ui: {} } as never,
+		context,
 		{ scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } },
 	);
 
@@ -198,6 +248,11 @@ test("project_trust uses the safety timeout, fails closed, and ignores a late al
 	await Promise.resolve();
 	await Promise.resolve();
 	assert.equal(outcome.result?.trusted, "no");
+	assert.equal(dialogCalls, 0, "expired machine work cannot open a late approval dialog");
+	const next = await emitProjectTrustEvent({ extensions: [extension], errors: [], runtime },
+		{ type: "project_trust", cwd }, context, { scheduler, hookTimeouts: { safety: { timeoutMs: 100 } } });
+	assert.equal(next.result?.trusted, "yes"); assert.equal(dialogCalls, 1);
+	assert.equal(scheduler.highWaterMark.current, 0);
 });
 
 test("main runtime project trust callback applies the shared CLI safety timeout", async () => {
