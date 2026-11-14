@@ -13,6 +13,7 @@ process.env.SP_CODING_AGENT_DIR = join(root, 'agent');
 const { MemoryStore } = await import('../dist/store/memory-store.js');
 const { DatabaseManager } = await import('../dist/store/db.js');
 const { AtomicLockCoordinator } = await import('../dist/store/atomic-lock-coordinator.js');
+const { acquireMarkdownMutationLock, canonicalMarkdownIdentity } = await import('../dist/store/markdown-mutation-lock.js');
 const { loadConfig } = await import('../dist/config.js');
 const { registerMemoryTool } = await import('../dist/tools/memory-tool.js');
 const { registerMemorySearchTool } = await import('../dist/tools/memory-search-tool.js');
@@ -153,6 +154,139 @@ async function bulkFixture(name) {
     project: { name: projectName, memoryDir, root: join(root, 'current-project'), displayName: 'current' } };
   return { ...f, options, db, projectStore, close() { db.close(); f.store.close(); projectStore.close(); } };
 }
+
+test('cancelled memory additions preserve canonical bytes and search, including failure adds', async () => {
+  const f = await bulkFixture('cancel-admission'), tool = f.harness.tools.get('memory');
+  try {
+    await tool.execute('seed', { action: 'add', target: 'user', content: 'retained preference' });
+    const file = join(f.config.memoryDir, 'USER.md'), before = await readFile(file);
+    const controller = new AbortController(); controller.abort();
+    for (const args of [{ target: 'user' }, { target: 'failure', scope: 'global', category: 'correction' }]) {
+      await assert.rejects(tool.execute('cancel', { action: 'add', content: 'cancelprobe', ...args }, controller.signal), { name: 'AbortError' });
+    }
+    assert.deepEqual(await readFile(file), before);
+    assert.equal(f.store.getEntries('failure').length, 0);
+    assert.equal(searchMemories(f.db, 'cancelprobe', { project: '*' }).length, 0);
+    assert.equal((await tool.execute('next', { action: 'add', target: 'user', content: 'next preference' })).details.success, true);
+  } finally { f.close(); }
+});
+
+test('cancelling a queued memory addition rejects before the active Markdown lease is released', { timeout: 15000 }, async t => {
+  const f = await bulkFixture('cancel-queue'), tool = f.harness.tools.get('memory');
+  let lease;
+  try {
+    await tool.execute('seed', { action: 'add', target: 'user', content: 'retained preference' });
+    const file = join(f.config.memoryDir, 'USER.md'), before = await readFile(file), identity = await canonicalMarkdownIdentity(file);
+    const shared = AtomicLockCoordinator.shared(join(dirname(dirname(identity)), '.pi-hermes-locks.sqlite'));
+    lease = await acquireMarkdownMutationLock(file);
+    const acquire = shared.tryAcquire, controller = new AbortController(); let queued = false;
+    const abortQueued = () => controller.abort();
+    const hook = t.mock.method(shared, 'tryAcquire', function(...args) {
+      const result = acquire.apply(this, args);
+      if (!result && !queued) { queued = true; queueMicrotask(abortQueued); }
+      return result;
+    });
+    await assert.rejects(tool.execute('queued', { action: 'add', target: 'user', content: 'cancelprobe' }, controller.signal), { name: 'AbortError' });
+    assert.equal(queued, true);
+    assert.equal(shared.cachedDb.prepare('SELECT COUNT(*) AS count FROM locks').get().count, 1, 'The active owner still holds its lease');
+    assert.deepEqual(await readFile(file), before);
+    assert.equal(searchMemories(f.db, 'cancelprobe', { project: '*' }).length, 0);
+    hook.mock.restore(); lease.release(); lease = undefined;
+    assert.equal((await tool.execute('next', { action: 'add', target: 'user', content: 'next preference' })).details.success, true);
+  } finally { lease?.release(); f.close(); }
+});
+
+test('cancellation before publication rolls back staged entries and FIFO eviction without publishing', async t => {
+  for (const strategy of ['reject', 'fifo-evict']) {
+    const config = { ...loadConfig(), memoryDir: join(root, 'cancel-publication-' + strategy), userCharLimit: strategy === 'fifo-evict' ? 180 : 10000, memoryOverflowStrategy: strategy };
+    const store = new MemoryStore(config), h = createExtensionHarness(); await store.loadFromDisk(); registerMemoryTool(h.api, store, null);
+    const tool = h.tools.get('memory'), file = await canonicalMarkdownIdentity(join(config.memoryDir, 'USER.md')), old = 'retained preference ' + 'x'.repeat(60), content = 'cancelprobe ' + 'y'.repeat(60);
+    try {
+      await tool.execute('seed', { action: 'add', target: 'user', content: old });
+      const before = await readFile(file), controller = new AbortController(), read = store.readFileState; let armed = true;
+      const hook = t.mock.method(store, 'readFileState', async function(current, ...args) {
+        const state = await read.call(this, current, ...args);
+        if (armed && current === file && (await readdir(config.memoryDir)).some(name => name.startsWith('.tmp-'))) { armed = false; controller.abort(); }
+        return state;
+      });
+      await assert.rejects(tool.execute('cancel', { action: 'add', target: 'user', content }, controller.signal), { name: 'AbortError' });
+      hook.mock.restore(); assert.equal(armed, false);
+      assert.deepEqual(await readFile(file), before);
+      assert.equal((await store.listEntries('user')).total, 1);
+      assert.equal((await readdir(config.memoryDir)).some(name => name.startsWith('.tmp-')), false);
+      const next = await tool.execute('next', { action: 'add', target: 'user', content });
+      assert.equal(next.details.success, true);
+      assert.equal(next.details.evicted_count ?? 0, strategy === 'fifo-evict' ? 1 : 0);
+    } finally { store.close(); }
+  }
+});
+
+test('cancellation after canonical publication starts returns committed truth and reconciles search', async t => {
+  for (const phase of ['create', 'replace']) {
+    const f = await bulkFixture('cancel-commit-' + phase), tool = f.harness.tools.get('memory');
+    const file = await canonicalMarkdownIdentity(join(f.config.memoryDir, 'USER.md')), controller = new AbortController(); let committed = false;
+    const method = phase === 'create' ? 'link' : 'rename', operation = fsPromises[method]; let hook;
+    try {
+      if (phase === 'replace') await tool.execute('seed', { action: 'add', target: 'user', content: 'retained preference' });
+      hook = t.mock.method(fsPromises, method, async function(source, destination, ...args) {
+        const result = await operation(source, destination, ...args);
+        if (phase === 'create' ? destination === file : source === file) { committed = true; controller.abort(); }
+        return result;
+      });
+      syncBuiltinESMExports();
+      const result = await tool.execute('commit', { action: 'add', target: 'user', content: 'committedprobe' }, controller.signal);
+      assert.equal(committed, true); assert.equal(controller.signal.aborted, true); assert.equal(result.details.success, true);
+      assert.match(await readFile(file, 'utf8'), /committedprobe/);
+      assert.equal(searchMemories(f.db, 'committedprobe', { project: null }).length, 1);
+      hook.mock.restore(); syncBuiltinESMExports();
+      assert.equal((await tool.execute('next', { action: 'add', target: 'user', content: 'next preference' })).details.success, true);
+    } finally { hook?.mock.restore(); syncBuiltinESMExports(); f.close(); }
+  }
+});
+
+test('cancellation after candidate identity is read preserves FIFO bytes and allows the next call', async t => {
+  const config = { ...loadConfig(), memoryDir: join(root, 'cancel-identity'), userCharLimit: 180, memoryOverflowStrategy: 'fifo-evict' };
+  const store = new MemoryStore(config), db = new DatabaseManager(config.memoryDir), h = createExtensionHarness();
+  await store.loadFromDisk(); registerMemoryTool(h.api, store, null, db);
+  try {
+    const tool = h.tools.get('memory'), file = await canonicalMarkdownIdentity(join(config.memoryDir, 'USER.md'));
+    const old = 'retained preference ' + 'x'.repeat(60), content = 'identityprobe ' + 'y'.repeat(60);
+    await tool.execute('seed', { action: 'add', target: 'user', content: old });
+    const before = await readFile(file), controller = new AbortController(), identity = store.fileIdentity; let injected = false;
+    const hook = t.mock.method(store, 'fileIdentity', async function(file) {
+      const value = await identity.call(this, file);
+      if (String(file).endsWith('write.tmp')) { injected = true; controller.abort(); }
+      return value;
+    });
+    await assert.rejects(tool.execute('cancel', { action: 'add', target: 'user', content }, controller.signal), { name: 'AbortError' });
+    hook.mock.restore(); assert.equal(injected, true); assert.deepEqual(await readFile(file), before);
+    assert.equal(searchMemories(db, 'identityprobe', { project: null }).length, 0);
+    const next = await tool.execute('next', { action: 'add', target: 'user', content });
+    assert.equal(next.details.success, true); assert.equal(next.details.evicted_count, 1);
+  } finally { db.close(); store.close(); }
+});
+
+test('post-publication cancellation survives an external-edit conflict and reconciles without replay', async t => {
+  const f = await bulkFixture('cancel-conflict'), tool = f.harness.tools.get('memory'); let hook;
+  try {
+    await tool.execute('seed', { action: 'add', target: 'user', content: 'retained preference' });
+    const file = await canonicalMarkdownIdentity(join(f.config.memoryDir, 'USER.md')), controller = new AbortController();
+    const link = fsPromises.link; let publications = 0;
+    hook = t.mock.method(fsPromises, 'link', async function(source, destination, ...args) {
+      const value = await link(source, destination, ...args);
+      if (destination === file && publications++ === 0) { controller.abort(); await fsPromises.appendFile(file, '\n§\nexternalprobe'); }
+      return value;
+    });
+    syncBuiltinESMExports();
+    const result = await tool.execute('commit', { action: 'add', target: 'user', content: 'committedprobe' }, controller.signal);
+    assert.equal(controller.signal.aborted, true); assert.equal(result.details.success, true); assert.equal(publications, 1);
+    const text = await readFile(file, 'utf8'); assert.match(text, /committedprobe/); assert.match(text, /externalprobe/);
+    assert.equal(searchMemories(f.db, 'committedprobe', { project: null }).length, 1);
+    assert.equal(searchMemories(f.db, 'externalprobe', { project: null }).length, 1);
+    hook.mock.restore(); syncBuiltinESMExports();
+    assert.equal((await tool.execute('next', { action: 'add', target: 'user', content: 'next preference' })).details.success, true);
+  } finally { hook?.mock.restore(); syncBuiltinESMExports(); f.close(); }
+});
 
 test('bulk global/current scopes reconcile search and keep exact unselected bytes', async () => {
   const f = await bulkFixture('bulk-scopes');

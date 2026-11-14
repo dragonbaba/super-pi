@@ -350,6 +350,7 @@ export function registerMemoryTool(
               category: memoryCategory,
               failureReason: failure_reason,
               project: projectFailure ? projectName?.trim() || undefined : undefined,
+              signal,
             });
             if (result.success && !syncHandled) {
               syncWarning = await syncAddToSqlite(rawTarget, content, memoryCategory, failure_reason, dbManager, projectName);

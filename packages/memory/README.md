@@ -37,6 +37,12 @@ Use **同步搜索索引** to reconcile current Markdown into search, a **整理
 
 The all-projects scan skips a project directory that disappears after enumeration and continues with the remaining projects. Other directory inspection errors are reported rather than silently omitted.
 
+Memory additions, including failure entries, honor cancellation before acquiring
+the Markdown write lock, while queued, and before canonical publication starts.
+Cancelling before publication preserves saved entries and search state. Once the
+first canonical link or rename starts, publication completes its consistency
+checks and search reconciliation and returns the actual committed result.
+
 Cleanup removes selected raw fragments without trimming, deduplicating or rewriting unselected bytes. A changed file is skipped as a whole. All-project cleanup includes hashed project identities even when their original root is gone, excludes linked files/directories and reports excluded legacy directories. Markdown deletion survives search-index failure; the report warns that search may remain stale and points to **同步搜索索引**. The current session's startup digest stays frozen. Existing checked publication/recovery behavior remains; this feature creates no recycle directory or second canonical index.
 
 ## Upgrade Notes

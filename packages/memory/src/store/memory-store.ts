@@ -89,6 +89,16 @@ function isGeneratedArtifactName(name: string, prefix: string): boolean {
 
 class ExternalMemoryWriteConflict extends Error {}
 
+/** One explicit mutation owns cancellation until its first publication dispatch. */
+interface MemoryMutationCancellation {
+  signal: AbortSignal | undefined;
+}
+
+function beginCanonicalPublication(cancellation?: MemoryMutationCancellation): void {
+  cancellation?.signal?.throwIfAborted();
+  if (cancellation) cancellation.signal = undefined;
+}
+
 interface MemoryEntryMetadata {
   created: string;
   lastReferenced: string;
@@ -203,10 +213,11 @@ export class MemoryStore {
     toolState?: string;
     correctedTo?: string;
     project?: string;
+    signal?: AbortSignal;
   }): Promise<MemoryResult> {
     const failureText = this.buildFailureMemoryText(content, options);
     return this.addLocked(
-      "failure", failureText, undefined, "Failure memory saved: " + options.category, options.project,
+      "failure", failureText, options.signal, "Failure memory saved: " + options.category, options.project,
     );
   }
 
@@ -227,7 +238,7 @@ export class MemoryStore {
   private async _add(
     target: "memory" | "user" | "failure",
     content: string,
-    signal?: AbortSignal,
+    cancellation?: MemoryMutationCancellation,
     addedMessage = "Entry added.",
     project?: string,
   ): Promise<MemoryResult> {
@@ -238,6 +249,7 @@ export class MemoryStore {
     if (scanError) return { success: false, error: scanError };
 
     await this.syncTargetFromDiskIfChanged(target);
+    cancellation?.signal?.throwIfAborted();
     const entries = this.entriesFor(target);
     const limit = this.charLimit(target);
 
@@ -261,7 +273,7 @@ export class MemoryStore {
       const strategy = this.memoryOverflowStrategy();
 
       if (strategy === "fifo-evict") {
-        return this.fifoEvictAndAdd(target, entries, encoded, content.length, limit);
+        return this.fifoEvictAndAdd(target, entries, encoded, content.length, limit, cancellation);
       }
 
       return this.memoryFullError(target, content.length);
@@ -269,7 +281,7 @@ export class MemoryStore {
 
     entries.push(encoded);
     this.setEntries(target, entries);
-    await this.saveToDisk(target);
+    await this.saveToDisk(target, cancellation);
 
     return this.successResponse(target, addedMessage);
   }
@@ -281,7 +293,7 @@ export class MemoryStore {
     addedMessage: string,
     project?: string,
   ): Promise<MemoryResult> {
-    return this.runTargetMutation(target, () => this._add(target, content, signal, addedMessage, project));
+    return this.runTargetMutation(target, cancellation => this._add(target, content, cancellation, addedMessage, project), signal);
   }
 
   private async fifoEvictAndAdd(
@@ -290,6 +302,7 @@ export class MemoryStore {
     encoded: string,
     contentLength: number,
     limit: number,
+    cancellation?: MemoryMutationCancellation,
   ): Promise<MemoryResult> {
     if (encoded.length > limit) {
       return this.memoryFullError(target, contentLength);
@@ -309,7 +322,7 @@ export class MemoryStore {
 
     remaining.push(encoded);
     this.setEntries(target, remaining);
-    await this.saveToDisk(target);
+    await this.saveToDisk(target, cancellation);
 
     return {
       ...this.successResponse(
@@ -819,13 +832,17 @@ export class MemoryStore {
 
   private async runTargetMutation(
     target: "memory" | "user" | "failure",
-    mutation: () => Promise<MemoryResult>,
+    mutation: (cancellation?: MemoryMutationCancellation) => Promise<MemoryResult>,
+    signal?: AbortSignal,
   ): Promise<MemoryResult> {
+    signal?.throwIfAborted();
+    const cancellation: MemoryMutationCancellation | undefined = signal ? { signal } : undefined;
     const storagePath = await this.resolveStoragePath(target);
     return withMarkdownMutationLock(storagePath, async () => {
       for (let attempt = 0; ; attempt++) {
+        cancellation?.signal?.throwIfAborted();
         try {
-          const result = await mutation();
+          const result = await mutation(cancellation);
           if (result.success) {
             // saveToDisk stamps fileFingerprints on success. If an editor
             // truncates/replaces the file after publish returns, refuse the
@@ -855,7 +872,7 @@ export class MemoryStore {
           }
         }
       }
-    });
+    }, { signal });
   }
 
   /**
@@ -864,18 +881,21 @@ export class MemoryStore {
    * cross-device rename errors (EXDEV) when os.tmpdir() is on a different
    * drive than the memory directory (common on Windows).
    */
-  private async saveToDisk(target: "memory" | "user" | "failure"): Promise<void> {
+  private async saveToDisk(target: "memory" | "user" | "failure", cancellation?: MemoryMutationCancellation): Promise<void> {
+    cancellation?.signal?.throwIfAborted();
     const filePath = await this.resolveStoragePath(target);
     const entries = this.entriesFor(target);
     const content = entries.length ? entries.join(ENTRY_DELIMITER) : "";
     const expectedFingerprint = this.fileFingerprints[filePath] ?? "missing";
-    await this.publishBytes(target, filePath, content, expectedFingerprint, true);
+    await this.publishBytes(target, filePath, content, expectedFingerprint, true, undefined, cancellation);
   }
 
   /** Shared checked publication for normalized tool writes and raw UI removals. */
   private async publishBytes(target: "memory" | "user" | "failure", filePath: string,
     content: string | Buffer, expectedFingerprint: string, pruneRecovery: boolean, rawParent?: RawMemorySnapshot,
+    cancellation?: MemoryMutationCancellation,
   ): Promise<void> {
+    cancellation?.signal?.throwIfAborted();
     if (rawParent) await assertRawMemoryParent(rawParent);
 
     // Use the memory directory for temp files so rename stays on the same device
@@ -890,8 +910,11 @@ export class MemoryStore {
         throw new ExternalMemoryWriteConflict();
       }
 
+      // Publication owns consistency from the first canonical link/rename onward.
+      // Observe cancellation before that boundary, then report the actual result.
       if (expectedFingerprint === "missing") {
         try {
+          beginCanonicalPublication(cancellation);
           await fs.link(tmpPath, filePath);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -903,6 +926,7 @@ export class MemoryStore {
         const recoveryPath = this.recoveryPathFor(filePath);
         const publishedIdentity = await this.fileIdentity(tmpPath);
         try {
+          beginCanonicalPublication(cancellation);
           await fs.rename(filePath, recoveryPath);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") {
