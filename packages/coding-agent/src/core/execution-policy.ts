@@ -651,7 +651,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         // Auto reviews effects, rather than every ordinary shell/MCP request. Existing outside-path
         // authorization and explicit rules still apply; a model request can only ask for more review.
         if (this.mode === "host-auto" && !explicitUserCommand && (resolved ?? delegated)?.outside !== true)
-            fallback = projectToolAllow ? "allow" : reviewRisk ? "ask" : "allow";
+            fallback = projectToolAllow || shellClass === HOST_SHELL_RULE_ALLOWED && fallback === "allow" ? "allow" : reviewRisk ? "ask" : "allow";
         // Only an ask that a project allow rule could lift offers "不再询问": not outside paths, uncertain targets or writes into directories.
         let liftable = restricted && fallback === "ask" && (resolved ?? delegated)?.outside !== true
             && (shellTool ? shellClass === HOST_SHELL_OTHER : definition?.mcpServer !== undefined);

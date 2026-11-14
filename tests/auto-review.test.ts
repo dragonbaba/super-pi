@@ -13,6 +13,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { AutoReviewBreaker, autoReviewSessionFiles, autoReviewTranscript, parseAutoReviewVerdict, runAutoReview } from "../packages/coding-agent/src/core/auto-review.ts";
 import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
+import { ProjectPermissionStore } from "../packages/coding-agent/src/core/project-permissions.ts";
 
 test("auto review verdicts, breaker and trimmed transcript", () => {
   assert.deepEqual(parseAutoReviewVerdict("APPROVE: runs the tests the user asked for"), { approved: true, reason: "runs the tests the user asked for" });
@@ -189,7 +190,7 @@ test("auto attachment rejects an actual POSIX FIFO without waiting for a writer"
 async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", answers: string[], config = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-")));
   const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "sp-auto-review-outside-")));
-  const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(root);
+  const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(root), store = new ProjectPermissionStore(path.join(root, "agent"), root);
   runtime.appendEntry = (customType, data) => { manager.appendCustomEntry(customType, data); };
   const requests: string[] = [], dialogs: string[] = [], notes: string[] = [], statuses: (string | undefined)[] = [], choices: (string | undefined)[] = [];
   runtime.withSupplementalSummary = (async (_signal: AbortSignal, run: (stream: any) => Promise<unknown>) => run(async (_model: unknown, context: any) => {
@@ -202,7 +203,7 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k" }) },
     ui: { select: async (title: string) => { dialogs.push(title); return choices.shift(); }, notify: (message: string) => { notes.push(message); },
       setStatus: (_key: string, text: string | undefined) => { statuses.push(text); } } };
-  const owner = new SessionExecutionPolicy(runtime, "trusted-host", config, mode);
+  const owner = new SessionExecutionPolicy(runtime, "trusted-host", config, mode, [], store);
   t.after(async () => {
     owner.dispose(); await runtime.executionBoundary.dispose();
     await fs.rm(root, { recursive: true }); await fs.rm(outside, { recursive: true });
@@ -211,7 +212,7 @@ async function fixture(t: TestContext, mode: "host-auto" | "host-restricted", an
     try { (await owner.authorize({ type: "tool_call", toolName: name, input, toolCallId: "c", review } as any, ctx, definition)).release(); return "allow"; }
     catch (error: any) { return /AUTO_REVIEW_DENIED/.test(error.message) ? "denied" : /APPROVAL_CANCELLED/.test(error.message) ? "asked" : error.message; }
   }
-  return { root, outside, requests, dialogs, notes, statuses, choices, decide, owner, ctx };
+  return { root, outside, requests, dialogs, notes, statuses, choices, decide, owner, ctx, store };
 }
 
 test("risk-selective Auto does not review ordinary commands or unmarked MCP queries", async t => {
@@ -219,6 +220,21 @@ test("risk-selective Auto does not review ordinary commands or unmarked MCP quer
   assert.equal(await f.decide("bash", { command: "npm test" }), "allow");
   assert.equal(await f.decide("mcp__fixture__query", {}, false, { name: "mcp__fixture__query", mcpServer: "fixture" }), "allow");
   assert.equal(f.requests.length, 0); assert.equal(f.dialogs.length, 0);
+});
+
+test("risk-selective Auto preserves saved shell-prefix allows and their workspace and explicit-rule limits", async t => {
+  const f = await fixture(t, "host-auto", ["DENY: must not be called"], { rules: [
+    { tool: "bash", command: "npm test --ask > log.txt", decision: "ask" },
+    { tool: "bash", command: "npm test --deny > log.txt", decision: "deny" },
+  ] });
+  await f.store.remember([{ tool: "bash", command: "npm test *", decision: "allow" }]);
+  assert.equal(await f.decide("bash", { command: "npm test > log.txt" }), "allow");
+  assert.equal(await f.decide("bash", { command: "npm test --ask > log.txt" }), "asked");
+  assert.match(await f.decide("bash", { command: "npm test --deny > log.txt" }), /Explicitly denied/);
+  const outside = path.join(f.outside, "log.txt"); await fs.writeFile(outside, "keep");
+  assert.match(await f.decide("bash", { command: `npm test > ${outside.replaceAll("\\", "/")}` }), /EXTERNAL_FILE_WRITE_BLOCKED/);
+  assert.equal(await fs.readFile(outside, "utf8"), "keep");
+  assert.equal(f.requests.length, 0); assert.equal(f.dialogs.length, 1);
 });
 
 test("risk-selective Auto reviews native file changes before they can execute", async t => {

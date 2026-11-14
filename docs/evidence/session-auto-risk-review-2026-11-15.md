@@ -27,6 +27,7 @@ Auto 原先沿用宿主机受限的询问范围，普通 shell/MCP 操作也会�
 - 完整 CodeMode session、权限模式、人工交互、宿主文件和 shell 权限：206 项全部通过。包含真实 CodeMode/AgentSession 元数据传递、参数隔离、无效 review 值在副作用前拒绝，以及分页、版本更新和文档完整标记。
 - `npm run check` 通过；`npm run build:offline` 12/12 包成功。构建与读取 dist 的测试分时进行。以上均为离线 fixture，不等同于真实会话/provider/MXC 验证。
 - 最终构建后再验 CodeMode session 与权限模式：135 项通过；补充请求隔离、失效/取消释放和普通请求连续性：3 项通过。
+- PR 审查复现了已保存 shell 前缀允许规则的回退：`npm test *` 已允许时，重定向触发文件风险，导致命令重新送审。修正为保留既有 classifier 已允许的前缀规则；不放宽不确定目标、显式 ask/deny 或工作区外覆盖限制。Auto、项目规则、原生权限与 source invariants 复核 63 项：62 通过、1 个平台跳过。
 
 ## 分配与生命周期
 
