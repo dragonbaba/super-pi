@@ -63,6 +63,27 @@ test("MXC cleanup failure blocks reuse and resource deletion", async () => {
   } finally { restore(); }
 });
 
+test("MXC process error waits in finally for physical cleanup and permits a fresh next call", async () => {
+  const child = new ExecFixture(), restore = installExecFixture(child), owner = new MxcProcess();
+  let release!: (value: string | undefined) => void;
+  child.cleanupGate = new Promise(resolve => { release = resolve; });
+  try {
+    let settled = false;
+    const pending = owner.run("fixture", [], process.cwd(), {}, new AbortController().signal, 1000);
+    const rejected = assert.rejects(pending, /fixture process error/).then(() => { settled = true; });
+    await child.ready; child.emit("error", new Error("fixture process error")); await nextTurn();
+    assert.equal(settled, false); assert.equal(owner.diagnostics.active, true); assert.equal(child.stopCount, 1);
+    release(undefined); await rejected; child.assertReleased(); owner.assertStopped();
+    assert.equal(owner.diagnostics.retainedStreams, 0);
+  } finally { release(undefined); restore(); }
+  const next = new ExecFixture(), restoreNext = installExecFixture(next);
+  try {
+    const pending = owner.run("fixture", [], process.cwd(), {}, new AbortController().signal, 1000);
+    await next.ready; next.finish(); assert.equal((await pending).code, 0);
+    next.assertReleased(); owner.assertStopped();
+  } finally { restoreNext(); }
+});
+
 test("MXC deadline kills its owned process and reports the timeout", async () => {
   const child = new ExecFixture(), restore = installExecFixture(child), owner = new MxcProcess();
   try {

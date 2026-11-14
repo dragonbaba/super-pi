@@ -94,7 +94,7 @@ export class WorkspaceSandboxTools {
           : name === "find" || name === "ls" ? "List sandbox paths; find filters file paths by a literal substring. At most 200 records and 32,768 UTF-16 code units of body. Check details.search and status prefixes for scan/output limits." + workspace
           : name === "read" ? "Read UTF-8 text (files up to 2 MiB; at most 2000 lines and 32,768 UTF-16 code units of body per call) or JPEG, PNG, GIF, WebP, BMP images (up to 16 MiB) by file signature. details.read distinguishes windowComplete, hasMore and lineTruncated; nextOffset is safe only at a complete line boundary. A clipped line suffix cannot be recovered with line offsets. Images return native image attachments, resized to inline limits; offset/limit apply only to text. In CodeMode use await show(result.ref) to display the image; do not print shell base64. For text writes/edits pass snapshot: result.details.snapshot (the SHA-256 hash); result.ref is only a display reference, never a file snapshot." + workspace
           : "Operate directly inside the authorized sandbox workspace. Existing-file write/edit requires snapshot: result.details.snapshot from a read or clean own write/edit; each successful mutation returns the next SHA-256 for continuation without a reread. New-file write omits snapshot and returns one. Never pass result.ref. A stale hash requires read and reconciliation. file_batch details.items preserves individual verified snapshots and partial effects; failed/unknown items have no successor. Protected .git and .sp metadata remain read-only." + workspace,
-        async execute(id, args, signal, _update, ctx) { return owner.execute(name, id, args as Record<string, unknown>, ctx, signal); },
+        async execute(_id, args, signal, _update, ctx) { return owner.execute(name, args as Record<string, unknown>, ctx, signal); },
       };
       this.definitions.set(name, definition);
     }
@@ -108,7 +108,7 @@ export class WorkspaceSandboxTools {
     return installed;
   }
   definition(name: string): ToolDefinition | undefined { return this.definitions.get(name); }
-  private async execute(name: string, id: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) {
+  private async execute(name: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) {
     if (name === "write" || name === "edit" || name === "copy" || name === "delete" || name === "move" || name === "file_batch")
       throw new Error("[SANDBOX_UNSUPPORTED] File mutations require the session file invocation owner.");
     const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
@@ -117,11 +117,11 @@ export class WorkspaceSandboxTools {
     try {
       return await this.operations.run(operationSignal, async () => {
         boundary.assertCurrent(generation);
-        return this.perform(name, id, input, ctx, operationSignal);
+        return this.perform(name, input, ctx, operationSignal);
       });
     } finally { reservation.release(); }
   }
-  private async perform(name: string, id: string, input: Record<string, unknown>, ctx: ExtensionContext, signal: AbortSignal) {
+  private async perform(name: string, input: Record<string, unknown>, ctx: ExtensionContext, signal: AbortSignal) {
     const runtime = this.runtime(), boundary = runtime.executionBoundary, generation = boundary.generation;
     const check = () => { boundary.assertCurrent(generation); signal?.throwIfAborted(); };
     const cwd = typeof input.cwd === "string" ? path.resolve(this.backend.workspace(), input.cwd) : this.backend.workspace();
