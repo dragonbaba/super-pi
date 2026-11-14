@@ -30,6 +30,7 @@
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、读取与修改、失败处理、工具发现和分支存储。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
+- [人工交互持续等待](evidence/human-approval-wait-2026-11-14.md)：TUI/RPC 忽略旧对话超时，原生审批、沙箱联网及项目信任持续等待；取消后的迟到答复不授予联网权限，旧测试及工具提示同步修正。
 - [复制/移动的缺失父目录](evidence/post-review-file-parents-2026-11-13.md)：复用 write 的建目录身份清单、共享父目录和失败回执。
 - [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 在 #296、A 在 #297 已审核、通过原有 CI 并合并，见[B 的证据](evidence/codegraph-retirement-2026-11-12.md)和[A 的证据](evidence/file-operations-v3-2026-11-13.md)。C 的批量清理实现及本机验证见[C 的证据](evidence/memory-bulk-cleanup-2026-11-13.md)，最终交付状态见[PR #298](https://github.com/dragonbaba/super-pi/pull/298)。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。

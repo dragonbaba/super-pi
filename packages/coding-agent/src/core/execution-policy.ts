@@ -67,7 +67,6 @@ const BLOCKED = "[POLICY_BLOCKED] ";
 const MAX_REFUSALS = 128;
 const MAX_REFUSAL_SUMMARY = 4096;
 const MAX_REFUSAL_REASON = 1024;
-const APPROVAL_TIMEOUT_MS = 60000;
 const REFUSAL_KEY = /^[a-f0-9]{64}$/;
 const APPROVAL_CHOICES = ["允许一次", "拒绝", "拒绝并说明原因"];
 const REMEMBER_CHOICE = "允许，并在本项目不再询问";
@@ -742,8 +741,9 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 ? await this.rememberableRules(event.toolName, input.command, paths, ctx.cwd, definition) : undefined;
             check();
             const signal = ctx.signal ?? this.runtime.executionBoundary.signal;
+            // Human decisions have no deadline; only an answer or explicit cancellation ends the wait.
             const selected = await ctx.ui.select("允许这次操作？", remembered ? REMEMBER_CHOICES : APPROVAL_CHOICES,
-                { signal, timeout: APPROVAL_TIMEOUT_MS, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}`
+                { signal, kind: "permission", details: `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n${details}`
                     + (remembered ? `\n选择“${REMEMBER_CHOICE}”会在本项目保存：\n${describeRules(remembered)}` : "")
                     + (this.autoReview?.tripped ? "\nAuto 审查已暂停；允许这次操作后恢复 Auto 审查。" : "") });
             check();
@@ -766,7 +766,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             } else if (selected !== APPROVAL_CHOICES[0]) {
                 let reason: string | undefined;
                 if (selected === APPROVAL_CHOICES[2]) {
-                    const value = await ctx.ui.input("拒绝原因（仅记录本次明确拒绝）", undefined, { signal, timeout: APPROVAL_TIMEOUT_MS });
+                    const value = await ctx.ui.input("拒绝原因（仅记录本次明确拒绝）", undefined, { signal });
                     check();
                     if (value === undefined) throw new Error("[APPROVAL_CANCELLED] Refusal explanation was cancelled; operation was not executed");
                     reason = value.trim().slice(0, MAX_REFUSAL_REASON) || undefined;

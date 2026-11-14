@@ -48,7 +48,7 @@ const BrowserExecParameters = Type.Object({
     description: "Optional named Browser Use cloud session; omit for the local browser daemon",
   })),
   timeoutMs: Type.Optional(Type.Integer({ minimum: 5_000, maximum: 300_000, default: DEFAULT_TIMEOUT_MS,
-    description: "Whole-process deadline including connection. Codemode also has its own deadline (60s by default); set a sufficient parent timeout_ms when waiting for Chrome approval. Each navigation waits up to 30 seconds within this budget. A timeout does not prove navigation was cancelled; inspect list_tabs() before further actions.",
+    description: "Whole-process deadline including connection and navigation. Codemode pauses its active script clock while this child call is pending. Each navigation waits up to 30 seconds within this budget. A timeout does not prove navigation was cancelled; inspect list_tabs() before further actions.",
   })),
   purpose: Type.Optional(Type.String({ maxLength: 800, description: "Why this terminal-authority browser script is needed" })),
 }, { additionalProperties: false });

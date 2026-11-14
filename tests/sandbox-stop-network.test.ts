@@ -57,8 +57,8 @@ function fixture(options: { session?: SandboxNetworkSession; hasUI?: boolean; ch
   const ctx: any = { hasUI: options.hasUI ?? true, ui: {
     async select(title: string) { dialogs.push(title); return options.choice; },
     notify() {}, setStatus(_key: string, text: string | undefined) { statuses.push(text); } } };
-  return { owner, runtime, backend, dialogs, statuses, invoked, get enabled() { return enabled; },
-    run(command: string) { return owner.definition("powershell")!.execute("powershell", { command }, undefined, undefined, ctx); },
+  return { owner, runtime, backend, ctx, dialogs, statuses, invoked, get enabled() { return enabled; },
+    run(command: string, signal?: AbortSignal) { return owner.definition("powershell")!.execute("powershell", { command }, signal, undefined, ctx); },
     async close() { await owner.close(); await runtime.executionBoundary.dispose(); } };
 }
 
@@ -126,6 +126,52 @@ test("an offline sandbox asks once before a network command; consent lasts for t
   const headless = fixture({ session: new SandboxNetworkSession(), hasUI: false });
   await headless.run("npm install");
   assert.equal(headless.dialogs.length, 0); assert.equal(headless.invoked.length, 1); await headless.close();
+});
+
+test("sandbox network approval waits for the user without running or enabling networking", async t => {
+  const { ExtensionSelectorComponent } = await import("../packages/coding-agent/src/modes/interactive/components/extension-selector.ts");
+  const { initTheme } = await import("../packages/coding-agent/src/modes/interactive/theme/theme.ts");
+  initTheme("dark");
+  const session = new SandboxNetworkSession(), f = fixture({ session });
+  let selector: InstanceType<typeof ExtensionSelectorComponent> | undefined, opened!: () => void;
+  t.after(async () => { selector?.cancel(); await f.close(); });
+  const visible = new Promise<void>(resolve => { opened = resolve; });
+  f.ctx.ui.select = (title: string, choices: string[], opts: any) => new Promise<string | undefined>(resolve => {
+    selector = new ExtensionSelectorComponent(title, choices, value => { selector!.dispose(); resolve(value); },
+      () => { selector!.dispose(); resolve(undefined); },
+      { tui: { terminal: { rows: 24, columns: 80 }, requestRender() {} } as never, timeout: opts.timeout, details: opts.details });
+    opened();
+  });
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  let settled = false;
+  const pending = f.run("npm install").then(result => result, error => error).finally(() => { settled = true; });
+  await visible;
+  t.mock.timers.tick(24 * 60 * 60 * 1000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(session.enabled, false); assert.equal(f.enabled, 0); assert.deepEqual(f.invoked, []);
+  selector!.render(80); selector!.handleInput("\x1b[A"); selector!.handleInput("\r");
+  await pending;
+  assert.equal(session.enabled, true); assert.equal(f.enabled, 1); assert.deepEqual(f.invoked, ["npm install"]);
+});
+
+for (const cancellation of ["abort", "transition"] as const) test(`late sandbox network consent is discarded after ${cancellation}`, async t => {
+  const session = new SandboxNetworkSession(), f = fixture({ session }), abort = new AbortController();
+  t.after(() => f.close());
+  let answer!: (choice: string) => void, opened!: () => void;
+  const visible = new Promise<void>(resolve => { opened = resolve; });
+  f.ctx.ui.select = () => { opened(); return new Promise<string>(resolve => { answer = resolve; }); };
+  const pending = f.run("npm install", abort.signal);
+  const rejected = assert.rejects(pending, /abort|BOUNDARY_CHANGED/i);
+  await visible;
+  if (cancellation === "abort") abort.abort();
+  else await f.runtime.executionBoundary.transition(() => undefined);
+  answer("允许本会话联网"); await rejected;
+  assert.equal(session.enabled, false); assert.equal(f.enabled, 0); assert.deepEqual(f.invoked, []);
+  f.ctx.ui.select = async () => { f.dialogs.push("fresh approval"); return "拒绝"; };
+  await assert.rejects(f.run("git fetch origin"), /SANDBOX_NETWORK_DECLINED/);
+  assert.equal(f.dialogs.length, 1, "the next command must still request consent");
+  assert.equal(f.owner.diagnostics.active, 0); assert.equal(f.owner.diagnostics.queued, 0); assert.equal(f.owner.diagnostics.reservations, 0);
 });
 
 test("an observed outside-path failure pauses the turn without prechecking commands; offline failures name their cause", async () => {

@@ -6,7 +6,7 @@ Registers one sequential `browser_exec` tool for every model. It sends one bound
 
 - `code`: 1–4000 characters; the complete model script fits the permission preview.
 - `session`: optional Browser Use cloud-session name. Local Chrome needs no cloud account.
-- `timeoutMs`: 5–300 seconds; default 120 seconds, including connection/startup. Codemode has a separate parent deadline (60 seconds by default); use its `// @options: {"timeout_ms":150000}` directive when a child needs the full 120-second approval budget. The process-local adapter gives `Page.navigate` up to 30 seconds; other helper and screenshot timeouts remain unchanged. Creation and navigation never retry automatically. A timeout leaves the browser outcome unconfirmed: inspect `list_tabs()` before further actions.
+- `timeoutMs`: 5–300 seconds; default 120 seconds, including connection/startup. Codemode pauses its active script clock while this child call is pending, so browser work does not require a larger parent `timeout_ms`. The process-local adapter gives `Page.navigate` up to 30 seconds; other helper and screenshot timeouts remain unchanged. Creation and navigation never retry automatically. A timeout leaves the browser outcome unconfirmed: inspect `list_tabs()` before further actions.
 - `purpose`: optional concise permission context.
 - Browser output is untrusted and bounded to 50 KiB per stream.
 - A fixed trusted prelude redirects `capture_screenshot()`'s default output to a unique file in the extension-owned session workspace and validates standard navigation calls. The model script itself remains unchanged.
