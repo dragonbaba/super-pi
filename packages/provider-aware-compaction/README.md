@@ -93,11 +93,15 @@ On cancellation only, the extension best-effort appends `compaction-telemetry-v1
 
 ## Verification
 
+From the monorepo root:
+
 ```bash
-npm test
-npm run benchmark:prefix
+node --experimental-strip-types --test tests/provider-aware-policy-config.test.ts
 ```
 
-The localhost E2E sends a synthetic regular request and compaction request through the same installed OpenAI-compatible adapter, then proves the latter's serialized system/tool/message sequence begins with the former and has one trailing compaction instruction. The benchmark uses only synthetic fixtures and reports median/p80, retained heap, and a body-free behavior hash.
+The maintained regression checks explicit preset configuration and native strategy
+selection. The former package-local test and prefix-benchmark npm scripts are not
+provided by this checkout. The pilot results above remain historical measurements;
+this regression is not a replacement measurement of live prefix reuse or memory.
 
 The package is version-gated to Super Pi 1.x and legacy 0.84.x. Re-audit before widening its model or version gates.

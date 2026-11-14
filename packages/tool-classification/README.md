@@ -42,4 +42,13 @@ tool allowlists and Plan-mode restrictions still govern every activation.
 
 A resumed restrictive Plan-mode tool set is preserved exactly. Active Goal tools and the model-driven `inspect_image` fallback are retained alongside the core pack instead of being erased by the final session-start reset.
 
-Use `/tool-classes` to inspect the current active split. Run `npm run smoke:rpc -- <trusted-workspace>` for a real offline activation/prompt-stability audit. Restart Pi after installation or settings changes.
+Use `/tool-classes` to inspect the current active split. From the monorepo root,
+run the maintained offline activation and search regressions:
+
+```bash
+node --experimental-strip-types --test tests/mcp-background-activation.test.ts tests/tool-search-hot-paths.test.ts
+```
+
+The former package-local RPC smoke command is not provided by this checkout.
+These regressions do not substitute for a real RPC session audit. Restart Pi after
+installation or settings changes.

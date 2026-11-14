@@ -28,7 +28,7 @@ Super Pi 适合需要多轮探索和修改的工程任务，例如：
 
 这些能力仍受 provider、模型能力、项目配置和当前工具策略限制。选定的执行模式决定已接入的工具是否使用 Windows MXC ProcessContainer；应用权限不保证模型输出或外部服务行为。
 
-MXC 沙箱命令严格使用 **PowerShell 7**，不回退其他 shell 或宿主执行。默认从宿主 PATH 发现工具安装目录。通过 `/add-dir <directory>`、`/remove-dir <directory>` 和 `/dirs` 管理附加工作目录。文件与命令工具直接访问授权的原工作区；修改即时生效，失败前已发生的修改也会保留。网络默认关闭，可通过全局 `sandboxNetwork` 或明确的会话同意开启。详见[工作区路径与网络配置](docs/execution-environments.md#工作区路径与网络配置)。
+MXC 沙箱命令严格使用 **PowerShell 7**，不回退其他 shell 或宿主执行。默认从宿主 PATH 发现工具安装目录。通过 `/add-dir <directory>`、`/remove-dir <directory>` 和 `/dirs` 管理附加工作目录。文件与命令工具直接访问授权的原工作区；修改即时生效，失败前已发生的修改也会保留。网络默认关闭，可通过全局 `sandboxNetwork` 或明确的会话同意开启。详见[工作区路径与网络配置](docs/execution-environments.md#路径网络与工具安装)。
 
 ## 快速开始
 

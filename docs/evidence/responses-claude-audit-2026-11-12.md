@@ -66,21 +66,56 @@
 
 DeepSeek 对照核实：当前内置 provider 为单 Chat adapter、旧目录两模型为 text-only；官方 Chat 与 Responses 均提供当前 Flash 的图像/工具输入，Responses 不支持服务端续接且仅回放明文 reasoning。仓库 Responses serializer 保持图片与 function_call_output 的直接关联，Chat 将工具图片放到额外 user 消息。正常 ModelRuntime 仅核对官方认证是否已配置，结果 false，未读取或发送其他 provider 的 key，没有真实 DeepSeek 请求或速度/质量结论。建议保留现有 Chat 默认，后续增加可选内置 Responses 并独立验证目录、profile、reasoning、配对和 usage；当前没有修改生产代码。依据与链接见方案 9.1。
 
-本次复跑日志与最小对照脚本位于 `.task-tmp/deepseek-claude-472e97d3/`；原生基础脚本复用此前审计根。先将子进程 TMP/TEMP/TMPDIR 指向本次任务根，再执行 `node .task-tmp/responses-claude-d3182d90/claude-live.mjs`、`node .task-tmp/deepseek-claude-472e97d3/claude-minimal.mjs` 和 `node .task-tmp/responses-claude-d3182d90/relay-models.mjs`。真实认证仍走本机正常入口，不复制 key 到脚本或证据。
+## 当前离线复跑入口
 
-探针位于任务临时目录，保留给本机复跑；源码路径固定在该目录内，不含 key 或私人会话。复跑先将子进程 TMP/TEMP/TMPDIR 指向任务根：
+2026-11-14 在 main `c51a46f059` 核对：初始 `responses-wire.mjs`、`reasoning-replay.mjs` 是修复前的临时探针，已由受版本控制的生产路径回归替代。旧 reasoning 探针在当前构建上仍断言默认请求丢失 reasoning，实际已正确保留，因此会失败；不能继续用它验收修复后的行为。当前 `responses-reasoning-replay.contract.test.ts` 的 39/39 项通过，覆盖三个 adapter 的 parser→下一请求、落盘重载、显式关闭、跨目标隔离及目录恢复。
+
+以下入口只依赖仓库内的 `tests/` 和 `scripts/bench/`；临时目录只承接本次输出和缓存，不作为脚本来源。删除旧任务根不会影响这些回归。先按[构建说明](../building.md)准备当前构建，已有对应构建时无需重复构建；构建不能与消费 `dist` 的检查并发。在仓库根目录的新 PowerShell 会话中创建独占临时目录：
 
 ```powershell
-node --experimental-strip-types .task-tmp/responses-claude-d3182d90/responses-wire.mjs
-node .task-tmp/responses-claude-d3182d90/reasoning-replay.mjs
-node --experimental-strip-types --test tests/provider-contract/responses-terminal-tool-calls.contract.test.ts tests/provider-contract/model-capability-matrix.contract.test.ts tests/provider-contract/model-capability-authority.contract.test.ts tests/provider-contract/codex-sse-framing.contract.test.ts
-node --experimental-strip-types --test tests/provider-contract/responses-reasoning-replay.contract.test.ts
-node --expose-gc --experimental-strip-types scripts/bench/responses-replay.ts
+$rerunRoot = Join-Path (Get-Location) ('.task-tmp/responses-rerun-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $rerunRoot | Out-Null
+$env:TMP = $rerunRoot
+$env:TEMP = $rerunRoot
+$env:TMPDIR = $rerunRoot
+```
+
+按本次关注的问题选择对应回归；以下三组没有重复的测试文件，不需要为了复跑某一项串行执行全部组：
+
+```powershell
+# R0：reasoning、能力声明和协议终态
+node --experimental-strip-types --test tests/provider-contract/responses-reasoning-replay.contract.test.ts tests/provider-contract/responses-terminal-tool-calls.contract.test.ts tests/provider-contract/model-capability-matrix.contract.test.ts tests/provider-contract/model-capability-authority.contract.test.ts tests/provider-contract/codex-sse-framing.contract.test.ts
+# R1：完整历史图片预算及实际 session
 node --expose-gc --experimental-strip-types --test tests/request-image-budget-session.test.ts tests/request-image-budget.test.ts tests/request-image-budget-hot-paths.test.ts tests/request-image-summary.test.ts tests/source-invariants.test.ts
+# R2：实际传输计量、owner、回调和 compaction
+node --experimental-strip-types --test tests/codex-request-body.test.ts tests/codex-transport-owner.test.ts tests/openai-codex-callback.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts tests/request-body-observer.test.ts
+```
+
+分配、CPU 和字节测量是按需手动基准，不是每次回归之后的额外测试链；历史数字只对应上文记录的版本和工作量：
+
+```powershell
+node --expose-gc --experimental-strip-types scripts/bench/responses-replay.ts
 node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts --responses
 node --expose-gc --experimental-strip-types scripts/bench/request-image-budget.ts --azure
-node --experimental-strip-types --test tests/codex-request-body.test.ts tests/codex-transport-owner.test.ts tests/openai-codex-callback.test.ts tests/provider-contract/codex-sse-framing.contract.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts tests/request-body-observer.test.ts tests/request-image-budget-hot-paths.test.ts
 node --expose-gc --experimental-strip-types scripts/bench/codex-request-body.ts
+```
+
+所有子进程退出后，只删除本次建立的确切目录，再关闭该 PowerShell 会话：
+
+```powershell
+Remove-Item -LiteralPath $rerunRoot -Recurse
+```
+
+以上回归使用合成数据和离线传输，不需要真实 provider 认证，也不证明真实中转通道可用。本次只更新复跑文档，未触及生产代码或热路径，跳过新增分配基准。
+
+## 历史真实中转探针
+
+以下三个脚本只保留本机 2026-11-12 中转复测的手动能力，不属于当前离线测试入口，也不由 CI 调用。其目录 `.task-tmp/deepseek-claude-472e97d3/` 和 `.task-tmp/responses-claude-d3182d90/` 暂保留；日志只说明当时的结果。只有另行授权真实调用并准备新的独占 TMP/TEMP/TMPDIR 后，才执行对应脚本：
+
+```powershell
+node .task-tmp/responses-claude-d3182d90/claude-live.mjs
+node .task-tmp/deepseek-claude-472e97d3/claude-minimal.mjs
+node .task-tmp/responses-claude-d3182d90/relay-models.mjs
 ```
 
 中转真实生成与目录脚本会从本机正常认证入口解析配置，不应复制配置或凭据到证据；生成脚本的后续步骤仅在基础调用成功后运行。Gemini 暂不测试，DeepSeek 的真实 Responses 集成与 Claude 签名/图片兼容仍未验证。

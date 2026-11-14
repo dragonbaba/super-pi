@@ -11,6 +11,7 @@ accesses authorized workspaces in two sandbox modes. Three other modes use host 
 | MXC migration and route evidence | Delivered history; evidence for the recorded revision |
 | Windows Sandbox VM plans and evidence | Retired history; see the archived acceptance suite below |
 | CodeMode R1–R5, OpenCode OC, upstream V/F and PF external acceptance | Mixed plans and evidence; verify individual items before marking complete |
+| Manual CodeMode R0 recovery entry | Retains frozen acceptance assertions outside default discovery; the [2026-11-14 verification](evidence/test-doc-cleanup-2026-11-14.md) records all seven failing targets, including pending R1.6 long-line recovery |
 | File operations / CodeGraph / memory cleanup | B merged in #296; A merged in #297 ([evidence and limits](evidence/file-operations-v3-2026-11-13.md)); C implementation and local checks are recorded in [evidence](evidence/memory-bulk-cleanup-2026-11-13.md), with final delivery status in [#298](https://github.com/dragonbaba/super-pi/pull/298) |
 
 ## Windows Sandbox VM retirement

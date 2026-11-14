@@ -9,7 +9,7 @@
 - [项目首页（English）](../README.md)：定位、快速开始、认证、模型选择、目标项目启动方式和边界。
 - [项目首页（简体中文）](../README.zh-CN.md)：中文对等版本。
 - [本地构建](building.md)：统一入口、依赖顺序、并发控制、失败处理和实测结果。
-- [沙箱路径与网络](execution-environments.md#工作区路径与网络配置)：工作区绝对路径、来宾 cwd、全局网络开关和依赖安装。
+- [沙箱路径与网络](execution-environments.md#路径网络与工具安装)：工作区绝对路径、来宾 cwd、全局网络开关和依赖安装。
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
 - [分支摘要配置](branch-summaries.md)：输出额度、历史输入预留、推理预算和空结果处理。
@@ -60,6 +60,8 @@
 
 ## 开发和性能契约
 
+- [测试与文档清理核实](evidence/test-doc-cleanup-2026-11-14.md)：失效验证入口与链接修正；R0 冻结断言及七项未通过验收目标保持完整。
+- [Responses 审计的当前复跑入口](evidence/responses-claude-audit-2026-11-12.md#当前离线复跑入口)：reasoning、图片预算和实际传输的正式回归，不依赖旧任务目录；历史真实中转探针单列。
 - [LSP 大批量诊断修复记录](evidence/post-review-lsp-diagnostics-2026-11-14.md)：88 文件的 tsserver OOM 复现、16 文档滑动窗口、到期就绪余量、逐文件失败与部分结果续查。
 - [TypeScript 同步诊断记录](evidence/typescript-synchronous-diagnostics-2026-11-14.md)：同代码诊断等价性、6/11 条差异来源、同步请求与发布回退、1/4/16 并发及冷/热内存测量。
 

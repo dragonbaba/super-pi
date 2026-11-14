@@ -41,11 +41,23 @@ that option stop scheduling after the first failing file.
 
 For a local change, use Node's existing exact-file test entry point, for example
 `node --experimental-strip-types --test tests/file-mutation-v3.test.ts`.
+Current rerun instructions must use tracked tests or scripts; `.task-tmp` holds
+disposable per-run output and caches, not a prerequisite script installation.
+Historical local provider probes remain explicitly separate from offline
+regressions. The [Responses audit rerun entry](evidence/responses-claude-audit-2026-11-12.md#当前离线复跑入口)
+maps the former one-off probes to maintained tests and creates a fresh task root.
 Do not automatically run unit, hot,
 contract and the full suite in succession, or repeat full suites just to wait
 for remote CI/review. Start with the relevant small regression and expand only
 for changed behavior or a diagnosed failure. Do not overlap local benchmarks
 with normal development or unrelated work.
+
+`npm run test:codemode-recovery` is an explicit R0 acceptance entry with retained
+unresolved targets, not an additional green gate after `npm test`. Its three
+`.regression.ts` files are outside default discovery; `controls.test.ts` remains
+in the ordinary suite. See the [documentation fixes and frozen R0 targets](evidence/test-doc-cleanup-2026-11-14.md)
+before changing assertions or promoting cases. Do not interpret a failure there
+as evidence that the failing case is obsolete.
 
 Every child gets private HOME, USERPROFILE, config, agent and session paths and
 `SP_OFFLINE=1`. Its `TMPDIR`, `TMP` and `TEMP` point at one runner-owned
