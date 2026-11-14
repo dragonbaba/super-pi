@@ -637,8 +637,21 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             : mutation && isHostPermissionMode(this.mode) ? await assessHostMutations(resolved!.workspaces, paths, event.toolName, input) : undefined; check();
         if (host?.forbidden) this.refuse(ctx, BLOCKED, `敏感目标禁止删除或移出：${host.forbidden}\n操作未执行，请明确告知用户。`);
         const projectToolAllow = project?.toolDecision(event.toolName) === RULE_ALLOW;
+        const session = ctx.sessionManager.getSessionId();
+        const invocationKey = this.autoReview && !mutation ? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
+        let reviewRisk = mutation || shell !== undefined || definition?.mcpDestructive === true || event.review === true;
+        // Remember selected risk through the existing bounded denial/retry owners. Dropping only
+        // review metadata must not make the same rejected call ordinary or bypass a reviewed retry.
+        if (!reviewRisk && invocationKey !== undefined) {
+            reviewRisk = this.autoRetries.has(invocationKey);
+            for (let index = 0; !reviewRisk && index < this.autoDenials.length; index++) reviewRisk = this.autoDenials[index]!.key === invocationKey;
+        }
         let fallback = explicitUserCommand ? "allow"
             : restricted ? restrictedFallback(event.toolName, (resolved ?? delegated)?.outside === true, shell, shellClass, definition, projectToolAllow) : undefined;
+        // Auto reviews effects, rather than every ordinary shell/MCP request. Existing outside-path
+        // authorization and explicit rules still apply; a model request can only ask for more review.
+        if (this.mode === "host-auto" && !explicitUserCommand && (resolved ?? delegated)?.outside !== true)
+            fallback = projectToolAllow || shellClass === HOST_SHELL_RULE_ALLOWED && fallback === "allow" ? "allow" : reviewRisk ? "ask" : "allow";
         // Only an ask that a project allow rule could lift offers "不再询问": not outside paths, uncertain targets or writes into directories.
         let liftable = restricted && fallback === "ask" && (resolved ?? delegated)?.outside !== true
             && (shellTool ? shellClass === HOST_SHELL_OTHER : definition?.mcpServer !== undefined);
@@ -685,7 +698,6 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (projectVerdict === RULE_DENY) decision = "deny";
         else if (projectVerdict === RULE_ASK && decision === "allow") decision = "ask";
         const keys: string[] = [];
-        const session = ctx.sessionManager.getSessionId();
         if (mutation) {
             const count = fileMutationItemCount(event.toolName, input); let cursor = 0;
             for (let index = 0; index < count; index++) {
@@ -695,7 +707,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 const hash = mutationRequestHash(operation as PermissionPathApproval["operation"], { ...item, path: target, destination, purpose: undefined });
                 keys.push(fingerprint([session, operation, hash]));
             }
-        } else keys.push(fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
+        } else keys.push(invocationKey ?? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
         if (decision === "deny" || keys.some(key => this.denied.has(key))) throw new Error(BLOCKED + "Explicitly denied operation");
         if (host?.externalOverwrite) {
             void this.runtime.executionBoundary.pauseForUser();
@@ -711,13 +723,13 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition)
             && !projectToolAllow;
         if (destructiveMcp) decision = "ask";
-        // host-auto: the session model answers an ordinary ask in the user's place; explicit ask
+        // host-auto: the session model reviews selected risks; explicit ask
         // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
         // A review without a verdict asks the user instead.
         let unreviewed: string | undefined;
         const preparedDetails = decision === "ask" ? describePreparation?.() : undefined;
         // The retry grant identity hashes the whole invocation, batch-level arguments such as `dryRun` included.
-        const grant = decision === "ask" && this.autoReview ? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
+        const grant = decision === "ask" && this.autoReview && reviewRisk ? invocationKey ?? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
         if (grant !== undefined && !this.autoReview!.tripped && this.approval !== "never"
             && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {

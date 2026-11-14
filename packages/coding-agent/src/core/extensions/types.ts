@@ -1004,6 +1004,8 @@ interface ToolCallEventBase {
 	type: "tool_call";
 	toolCallId: string;
 	parentToolCallId?: string;
+	/** The main model requests Auto risk review for this exact call; this grants no authority. */
+	review?: boolean;
 	/**
 	 * Nested calls only: `performance.now()` when the script issued the call. Identical siblings
 	 * issued together are serialized, so the later one reaches this hook after the first finished.

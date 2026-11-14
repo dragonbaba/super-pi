@@ -70,6 +70,8 @@ const MAX_DESCRIBE_TOOLS = 16;
 const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. If tools.tool_search is available, search the exact name, then read describeTools again. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
 const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 const ALLOW_FAILURE = Object.freeze({ allowFailure: true });
+const REQUEST_REVIEW = Object.freeze({ review: true });
+const REVIEW_ALLOW_FAILURE = Object.freeze({ review: true, allowFailure: true });
 /** Host-local distinction only; ordinary rejection handling is proved by the VM. */
 class ChildToolFailure extends Error {}
 
@@ -330,11 +332,13 @@ export class CodemodeController {
 		invocation.pending++;
 		try {
 			if (options !== undefined && (!options || typeof options !== "object" || Array.isArray(options)
-				|| (options as { allowFailure?: unknown }).allowFailure !== undefined && typeof (options as { allowFailure?: unknown }).allowFailure !== "boolean")) {
-				throw new Error("callTool options must be an object with an optional boolean allowFailure");
+				|| (options as { allowFailure?: unknown }).allowFailure !== undefined && typeof (options as { allowFailure?: unknown }).allowFailure !== "boolean"
+				|| (options as { review?: unknown }).review !== undefined && typeof (options as { review?: unknown }).review !== "boolean")) {
+				throw new Error("callTool options must be an object with optional boolean allowFailure and review");
 			}
 			const allowFailure = (options as { allowFailure?: boolean } | undefined)?.allowFailure === true;
-			return await this.runChild(invocation, name, args, allowFailure, sequence, runtimeCallId);
+			const review = (options as { review?: boolean } | undefined)?.review === true;
+			return await this.runChild(invocation, name, args, allowFailure, review, sequence, runtimeCallId);
 		}
 		catch (error) {
 			const systemFailure = !(error instanceof ChildToolFailure);
@@ -354,13 +358,13 @@ export class CodemodeController {
 			if (--invocation.pending === 0) { invocation.resolveIdle?.(); invocation.resolveIdle = undefined; }
 		}
 	}
-	private async runChild(invocation: Invocation, name: string, args: unknown, allowFailure: boolean, sequence: number, runtimeCallId?: number): Promise<unknown> {
+	private async runChild(invocation: Invocation, name: string, args: unknown, allowFailure: boolean, review: boolean, sequence: number, runtimeCallId?: number): Promise<unknown> {
 		if (!args || typeof args !== "object" || Array.isArray(args)) throw new ChildToolFailure("Tool arguments must be an object");
 		const input = args as Record<string, unknown>;
 		// Validate before effects; argument objects are never retained by the ref cache.
 		this.serializer.stringify(input, 256 * 1024);
 		const startedAt = Date.now();
-		const raw = await invocation.context.callTool(name, input, allowFailure ? ALLOW_FAILURE : undefined);
+		const raw = await invocation.context.callTool(name, input, review ? allowFailure ? REVIEW_ALLOW_FAILURE : REQUEST_REVIEW : allowFailure ? ALLOW_FAILURE : undefined);
 		const systemFailure = !!raw.observationFailure || invocation.signal?.aborted === true || raw.details?.requiresVerification === true
 			|| invocation.failedRecordings?.includes(raw.toolCallId) === true;
 		const failureHandled = raw.isError && allowFailure && !systemFailure;
@@ -607,7 +611,8 @@ export class CodemodeController {
 		}
 		const end = Math.min(position, pageOffset + text.length);
 		if (end === position) this.documentationSnapshot = undefined;
-		const continuation = end < position ? `\n[More tool documentation: describeTools with the same names/format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]` : "";
+		const continuation = end < position ? `\n[More tool documentation: describeTools with the same names/format, offset:${end}, limit:${limit}, revision:"${currentRevision}".]`
+			: "\n[Tool documentation complete. No continuation is needed.]";
 		return `[Tool documentation chars ${Math.min(pageOffset, position)}..${end} of ${position}; format:${format}; revision:${currentRevision}]\n${text}${continuation}`;
 	}
 	private async ensureSandbox(): Promise<CodemodeSandbox> {

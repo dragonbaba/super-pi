@@ -116,14 +116,14 @@ export class NestedToolDispatch implements AgentToolExecutionContext {
 		return this.findTool(tool.name) === tool;
 	}
 
-	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean }): Promise<NestedToolResultMessage> {
+	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean; review?: boolean }): Promise<NestedToolResultMessage> {
 		if (!this.accepting || this.signal.aborted || this.issued >= MAX_NESTED_TOOL_CALLS) {
 			this.hardErrors = this.errors = true;
 			const rejected = Promise.reject<NestedToolResultMessage>(new Error("Nested tool dispatch is closed, cancelled, or at its 256-call limit"));
 			void rejected.catch(observeRejection);
 			return rejected;
 		}
-		const call: AgentToolCall = { type: "toolCall", id: `${this.parentToolCallId}:nested:${++this.issued}`, name, arguments: args };
+		const call: AgentToolCall = { type: "toolCall", id: `${this.parentToolCallId}:nested:${++this.issued}`, name, arguments: args, review: options?.review === true };
 		const issuedAt = performance.now();
 		const allowFailure = options?.allowFailure === true;
 		const result = new Promise<NestedToolResultMessage>((resolve, reject) => {

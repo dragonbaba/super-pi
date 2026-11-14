@@ -59,6 +59,8 @@ for (const result of results) {
 
 ## 读取与修改
 
+在 Auto 权限档，普通读取、查询和常规构建/测试无需额外请求审查；宿主自动识别原生文件变更、部分 shell 文件变更和 destructive MCP 声明。主模型判断不透明的 shell、MCP 或自定义调用会删除/覆盖数据、修改项目或应用状态、安装软件、修改系统设置、改写 Git 历史或向外部发送私有数据时，必须在执行前使用 `await callTool(name, args, { review: true })`。可以同时传入 `allowFailure: true` 并检查原始失败结果。`review` 仅请求审查本次调用，不传给底层工具，不覆盖明确的权限规则或边界；被拒绝后不得换一种调用形式重试。完整规则见[执行环境与权限](execution-environments.md)。
+
 已有文件第一次编辑用 `read` 获取可靠原文和相应版本，可在同一个脚本内读取、计算并编辑，不要求 `show()` 或额外模型轮次。权限核验独立于文件版本：
 
 ```js
@@ -100,7 +102,7 @@ text(ALL_TOOLS.filter(tool => tool.name.includes("search")));
 text(await describeTools(["read"]));
 ```
 
-`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。长文档带有下一页 `offset` 和定义版本 `revision`；续页必须同时带回这两个值，并保持名字和格式一致。若 MCP 后台更新等原因使定义改变，会要求丢弃旧页、从 `offset:0` 重读，不会混合两个版本。页头和续读提示不计入正文限额。
+`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。只有返回 `[More tool documentation]` 提示时才请求续页，照抄其中的下一页 `offset` 和定义版本 `revision`，并保持名字和格式一致；所有 `offset > 0` 请求都必须带回该版本。完整文档会标记无需续页，不要自行猜测偏移重读。首页不传 `revision`；若 MCP 后台更新等原因使定义改变，会要求丢弃旧页、从 `offset:0` 且不带版本重读，不会混合两个版本。页头和续读提示不计入正文限额。
 
 ```js
 // TypeScript 是便于阅读的摘要；精确约束和无法展开的类型可查询原始 JSON Schema。

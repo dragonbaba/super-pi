@@ -58,7 +58,10 @@ export interface ToolExecutionPath {
 export type QueueMode = "all" | "one-at-a-time";
 
 /** A single tool call content block emitted by an assistant message. */
-export type AgentToolCall = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
+export type AgentToolCall = Extract<AssistantMessage["content"][number], { type: "toolCall" }> & {
+	/** Host-side request for risk review; never grants permission or changes tool arguments. */
+	review?: boolean;
+};
 
 /**
  * Result returned from `beforeToolCall`.
@@ -488,7 +491,7 @@ export interface NestedToolResultMessage extends ToolResultMessage {
 export interface AgentToolExecutionContext {
 	readonly parentToolCallId: string;
 	/** Executes through the current run's hooks; never creates a new Agent run. */
-	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean }): Promise<NestedToolResultMessage>;
+	callTool(name: string, args: Record<string, unknown>, options?: { allowFailure?: boolean; review?: boolean }): Promise<NestedToolResultMessage>;
 	/**
 	 * Tools of the active turn context (the live tools when there is none). These host objects never
 	 * enter the sandbox. Later live changes are not reflected here; authorize a name with findTool().

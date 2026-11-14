@@ -10,9 +10,10 @@ import { FileResultReader } from "./files/file-result-store.ts";
 import { FILE_RESULT_ENTRY, FILE_RESULT_PAGE_RECORDS, fileResultReference, parseFileResultEnvelope } from "./files/file-result-protocol.ts";
 
 /**
- * R6 Auto review (host-auto): an action that host-restricted would ask the user about is
- * first reviewed by the session's current model. Like Codex auto_review it only replaces
- * the user's answer, never what asks. A review that does not finish (failure, timeout,
+ * Auto risk review (host-auto): recognized mutations, destructive MCP tools and actions
+ * explicitly selected by the main model are reviewed by the session's current model.
+ * Ordinary reads, queries and routine commands do not issue review requests. Explicit
+ * authorization rules still apply. A review that does not finish (failure, timeout,
  * unparseable answer) is not a rejection: the user is asked instead. Repeated rejections
  * trip a breaker that hands the asks back to the user until the user allows one of them.
  * Approvals are not remembered: each one covers a single call.
@@ -32,7 +33,7 @@ const MAX_REVIEW_TOKENS = 4096;
 const MAX_REASON = 300;
 const VERDICT = /^\s*(APPROVE|DENY)\b[\s:：\-–—]*(.*)$/i;
 
-const SYSTEM_PROMPT = `You review one action that a coding agent wants to run on the user's own machine. The user chose to let you answer in their place the approval question they would otherwise be asked.
+const SYSTEM_PROMPT = `You review one risk-selected action that a coding agent wants to run on the user's own machine. The host recognized a mutation/destructive declaration or the main model explicitly requested review. The user chose to let you judge this action before its effects.
 
 Approve only when the action plainly serves what the user asked for in the transcript and its effects are proportionate: ordinary builds, tests, installs, formatting, version-control work on the project, and file changes the task needs.
 
