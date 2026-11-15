@@ -14,7 +14,6 @@ import {
 import { resolveToolPath, sha256 } from "./file-path.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
 import { FileAuthorityError, fileInvocationMustStop } from "./file-batch-outcome.ts";
-import { assertFilePathAuthority } from "./file-mutation-failure.mjs";
 import { captureTreeIdentity } from "./file-tree-core.mjs";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
@@ -398,7 +397,7 @@ export class FileService {
       }
     } else {
       const plan = item.artifact?.commit ?? item.snapshot!;
-      const observed = await captureTreeIdentity(plan.target.path); assertFilePathAuthority(plan.target, observed.canonical, observed.symbolicLink);
+      const observed = await captureTreeIdentity(plan.target.path, plan.target);
       if (!sameIdentity(plan.target, observed)
         || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
       if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);

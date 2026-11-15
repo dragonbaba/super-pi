@@ -3,7 +3,7 @@
 import { lstat } from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
 import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason } from './file-tree-core.mjs';
-import { FileAuthorityError, assertFilePathAuthority } from './file-mutation-failure.mjs';
+import { FileAuthorityError } from './file-mutation-failure.mjs';
 import { prepareFileCreation, directoryKey } from './file-creation-core.mjs';
 import { ManifestArtifactWriter, visitManifestArtifact, validateManifestArtifact } from './file-manifest-artifact.mjs';
 import { workspaceFilePath, validFileIdentity } from './file-workspace-path.mjs';
@@ -240,8 +240,7 @@ async function assertPreparedParent(identity) {
 async function assertPreparedFile(identity) {
   // Observe the leaf before resolving it: a dangling replacement link is an
   // authority change, while an absent original file remains an item mismatch.
-  const observed = await captureTreeIdentity(identity.path);
-  assertFilePathAuthority(identity, observed.canonical, observed.symbolicLink);
+  const observed = await captureTreeIdentity(identity.path, identity);
   need(sameIdentity(identity, observed), 'Prepared source or overwrite destination changed');
 }
 

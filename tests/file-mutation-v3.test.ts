@@ -16,6 +16,7 @@ import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
 import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
 import { prepareFileCreation, verifyCreationAncestor, executeFileCreation, FileCreationFailure } from "../packages/coding-agent/src/core/files/file-creation.ts";
+import { revalidateTree, executeTree } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
 
 async function fixture(t: test.TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), "file-mutation-v3-")); t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -245,6 +246,20 @@ for (const phase of ["precheck", "open"]) for (const replacement of ["dangling-l
     await assert.rejects(executeFileCreation(plan, "new", async () => plan.canonicalTarget, undefined, undefined, undefined, undefined, true), (error: any) => {
       assert(error instanceof FileCreationFailure); assert.equal(error.stopInvocation, replacement === "dangling-link"); assert.equal(error.facts.stateChanged, false); return true;
     });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const phase of ["validate", "execute"]) for (const replacement of ["dangling-link", "missing"]) test(`tree identity resolution classifies ${replacement} during ${phase}`, async t => {
+  const f = await fixture(t), source = join(f.cwd, "source"); await writeFile(source, "original");
+  const item = await f.service.prepareV3("delete", { path: "source" }), originalRealpath = fsPromises.realpath; let injected = false;
+  t.mock.method(fsPromises, "realpath", async (path: any, ...args: any[]) => {
+    if (!injected && path === source) { injected = true; unlinkSync(source); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), source, "file"); }
+    return (originalRealpath as any)(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    if (phase === "validate") await assert.rejects(revalidateTree(item.tree!.tree), (error: any) => { assert.equal(error.stopInvocation === true, replacement === "dangling-link"); return true; });
+    else { const receipt = await executeTree(item.tree!.tree, "delete", item.tree!.sourceParent, undefined, undefined, current); assert.equal(receipt.status, "failed_no_change"); assert.equal(receipt.stopInvocation === true, replacement === "dangling-link"); }
+    assert.equal(injected, true);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 

@@ -6,8 +6,9 @@ export interface TreeEntry { identity: TreeIdentity; parent: number; }
 export interface TreePreparation { readonly entries: readonly TreeEntry[]; readonly files: number; readonly directories: number; readonly skippedLinks: number; readonly bytes: number; readonly unlinkFiles?: number; }
 export function capturePathIdentity(path: string, expected?: PathIdentity & { symbolicLink?: boolean }): Promise<PathIdentity>;
 export function assertFilePathAfterFailure(expected: PathIdentity & { symbolicLink?: boolean }): Promise<void>;
+export function assertFilePathAfterFailureSync(expected: PathIdentity & { symbolicLink?: boolean }): void;
 export function pathIdentityFromStat(path: string, canonical: string, info: BigIntStats, symbolicLink?: boolean): TreeIdentity;
-export function captureTreeIdentity(path: string): Promise<TreeIdentity>;
+export function captureTreeIdentity(path: string, expected?: PathIdentity & { symbolicLink?: boolean }): Promise<TreeIdentity>;
 export function sameIdentity(a: PathIdentity, b: PathIdentity, metadata?: boolean): boolean;
 export function protectedTreeName(name: string): boolean;
 export function prepareTree(source: PathIdentity, operation: "copy" | "move" | "delete", recursive?: boolean, authority?: () => void, signal?: AbortSignal): Promise<TreePreparation>;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import fsPromises from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { runFileMutationRequest } from '../packages/coding-agent/src/core/sandbox/mxc-file-mutation-worker.mjs';
 import { capturePathIdentity } from '../packages/coding-agent/src/core/files/file-tree-core.mjs';
@@ -83,6 +84,20 @@ for (const replacement of ['dangling-link', 'missing']) test(`worker hash-open c
     else { const rows = await f.validate(prepared); assert.match(rows[0].error, /ENOENT/); assert.equal(rows[0].noEffects, true); }
     assert.equal(injected, true); assert.equal(await readFile(source, 'utf8'), 'source');
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ['write', 'edit']) for (const replacement of ['dangling-link', 'missing']) test(`worker ${operation} publication-open preserves ${replacement} provenance`, async t => {
+  const input = { operation, path: 'target', snapshot: createHash('sha256').update('original').digest('hex'), ...(operation === 'write' ? { mode: 'overwrite', content: 'next' } : { edits: [{ oldText: 'original', newText: 'next' }] }) };
+  const f = await fixture(t, [input]), target = join(f.workspace, 'target'); await writeFile(target, 'original');
+  const prepared = await f.prepare(), validated = await f.validate(prepared), originalOpen = fsSync.openSync; let injected = false;
+  t.mock.method(fsSync, 'openSync', (path, ...args) => {
+    if (!injected && path === target && args[0] === 'r') { injected = true; fsSync.unlinkSync(target); if (replacement === 'dangling-link') fsSync.symlinkSync(join(f.workspace, 'absent-target'), target, 'file'); }
+    return originalOpen(path, ...args);
+  });
+  try {
+    const receipt = await f.execute(0, prepared, validated); assert.equal(injected, true); assert.equal(receipt.status, 'failed_no_change');
+    assert.equal(receipt.stopInvocation === true, replacement === 'dangling-link', JSON.stringify(receipt));
+  } finally { t.mock.restoreAll(); }
 });
 
 test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {

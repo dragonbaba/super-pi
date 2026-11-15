@@ -6,7 +6,8 @@ import { isUtf8 } from 'node:buffer';
 import { detectSupportedImageMimeType, IMAGE_TYPE_SNIFF_BYTES } from '../../utils/image-signature.mjs';
 import { MxcFilePublication } from '../files/mxc-file-publication.mjs';
 import { FILE_RPC_REQUEST_BYTES } from '../files/file-operation-limits.mjs';
-import { pathIdentityFromStat, sameIdentity, boundedReason } from '../files/file-tree-core.mjs';
+import { pathIdentityFromStat, sameIdentity, boundedReason, assertFilePathAfterFailureSync } from '../files/file-tree-core.mjs';
+import { fileInvocationMustStop } from '../files/file-mutation-failure.mjs';
 import { FILE_LIMIT, IMAGE_LIMIT, SEARCH_ROWS, SEARCH_ENTRIES, TEXT_LIMIT, SEARCH_EXCERPT, SEARCH_CLIPPED_MARK, DIRECTORY_READ_BUFFER,
   normalizeReadOffset, normalizeReadLimit } from './mxc-file-limits.mjs';
 
@@ -282,10 +283,18 @@ function executePreparedTextMutation(root, operation, input, maxWriteBytes, base
     need(snapshot === baseline.nextSha256, 'Published text does not match the prepared postimage');
     return { status: 'succeeded', stateChanged: true, snapshot, bytes: baseline.bytes, commit: facts.commit };
   } catch (error) {
+    let failure = error;
+    try {
+      if (!fileInvocationMustStop(error)) {
+        if (baseline?.parent) assertFilePathAfterFailureSync(baseline.parent);
+        if (baseline?.identity) assertFilePathAfterFailureSync(baseline.identity);
+      }
+    } catch (authorityError) { failure = authorityError; }
     const changed = facts.stateChanged === 'unknown' ? 'unknown' : facts.stateChanged;
     return { status: changed === 'unknown' ? 'state_unknown' : changed ? 'partial' : 'failed_no_change', stateChanged: changed,
       requiresVerification: changed !== false || unverifiedPublication || facts.requiresVerification || undefined,
-      commit: facts.commit, reason: boundedReason(String(error.message)) };
+      stopInvocation: fileInvocationMustStop(failure) || undefined,
+      commit: facts.commit, reason: boundedReason(failure instanceof Error ? failure.message : String(failure)) };
   } finally { unverifiedPublication = previous; }
 }
 export { runFileWorker, prepareTextMutation, executePreparedTextMutation };

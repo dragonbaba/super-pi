@@ -130,6 +130,26 @@ for (const phase of ["prepare", "validate"]) for (const finalItem of [false, tru
   assert.equal((await f.call("write", { path: "after-failure", content: "allowed" })).isError, false); assert.equal(f.owned.size, 0);
 });
 
+for (const operation of ["write", "edit"]) for (const finalItem of [false, true]) for (const replacement of ["dangling-link", "missing"])
+test(`sandbox ${operation} text publication distinguishes ${replacement}, final=${finalItem}`, async t => {
+  const f = await fixture(t), target = join(f.cwd, "target");
+  const snapshot = (await f.call("write", { path: "target", content: "original" })).details.snapshot;
+  const change = { operation, path: "target", snapshot, ...(operation === "write" ? { mode: "overwrite", content: "next" } : { edits: [{ oldText: "original", newText: "next" }] }) };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const originalOpen = fsSync.openSync; let injected = false;
+  t.mock.method(fsSync, "openSync", (path: any, ...args: any[]) => {
+    if (!injected && path === target && args[0] === "r" && f.sends.at(-1)?.phase === "execute") {
+      injected = true; fsSync.unlinkSync(target); if (replacement === "dangling-link") fsSync.symlinkSync(join(f.cwd, "absent-target"), target, "file");
+    }
+    return (originalOpen as any)(path, ...args);
+  });
+  try {
+    const result = await f.call("file_batch", { operations: finalItem ? [independent, change] : [change, independent] });
+    assert.equal(injected, true); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+    assert.equal(result.details.succeeded, replacement === "missing" || finalItem ? 1 : 0); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); }
+});
+
 for (const fault of ["integrity", "io"]) test(`sandbox preparation artifact ${fault} failure stops all effects and releases exact artifacts`, async t => {
   const f = await fixture(t);
   const original = fsSync.writeFileSync;

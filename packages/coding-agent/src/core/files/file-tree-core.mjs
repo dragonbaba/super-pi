@@ -1,5 +1,5 @@
 // Shared filesystem mechanics for native and controlled MXC owners. No policy, session or global payload state.
-import { constants } from 'node:fs';
+import { constants, lstatSync, realpathSync } from 'node:fs';
 import { lstat, realpath, opendir, open, link, unlink, mkdir, rmdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, relative, basename } from 'node:path';
@@ -26,6 +26,15 @@ export async function assertFilePathAfterFailure(expected) {
   try { canonical = await realpath(expected.path); } catch { return; }
   assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
 }
+/** Controlled synchronous text publication has the same error-only boundary. */
+export function assertFilePathAfterFailureSync(expected) {
+  let info;
+  try { info = lstatSync(expected.path, { bigint: true }); } catch { return; }
+  assertFilePathAuthority(expected, expected.canonical, info.isSymbolicLink());
+  let canonical;
+  try { canonical = realpathSync(expected.path); } catch { return; }
+  assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
+}
 export function pathIdentityFromStat(path, canonical, info, symbolicLink = false) {
   return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino), size: String(info.size),
     mtime: String(info.mtimeNs), ctime: String(info.ctimeNs), mode: String(info.mode), links: String(info.nlink), directory: info.isDirectory(),
@@ -36,17 +45,23 @@ export function sameIdentity(a, b, metadata = true) {
     && a.mode === b.mode && Boolean(a.symbolicLink) === Boolean(b.symbolicLink)
     && (!metadata || a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.links === b.links);
 }
-export async function captureTreeIdentity(path) {
-  const info = await lstat(path, { bigint: true });
-  const symbolicLink = info.isSymbolicLink();
-  if (!symbolicLink && !info.isFile() && !info.isDirectory()) throw new Error('[unsupported] Special files are unsupported.');
-  const canonical = symbolicLink ? resolve(await realpath(dirname(path)), basename(path)) : await realpath(path);
-  // Canonical resolution is asynchronous too. Observe the leaf last, without
-  // following a link's target, and reject mixed observations of two objects.
-  const checked = await lstat(path, { bigint: true });
-  if (info.dev !== checked.dev || info.ino !== checked.ino || info.mode !== checked.mode || info.size !== checked.size
-    || info.mtimeNs !== checked.mtimeNs || info.ctimeNs !== checked.ctimeNs || info.nlink !== checked.nlink) throw new Error('[STALE_STATE] Tree entry changed during identity capture.');
-  return pathIdentityFromStat(path, canonical, checked, symbolicLink);
+export async function captureTreeIdentity(path, expected) {
+  try {
+    const info = await lstat(path, { bigint: true });
+    const symbolicLink = info.isSymbolicLink();
+    if (!symbolicLink && !info.isFile() && !info.isDirectory()) throw new Error('[unsupported] Special files are unsupported.');
+    const canonical = symbolicLink ? resolve(await realpath(dirname(path)), basename(path)) : await realpath(path);
+    // Canonical resolution is asynchronous too. Observe the leaf last, without
+    // following a link's target, and reject mixed observations of two objects.
+    const checked = await lstat(path, { bigint: true });
+    if (expected) assertFilePathAuthority(expected, canonical, checked.isSymbolicLink());
+    if (info.dev !== checked.dev || info.ino !== checked.ino || info.mode !== checked.mode || info.size !== checked.size
+      || info.mtimeNs !== checked.mtimeNs || info.ctimeNs !== checked.ctimeNs || info.nlink !== checked.nlink) throw new Error('[STALE_STATE] Tree entry changed during identity capture.');
+    return pathIdentityFromStat(path, canonical, checked, symbolicLink);
+  } catch (error) {
+    if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
+    throw error;
+  }
 }
 export function protectedTreeName(name) {
   if (process.platform === 'win32') name = name.toLowerCase();
@@ -176,7 +191,7 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
-    const observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(entry.identity, observed.canonical, observed.symbolicLink);
+    const observed = await captureTreeIdentity(entry.identity.path, entry.identity);
     if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
   }
   current(authority, signal);
@@ -219,7 +234,7 @@ class TreeExecution {
     if (!group) return;
     if (group.entries[group.next++] !== entry) throw new Error('[STALE_STATE] Source alias order changed.');
     if (group.next === group.entries.length) return;
-    const next = group.entries[group.next].identity, observed = await captureTreeIdentity(next.path);
+    const next = group.entries[group.next].identity, observed = await captureTreeIdentity(next.path, next);
     const links = String(BigInt(identity.links) - (decremented ? 1n : 0n));
     if (!sameIdentity(next, observed, false) || next.size !== observed.size || next.mtime !== observed.mtime || observed.links !== links) throw new Error('[STALE_STATE] Remaining source alias changed after the completed operation.');
     this.current(); group.ctime = observed.ctime; group.links = links; group.changed = true;
@@ -233,7 +248,7 @@ class TreeExecution {
   async checkSource(entry, metadata = true) {
     this.current();
     await this.checkParent(entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity);
-    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(expected, observed.canonical, observed.symbolicLink);
+    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path, expected);
     if (!sameIdentity(expected, observed, metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
   }
   async copyFile(entry, destination, parent) {
@@ -294,7 +309,8 @@ class TreeExecution {
     const copied = await this.copyFile(entry, destination, parent);
     await this.checkSource(entry); await this.checkParent(parent); this.current();
     if (!sameIdentity(copied, await capturePathIdentity(destination))) throw new Error('[STALE_STATE] Copied destination changed before source deletion; source retained.');
-    if (!sameIdentity(this.sourceIdentity(entry), await captureTreeIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Copied source changed at the final deletion boundary; source retained.');
+    const expected = this.sourceIdentity(entry);
+    if (!sameIdentity(expected, await captureTreeIdentity(entry.identity.path, expected))) throw new Error('[STALE_STATE] Copied source changed at the final deletion boundary; source retained.');
     this.current(); this.effectPending = true; await unlink(entry.identity.path); this.effectPending = false; this.files++;
     if (entry.identity.links !== '1') await this.advanceSource(entry, true);
   }
