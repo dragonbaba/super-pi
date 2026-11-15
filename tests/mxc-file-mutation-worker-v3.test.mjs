@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm, rename, symlink } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm, rename, symlink, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -53,6 +53,21 @@ for (const phase of ['validate', 'execute']) test(`worker parent retargeting is 
   else { const receipt = await f.execute(0, prepared, validated); assert.equal(receipt.status, 'failed_no_change'); assert.equal(receipt.stopInvocation, true, JSON.stringify(receipt)); }
   await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
   for (const parent of ['retained', 'replacement']) assert.equal(await readFile(join(f.workspace, parent, 'source'), 'utf8'), 'same content');
+});
+
+for (const phase of ['validate', 'execute']) for (const replacement of ['dangling-link', 'missing']) test(`worker distinguishes ${replacement} from ordinary missing content during ${phase}`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }]);
+  const source = join(f.workspace, 'source'); await writeFile(source, 'original');
+  const prepared = await f.prepare(), validated = phase === 'execute' ? await f.validate(prepared) : undefined;
+  await unlink(source); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), source, 'file');
+  if (phase === 'validate') {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const refused = await f.validate(prepared); assert.match(refused[0].error, /ENOENT/); assert.equal(refused[0].noEffects, true); }
+  } else {
+    const receipt = await f.execute(0, prepared, validated); assert.equal(receipt.status, 'failed_no_change');
+    assert.equal(receipt.stopInvocation === true, replacement === 'dangling-link', JSON.stringify(receipt));
+  }
+  await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
 });
 
 test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {

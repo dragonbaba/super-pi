@@ -237,13 +237,10 @@ async function assertPreparedParent(identity) {
   }
 }
 
-async function assertPreparedFile(identity, allowLink = false) {
-  let observed;
-  try { observed = allowLink ? await captureTreeIdentity(identity.path) : await capturePathIdentity(identity.path); }
-  catch (error) {
-    if (error instanceof Error && error.message.startsWith('[unsupported]')) throw new FileAuthorityError('Prepared file path was replaced by an unsupported object.');
-    throw error;
-  }
+async function assertPreparedFile(identity) {
+  // Observe the leaf before resolving it: a dangling replacement link is an
+  // authority change, while an absent original file remains an item mismatch.
+  const observed = await captureTreeIdentity(identity.path);
   if (!equalPath(observed.canonical, identity.canonical) || Boolean(observed.symbolicLink) !== Boolean(identity.symbolicLink)) throw new FileAuthorityError('Prepared file path was retargeted.');
   need(sameIdentity(identity, observed), 'Prepared source or overwrite destination changed');
 }
@@ -252,7 +249,7 @@ export async function revalidateFileWorkerManifest(request, item, prepared, prev
   const { header, tree, creation } = prepared;
   workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
   if (header.sourceParent) await assertPreparedParent(header.sourceParent);
-  if (header.source) await assertPreparedFile(header.source, item.operation === 'delete');
+  if (header.source) await assertPreparedFile(header.source);
   if (header.destination) {
     workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
     if (header.destinationParent) await assertPreparedParent(header.destinationParent);

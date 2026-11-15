@@ -111,6 +111,25 @@ for (const phase of ["prepare", "validate"]) for (const finalItem of [false, tru
   for (const parent of ["retained", "replacement"]) assert.equal(await readFile(join(f.cwd, parent, "source"), "utf8"), "same content");
 });
 
+for (const phase of ["prepare", "validate"]) for (const finalItem of [false, true]) test(`sandbox dangling source link stops after ${phase}, final=${finalItem}`, async t => {
+  let changed = false;
+  const f = await fixture(t, request => {
+    if (!changed && request.phase === phase) {
+      changed = true; fsSync.unlinkSync(join(f.cwd, "source")); fsSync.symlinkSync(join(f.cwd, "absent-target"), join(f.cwd, "source"), "file");
+    }
+  });
+  await writeFile(join(f.cwd, "source"), "original");
+  const copy = { operation: "copy", path: "source", destination: "copied" };
+  const write = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [write, copy] : [copy, write] });
+  assert.equal(completedFileBatchFailure(result.details), false, JSON.stringify(result)); assert.match(result.details.reason, /STALE_STATE/);
+  assert.equal(result.details.succeeded, phase === "validate" && finalItem ? 1 : 0);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, phase === "prepare" ? 0 : finalItem ? 2 : 1);
+  assert.equal((await lstat(join(f.cwd, "source"))).isSymbolicLink(), true);
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  assert.equal((await f.call("write", { path: "after-failure", content: "allowed" })).isError, false); assert.equal(f.owned.size, 0);
+});
+
 for (const fault of ["integrity", "io"]) test(`sandbox preparation artifact ${fault} failure stops all effects and releases exact artifacts`, async t => {
   const f = await fixture(t);
   const original = fsSync.writeFileSync;
