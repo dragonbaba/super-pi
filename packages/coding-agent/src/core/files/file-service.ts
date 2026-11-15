@@ -13,6 +13,7 @@ import {
 } from "./file-parameters.ts";
 import { resolveToolPath, sha256 } from "./file-path.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
+import { FileAuthorityError } from "./file-batch-outcome.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
   prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
@@ -133,7 +134,7 @@ class FileExecution {
     this.assertCurrent();
     const current = await assessProtectedMutationPath(this.service.cwd, this.item.executionPath, this.item.tree?.protectedPaths[0].followLeaf);
     this.assertCurrent();
-    if (!current.canonicalTarget || directoryKey(current.canonicalTarget) !== directoryKey(this.item.target)) throw new Error("[STALE_STATE] Prepared path no longer identifies the approved target.");
+    if (!current.canonicalTarget || directoryKey(current.canonicalTarget) !== directoryKey(this.item.target)) throw new FileAuthorityError("Prepared path no longer identifies the approved target.");
     return current.canonicalTarget;
   };
   readonly selected = (metadata: { strategy: string; reason?: string }): void => {
@@ -200,7 +201,7 @@ class FileExecution {
         const changed = creationFailure?.stateChanged === "unknown" ? "unknown" : creationFailure?.stateChanged === true;
         receipt = { ...creationFailure, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
           ok: false, status: changed === "unknown" ? "state_unknown" : changed ? "partial" : hooks.signal?.aborted ? "cancelled" : "failed_no_change",
-          stateChanged: changed, requiresVerification: changed !== false,
+          stateChanged: changed, requiresVerification: changed !== false, stopInvocation: error instanceof FileAuthorityError || undefined,
           cause: creationFailure?.cause ?? (error instanceof Error ? error.message : String(error)) };
       }
     }
@@ -249,7 +250,7 @@ export class FileService {
   clear(): void { this.revisions.clear(); }
   dispose(): void { this.closed = true; this.revisions.dispose(); }
   assertPrepared(item: PreparedFileItem): void {
-    if (this.closed || !this.prepared.has(item) || item.generation !== this.revisions.generation) throw new Error("[STALE_STATE] File invocation was released or its session changed.");
+    if (this.closed || !this.prepared.has(item) || item.generation !== this.revisions.generation) throw new FileAuthorityError("File invocation was released or its session changed.");
   }
   release(item: PreparedFileItem): void {
     this.prepared.delete(item);
@@ -336,7 +337,7 @@ export class FileService {
         }
       }
       const actual = item.creation?.canonicalTarget ?? item.identity?.canonical;
-      if (actual === undefined || directoryKey(actual) !== directoryKey(item.target)) throw new Error("[STALE_STATE] File target changed during preparation.");
+      if (actual === undefined || directoryKey(actual) !== directoryKey(item.target)) throw new FileAuthorityError("File target changed during preparation.");
       signal?.throwIfAborted();
       this.prepared.add(item); this.assertPrepared(item);
       return item;
@@ -378,7 +379,7 @@ export class FileService {
   async revalidate(item: PreparedFileItem, hooks: FileExecutionHooks): Promise<void> {
     this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
     const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath, item.tree?.protectedPaths[0].followLeaf);
-    if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new Error("[STALE_STATE] Prepared target changed.");
+    if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new FileAuthorityError("Prepared target changed.");
     if (item.tree) {
       if (item.tree.deferredCopyHash && !hooks.preflightOnly) item.tree = await finalizeNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
       else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal, true, hooks.sharedDirectories);

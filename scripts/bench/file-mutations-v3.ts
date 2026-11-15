@@ -91,7 +91,9 @@ test(`native session v3 covers ${targets} targets for every public operation and
     for (let index = 0; index < 4; index++) { await tick(); await inspector.post("HeapProfiler.collectGarbage"); }
     let retainedPlans = 0; for (const ref of refs) if (ref.deref()) retainedPlans++;
     assert.equal(retainedPlans, 0); assert.equal(files.getDiagnostics().pending, 0); assert.equal(files.getDiagnostics().revisions, 0);
-    sampleMemory(); t.diagnostic(JSON.stringify({ fixture: "native-v3-session", samples, peakHeap, peakRss, sampledBytes,
+    const retainedMemory = process.memoryUsage();
+    sampleMemory(); t.diagnostic(JSON.stringify({ fixture: "native-v3-session", samples, peakHeap, peakRss,
+      retainedHeap: retainedMemory.heapUsed, retainedRss: retainedMemory.rss, sampledBytes,
       sampledNotTotalAllocations: true, allocationSites: allocationSites.slice(0, 15), planReferences: refs.length, retainedPlans, sessionHistoricalEntries: f.manager.getEntryCount() }));
   } finally {
     clearInterval(timer); inspector.disconnect(); await files.dispose(); policy.dispose(); await f.runtime.executionBoundary.dispose(); await disposeNativeFileWorker(); await rm(root, { recursive: true });

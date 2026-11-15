@@ -12,8 +12,11 @@ import { FileResultWriter, type AppendFileResultEntry, type FileResultSession } 
 import { FILE_MUTATION_CALL_ENTRY, type FileResultOperation, type FileResultPayload } from "./file-result-protocol.ts";
 import { FILE_RESULT_FAILURE_SAMPLES, FILE_RESULT_PREVIEW_SAMPLES, FILE_RESULT_INLINE_BYTES, FILE_RESULT_INLINE_ITEMS } from "./file-operation-limits.mjs";
 import type { PathIdentity } from "./native-file-core.ts";
+import { resolve } from "node:path";
+import { assertFileBatchItemFailure } from "./file-batch-outcome.ts";
 
-export type PreparedMutationItem = PreparedFileItem & { itemId: string; preparedId?: string };
+export type PreparedMutationItem = PreparedFileItem & { itemId: string; preparedId?: string; preparationFailure?: string; unprepared?: true };
+function unavailableExecution(): never { throw new Error("No prepared file can execute."); }
 const INPUT_FIELDS = ["content", "destination", "snapshot", "edits", "recursive", "overwrite", "purpose"] as const;
 const RECEIPT_FIELDS = ["operation", "target", "destination", "status", "stateChanged", "requiresVerification", "sha256", "previousSha256",
   "sourceIdentity", "created", "bytes", "files", "directories", "skippedLinks", "coverageComplete", "revision", "revisionContinuation", "snapshot",
@@ -65,8 +68,9 @@ export class FileMutation {
   private input: BatchInput | readonly Readonly<FileOperationInput>[] | undefined;
   private state: "new" | "preparing" | "ready" | "executing" | "released" = "new";
   private revoked = false;
-  constructor(service: FileMutationService, id: string, operation: FileResultOperation, raw: unknown) {
-    this.service = service; this.id = id; this.operation = operation;
+  private canonicalPaths: readonly string[] | undefined;
+  constructor(service: FileMutationService, id: string, operation: FileResultOperation, raw: unknown, canonicalPaths?: readonly string[]) {
+    this.service = service; this.id = id; this.operation = operation; this.canonicalPaths = canonicalPaths;
     this.requestHash = mutationRequestHash(operation, raw);
     if (operation === "file_batch") { const input = copyBatchInput(raw, service.inputKind === "sandbox" ? "sandbox" : true); this.input = input; this.dryRun = input.dryRun === true; }
     else if (operation === "copy" || operation === "delete" || operation === "move") {
@@ -80,6 +84,7 @@ export class FileMutation {
     const budget = new PreviewBudget(), batch = this.operation === "file_batch" ? this.input as BatchInput : undefined;
     const list = batch?.operations ?? this.input as readonly FileOperationInput[];
     let index = 0;
+    let pathIndex = 0;
     try {
       await this.service!.beginMutation?.(this.operation, this.id, this.requestHash, list, this.dryRun, signal);
       for (; index < list.length; index++) {
@@ -90,21 +95,33 @@ export class FileMutation {
         for (const key of INPUT_FIELDS) {
           if (source[key] !== undefined) (input as unknown as Record<string, unknown>)[key] = source[key];
         }
-        const item = await this.service!.prepareV3(operation, input, signal, batch?.operations[index].mode, budget) as PreparedMutationItem;
+        const target = this.canonicalPaths?.[pathIndex++] ?? resolve(this.service!.cwd, input.path);
+        const destination = input.destination === undefined ? undefined : this.canonicalPaths?.[pathIndex++] ?? resolve(this.service!.cwd, input.destination);
+        let item: PreparedMutationItem;
+        try { item = await this.service!.prepareV3(operation, input, signal, batch?.operations[index].mode, budget) as PreparedMutationItem; }
+        catch (error) {
+          this.assertLive(); signal?.throwIfAborted();
+          if (!batch) throw error;
+          assertFileBatchItemFailure(error);
+          item = { operation, input, target, executionPath: target, paths: destination ? [target, destination] : [target],
+            generation: this.service!.revisions.generation, requestHash: mutationRequestHash(operation, input), itemId: `${this.id}:${index}`,
+            approval: { canonicalTarget: target, protectedRoots: [] }, unprepared: true,
+            preparationFailure: boundedReason(error instanceof Error ? error.message : String(error)) };
+        }
         item.itemId = `${this.id}:${index}`; this.items.push(item);
       }
       this.assertLive(); signal?.throwIfAborted();
       // The shared trie sees directory child identities too, without duplicating the inventory.
       assertIndependent(this.items);
-      this.state = "ready"; this.input = undefined;
+      this.state = "ready"; this.input = undefined; this.canonicalPaths = undefined;
     } catch (error) {
       this.dispose(); throw new Error(`${this.id}:${index}: ${error instanceof Error ? error.message : String(error)}\nPreflight failed; no item executed.`, { cause: error });
     }
   }
   release(): void { this.revoked = true; if (this.state !== "preparing" && this.state !== "executing") this.dispose(); }
   private dispose(): void {
-    for (const item of this.items) this.service?.release(item);
-    this.items.length = 0; this.input = undefined; this.service = undefined; this.state = "released"; this.revoked = true;
+    for (const item of this.items) if (!item.unprepared) this.service?.release(item);
+    this.items.length = 0; this.input = undefined; this.canonicalPaths = undefined; this.service = undefined; this.state = "released"; this.revoked = true;
   }
   readonly describePreflight = (): string => {
     this.assertLive();
@@ -112,6 +129,7 @@ export class FileMutation {
     for (let index = 0; index < this.items.length; index++) {
       const item = this.items[index], tree = item.tree;
       text += `\n${index + 1}. ${item.operation}: ${displayMetadata(item.target)}`;
+      if (item.preparationFailure) { text += `; failed preflight: ${displayMetadata(item.preparationFailure)}`; continue; }
       if (tree?.destination) text += ` → ${displayMetadata(tree.destination)}`;
       if (tree) text += `; ${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.bytes} bytes, ${tree.tree.skippedLinks} skipped links`
         + (item.input.recursive ? "; recursive" : "") + (item.input.overwrite ? `; overwrite existing regular file (${tree.destinationIdentity?.size ?? "0"} bytes)` : "; exclusive destination");
@@ -220,7 +238,7 @@ class FileMutationExecution {
   }
   private preparation(item: PreparedMutationItem): Omit<FileResultPayload, "phase"> {
     const tree = item.tree;
-    return { operation: item.operation, inputHash: item.requestHash, target: item.target, destination: tree?.destination,
+    return { operation: item.operation, inputHash: item.requestHash, target: item.target, destination: item.paths[1],
       recursive: item.input.recursive, overwrite: item.input.overwrite,
       moveStrategy: item.remote?.prepared.header.moveStrategy ?? (item.operation === "move" && tree?.source.directory ? "copy_unlink_verified" : undefined),
       source: item.identity, sourceParent: tree?.sourceParent ?? item.snapshot?.parent ?? item.remote?.prepared.header.sourceParent ?? item.creation?.ancestor,
@@ -236,11 +254,24 @@ class FileMutationExecution {
   }
   readonly run = async (execute: ExecutePreparedFile): Promise<void> => {
     const { mutation } = this;
-    for (const item of mutation.items) await this.service.revalidate(item, this.fileHooks);
+    for (const item of mutation.items) {
+      if (item.unprepared) continue;
+      try { await this.service.revalidate(item, this.fileHooks); }
+      catch (error) {
+        this.assertCurrent();
+        if (mutation.operation !== "file_batch") throw error;
+        assertFileBatchItemFailure(error);
+        item.preparationFailure = boundedReason(error instanceof Error ? error.message : String(error));
+      }
+    }
     this.assertCurrent();
     if (mutation.dryRun) {
       for (let index = 0; index < mutation.items.length; index++) {
         const item = mutation.items[index];
+        if (item.preparationFailure) {
+          this.failed++; this.remember({ index, itemId: item.itemId, operation: item.operation, target: item.target,
+            status: "failed_no_change", stateChanged: false, reason: item.preparationFailure }); continue;
+        }
         const files = item.tree?.tree.files ?? 1, skippedLinks = item.tree?.tree.skippedLinks ?? 0;
         let directories = item.tree?.tree.directories ?? 0;
         if (item.creation) for (const path of item.creation.directories) {
@@ -273,7 +304,10 @@ class FileMutationExecution {
       this.assertCurrent();
       const item = mutation.items[this.current];
       this.fileHooks.resultIntentId = this.writer.intent(this.current, item.preparedId!); this.started++;
-      const receipt = await execute(item, mutation.id, this.fileHooks, item.itemId);
+      const receipt: FileReceipt = item.preparationFailure
+        ? { mutationReceiptVersion: 3 as const, operation: item.operation, target: item.target, destination: item.paths[1],
+            ok: false, status: "failed_no_change" as const, stateChanged: false, category: "PREFLIGHT_FAILED", reason: item.preparationFailure }
+        : await execute(item, mutation.id, this.fileHooks, item.itemId);
       const metadata = projectMutationReceipt(receipt);
       if (this.writer.diagnostics.poisoned) {
         // No automatic replay or private version survives loss of the terminal journal.
@@ -305,12 +339,29 @@ class FileMutationExecution {
       this.requiresVerification ||= receipt.requiresVerification === true;
       this.coverageComplete &&= metadata.coverageComplete !== false && receipt.status !== "partial" && receipt.status !== "state_unknown";
       this.remember({ index: this.current, itemId: item.itemId, ...metadata });
-      if (receipt.stopInvocation === true || receipt.status === "state_unknown" || receipt.status === "cancelled" || mutation.operation === "file_batch" && receipt.status !== "succeeded") break;
+      if (receipt.stopInvocation === true) {
+        const reason = receipt.reason ?? receipt.cause;
+        this.reason = boundedReason(typeof reason === "string" ? reason : "File invocation must stop; verify its authority before continuing."); break;
+      }
+      if (mutation.operation === "file_batch" && receipt.requiresVerification === true
+        || receipt.status === "state_unknown" || receipt.status === "cancelled") break;
     }
-    this.resultRef = this.writer.finish();
+    this.resultRef = this.writer.finish(this.reason);
   };
   async execute() {
-    try { await this.service.withPreparedItems(this.mutation.items, this.run, this.fileHooks); }
+    let prepared: readonly PreparedMutationItem[] = this.mutation.items;
+    let selected: PreparedMutationItem[] | undefined;
+    for (let index = 0; index < this.mutation.items.length; index++) {
+      const item = this.mutation.items[index];
+      if (item.unprepared && !selected) {
+        selected = []; for (let prior = 0; prior < index; prior++) selected.push(this.mutation.items[prior]);
+      } else if (!item.unprepared && selected) selected.push(item);
+    }
+    if (selected) prepared = selected;
+    try {
+      if (prepared.length) await this.service.withPreparedItems(prepared, this.run, this.fileHooks);
+      else await this.run(unavailableExecution);
+    }
     catch (error) {
       this.reason = boundedReason(error instanceof Error ? error.message : String(error));
       if (this.writer) {
@@ -336,9 +387,17 @@ class FileMutationExecution {
       this.remember({ index, itemId: item.itemId, operation: item.operation, target: item.target, destination: item.paths[1], status: "not_started", stateChanged: false });
     }
     const failed = this.failed + this.partial + this.unknown + this.cancelled;
-    const text = mutation.dryRun && !this.reason ? `Preflight passed for ${mutation.items.length} items. No changes; apply prepares and authorizes again.`
+    const text = mutation.dryRun && !this.reason ? this.failed
+      ? `Preflight: ${mutation.items.length - this.failed} ready, ${this.failed} failed. No changes.`
+      : `Preflight passed for ${mutation.items.length} items. No changes; apply prepares and authorizes again.`
       : `${mutation.operation}: ${this.succeeded} succeeded, ${this.failed} failed, ${this.partial} partial, ${this.unknown} unknown, ${this.cancelled} cancelled, ${notStarted} not started.`;
-    const summary = text + (this.reason ? `\n${displayMetadata(this.reason)}` : "") + (this.resultRef ? `\nResult records: ${this.resultRef}` : "");
+    let summary = text + (this.reason ? `\n${displayMetadata(this.reason)}` : "");
+    if (mutation.operation === "file_batch") {
+      for (const failure of this.failures) summary += `\nFailed item ${Number(failure.index) + 1}: ${displayMetadata(String(failure.target))} — ${displayMetadata(String(failure.reason ?? failure.status))}`;
+      if (this.failureCount > this.failures.length) summary += `\n${this.failureCount - this.failures.length} more failures are available in file_result.`;
+      if (failed || notStarted) summary += "\nDo not repeat successful items. Reconcile only the failed or unstarted items; no automatic retry was performed.";
+    }
+    if (this.resultRef) summary += `\nResult records: ${this.resultRef}`;
     const single = mutation.operation !== "file_batch" && mutation.items.length === 1 && this.items?.length === 1 ? this.items[0] : undefined;
     const display = single && this.singlePreviewDiff ? summary + "\n" + this.singlePreviewDiff : summary;
     return { content: [{ type: "text" as const, text: display }], details: {

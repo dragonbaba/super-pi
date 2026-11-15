@@ -14,6 +14,7 @@ import { CodemodeStore } from "./codemode-store.ts";
 import { saveCodemodeImages } from "./codemode-images.ts";
 import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars, persistCodemodeResult } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
+import { completedFileBatchFailure } from "./files/file-batch-outcome.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
 import { truncateTail } from "./tools/truncate.ts";
 import { codemodeFailureReason, codemodeFailureWindow, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
@@ -21,7 +22,7 @@ import { codemodeFailureReason, codemodeFailureWindow, codemodeInputSummary, cod
 /** Result quota excludes input. Only native-read path/range primitives survive dispatch. */
 interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown> | undefined; chars: number; contentChars: number; imageChars: number;
 	fact: ChildFact; recovery: { path: string; capped: boolean } | undefined;
-	recoveryAttempted: boolean; recoveryPending: Promise<{ path: string; capped: boolean }> | undefined; }
+	recoveryAttempted: boolean; recoveryPending: Promise<{ path: string; capped: boolean }> | undefined; automaticallyShown: boolean; }
 /** Durable mutation outcome; `observationError` is kept outside the receipt-bearing result. */
 interface CodemodeResultEntry { version: 1; parentToolCallId: string; result: ToolResultMessage; observationError?: string; }
 type ChildFact = CodemodeChildDisplay;
@@ -367,7 +368,8 @@ export class CodemodeController {
 		const raw = await invocation.context.callTool(name, input, review ? allowFailure ? REVIEW_ALLOW_FAILURE : REQUEST_REVIEW : allowFailure ? ALLOW_FAILURE : undefined);
 		const systemFailure = !!raw.observationFailure || invocation.signal?.aborted === true || raw.details?.requiresVerification === true
 			|| invocation.failedRecordings?.includes(raw.toolCallId) === true;
-		const failureHandled = raw.isError && allowFailure && !systemFailure;
+		const batchPartial = raw.isError && name === "file_batch" && completedFileBatchFailure(raw.details) && !systemFailure;
+		const failureHandled = raw.isError && (allowFailure || batchPartial) && !systemFailure;
 		const fact: ChildFact = { toolCallId: raw.toolCallId, toolName: raw.toolName, isError: raw.isError,
 			preview: raw.observationFailure ? codemodeFailureWindow(raw.observationFailure.error) : preview(raw), inputSummary: codemodeInputSummary(input), sequence, runtimeCallId, systemFailure, durationMs: Date.now() - startedAt,
 			executed: raw.executionStatus !== "not_executed", resultComplete: "unknown", displayLimited: false, failureHandled };
@@ -422,7 +424,7 @@ export class CodemodeController {
 		const readInput = name === "read" && typeof input.path === "string" && input.path.length <= 32768
 			&& (input.offset === undefined || typeof input.offset === "number") && (input.limit === undefined || typeof input.limit === "number")
 			? { path: input.path, offset: input.offset, limit: input.limit } : undefined;
-		const record: ChildRecord = { result, input: readInput, chars, contentChars, imageChars, fact, recovery: undefined, recoveryAttempted: false, recoveryPending: undefined };
+		const record: ChildRecord = { result, input: readInput, chars, contentChars, imageChars, fact, recovery: undefined, recoveryAttempted: false, recoveryPending: undefined, automaticallyShown: false };
 		while ((invocation.retainedChars + chars > MAX_CODEMODE_RETAINED_CHARS
 			|| invocation.retainedImageChars + imageChars > MAX_RETAINED_IMAGE_CHARS
 			|| invocation.records.size >= MAX_RETAINED_RECORDS) && invocation.records.size) {
@@ -445,6 +447,10 @@ export class CodemodeController {
 			invocation.evicted.set(ref, fact);
 			fact.evicted = true;
 			await this.recoverRecord(record);
+		}
+		if (batchPartial) {
+			// Completed item outcomes remain visible even when the script omits show().
+			await this.show(ref); record.automaticallyShown = true;
 		}
 		if (result.isError && !failureHandled) {
 			// Failure throws before the script can show(ref). Preserve partial browser
@@ -483,6 +489,7 @@ export class CodemodeController {
 			invocation.displayLimited = evicted.displayLimited = true;
 			return { evicted: true, ref, path: evicted.outputPath, capped: evicted.recoveryCapped, recoveryError: evicted.recoveryError };
 		}
+		if (record.automaticallyShown) return;
 		const limited = invocation.shownChars + record.contentChars > MAX_SHOWN_CHARS
 			|| invocation.shown.length + record.result.content.length > 256
 			|| invocation.shownImageChars + record.imageChars > MAX_SHOWN_IMAGE_CHARS;

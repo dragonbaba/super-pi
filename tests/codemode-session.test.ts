@@ -712,6 +712,29 @@ test("default extension bundle allows sequential verification after an authorize
 	assert.match(JSON.stringify(outcome.results.at(-1)?.content), /changed/);
 });
 
+for (const showResult of [false, true]) test(`completed batch item failures continue the script and expose only failed files, show=${showResult}`, async t => {
+  const f = await fixture(t);
+  const outcome = await f.run([`await tools.read({path:"file.txt"});
+    const r=await tools.file_batch({operations:[
+      {operation:"write",mode:"create",path:"first.txt",content:"first"},
+      {operation:"edit",path:"file.txt",edits:[{oldText:"missing text",newText:"changed"}]},
+      {operation:"write",mode:"create",path:"last.txt",content:"last"}]});
+    ${showResult ? "await show(r.ref);" : ""}store("continued",true);text("continued after batch");`]);
+  const parent = outcome.results.at(-1)!;
+  assert.equal(parent.isError, false, JSON.stringify(parent));
+  const text = JSON.stringify(parent.content);
+  assert.match(text, /CODEMODE_PARTIAL/); assert.match(text, /continued after batch/);
+  assert.match(text, /2 succeeded, 1 failed/); assert.match(text, /file\.txt/);
+  assert.equal((text.match(/Failed item 2:/g) ?? []).length, 1, "failure is shown once even with an explicit show");
+  assert.equal(readFileSync(join(f.cwd, "first.txt"), "utf8"), "first");
+  assert.equal(readFileSync(join(f.cwd, "last.txt"), "utf8"), "last");
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "hello\nworld\n");
+  const next = await f.run(['text(load("continued"));await tools.file_batch({operations:[{operation:"edit",path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]}]});']);
+  assert.equal(next.results.at(-1)?.isError, false, JSON.stringify(next.results.at(-1)));
+  assert.match(JSON.stringify(next.results.at(-1)?.content), /true/);
+  assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "changed\nworld\n");
+});
+
 test("native files have one owner and support same-script unshown read/edit in default and zero-extension sessions", { timeout: 15_000 }, async t => {
   for (const bundle of [false, true]) {
     const f = await fixture(t, {}, [], bundle);

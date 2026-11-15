@@ -3,12 +3,13 @@ import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, symlinkSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
 import { FileMutation } from "../packages/coding-agent/src/core/files/file-mutation.ts";
+import { completedFileBatchFailure } from "../packages/coding-agent/src/core/files/file-batch-outcome.ts";
 import { FileResultReader } from "../packages/coding-agent/src/core/files/file-result-store.ts";
 import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-result-protocol.ts";
 import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
@@ -107,7 +108,7 @@ test("native targets cross inline and page boundaries while publishing every ter
   assert.equal(terminal, count); assert(sawLast); assert(coverage);
 });
 
-test("independent arrays continue ordinary failures; ordered file_batch stops with an explicit suffix", async t => {
+test("independent arrays and file_batch continue confirmed ordinary failures", async t => {
   for (const batch of [false, true]) {
     const f = await fixture(t); await mkdir(join(f.cwd, "source")); await mkdir(join(f.cwd, "destination"));
     for (const path of ["a", "b", "c"]) await writeFile(join(f.cwd, "source", path), path);
@@ -120,12 +121,53 @@ test("independent arrays continue ordinary failures; ordered file_batch stops wi
       return id;
     };
     const result = await mutation.execute(f.session, append, { record: unexpectedLegacy, assertCurrent: current });
-    assert.equal(result.isError, true); assert.equal(result.details.succeeded, batch ? 1 : 2); assert.equal(result.details.failed, 1);
-    assert.equal(result.details.notStarted, batch ? 1 : 0);
+    assert.equal(result.isError, true); assert.equal(result.details.succeeded, 2); assert.equal(result.details.failed, 1);
+    assert.equal(result.details.notStarted, 0);
     assert.equal(result.details.items![1].status, "failed_no_change");
-    assert.equal(result.details.items![2].status, batch ? "not_started" : "succeeded");
+    assert.equal(result.details.items![2].status, "succeeded");
     assert.equal(await readFile(join(f.cwd, "source", "b"), "utf8"), "changed after ready");
   }
+});
+
+for (const withSuccessor of [true, false]) test(`a retargeted path stops even the final item and releases the next invocation, successor=${withSuccessor}`, async t => {
+  const f = await fixture(t), original = join(f.cwd, "original"), replacement = join(f.cwd, "replacement"), retained = join(f.cwd, "retained");
+  for (const path of [original, replacement]) { await mkdir(path); await writeFile(join(path, "kept"), "same content"); }
+  const mutation = f.mutation("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "first", content: "committed" },
+    { operation: "delete", path: "original/kept" },
+    ...(withSuccessor ? [{ operation: "write", mode: "create", path: "last", content: "unstarted" }] : []),
+  ] }); await mutation.prepare();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = f.session.appendCustomEntry(kind, data), payload = JSON.parse(data.payload);
+    if (payload.phase === "intent" && payload.index === 1) { renameSync(original, retained); symlinkSync(replacement, original, process.platform === "win32" ? "junction" : "dir"); }
+    return id;
+  }, { assertCurrent: current, record: unexpectedLegacy });
+  assert.equal(result.details.succeeded, 1, JSON.stringify(result)); assert.equal(result.details.failed, 1); assert.equal(result.details.notStarted, withSuccessor ? 1 : 0);
+  assert.equal(result.details.items![1].stopInvocation, true);
+  assert.equal(completedFileBatchFailure(result.details), false, "last-item authority loss must still fail its containing script");
+  for (const path of [retained, replacement]) assert.equal(await readFile(join(path, "kept"), "utf8"), "same content");
+  await assert.rejects(lstat(join(f.cwd, "last")), { code: "ENOENT" });
+  const next = f.mutation("write", { path: "next", content: "allowed" }, "next-call"); await next.prepare();
+  assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
+});
+
+test("large all-failed batch bounds failure excerpts while retaining every terminal outcome", async t => {
+  const f = await fixture(t), operations = [];
+  for (let index = 0; index < 40; index++) operations.push({ operation: "delete", path: "missing-" + index });
+  const mutation = f.mutation("file_batch", { operations }); await mutation.prepare();
+  const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy });
+  assert.equal(result.details.failed, 40); assert.equal(result.details.succeeded, 0); assert.equal(result.details.complete, true);
+  assert.equal(result.details.notStarted, 0); assert.equal(result.details.itemsOmitted, true);
+  assert.equal(result.details.failureSamples.length, 8); assert.equal(result.details.failuresOmitted, 32);
+  assert.match(result.content[0].text, /32 more failures/);
+  const reader = new FileResultReader(f.session); t.after(() => reader.dispose());
+  let cursor: string | undefined, failures = 0;
+  do {
+    const page = reader.read(result.details.resultRef!, cursor, 16);
+    for (const row of page.records) if (row.record.phase === "result") { assert.equal(row.record.status, "failed_no_change"); failures++; }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  assert.equal(failures, 40);
 });
 
 test("whole-call preflight rejects a protected later item before any effect", async t => {
@@ -136,7 +178,7 @@ test("whole-call preflight rejects a protected later item before any effect", as
   assert.equal(f.session.getEntries().filter(entry => entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY).length, 0);
 });
 
-for (const failure of ["missing-later-edit", "ambiguous-edit"] as const) test(`native batch ${failure} leaves every target untouched and permits a corrected next batch`, async t => {
+for (const failure of ["missing-later-edit", "ambiguous-edit"] as const) test(`native batch ${failure} preflights first, continues independent items and retries only the corrected item`, async t => {
   const f = await fixture(t), source = failure === "missing-later-edit" ? "a\nb\nc\nd\ne\n" : "shared\nleft\nshared\nright\n";
   const append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data);
   const hooks = { assertCurrent: current, record: unexpectedLegacy };
@@ -150,20 +192,32 @@ for (const failure of ["missing-later-edit", "ambiguous-edit"] as const) test(`n
     { operation: "edit", path: "existing.txt", edits },
     { operation: "write", path: "new/last.txt", mode: "create", content: "last" },
   ];
-  const failed = f.mutation("file_batch", { operations }, "failed-batch");
-  await assert.rejects(failed.prepare(), failure === "missing-later-edit" ? /edits\[4\]\.oldText was not found/ : /oldText is ambiguous/);
+  const preview = f.mutation("file_batch", { operations, dryRun: true }, "preview-batch"); await preview.prepare();
+  const checked = await preview.execute(f.session, append, hooks); assert.equal(checked.details.failed, 1); assert.equal(checked.details.preview, true);
   assert.equal(await readFile(join(f.cwd, "existing.txt"), "utf8"), source);
   await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
-  assert.equal(f.session.getEntries().some(entry => entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY && (entry.data as any).toolCallId === "failed-batch"), false);
+  const failed = f.mutation("file_batch", { operations }, "failed-batch"); await failed.prepare();
+  await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
+  const partial = await failed.execute(f.session, append, hooks);
+  assert.equal(partial.details.succeeded, 2); assert.equal(partial.details.failed, 1); assert.equal(partial.details.notStarted, 0);
+  assert.deepEqual(partial.details.items!.map(item => item.status), ["succeeded", "failed_no_change", "succeeded"]);
+  assert.match(partial.content[0].text, failure === "missing-later-edit" ? /edits\[4\]\.oldText was not found/ : /oldText is ambiguous/);
+  assert.doesNotMatch(partial.content[0].text, /first\.txt|last\.txt/);
+  assert.equal(await readFile(join(f.cwd, "existing.txt"), "utf8"), source);
+  const first = await lstat(join(f.cwd, "new/first.txt")), last = await lstat(join(f.cwd, "new/last.txt"));
+  const reader = new FileResultReader(f.session); t.after(() => reader.dispose());
+  assert.equal(reader.read(partial.details.resultRef!).records.filter(row => row.record.phase === "result").length, 3);
   const corrected = failure === "missing-later-edit"
     ? ["a", "b", "c", "d", "e"].map(oldText => ({ oldText, newText: oldText.toUpperCase() }))
     : [{ oldText: "shared\nleft", newText: "changed\nleft" }];
-  const next = f.mutation("file_batch", { operations: [operations[0], { ...operations[1], edits: corrected }, operations[2]] }, "corrected-batch");
+  const next = f.mutation("file_batch", { operations: [{ ...operations[1], edits: corrected }] }, "corrected-batch");
   await next.prepare(); const result = await next.execute(f.session, append, hooks);
-  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 3);
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 1);
   assert.equal(await readFile(join(f.cwd, "existing.txt"), "utf8"), failure === "missing-later-edit" ? "A\nB\nC\nD\nE\n" : "changed\nleft\nshared\nright\n");
   assert.equal(await readFile(join(f.cwd, "new/first.txt"), "utf8"), "first");
   assert.equal(await readFile(join(f.cwd, "new/last.txt"), "utf8"), "last");
+  assert.equal((await lstat(join(f.cwd, "new/first.txt"))).mtimeMs, first.mtimeMs);
+  assert.equal((await lstat(join(f.cwd, "new/last.txt"))).mtimeMs, last.mtimeMs);
 });
 
 test("dryRun has no journal or directories and cannot issue an execution resultRef", async t => {

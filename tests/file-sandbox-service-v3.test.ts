@@ -44,6 +44,74 @@ async function fixture(t: test.TestContext, changeReply?: (request: any, reply: 
   return { ...f, cwd, definitions, owner, sends, owned, call: (name: string, input: any) => f.invoke(definitions, name, input) };
 }
 
+for (const failedIndex of [0, 1, 2]) test(`sandbox batch retains item ${failedIndex} preflight failure and executes independent items once`, async t => {
+  const f = await fixture(t);
+  const operations: any[] = [];
+  for (let index = 0; index < 3; index++) operations.push(index === failedIndex
+    ? { operation: "copy", path: "missing", destination: "failed-copy" }
+    : { operation: "write", mode: "create", path: "new/file-" + index, content: "kept" });
+  const preview = await f.call("file_batch", { operations, dryRun: true });
+  assert.equal(preview.details.failed, 1, JSON.stringify(preview)); assert.equal(preview.details.preview, true);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false);
+  await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
+  assert.equal(f.owned.size, 0);
+  const result = await f.call("file_batch", { operations });
+  assert.equal(result.details.succeeded, 2, JSON.stringify(result)); assert.equal(result.details.failed, 1);
+  assert.equal(result.details.notStarted, 0); assert.equal(result.details.complete, true);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 2);
+  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose());
+  const rows = reader.read(result.details.resultRef).records.filter(row => row.record.phase === "result");
+  assert.equal(rows.length, 3); assert.equal(rows.find(row => row.record.index === failedIndex)!.record.status, "failed_no_change");
+  for (let index = 0; index < 3; index++) if (index !== failedIndex) {
+    assert.equal(await readFile(join(f.cwd, "new/file-" + index), "utf8"), "kept");
+    assert.doesNotMatch(result.content[0].text, new RegExp("file-" + index));
+  }
+  await writeFile(join(f.cwd, "missing"), "fixed");
+  const corrected = await f.call("file_batch", { operations: [operations[failedIndex]] });
+  assert.equal(corrected.isError, false, JSON.stringify(corrected));
+  assert.equal(await readFile(join(f.cwd, "failed-copy"), "utf8"), "fixed");
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 3); assert.equal(f.owned.size, 0);
+});
+
+test("sandbox batch validation detects a changed preimage before effects and continues independent files", async t => {
+  let changed = false;
+  const f = await fixture(t, (request) => {
+    if (!changed && request.phase === "prepare") { changed = true; fsSync.writeFileSync(join(f.cwd, "source"), "external change"); }
+  });
+  await writeFile(join(f.cwd, "source"), "original");
+  const result = await f.call("file_batch", { operations: [
+    { operation: "copy", path: "source", destination: "copied" },
+    { operation: "write", mode: "create", path: "independent", content: "kept" },
+  ] });
+  assert.equal(result.details.succeeded, 1, JSON.stringify(result)); assert.equal(result.details.failed, 1);
+  assert.equal(result.details.notStarted, 0); assert.equal(f.sends.filter(row => row.phase === "execute").length, 1);
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "external change");
+  assert.equal(await readFile(join(f.cwd, "independent"), "utf8"), "kept");
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+});
+
+test("sandbox invalid per-item refusal is a protocol failure before any effect", async t => {
+  const f = await fixture(t, (request, reply) => {
+    if (request.phase === "prepare") reply.items[1] = { index: 1, error: "not a confirmed refusal", noEffects: false };
+  });
+  await assert.rejects(f.call("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "first", content: "kept" },
+    { operation: "write", mode: "create", path: "last", content: "kept" },
+  ] }), /FILE_RPC_INVALID/);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false);
+  await assert.rejects(lstat(join(f.cwd, "first")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+});
+
+test("sandbox batch with no prepared files publishes complete failures and releases artifacts", async t => {
+  const f = await fixture(t);
+  const result = await f.call("file_batch", { operations: [
+    { operation: "delete", path: "absent-one" }, { operation: "copy", path: "absent-two", destination: "copy" },
+  ] });
+  assert.equal(result.details.succeeded, 0, JSON.stringify(result)); assert.equal(result.details.failed, 2);
+  assert.equal(result.details.complete, true); assert.equal(result.details.notStarted, 0);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false); assert.equal(f.owned.size, 0);
+});
+
 test("sandbox v3 uses the session journal and SHA continuation without native versions", async t => {
   const f = await fixture(t);
   const first = await f.call("write", { path: "deep/one", content: "one" }); assert.equal(first.isError, false, JSON.stringify(first));

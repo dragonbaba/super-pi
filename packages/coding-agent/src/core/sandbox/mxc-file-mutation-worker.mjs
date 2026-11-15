@@ -199,12 +199,19 @@ export async function runFileMutationRequest(request, serializedRequest) {
     await validateFileMutationEnvelope(request);
     for (let offset = 0; offset < request.items.length; offset++) {
       const item = request.items[offset], index = request.start + offset, control = request.control.prepared[offset];
-      if (request.phase === 'prepare') reply.items.push(await prepareFileWorkerManifest(request, item, index, control.owned, prepareTextMutation));
-      else if (request.phase === 'validate') {
-        const prepared = await readFileWorkerManifest(request, item, index, control.manifest);
-        reply.items.push({ index, validated: await revalidateFileWorkerManifest(request, item, prepared, request.control.preview === true) });
-      } else reply.items.push({ index, readyHash: request.control.readyHash, intentId: request.control.intentId,
-        receipt: await new WorkerItemExecution(request, item, index, control).run() });
+      // Artifact identity/protocol failures poison the invocation; only a valid
+      // prepared plan's changed file precondition is an ordinary item failure.
+      const prepared = request.phase === 'validate' ? await readFileWorkerManifest(request, item, index, control.manifest) : undefined;
+      try {
+        if (request.phase === 'prepare') reply.items.push(await prepareFileWorkerManifest(request, item, index, control.owned, prepareTextMutation));
+        else if (request.phase === 'validate') {
+          reply.items.push({ index, validated: await revalidateFileWorkerManifest(request, item, prepared, request.control.preview === true) });
+        } else reply.items.push({ index, readyHash: request.control.readyHash, intentId: request.control.intentId,
+          receipt: await new WorkerItemExecution(request, item, index, control).run() });
+      } catch (error) {
+        if (request.operation !== 'file_batch' || request.phase === 'execute') throw error;
+        reply.items.push({ index, error: boundedReason(error instanceof Error ? error.message : String(error)), noEffects: true });
+      }
     }
     reply.ok = true;
   } catch (error) { reply.error = boundedReason(error instanceof Error ? error.message : String(error)); reply.noEffects = request?.phase !== 'execute'; }

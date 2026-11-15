@@ -1499,7 +1499,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
     return entry;
   });
   const result = await call("sdk-batch", { operations: [{ operation: "write", mode: "create", path: "committed", content: "postimage" }, { operation: "delete", path: "stale" }, { operation: "write", mode: "create", path: "remaining", content: "desired" }] });
-  assert.equal(result.isError, true);
+  assert.equal(result.isError, false); assert.match(JSON.stringify(result.content), /CODEMODE_PARTIAL/);
   const reader = new FileChangesV3(manager);
   const reference = (await reader.calls()).find(call => call.toolCallId === "sdk-batch:nested:1")!.ref; reader.dispose();
   async function inspectChanges() {
@@ -1513,7 +1513,8 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   assert.ok(manager.getBranch().some((e: any) => e.customType === "file-change-verification-v1" && e.data.postimageMatches === true), JSON.stringify(collectChanges(manager.getBranch(), cwd)));
   action = "Draft remaining request";
   await inspectChanges();
-  assert.match(input, /remaining/); assert.equal(existsSync(join(cwd, "remaining")), false);
+  assert.match(input, /stale/); assert.doesNotMatch(input, /"path":\s*"remaining"/);
+  assert.equal(readFileSync(join(cwd, "remaining"), "utf8"), "desired");
   assert.deepEqual(notices, []);
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal((session.extensionRunner as any).finalAuthorizations.size, 0);
   const file = manager.getSessionFile()!;
@@ -1524,7 +1525,7 @@ test("N1 actual default SDK Session: view/verify/draft do not trigger provider c
   action = "View";
   await inspectChanges();
   assert.deepEqual(notices, []);
-  assert.equal(existsSync(join(cwd, "remaining")), false);
+  assert.equal(readFileSync(join(cwd, "remaining"), "utf8"), "desired");
   assert.equal(readFileSync(join(cwd, "committed"), "utf8"), "postimage");
   assert.equal(providerCalls, callsBeforeCommands);
 });

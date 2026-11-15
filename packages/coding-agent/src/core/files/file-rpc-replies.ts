@@ -11,6 +11,7 @@ import { directoryKey } from "./file-creation-core.mjs";
 
 const REPLY_FIELDS = new Set(["version", "rpc", "id", "callId", "requestHash", "generation", "itemCount", "start", "phase", "wireHash", "ok", "items", "error", "noEffects"]);
 const PREPARED_FIELDS = new Set(["index", "manifest"]), VALIDATED_FIELDS = new Set(["index", "validated"]), CONTENT_FIELDS = new Set(["sourceSha256", "previousSha256"]);
+const ITEM_FAILURE_FIELDS = new Set(["index", "error", "noEffects"]);
 const EXECUTED_FIELDS = new Set(["index", "readyHash", "intentId", "receipt"]);
 const RECEIPT_FIELDS = new Set(["mutationReceiptVersion", "operation", "target", "destination", "status", "stateChanged", "ok", "requiresVerification", "reason", "stopInvocation",
   "bytes", "files", "directories", "skippedLinks", "coverageComplete", "sha256", "previousSha256", "snapshot", "created", "category", "commit", "creation", "createdParents"]);
@@ -45,6 +46,13 @@ export function fileRpcPreparedManifest(row: unknown, owned: OwnedManifestFile):
   const artifact = validateManifestArtifact(row.manifest, owned.name);
   need(artifact.device === owned.device && artifact.inode === owned.inode, "Preparation replaced the host-assigned artifact object");
   return Object.freeze(artifact);
+}
+export function fileRpcItemFailure(row: unknown): string | undefined {
+  if (!row || typeof row !== "object" || !("error" in row)) return undefined;
+  const value = row as Record<string, unknown>;
+  fields(value, ITEM_FAILURE_FIELDS);
+  need(count(value.index) && typeof value.error === "string" && reason(value.error) && value.noEffects === true, "Invalid item failure acknowledgement");
+  return value.error;
 }
 export function fileRpcValidatedContent(row: unknown, prepared: PreparedFileWorkerManifest, preview: boolean): Readonly<ValidatedFileWorkerContent> {
   fields(row, VALIDATED_FIELDS); fields(row.validated, CONTENT_FIELDS);
