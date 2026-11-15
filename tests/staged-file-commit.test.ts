@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, writeFile, readFile, readdir, rm, rename, link, lstat, realpath, unlink, symlink } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm, rename, link, lstat, realpath, unlink, symlink, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -32,6 +32,17 @@ for (const replacement of ["dangling-link", "missing"]) test(`publication open f
   });
   assert.equal(validations, 0, "the failing open precedes publication validation");
   assert.deepEqual(await readdir(f.root), replacement === "dangling-link" ? ["中文.txt"] : []);
+});
+
+for (const replacement of ["dangling-link", "missing"]) test(`publication open classifies higher ${replacement} ancestor`, async t => {
+  const f = await fixture(t), ancestor = join(f.root, "original"), target = join(ancestor, "inner/file");
+  await mkdir(dirname(target), { recursive: true }); await writeFile(target, f.content);
+  f.plan.target = await capturePathIdentity(target); f.plan.parent = await capturePathIdentity(dirname(target)); f.hooks.assertPathAllowed = async () => target;
+  await rename(ancestor, join(f.root, "retained")); if (replacement === "dangling-link") await symlink(join(f.root, "absent-target"), ancestor, process.platform === "win32" ? "junction" : "dir");
+  await assert.rejects(commitPreparedFile(f.plan, Buffer.from("next"), f.hooks), (error: unknown) => {
+    assert(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed"); assert.equal(error.stopInvocation === true, replacement === "dangling-link"); return true;
+  });
+  assert.equal(await readFile(join(f.root, "retained/inner/file"), "utf8"), f.content);
 });
 
 test("N2 shared commit publishes a complete BOM/CRLF candidate and releases its temporary", async t => {

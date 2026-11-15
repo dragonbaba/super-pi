@@ -100,6 +100,36 @@ for (const operation of ['write', 'edit']) for (const replacement of ['dangling-
   } finally { t.mock.restoreAll(); }
 });
 
+for (const replacement of ['dangling-link', 'missing']) test(`worker hash-open classifies higher ${replacement} ancestor`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'original/inner/target', overwrite: true }]);
+  const source = join(f.workspace, 'source'), ancestor = join(f.workspace, 'original'); await mkdir(join(ancestor, 'inner'), { recursive: true });
+  await writeFile(source, 'source'); await writeFile(join(ancestor, 'inner/target'), 'original');
+  const prepared = await f.prepare(), originalOpen = fsPromises.open; let injected = false;
+  t.mock.method(fsPromises, 'open', async (path, ...args) => {
+    if (!injected && path === source) { injected = true; await rename(ancestor, join(f.workspace, 'retained')); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), ancestor, process.platform === 'win32' ? 'junction' : 'dir'); }
+    return originalOpen(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const rows = await f.validate(prepared); assert.match(rows[0].error, /ENOENT/); assert.equal(rows[0].noEffects, true); }
+    assert.equal(injected, true); assert.equal(await readFile(join(f.workspace, 'retained/inner/target'), 'utf8'), 'original');
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test('worker assigned workspace paths and owned artifact names remain invocation protocol failures', async t => {
+  const outside = await fixture(t, [{ operation: 'delete', path: '../outside' }]);
+  await assert.rejects(outside.prepare(), /FILE_WORKSPACE_PATH/);
+  const escaped = await fixture(t, [{ operation: 'copy', path: 'original/inner/source', destination: 'target' }]);
+  const external = join(escaped.root, 'external'); await mkdir(join(external, 'inner'), { recursive: true }); await writeFile(join(external, 'inner/source'), 'kept');
+  await symlink(external, join(escaped.workspace, 'original'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(escaped.prepare(), /FILE_WORKSPACE_PATH/);
+  assert.equal(await readFile(join(external, 'inner/source'), 'utf8'), 'kept');
+  const owned = await fixture(t, [{ operation: 'write', mode: 'create', path: 'target', content: 'new' }]);
+  const info = await lstat(join(owned.exchange, owned.request.id + '-0.manifest'), { bigint: true });
+  const reply = await owned.rpc('prepare', 0, owned.items, [{ owned: { name: owned.request.id + '-99.manifest', device: String(info.dev), inode: String(info.ino) } }]);
+  assert.equal(reply.ok, false); assert.equal(reply.noEffects, true); assert.match(reply.error, /FILE_MANIFEST_INVALID/);
+});
+
 test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {
   const f = await fixture(t, [{ operation: 'write', mode: 'create', path: 'first', content: 'kept' }]);
   await writeFile(join(f.exchange, f.request.id + '-0.manifest'), 'foreign bytes');

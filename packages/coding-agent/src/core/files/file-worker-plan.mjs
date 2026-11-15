@@ -169,7 +169,7 @@ export async function readFileWorkerManifest(request, item, index, descriptor) {
 }
 
 export async function prepareFileWorkerManifest(request, item, index, owned, textPreparation) {
-  need(owned?.name === request.id + '-' + index + '.manifest', 'Unexpected host-assigned manifest name');
+  if (owned?.name !== request.id + '-' + index + '.manifest') throw new Error('[FILE_MANIFEST_INVALID] Unexpected host-assigned manifest name');
   const rootIndex = item.workspaceIndex, target = workspaceFilePath(request.workspaces, rootIndex, item.path, item.operation === 'copy');
   const header = { kind: 'file-plan-v3', ownerId: request.id, generation: request.generation, callId: request.callId, requestHash: request.requestHash, index, itemCount: request.itemCount,
     operation: item.operation, inputHash: item.inputHash, workspaceIndex: rootIndex, destinationWorkspaceIndex: item.destinationWorkspaceIndex,

@@ -12,7 +12,7 @@ export function assertFilePathAuthority(expected, canonical, symbolicLink = fals
 export function fileInvocationMustStop(error) {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   return error instanceof Error && error.stopInvocation === true
-    || message.startsWith('[FILE_RPC_') || message.startsWith('[FILE_RESULT_') || message.startsWith('[FILE_MANIFEST_')
+    || message.startsWith('[FILE_RPC_') || message.startsWith('[FILE_RESULT_') || message.startsWith('[FILE_MANIFEST_') || message.startsWith('[FILE_WORKSPACE_')
     || message.startsWith('[EXECUTION_') || message.startsWith('[POLICY_BLOCKED]')
     || message.startsWith('[SANDBOX_') || error instanceof Error && error.name === 'AbortError';
 }

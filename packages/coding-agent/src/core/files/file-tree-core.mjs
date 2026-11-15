@@ -19,21 +19,41 @@ export async function capturePathIdentity(path, expected) {
 }
 /** Error lifecycle only: a failed resolution/open may hide a dangling replacement. */
 export async function assertFilePathAfterFailure(expected) {
-  let info;
-  try { info = await lstat(expected.path, { bigint: true }); } catch { return; }
-  assertFilePathAuthority(expected, expected.canonical, info.isSymbolicLink());
-  let canonical;
-  try { canonical = await realpath(expected.path); } catch { return; }
-  assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
+  let cursor = expected.path;
+  for (;;) {
+    let info;
+    try { info = await lstat(cursor, { bigint: true }); }
+    catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
+    const leaf = cursor === expected.path, link = info.isSymbolicLink();
+    if (leaf) assertFilePathAuthority(expected, expected.canonical, link);
+    let canonical;
+    try { canonical = await realpath(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
+    catch {
+      if (!leaf && link) throw new FileAuthorityError('Prepared path ancestor is an unresolved link.');
+      const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue;
+    }
+    const target = leaf ? expected.symbolicLink ? resolve(canonical, basename(cursor)) : canonical : resolve(canonical, relative(cursor, expected.path));
+    assertFilePathAuthority(expected, target, leaf ? link : Boolean(expected.symbolicLink)); return;
+  }
 }
 /** Controlled synchronous text publication has the same error-only boundary. */
 export function assertFilePathAfterFailureSync(expected) {
-  let info;
-  try { info = lstatSync(expected.path, { bigint: true }); } catch { return; }
-  assertFilePathAuthority(expected, expected.canonical, info.isSymbolicLink());
-  let canonical;
-  try { canonical = realpathSync(expected.path); } catch { return; }
-  assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
+  let cursor = expected.path;
+  for (;;) {
+    let info;
+    try { info = lstatSync(cursor, { bigint: true }); }
+    catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
+    const leaf = cursor === expected.path, link = info.isSymbolicLink();
+    if (leaf) assertFilePathAuthority(expected, expected.canonical, link);
+    let canonical;
+    try { canonical = realpathSync(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
+    catch {
+      if (!leaf && link) throw new FileAuthorityError('Prepared path ancestor is an unresolved link.');
+      const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue;
+    }
+    const target = leaf ? expected.symbolicLink ? resolve(canonical, basename(cursor)) : canonical : resolve(canonical, relative(cursor, expected.path));
+    assertFilePathAuthority(expected, target, leaf ? link : Boolean(expected.symbolicLink)); return;
+  }
 }
 export function pathIdentityFromStat(path, canonical, info, symbolicLink = false) {
   return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino), size: String(info.size),

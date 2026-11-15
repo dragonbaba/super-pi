@@ -16,7 +16,7 @@ import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
 import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
 import { prepareFileCreation, verifyCreationAncestor, executeFileCreation, FileCreationFailure } from "../packages/coding-agent/src/core/files/file-creation.ts";
-import { revalidateTree, executeTree } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
+import { revalidateTree, executeTree, capturePathIdentity, assertFilePathAfterFailure, assertFilePathAfterFailureSync } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
 
 async function fixture(t: test.TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), "file-mutation-v3-")); t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -261,6 +261,21 @@ for (const phase of ["validate", "execute"]) for (const replacement of ["danglin
     else { const receipt = await executeTree(item.tree!.tree, "delete", item.tree!.sourceParent, undefined, undefined, current); assert.equal(receipt.status, "failed_no_change"); assert.equal(receipt.stopInvocation === true, replacement === "dangling-link"); }
     assert.equal(injected, true);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const synchronous of [false, true]) for (const replacement of ["dangling-link", "missing"]) test(`failure lookup checks higher ${replacement} ancestry, sync=${synchronous}`, async t => {
+  const f = await fixture(t), ancestor = join(f.cwd, "original"), source = join(ancestor, "inner/source"); await mkdir(join(ancestor, "inner"), { recursive: true }); await writeFile(source, "original");
+  const identity = await capturePathIdentity(source); renameSync(ancestor, join(f.cwd, "retained")); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), ancestor, process.platform === "win32" ? "junction" : "dir");
+  if (synchronous) {
+    if (replacement === "dangling-link") assert.throws(() => assertFilePathAfterFailureSync(identity), /STALE_STATE/); else assert.doesNotThrow(() => assertFilePathAfterFailureSync(identity));
+  } else if (replacement === "dangling-link") await assert.rejects(assertFilePathAfterFailure(identity), /STALE_STATE/); else await assert.doesNotReject(assertFilePathAfterFailure(identity));
+});
+
+for (const synchronous of [false, true]) for (const missing of ["leaf", "parent"]) test(`failure lookup preserves missing ${missing} under an unchanged alias, sync=${synchronous}`, async t => {
+  const f = await fixture(t), real = join(f.cwd, "real"), alias = join(f.cwd, "alias"); await mkdir(join(real, "inner"), { recursive: true }); await writeFile(join(real, "inner/source"), "original");
+  symlinkSync(real, alias, process.platform === "win32" ? "junction" : "dir"); const identity = await capturePathIdentity(join(alias, "inner/source"));
+  if (missing === "leaf") unlinkSync(join(real, "inner/source")); else renameSync(join(real, "inner"), join(real, "retained"));
+  if (synchronous) assert.doesNotThrow(() => assertFilePathAfterFailureSync(identity)); else await assert.doesNotReject(assertFilePathAfterFailure(identity));
 });
 
 test("large all-failed batch bounds failure excerpts while retaining every terminal outcome", async t => {
