@@ -147,6 +147,8 @@ Users should be aware:
 - Malformed JSON in a successful remote-compaction SSE stream is a protocol failure; it is never skipped in favor of later events.
 - For GPT-series models, authentication, request-preview, provider-native compaction, or required portable-summary failure appends a `failed_closed` `compaction-telemetry-v1` entry, shows the bounded raw reason only in the transient UI error, and explicitly returns `{ cancel: true }` so Pi cannot run default local compaction. Persisted telemetry contains only model, fixed strategy, stage/reason enums, a privacy-safe `failureClass`, and producer version. Non-GPT models retain the previous fallback behavior. The existing tool-repair aggregate consumes these entries; this package creates no telemetry store. Raw errors, prompts, summaries, responses, URLs, headers, credentials, and cache keys are excluded. Telemetry persistence failures are swallowed and do not weaken GPT cancellation.
 
+- The current host also records `compaction-failure-v1` in the local session JSONL when compaction fails or is cancelled. It contains the trigger, cancellation/extension flags and at most 512 characters of the displayed error on one line; it does not copy request bodies, responses, headers or stacks. This local diagnostic survives restart and is distinct from the privacy-safe provider telemetry above. A `provider_completed` usage receipt alone does not establish that a local `compaction` checkpoint was committed. Older sessions cannot recover an error that was never recorded.
+
 ## Configuration
 
 Config is read from:

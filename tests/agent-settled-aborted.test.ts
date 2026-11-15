@@ -140,7 +140,8 @@ test("execution transition owns manual summary preparation and late cleanup with
 		try {
 			for (let i = 0; i < 8; i++) f.session.sessionManager.appendMessage({ role: "user", content: "history ".repeat(1024), timestamp: i });
 			const target = f.session.sessionManager.getEntries()[0]!.id;
-			const leaf = f.session.sessionManager.getLeafId(), entries = f.session.sessionManager.getEntries().length;
+			let leaf = f.session.sessionManager.getLeafId(), entries = f.session.sessionManager.getEntries().length;
+			const messagesBefore = f.session.sessionManager.buildSessionContext().messages;
 			await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
 			for (phase of ["compact", "tree", "preparation"]) {
 				entered = gate(); release = gate(); cleanup = gate(); finish = gate();
@@ -155,7 +156,16 @@ test("execution transition owns manual summary preparation and late cleanup with
 				release.release();
 				if (phase === "compact") { await cleanup.promise; assert.equal(f.session.isCompacting, false); assert.equal(published, false); finish.release(); }
 				await rejected; await transition; f.session.abort = abort;
-				assert.equal(boundary.preparationCount, 0); assert.equal(f.session.sessionManager.getLeafId(), leaf); assert.equal(f.session.sessionManager.getEntries().length, entries);
+				assert.equal(boundary.preparationCount, 0);
+				assert.deepEqual(f.session.sessionManager.buildSessionContext().messages, messagesBefore);
+				if (phase === "compact") {
+					const diagnostic = f.session.sessionManager.getLeafEntry();
+					assert.equal(diagnostic?.type, "custom");
+					if (diagnostic?.type === "custom") assert.equal(diagnostic.customType, "compaction-failure-v1");
+					assert.equal(diagnostic?.parentId, leaf);
+					leaf = diagnostic!.id; entries++;
+				}
+				assert.equal(f.session.sessionManager.getLeafId(), leaf); assert.equal(f.session.sessionManager.getEntries().length, entries);
 			}
 			assert.equal(f.calls(), 0);
 			const { profile } = await profiler.post("HeapProfiler.stopSampling"); const nodes = [profile.head];

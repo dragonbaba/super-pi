@@ -398,6 +398,7 @@ def fresh():
         "fill_input": lambda selector, query, **kw: inputs.append((current, selector, query, kw)),
         "press_key": lambda key: inputs.append((current, key))}
     exec(source, scope)
+    assert str(__import__("pathlib").Path.cwd()) == str(__import__("pathlib").Path(state).parent)
     return scope
 s = fresh()
 search = s["open_tab"]("https://8.8.8.8/", role="search")
@@ -551,8 +552,10 @@ test("browser extension preserves failure details and bounds cleanup without con
  const runner = { runBrowserUse: async (options: any) => {
   helperCalls++;
   const phase = options.args?.[0] === "--version" ? "version" : options.args?.[0] === "--reload" ? "release" : "main";
+  const workspace = options.env.BH_AGENT_WORKSPACE;
+  if (phase === "main") assert.equal(options.cwd, path.dirname(workspace), "daemon cwd must outlive the disposable workspace");
   if (signalStarted && phase === waitPhase && options.env.BH_REQUIRE_EXISTING_DAEMON !== "1") {
-   if (phase === "main") states.set(options.cwd, 20);
+   if (phase === "main") states.set(workspace, 20);
    runSignal = options.signal; signalStarted(); return new Promise(resolve => { resolveRun = resolve; });
   }
   if (phase === "version") return { ...result, exitCode: 0, stdout: "0.1.13" };
@@ -560,10 +563,10 @@ test("browser extension preserves failure details and bounds cleanup without con
   if (options.env.BH_REQUIRE_EXISTING_DAEMON === "1") {
    cleanupCalls++; assert.ok(options.timeoutMs > 0 && options.timeoutMs <= 5000); assert.equal(options.maxBytesPerStream, 1024);
    cleanedSessions.push(options.env.BU_NAME);
-   if (!failCleanup) states.set(options.cwd, 2);
+   if (!failCleanup) states.set(workspace, 2);
    return { ...result, exitCode: failCleanup ? 1 : 0, stdout: "", stderr: "" };
   }
-  states.set(options.cwd, 20);
+  states.set(workspace, 20);
   return unconfirmed ? { ...result, cleanup: "unconfirmed", exitObserved: false } : result;
  } };
  const runtime = { findBrowserUseExecutable: async () => ({ command: "fixture-harness" }), browserUrlSafetyError: () => undefined,

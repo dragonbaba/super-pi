@@ -1569,6 +1569,18 @@ export class AgentSession {
 	}
 
 	private async _emitSessionCompactFailed(event: Omit<SessionCompactFailedEvent, "type">): Promise<void> {
+		// This lifecycle event otherwise exists only in the live UI. Preserve the
+		// bounded diagnostic separately from provider usage, without request bodies.
+		try {
+			this.sessionManager.appendCustomEntry("compaction-failure-v1", {
+				schemaVersion: 1,
+				...event,
+				...(event.errorMessage ? { errorMessage: event.errorMessage.replace(COMPACTION_ERROR_NEWLINE_PATTERN, " ").trim().slice(0, 512) } : {}),
+			});
+		} catch {
+			// A diagnostic write must not replace the original compaction failure.
+			console.error("Could not save the compaction failure diagnostic to this session.");
+		}
 		if (this._extensionRunner.hasHandlers("session_compact_failed")) {
 			await this._extensionRunner.emit({ type: "session_compact_failed", ...event });
 		}

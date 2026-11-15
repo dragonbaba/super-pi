@@ -136,6 +136,36 @@ test("whole-call preflight rejects a protected later item before any effect", as
   assert.equal(f.session.getEntries().filter(entry => entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY).length, 0);
 });
 
+for (const failure of ["missing-later-edit", "ambiguous-edit"] as const) test(`native batch ${failure} leaves every target untouched and permits a corrected next batch`, async t => {
+  const f = await fixture(t), source = failure === "missing-later-edit" ? "a\nb\nc\nd\ne\n" : "shared\nleft\nshared\nright\n";
+  const append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data);
+  const hooks = { assertCurrent: current, record: unexpectedLegacy };
+  const setup = f.mutation("write", { path: "existing.txt", content: source }, "setup"); await setup.prepare();
+  const created = await setup.execute(f.session, append, hooks); assert.equal(created.isError, false);
+  const edits = failure === "missing-later-edit"
+    ? ["a", "b", "c", "d", "absent"].map(oldText => ({ oldText, newText: oldText.toUpperCase() }))
+    : [{ oldText: "shared", newText: "changed" }];
+  const operations = [
+    { operation: "write", path: "new/first.txt", mode: "create", content: "first" },
+    { operation: "edit", path: "existing.txt", edits },
+    { operation: "write", path: "new/last.txt", mode: "create", content: "last" },
+  ];
+  const failed = f.mutation("file_batch", { operations }, "failed-batch");
+  await assert.rejects(failed.prepare(), failure === "missing-later-edit" ? /edits\[4\]\.oldText was not found/ : /oldText is ambiguous/);
+  assert.equal(await readFile(join(f.cwd, "existing.txt"), "utf8"), source);
+  await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
+  assert.equal(f.session.getEntries().some(entry => entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY && (entry.data as any).toolCallId === "failed-batch"), false);
+  const corrected = failure === "missing-later-edit"
+    ? ["a", "b", "c", "d", "e"].map(oldText => ({ oldText, newText: oldText.toUpperCase() }))
+    : [{ oldText: "shared\nleft", newText: "changed\nleft" }];
+  const next = f.mutation("file_batch", { operations: [operations[0], { ...operations[1], edits: corrected }, operations[2]] }, "corrected-batch");
+  await next.prepare(); const result = await next.execute(f.session, append, hooks);
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 3);
+  assert.equal(await readFile(join(f.cwd, "existing.txt"), "utf8"), failure === "missing-later-edit" ? "A\nB\nC\nD\nE\n" : "changed\nleft\nshared\nright\n");
+  assert.equal(await readFile(join(f.cwd, "new/first.txt"), "utf8"), "first");
+  assert.equal(await readFile(join(f.cwd, "new/last.txt"), "utf8"), "last");
+});
+
 test("dryRun has no journal or directories and cannot issue an execution resultRef", async t => {
   const f = await fixture(t);
   const mutation = f.mutation("file_batch", { operations: [{ operation: "write", path: "new/one", mode: "create", content: "one" }], dryRun: true });

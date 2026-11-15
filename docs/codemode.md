@@ -1,6 +1,6 @@
 # Codemode 使用说明
 
-Super Pi 默认通过 Codemode 执行普通工具。模型直接调用 `codemode`，在脚本内调用 read、bash、edit、MCP 等工具。ask_user、Plan/Goal 等控制工具保持直接调用。工具白名单、Plan mode、权限和取消规则继续生效；`--no-tools` 可以禁用工具。
+Super Pi 默认通过 Codemode 执行普通工具。模型直接调用 `codemode`，在脚本内调用 read、bash、edit、MCP 等工具。subagent、ask_user、Plan/Goal 等编排和控制工具保持直接调用。CodeMode 的 `ALL_TOOLS` 只列脚本可用工具；`describeTools` 对已激活的顶层工具返回 `TOOL_DIRECT_ONLY`，应按模型收到的顶层 schema 调用。`tool_search` 只搜索未激活工具，搜索为空不代表顶层工具不存在。工具白名单、Plan mode、权限和取消规则继续生效；`--no-tools` 可以禁用工具。
 
 ## 基本调用与树状卡片
 

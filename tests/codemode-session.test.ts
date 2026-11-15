@@ -1575,6 +1575,24 @@ test("inactive browser documentation guides discovery after reload without execu
 	assert.equal(calls, 1);
 });
 
+test("active direct tools guide delegation outside CodeMode without discovery or execution", async t => {
+	let calls = 0;
+	const f = await fixture(t, {}, [pi => {
+		pi.registerTool({ name: "subagent", label: "Subagent", description: "Delegate a bounded task", orchestration: true,
+			parameters: Type.Object({}), execute: async () => { calls++; return { content: [], details: {} }; } });
+	}]);
+	const outcome = await f.run(['text(await describeTools(["subagent"]));', 'text(await describeTools(["subagent","read"]));']);
+	for (const result of outcome.results) {
+		assert.equal(result.isError, false);
+		const text = JSON.stringify(result.content);
+		assert.match(text, /TOOL_DIRECT_ONLY.*subagent.*directly outside CodeMode/);
+		assert.doesNotMatch(text, /TOOL_UNAVAILABLE/);
+	}
+	assert.equal(calls, 0);
+	assert.equal(f.session.getActiveToolNames().includes("subagent"), true);
+	assert.ok(outcome.wires[0]!.tools!.some(tool => tool.name === "subagent"));
+});
+
 test("Codemode exposes the real DevTools task and browser-profile guidance after discovery", async t => {
 	const definitions = await jiti.import<Record<string, any>>("../packages/chrome-devtools/src/tools.ts");
 	const f = await fixture(t, {}, [toolClassification, pi => {
@@ -1639,7 +1657,9 @@ text({tail:ts.body.includes("FINAL_REQUIRED_INSTRUCTION"),unknown:ts.body.includ
 	assert.equal(data.fields, 60); assert.equal(data.pattern, "a🚀".repeat(33));
 	assert.equal(data.defaultValue, "𠮷🙂".repeat(25)); assert.equal(data.rockets, 2500);
 	assert.ok(data.pages > 10); assert.ok(data.maxPage < 4300); assert.match(data.hidden, /TOOL_UNAVAILABLE/);
-	assert.doesNotMatch(data.hidden, /not_registered|ask_user|Input JSON Schema/);
+	assert.doesNotMatch(data.hidden, /not_registered|Input JSON Schema/);
+	assert.match(data.hidden, /TOOL_DIRECT_ONLY.*ask_user, codemode/);
+	assert.ok(outcome.wires[0]!.tools!.some(tool => tool.name === "ask_user"), "direct guidance names an already exposed tool");
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
 });
 

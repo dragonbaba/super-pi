@@ -548,6 +548,7 @@ export class CodemodeController {
 		// Revalidate the live selection before reusing serialized schema text. Full descriptions
 		// remain query-owned references; no work is added to child/progress delivery.
 		const described: AgentTool<any>[] = [];
+		const direct: string[] = [];
 		let unavailable = false;
 		let currentRevision = (this.documentationRevisionPrefix ??= randomUUID()) + ":" + this.documentationCatalogRevision + ":" + format + ":";
 		for (const requested of names) {
@@ -555,11 +556,15 @@ export class CodemodeController {
 			// ALL_TOOLS lists script identifiers; accept them as well as registered names.
 			const alias = this.identifierNames.get(requested);
 			const tool = invocation.context.findTool(requested) ?? (alias === undefined ? undefined : invocation.context.findTool(alias));
-			if (!tool || !nestedAllowed(tool)) { unavailable = true; continue; }
-			if (described.includes(tool)) continue;
-			described.push(tool);
+			if (!tool) { unavailable = true; continue; }
 			let version = this.documentationVersions.get(tool);
 			if (version === undefined) this.documentationVersions.set(tool, version = ++this.nextDocumentationVersion);
+			if (!nestedAllowed(tool)) {
+				if (!direct.includes(tool.name)) { direct.push(tool.name); currentRevision += "direct-" + version + ","; }
+				continue;
+			}
+			if (described.includes(tool)) continue;
+			described.push(tool);
 			currentRevision += version + ",";
 		}
 		currentRevision += unavailable ? "unavailable" : "";
@@ -567,7 +572,9 @@ export class CodemodeController {
 			this.documentationSnapshot = undefined;
 			throw new Error("[TOOL_DOCUMENTATION_CHANGED] Tool definitions or selection changed. Discard earlier pages and restart describeTools at offset:0 without a revision.");
 		}
-		if (described.length === 0) { this.documentationSnapshot = undefined; return unavailable ? UNAVAILABLE_DOCUMENTATION : ""; }
+		const directGuidance = direct.length > 0
+			? `[TOOL_DIRECT_ONLY] ${direct.join(", ")} must be called directly outside CodeMode using the top-level tool schema. Searching again or launching an external agent CLI is not a substitute.\n` : "";
+		if (described.length === 0) { this.documentationSnapshot = undefined; return directGuidance + (unavailable ? UNAVAILABLE_DOCUMENTATION : ""); }
 		let snapshot = this.documentationSnapshot;
 		if (snapshot?.revision !== currentRevision) {
 			this.documentationSnapshot = undefined;
@@ -586,6 +593,7 @@ export class CodemodeController {
 			snapshot = this.documentationSnapshot = { revision: currentRevision, schemas };
 		}
 		const parts: string[] = [TOOL_RESULT_DECLARATION];
+		if (directGuidance) parts.push(directGuidance);
 		if (unavailable) parts.push(UNAVAILABLE_DOCUMENTATION, "\n");
 		for (let index = 0; index < described.length; index++) {
 			const tool = described[index]!;

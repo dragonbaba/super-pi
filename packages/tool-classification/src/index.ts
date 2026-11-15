@@ -216,7 +216,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
 
       if (candidates.length === 0) {
         return {
-          content: [{ type: "text", text: `No inactive tools matched: ${params.query}` }],
+          content: [{ type: "text", text: `No inactive tools matched: ${params.query}. This search omits already active tools. Direct top-level tools such as subagent must be called outside CodeMode using their exposed schema.` }],
           details: {
             query: params.query,
             matches: [] as ToolCandidate[],

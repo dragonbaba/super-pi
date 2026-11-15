@@ -56,6 +56,11 @@ requests approval, or closes unowned targets. Failed cleanup retains the exact
 state for a later attempt and reports the limitation. `/browser-use release`
 stops before daemon disconnection if cleanup is incomplete. Omitted local
 sessions and an explicitly named `default` session have distinct ownership keys.
+The CLI starts in the stable workspace parent; the Python prelude changes into
+the owned workspace before running the script. This preserves script-relative
+paths while preventing an inherited daemon cwd from locking the disposable
+directory on Windows. A daemon started by an older version can still hold its
+old directory; that exact path is retained rather than stopping a shared daemon.
 Process crashes or a
 lost create-target response cannot guarantee automatic cleanup; never infer
 ownership by scanning and closing unrelated tabs.

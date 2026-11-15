@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   getAgentDir,
   type ExtensionAPI,
@@ -312,7 +312,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
     const connection = ownedWorkspaces.get(workspace)!;
     const statePath = join(workspace, "tabs.json");
     try { if ((await stat(statePath)).size === 2) return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-    const result = await runHelper({ command: connection.command, cwd: workspace,
+    const result = await runHelper({ command: connection.command, cwd: dirname(workspace),
       env: { ...connection.env, BH_REQUIRE_EXISTING_DAEMON: "1" },
       code: withOwnedScreenshotDefault("close_owned_tabs()", join(workspace, "cleanup.png"), timeoutMs, statePath),
       timeoutMs, maxBytesPerStream: 1024 });
@@ -402,7 +402,9 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
           result = await runHelper({
             command: executable.command,
             code: withOwnedScreenshotDefault(params.code, expectedScreenshotPath, params.timeoutMs ?? DEFAULT_TIMEOUT_MS, join(currentWorkspace, "tabs.json")),
-            cwd: currentWorkspace,
+            // Browser Harness daemons inherit this cwd. Keep their lifetime outside
+            // the disposable workspace; the Python prelude enters that workspace.
+            cwd: dirname(currentWorkspace),
             env: core.buildBrowserUseEnvironment(process.env, currentWorkspace, params.session),
             timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
             maxBytesPerStream: MAX_OUTPUT_BYTES,
