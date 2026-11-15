@@ -14,7 +14,7 @@ import {
 import { resolveToolPath, sha256 } from "./file-path.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
 import { FileAuthorityError, fileInvocationMustStop } from "./file-batch-outcome.ts";
-import { captureTreeIdentity } from "./file-tree-core.mjs";
+import { captureTreeIdentity, assertFilePathAfterFailure } from "./file-tree-core.mjs";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
   prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
@@ -112,6 +112,24 @@ function copyInput(operation: FileOperation, raw: unknown): FileOperationInput {
     ...(input.recursive !== undefined ? { recursive: input.recursive } : {}), ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}) });
 }
 
+/** Error lifecycle only: a file/hash failure can follow its parent check. */
+async function assertNativeItemParentsAfterFailure(item: PreparedFileItem, sharedDirectories?: Map<string, PathIdentity>): Promise<void> {
+  const tree = item.tree ?? item.native;
+  if (tree) {
+    await assertFilePathAfterFailure(tree.sourceParent);
+    if (tree.destinationParent) await assertFilePathAfterFailure(tree.destinationParent);
+  }
+  const parent = item.artifact?.commit?.parent ?? item.snapshot?.parent;
+  if (parent) await assertFilePathAfterFailure(parent);
+  if (item.creation) {
+    await assertFilePathAfterFailure(item.creation.ancestor);
+    if (sharedDirectories) for (const path of item.creation.directories) {
+      const identity = sharedDirectories.get(directoryKey(path));
+      if (identity) await assertFilePathAfterFailure(identity);
+    }
+  }
+}
+
 /** Stable invocation callbacks. Retains only one plan until execution returns. */
 class FileExecution {
   pending: Promise<FileReceipt> | undefined;
@@ -206,6 +224,10 @@ class FileExecution {
           stopInvocation: creationFailure?.stopInvocation === true || fileInvocationMustStop(error) || undefined,
           cause: creationFailure?.cause ?? (error instanceof Error ? error.message : String(error)) };
       }
+    }
+    if (!receipt.ok && receipt.stopInvocation !== true) {
+      try { await assertNativeItemParentsAfterFailure(item, hooks.sharedDirectories); }
+      catch (error) { receipt.stopInvocation = fileInvocationMustStop(error) || undefined; receipt.cause = error instanceof Error ? error.message : String(error); }
     }
     if (receipt.stateChanged !== false || receipt.commit?.retainedTemporary) {
       if (item.operation !== "copy" || !receipt.ok) this.service.revisions.invalidatePath(item.target);
@@ -379,32 +401,37 @@ export class FileService {
   }
   /** Read-only all-item check. Each effect still repeats its own final identity/content checks. */
   async revalidate(item: PreparedFileItem, hooks: FileExecutionHooks): Promise<void> {
-    this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
-    const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath, item.tree?.protectedPaths[0].followLeaf);
-    if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new FileAuthorityError("Prepared target changed.");
-    if (item.tree) {
-      if (item.tree.deferredCopyHash && !hooks.preflightOnly) item.tree = await finalizeNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
-      else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal, true, hooks.sharedDirectories);
-    }
-    else if (item.native) await revalidateNativePlan(item.native);
-    else if (item.creation) {
-      await verifyCreationAncestor(item.creation);
-      // Prepared parents carry authority even if the leaf appeared or changed.
-      for (let index = 0; index <= item.creation.directories.length; index++) {
-        const path = index === item.creation.directories.length ? item.creation.path : item.creation.directories[index];
-        const shared = index < item.creation.directories.length ? hooks.sharedDirectories?.get(directoryKey(path)) : undefined;
-        if (shared) { await capturePathIdentity(path, shared); continue; }
-        try { await lstat(path); throw new Error("[TARGET_APPEARED] Planned file or parent appeared after preparation."); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    try {
+      this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
+      const assessment = await assessProtectedMutationPath(this.cwd, item.executionPath, item.tree?.protectedPaths[0].followLeaf);
+      if (!assessment.canonicalTarget || directoryKey(assessment.canonicalTarget) !== directoryKey(item.target)) throw new FileAuthorityError("Prepared target changed.");
+      if (item.tree) {
+        if (item.tree.deferredCopyHash && !hooks.preflightOnly) item.tree = await finalizeNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal);
+        else await revalidateNativeTreePlan(item.tree, hooks.assertCurrent, hooks.signal, true, hooks.sharedDirectories);
       }
-    } else {
-      const plan = item.artifact?.commit ?? item.snapshot!;
-      if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new FileAuthorityError("Prepared file parent changed.");
-      const observed = await captureTreeIdentity(plan.target.path, plan.target);
-      if (!sameIdentity(plan.target, observed)) throw new Error("[STALE_STATE] Prepared file changed.");
-      if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);
+      else if (item.native) await revalidateNativePlan(item.native);
+      else if (item.creation) {
+        await verifyCreationAncestor(item.creation);
+        // Prepared parents carry authority even if the leaf appeared or changed.
+        for (let index = 0; index <= item.creation.directories.length; index++) {
+          const path = index === item.creation.directories.length ? item.creation.path : item.creation.directories[index];
+          const shared = index < item.creation.directories.length ? hooks.sharedDirectories?.get(directoryKey(path)) : undefined;
+          if (shared) { await capturePathIdentity(path, shared); continue; }
+          try { await lstat(path); throw new Error("[TARGET_APPEARED] Planned file or parent appeared after preparation."); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        }
+      } else {
+        const plan = item.artifact?.commit ?? item.snapshot!;
+        if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new FileAuthorityError("Prepared file parent changed.");
+        const observed = await captureTreeIdentity(plan.target.path, plan.target);
+        if (!sameIdentity(plan.target, observed)) throw new Error("[STALE_STATE] Prepared file changed.");
+        if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);
+      }
+      this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
+    } catch (error) {
+      if (!fileInvocationMustStop(error)) await assertNativeItemParentsAfterFailure(item, hooks.sharedDirectories);
+      throw error;
     }
-    this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();
   }
 }
 

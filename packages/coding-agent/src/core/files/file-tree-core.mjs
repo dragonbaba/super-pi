@@ -218,8 +218,13 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
-    const observed = await captureTreeIdentity(entry.identity.path, entry.identity);
-    if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
+    try {
+      const observed = await captureTreeIdentity(entry.identity.path, entry.identity);
+      if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
+    } catch (error) {
+      if (!fileInvocationMustStop(error) && entry.parent >= 0) await assertFilePathAfterFailure(tree.entries[entry.parent].identity);
+      throw error;
+    }
   }
   current(authority, signal);
 }
@@ -269,8 +274,7 @@ class TreeExecution {
   async checkParent(expected) {
     this.checkedParent = expected;
     this.current();
-    try { if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path, expected), false)) throw new FileAuthorityError('Prepared parent changed.'); }
-    catch (error) { if (error instanceof FileAuthorityError) throw error; throw new FileAuthorityError('Prepared parent cannot be verified: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
+    if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path, expected), false)) throw new FileAuthorityError('Prepared parent changed.');
     this.current();
   }
   async checkSource(entry, metadata = true) {

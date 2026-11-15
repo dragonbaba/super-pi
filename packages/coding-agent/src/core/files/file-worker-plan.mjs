@@ -2,8 +2,8 @@
 // manifest reader; source/destination filesystem observations run in the worker.
 import { lstat } from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
-import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason } from './file-tree-core.mjs';
-import { FileAuthorityError } from './file-mutation-failure.mjs';
+import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason, assertFilePathAfterFailure } from './file-tree-core.mjs';
+import { FileAuthorityError, fileInvocationMustStop } from './file-mutation-failure.mjs';
 import { prepareFileCreation, directoryKey } from './file-creation-core.mjs';
 import { ManifestArtifactWriter, visitManifestArtifact, validateManifestArtifact } from './file-manifest-artifact.mjs';
 import { workspaceFilePath, validFileIdentity } from './file-workspace-path.mjs';
@@ -229,12 +229,7 @@ export async function prepareFileWorkerManifest(request, item, index, owned, tex
 }
 
 async function assertPreparedParent(identity) {
-  try {
-    if (!sameIdentity(identity, await capturePathIdentity(identity.path), false)) throw new FileAuthorityError('Prepared parent no longer identifies its approved directory.');
-  } catch (error) {
-    if (error instanceof FileAuthorityError) throw error;
-    throw new FileAuthorityError('Prepared parent cannot be verified: ' + boundedReason(error instanceof Error ? error.message : String(error)));
-  }
+  if (!sameIdentity(identity, await capturePathIdentity(identity.path, identity), false)) throw new FileAuthorityError('Prepared parent no longer identifies its approved directory.');
 }
 
 async function assertPreparedFile(identity) {
@@ -246,30 +241,46 @@ async function assertPreparedFile(identity) {
 
 export async function revalidateFileWorkerManifest(request, item, prepared, preview = false, sharedDirectories) {
   const { header, tree, creation } = prepared;
-  workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
-  if (header.sourceParent) await assertPreparedParent(header.sourceParent);
-  if (header.destination) {
-    workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
-    if (header.destinationParent) await assertPreparedParent(header.destinationParent);
-  }
-  if (creation) {
-    await assertPreparedParent(creation.ancestor);
-    for (const path of creation.directories) {
-      const shared = sharedDirectories?.get(directoryKey(path));
-      if (shared) await assertPreparedParent(shared);
-      else await absent(path);
+  try {
+    workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
+    if (header.sourceParent) await assertPreparedParent(header.sourceParent);
+    if (header.destination) {
+      workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
+      if (header.destinationParent) await assertPreparedParent(header.destinationParent);
     }
-    await absent(creation.path);
+    if (creation) {
+      await assertPreparedParent(creation.ancestor);
+      for (const path of creation.directories) {
+        const shared = sharedDirectories?.get(directoryKey(path));
+        if (shared) await assertPreparedParent(shared);
+        else await absent(path);
+      }
+      await absent(creation.path);
+    }
+    if (header.source) await assertPreparedFile(header.source);
+    if (header.destination) {
+      if (header.destinationIdentity) await assertPreparedFile(header.destinationIdentity);
+      else await absent(header.destination);
+    }
+    if (tree) await revalidateTree(tree);
+    if (header.text?.exists) need(await hashIdentity(header.source) === header.text.previousSha256, 'Prepared text preimage changed');
+    if (!preview && header.destinationIdentity) return { sourceSha256: await hashIdentity(header.source), previousSha256: await hashIdentity(header.destinationIdentity) };
+    return {};
+  } catch (error) {
+    // A later hash/leaf failure can hide a parent replaced after its first check.
+    if (!fileInvocationMustStop(error)) {
+      if (header.sourceParent) await assertFilePathAfterFailure(header.sourceParent);
+      if (header.destinationParent) await assertFilePathAfterFailure(header.destinationParent);
+      if (creation) {
+        await assertFilePathAfterFailure(creation.ancestor);
+        if (sharedDirectories) for (const path of creation.directories) {
+          const identity = sharedDirectories.get(directoryKey(path));
+          if (identity) await assertFilePathAfterFailure(identity);
+        }
+      }
+    }
+    throw error;
   }
-  if (header.source) await assertPreparedFile(header.source);
-  if (header.destination) {
-    if (header.destinationIdentity) await assertPreparedFile(header.destinationIdentity);
-    else await absent(header.destination);
-  }
-  if (tree) await revalidateTree(tree);
-  if (header.text?.exists) need(await hashIdentity(header.source) === header.text.previousSha256, 'Prepared text preimage changed');
-  if (!preview && header.destinationIdentity) return { sourceSha256: await hashIdentity(header.source), previousSha256: await hashIdentity(header.destinationIdentity) };
-  return {};
 }
 
 const PARENT_HEADER_FIELDS = new Set(['kind', 'ownerId', 'callId', 'generation', 'requestHash', 'index', 'target']);

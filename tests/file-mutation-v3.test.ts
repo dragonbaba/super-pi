@@ -279,6 +279,57 @@ for (const synchronous of [false, true]) for (const missing of ["leaf", "parent"
   if (synchronous) assert.doesNotThrow(() => assertFilePathAfterFailureSync(identity)); else await assert.doesNotReject(assertFilePathAfterFailure(identity));
 });
 
+for (const replacement of ["directory", "dangling-link", "missing"]) test(`tree parent validation preserves ${replacement} provenance`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"); await mkdir(parent); await writeFile(join(f.cwd, "source"), "original");
+  const item = await f.service.prepareV3("copy", { path: "source", destination: "original/target" }), plan = item.tree!, original = fsPromises.realpath; let injected = 0;
+  t.mock.method(fsPromises, "realpath", async (path: any, ...args: any[]) => {
+    if (path === plan.destinationParent!.path && !injected) {
+      renameSync(parent, join(f.cwd, "retained")); injected++;
+      if (replacement === "directory") fsSync.mkdirSync(parent);
+      else if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), parent, process.platform === "win32" ? "junction" : "dir");
+    } return (original as any)(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    const receipt = await executeTree(plan.tree, "copy", plan.sourceParent, plan.destination, plan.destinationParent, current);
+    assert.equal(injected, 1); assert.equal(receipt.status, "failed_no_change"); assert.equal(receipt.stateChanged, false);
+    assert.equal(receipt.stopInvocation === true, replacement !== "missing", JSON.stringify(receipt)); assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "original");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const replacement of ["directory-file", "directory-empty", "missing"]) for (const finalItem of [false, true]) test(`native hash failure checks ${replacement} destination parent, final=${finalItem}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"), source = join(f.cwd, "source"); await mkdir(parent); await writeFile(source, "source"); await writeFile(join(parent, "target"), "original");
+  const copy = { operation: "copy", path: "source", destination: "original/target", overwrite: true }, independent = { operation: "write", path: "independent", mode: "create", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, copy] : [copy, independent] }); await mutation.prepare();
+  const sourceCanonical = await fsPromises.realpath(source), original = fsPromises.open; let injected = 0;
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    const handle = await (original as any)(path, ...args);
+    if (path === sourceCanonical && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++;
+      if (replacement !== "missing") { fsSync.mkdirSync(parent); if (replacement === "directory-file") writeFileSync(join(parent, "target"), "external"); }
+    } return handle;
+  }); syncBuiltinESMExports();
+  try {
+    const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy });
+    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
+    assert.equal(await readFile(join(f.cwd, "retained/target"), "utf8"), "original"); assert.equal(await readFile(source, "utf8"), "source");
+    const next = f.mutation("write", { path: "after", content: "next" }, "after"); await next.prepare(); assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const phase of ["validate", "execute"]) for (const replacement of ["directory-file", "directory-empty", "missing"]) test(`nested tree ${phase} checks ${replacement} parent on child failure`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"); await mkdir(parent); await writeFile(join(parent, "source"), "original");
+  const item = await f.service.prepareV3("delete", { path: "original", recursive: true }), plan = item.tree!, child = plan.tree.entries[1].identity.path, original = fsPromises.lstat; let injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    if (path === child && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++;
+      if (replacement !== "missing") { fsSync.mkdirSync(parent); if (replacement === "directory-file") writeFileSync(join(parent, "source"), "external"); }
+    } return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    if (phase === "validate") await assert.rejects(revalidateTree(plan.tree), (error: any) => { assert.equal(error.stopInvocation === true, replacement !== "missing"); return true; });
+    else { const receipt = await executeTree(plan.tree, "delete", plan.sourceParent, undefined, undefined, current); assert.equal(receipt.status, "failed_no_change"); assert.equal(receipt.stopInvocation === true, replacement !== "missing", JSON.stringify(receipt)); }
+    assert.equal(injected, 1); assert.equal(await readFile(join(f.cwd, "retained/source"), "utf8"), "original");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("synchronous failure lookup uses native canonical spelling", async t => {
   const f = await fixture(t), source = join(f.cwd, "source"); await writeFile(source, "original");
   const identity = await capturePathIdentity(source); unlinkSync(source);
