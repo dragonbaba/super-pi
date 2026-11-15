@@ -74,6 +74,25 @@ for (const failedIndex of [0, 1, 2]) test(`sandbox batch retains item ${failedIn
   assert.equal(f.sends.filter(row => row.phase === "execute").length, 3); assert.equal(f.owned.size, 0);
 });
 
+for (const operation of ["write", "copy", "move"]) for (const replacement of [false, true]) for (const finalItem of [false, true]) test(`sandbox shared parent precedes ${operation} target-appeared failure, replacement=${replacement}, final=${finalItem}`, async t => {
+  let injected = 0;
+  const f = await fixture(t, request => {
+    if (request.phase === "execute" && request.start === 0 && !injected) {
+      const parent = join(f.cwd, "new");
+      if (replacement) { fsSync.renameSync(parent, join(f.cwd, "retained")); fsSync.mkdirSync(parent); }
+      fsSync.writeFileSync(join(parent, "second"), "external"); injected++;
+    }
+  });
+  await writeFile(join(f.cwd, "source"), "source");
+  const first = { operation: "write", mode: "create", path: "new/first", content: "committed" }, second = operation === "write" ? { operation, mode: "create", path: "new/second", content: "next" } : { operation, path: "source", destination: "new/second" }, independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [first, independent, second] : [first, second, independent] });
+  assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), !replacement, JSON.stringify(result));
+  assert.equal(result.details.succeeded, !replacement || finalItem ? 2 : 1); assert.equal(await readFile(join(f.cwd, replacement ? "retained/first" : "new/first"), "utf8"), "committed");
+  assert.equal(await readFile(join(f.cwd, "new/second"), "utf8"), "external"); assert.equal(f.owned.size, 0);
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "source");
+  const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
+});
+
 test("sandbox batch validation detects a changed preimage before effects and continues independent files", async t => {
   let changed = false;
   const f = await fixture(t, (request) => {

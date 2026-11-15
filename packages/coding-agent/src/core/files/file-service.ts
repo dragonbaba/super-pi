@@ -389,17 +389,19 @@ export class FileService {
     else if (item.native) await revalidateNativePlan(item.native);
     else if (item.creation) {
       await verifyCreationAncestor(item.creation);
-      const absent = [item.creation.path, ...item.creation.directories];
-      for (const path of absent) {
-        if (path !== item.creation.path && hooks.sharedDirectories?.has(directoryKey(path))) continue;
+      // Prepared parents carry authority even if the leaf appeared or changed.
+      for (let index = 0; index <= item.creation.directories.length; index++) {
+        const path = index === item.creation.directories.length ? item.creation.path : item.creation.directories[index];
+        const shared = index < item.creation.directories.length ? hooks.sharedDirectories?.get(directoryKey(path)) : undefined;
+        if (shared) { await capturePathIdentity(path, shared); continue; }
         try { await lstat(path); throw new Error("[TARGET_APPEARED] Planned file or parent appeared after preparation."); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
     } else {
       const plan = item.artifact?.commit ?? item.snapshot!;
+      if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new FileAuthorityError("Prepared file parent changed.");
       const observed = await captureTreeIdentity(plan.target.path, plan.target);
-      if (!sameIdentity(plan.target, observed)
-        || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
+      if (!sameIdentity(plan.target, observed)) throw new Error("[STALE_STATE] Prepared file changed.");
       if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);
     }
     this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();

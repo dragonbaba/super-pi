@@ -248,22 +248,25 @@ export async function revalidateFileWorkerManifest(request, item, prepared, prev
   const { header, tree, creation } = prepared;
   workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
   if (header.sourceParent) await assertPreparedParent(header.sourceParent);
-  if (header.source) await assertPreparedFile(header.source);
   if (header.destination) {
     workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
     if (header.destinationParent) await assertPreparedParent(header.destinationParent);
-    if (header.destinationIdentity) await assertPreparedFile(header.destinationIdentity);
-    else await absent(header.destination);
   }
-  if (tree) await revalidateTree(tree);
   if (creation) {
-    await assertPreparedParent(creation.ancestor); await absent(creation.path);
+    await assertPreparedParent(creation.ancestor);
     for (const path of creation.directories) {
       const shared = sharedDirectories?.get(directoryKey(path));
       if (shared) await assertPreparedParent(shared);
       else await absent(path);
     }
+    await absent(creation.path);
   }
+  if (header.source) await assertPreparedFile(header.source);
+  if (header.destination) {
+    if (header.destinationIdentity) await assertPreparedFile(header.destinationIdentity);
+    else await absent(header.destination);
+  }
+  if (tree) await revalidateTree(tree);
   if (header.text?.exists) need(await hashIdentity(header.source) === header.text.previousSha256, 'Prepared text preimage changed');
   if (!preview && header.destinationIdentity) return { sourceSha256: await hashIdentity(header.source), previousSha256: await hashIdentity(header.destinationIdentity) };
   return {};

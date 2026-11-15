@@ -101,6 +101,15 @@ function retainUnprovenDirectories(created) {
     for (const directory of created)
         directory.status = "retained";
 }
+/** Failure lifecycle only: shared parents can be below the original ancestor. */
+async function assertCreationPathsAfterFailure(plan, created, sharedDirectories) {
+    await assertFilePathAfterFailure(plan.ancestor);
+    for (const directory of created) if (directory.identity) await assertFilePathAfterFailure(directory.identity);
+    if (sharedDirectories) for (const path of plan.directories) {
+        const identity = sharedDirectories.get(directoryKey(path));
+        if (identity) await assertFilePathAfterFailure(identity);
+    }
+}
 /** Single write and file_batch share this exclusive create core. Never removes a partially written file. */
 export class FileCreationFailure extends Error {
     constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; this.stopInvocation = facts.stopInvocation === true; }
@@ -147,7 +156,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
         return created;
     } catch (error) {
         const noEffect = knownNoEffectError(error);
-        try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(plan.ancestor); } catch (authorityError) { error = authorityError; }
+        try { if (!fileInvocationMustStop(error)) await assertCreationPathsAfterFailure(plan, created, sharedDirectories); } catch (authorityError) { error = authorityError; }
         if (effectPending && attempted && !noEffect) created.push(attempted);
         retainUnprovenDirectories(created);
         const changed = created.length > 0;
@@ -155,7 +164,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
         throw new FileCreationFailure({ ok: false, status: stateChanged === "unknown" ? "state_unknown" : changed ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
-            stopInvocation: error?.stopInvocation === true || undefined,
+            stopInvocation: fileInvocationMustStop(error) || undefined,
             fileCreated: false, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) });
     } finally { if (reused) reused.length = 0; attempted = undefined; }
 }
@@ -214,7 +223,7 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
     catch (error) {
         if (error instanceof FileCreationFailure) throw structuredFailure ? error : new Error(JSON.stringify(error.facts));
         const noEffect = knownNoEffectError(error);
-        try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(plan.ancestor); } catch (authorityError) { error = authorityError; }
+        try { if (!fileInvocationMustStop(error)) await assertCreationPathsAfterFailure(plan, created, sharedDirectories); } catch (authorityError) { error = authorityError; }
         retainUnprovenDirectories(created);
         for (const directory of created)
             if (directory.status === "removed")
@@ -227,7 +236,7 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
         const facts = { ok: false, operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
-            stopInvocation: error?.stopInvocation === true || undefined,
+            stopInvocation: fileInvocationMustStop(error) || undefined,
             fileCreated, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) };
         throw structuredFailure ? new FileCreationFailure(facts) : new Error(JSON.stringify(facts));
     }

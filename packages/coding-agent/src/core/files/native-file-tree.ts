@@ -99,11 +99,6 @@ export async function revalidateNativeTreePlan(plan: NativeTreePlan, assertCurre
   await assertProtected(plan);
   if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path, plan.sourceParent), false)
     || plan.destinationParent && !sameIdentity(plan.destinationParent, await capturePathIdentity(plan.destinationParent.path, plan.destinationParent), false)) throw new Error("[STALE_STATE] Prepared operation parent changed.");
-  if (plan.destination) {
-    if (plan.destinationIdentity) {
-      if (!sameIdentity(plan.destinationIdentity, await capturePathIdentity(plan.destination, plan.destinationIdentity))) throw new Error("[STALE_STATE] Prepared overwrite destination changed.");
-    } else await absent(plan.destination);
-  }
   if (plan.creation) {
     await verifyCreationAncestor(plan.creation);
     for (const path of plan.creation.directories) {
@@ -112,6 +107,11 @@ export async function revalidateNativeTreePlan(plan: NativeTreePlan, assertCurre
         if (!sameIdentity(shared, await capturePathIdentity(path, shared), false)) throw new Error("[STALE_STATE] Shared created destination parent changed.");
       } else await absent(path);
     }
+  }
+  if (plan.destination) {
+    if (plan.destinationIdentity) {
+      if (!sameIdentity(plan.destinationIdentity, await capturePathIdentity(plan.destination, plan.destinationIdentity))) throw new Error("[STALE_STATE] Prepared overwrite destination changed.");
+    } else await absent(plan.destination);
   }
   if (includeTree) await revalidateTree(plan.tree, assertCurrent, signal);
   signal?.throwIfAborted(); assertCurrent?.();

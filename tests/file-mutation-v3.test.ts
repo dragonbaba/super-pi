@@ -295,7 +295,7 @@ test(`tree ${operation} syscall failure preserves ${replacement} parent provenan
   const item = await f.service.prepareV3(operation, { path: source, ...(operation !== "delete" ? { destination } : {}) }), plan = item.tree!;
   const syscall = operation === "copy" ? "open" : operation === "move" ? "link" : "unlink", original = fsPromises[syscall]; let injected = 0;
   t.mock.method(fsPromises, syscall, async (...args: any[]) => {
-    if (injected === 0 && (operation === "copy" ? args[0] === destination : args[0] === source)) {
+    if (injected === 0 && args[0] === (operation === "copy" ? plan.destination : plan.source.path)) {
       injected++; renameSync(parent, retained);
       if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), parent, process.platform === "win32" ? "junction" : "dir");
       else if (replacement === "directory") { await mkdir(parent); throw Object.assign(new Error("fixture denied mutation"), { code: "EACCES" }); }
@@ -304,7 +304,7 @@ test(`tree ${operation} syscall failure preserves ${replacement} parent provenan
   }); syncBuiltinESMExports();
   try {
     const receipt = await executeTree(plan.tree, operation, plan.sourceParent, plan.destination, plan.destinationParent, current);
-    assert.equal(injected, 1); assert.equal(receipt.status, "failed_no_change", JSON.stringify(receipt));
+    assert.equal(injected, 1, JSON.stringify(receipt)); assert.equal(receipt.status, "failed_no_change", JSON.stringify(receipt));
     assert.equal(receipt.stateChanged, false); assert.equal(receipt.requiresVerification, undefined);
     assert.equal(receipt.stopInvocation === true, replacement !== "missing", JSON.stringify(receipt));
     assert.equal(await readFile(operation === "copy" ? source : join(retained, "source"), "utf8"), "original");
@@ -331,6 +331,78 @@ test(`native batch stops on same-path ${role} parent replacement during ${phase}
   assert.equal(await readFile(join(f.cwd, "retained/source"), "utf8"), "original"); assert.equal(await readFile(join(parent, "source"), "utf8"), "replacement");
   const next = f.mutation("write", { path: "after", content: "next" }, "next"); await next.prepare();
   const repaired = await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy }); assert.equal(repaired.isError, false);
+});
+
+for (const operation of ["write", "edit"] as const) for (const phase of ["preflight", "item"]) for (const finalItem of [false, true])
+for (const replacement of ["directory-file", "directory-empty", "missing"])
+test(`text ${operation} checks ${replacement} parent before target during ${phase}, final=${finalItem}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"), append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data), hooks = { assertCurrent: current, record: unexpectedLegacy };
+  await mkdir(parent);
+  const setup = f.mutation("write", { path: "original/source", content: "original" }, "setup"); await setup.prepare(); await setup.execute(f.session, append, hooks);
+  const change = operation === "write" ? { operation, path: "original/source", mode: "overwrite", content: "next" } : { operation, path: "original/source", edits: [{ oldText: "original", newText: "next" }] };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, change] : [change, independent] }); await mutation.prepare();
+  function replace() { renameSync(parent, join(f.cwd, "retained")); if (replacement !== "missing") { fsSync.mkdirSync(parent); if (replacement === "directory-file") writeFileSync(join(parent, "source"), "external"); } }
+  if (phase === "preflight") replace();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = append(kind, data), payload = JSON.parse(data.payload);
+    if (phase === "item" && payload.phase === "intent" && payload.index === (finalItem ? 1 : 0)) replace(); return id;
+  }, hooks);
+  assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+  assert.equal(result.details.succeeded, replacement === "missing" || phase === "item" && finalItem ? 1 : 0);
+  assert.equal(await readFile(join(f.cwd, "retained/source"), "utf8"), "original");
+  if (replacement === "directory-file") assert.equal(await readFile(join(parent, "source"), "utf8"), "external");
+  const next = f.mutation("write", { path: "after", content: "next" }, "after"); await next.prepare(); assert.equal((await next.execute(f.session, append, hooks)).isError, false);
+});
+
+for (const syscall of ["open", "mkdir"] as const) for (const finalItem of [false, true]) for (const replacement of ["dangling-link", "directory", "missing"])
+test(`shared creation ${syscall} failure checks ${replacement} parent, final=${finalItem}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "new"), retained = join(f.cwd, "retained"), target = join(parent, syscall === "open" ? "second" : "deep");
+  const second = { operation: "write", mode: "create", path: syscall === "open" ? "new/second" : "new/deep/second", content: "next" };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" }, first = { operation: "write", mode: "create", path: "new/first", content: "committed" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [first, independent, second] : [first, second, independent] }); await mutation.prepare();
+  const original = fsPromises[syscall]; let injected = 0, committedMtime: bigint | undefined;
+  t.mock.method(fsPromises, syscall, async (path: any, ...args: any[]) => {
+    if (injected === 0 && path === target) {
+      committedMtime = (await lstat(join(parent, "first"), { bigint: true })).mtimeNs;
+      renameSync(parent, retained); injected++;
+      if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), parent, process.platform === "win32" ? "junction" : "dir");
+      else if (replacement === "directory") { fsSync.mkdirSync(parent); throw Object.assign(new Error("fixture denied creation"), { code: "EACCES" }); }
+    }
+    return (original as any)(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy });
+    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+    assert.equal(result.details.succeeded, replacement === "missing" || finalItem ? 2 : 1);
+    assert.equal(await readFile(join(retained, "first"), "utf8"), "committed"); assert.equal((await lstat(join(retained, "first"), { bigint: true })).mtimeNs, committedMtime);
+    const next = f.mutation("write", { path: "after", content: "next" }, "after"); await next.prepare(); assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("creation wrapper preserves invocation protocol failure", async t => {
+  const f = await fixture(t), plan = (await prepareFileCreation(join(f.cwd, "target"), true))!;
+  await assert.rejects(executeFileCreation(plan, "next", async () => plan.canonicalTarget, undefined, () => { throw new Error("[FILE_RPC_CLOSED] fixture closed transport"); }, undefined, undefined, true), (error: any) => {
+    assert(error instanceof FileCreationFailure); assert.equal(error.facts.stateChanged, false); assert.equal(error.stopInvocation, true); return true;
+  });
+});
+
+for (const operation of ["write", "copy", "move"]) for (const replacement of [false, true]) for (const finalItem of [false, true]) test(`native shared parent precedes ${operation} target-appeared failure, replacement=${replacement}, final=${finalItem}`, async t => {
+  const f = await fixture(t); let injected = 0;
+  await writeFile(join(f.cwd, "source"), "source");
+  const first = { operation: "write", mode: "create", path: "new/first", content: "committed" }, second = operation === "write" ? { operation, mode: "create", path: "new/second", content: "next" } : { operation, path: "source", destination: "new/second" }, independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [first, independent, second] : [first, second, independent] }); await mutation.prepare();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = f.session.appendCustomEntry(kind, data), payload = JSON.parse(data.payload);
+    if (payload.phase === "result" && payload.index === 0 && !injected) {
+      const parent = join(f.cwd, "new"); if (replacement) { renameSync(parent, join(f.cwd, "retained")); fsSync.mkdirSync(parent); }
+      writeFileSync(join(parent, "second"), "external"); injected++;
+    } return id;
+  }, { assertCurrent: current, record: unexpectedLegacy });
+  assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), !replacement, JSON.stringify(result));
+  assert.equal(result.details.succeeded, !replacement || finalItem ? 2 : 1);
+  assert.equal(await readFile(join(f.cwd, replacement ? "retained/first" : "new/first"), "utf8"), "committed"); assert.equal(await readFile(join(f.cwd, "new/second"), "utf8"), "external");
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "source");
 });
 
 test("large all-failed batch bounds failure excerpts while retaining every terminal outcome", async t => {
