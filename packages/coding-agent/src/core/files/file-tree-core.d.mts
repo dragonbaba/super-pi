@@ -17,7 +17,7 @@ export function knownNoEffectError(error: unknown): boolean;
 export function revalidateTree(tree: TreePreparation, authority?: () => void, signal?: AbortSignal): Promise<void>;
 export interface TreeResult {
   status: "succeeded" | "failed_no_change" | "partial" | "cancelled" | "state_unknown";
-  stateChanged: boolean | "unknown"; requiresVerification?: true; files: number; bytes: number; directories: number;
+  stateChanged: boolean | "unknown"; requiresVerification?: true; stopInvocation?: true; files: number; bytes: number; directories: number;
   skippedLinks: number; coverageComplete: boolean; sha256?: string; reason?: string;
 }
 export function executeTree(tree: TreePreparation, operation: "copy" | "move" | "delete", sourceParent: PathIdentity,

@@ -4,6 +4,11 @@ export class FileAuthorityError extends Error {
   constructor(message) { super('[STALE_STATE] ' + message); this.name = 'FileAuthorityError'; }
 }
 
+/** Compare already observed identities; never allocate or resolve a path here. */
+export function assertFilePathAuthority(expected, observed) {
+  if (expected.canonical !== observed.canonical || Boolean(expected.symbolicLink) !== Boolean(observed.symbolicLink)) throw new FileAuthorityError('Prepared file path was retargeted.');
+}
+
 export function fileInvocationMustStop(error) {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   return error instanceof Error && error.stopInvocation === true

@@ -4,6 +4,7 @@ import { lstat, realpath, opendir, open, link, unlink, mkdir, rmdir } from 'node
 import { createHash } from 'node:crypto';
 import { resolve, dirname, relative, basename } from 'node:path';
 import { FILE_STREAM_BUFFER_BYTES, FILE_RESULT_REASON_BYTES } from './file-operation-limits.mjs';
+import { assertFilePathAuthority, fileInvocationMustStop, FileAuthorityError } from './file-mutation-failure.mjs';
 
 export async function capturePathIdentity(path) {
   const canonical = await realpath(path), info = await lstat(path, { bigint: true });
@@ -142,7 +143,8 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
-    if (!sameIdentity(entry.identity, await captureTreeIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
+    const observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(entry.identity, observed);
+    if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
   }
   current(authority, signal);
 }
@@ -191,13 +193,15 @@ class TreeExecution {
   }
   async checkParent(expected) {
     this.current();
-    if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path), false)) throw new Error('[STALE_STATE] Prepared parent changed.');
+    try { if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path), false)) throw new FileAuthorityError('Prepared parent changed.'); }
+    catch (error) { if (error instanceof FileAuthorityError) throw error; throw new FileAuthorityError('Prepared parent cannot be verified: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
     this.current();
   }
   async checkSource(entry, metadata = true) {
     this.current();
     await this.checkParent(entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity);
-    if (!sameIdentity(this.sourceIdentity(entry), await captureTreeIdentity(entry.identity.path), metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
+    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(expected, observed);
+    if (!sameIdentity(expected, observed, metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
   }
   async copyFile(entry, destination, parent) {
     await this.checkSource(entry); await this.checkParent(parent); this.current();
@@ -341,7 +345,9 @@ class TreeExecution {
     } catch (error) {
       const status = this.effectPending && !knownNoEffectError(error) ? 'state_unknown' : this.changed ? 'partial'
         : this.signal?.aborted ? 'cancelled' : 'failed_no_change';
-      return this.receipt(status, boundedReason(error instanceof Error ? error.message : String(error)));
+      const receipt = this.receipt(status, boundedReason(error instanceof Error ? error.message : String(error)));
+      if (fileInvocationMustStop(error)) receipt.stopInvocation = true;
+      return receipt;
     } finally {
       this.created.clear(); this.groups.clear(); this.authority = undefined; this.signal = undefined; this.tree = undefined;
       this.sourceParent = undefined; this.destinationParent = undefined;

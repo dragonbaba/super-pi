@@ -3,7 +3,7 @@ import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises";
-import { writeFileSync, symlinkSync, renameSync } from "node:fs";
+import { writeFileSync, symlinkSync, renameSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
@@ -149,6 +149,27 @@ for (const withSuccessor of [true, false]) test(`a retargeted path stops even th
   await assert.rejects(lstat(join(f.cwd, "last")), { code: "ENOENT" });
   const next = f.mutation("write", { path: "next", content: "allowed" }, "next-call"); await next.prepare();
   assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
+});
+
+for (const operation of ["delete", "write"] as const) for (const phase of ["preflight", "item"] as const)
+for (const finalItem of [false, true]) for (const replacement of ["dangling-link", "missing"] as const)
+test(`native ${operation} distinguishes ${replacement} during ${phase}, final=${finalItem}`, async t => {
+  const f = await fixture(t), source = join(f.cwd, "source");
+  const append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data), hooks = { assertCurrent: current, record: unexpectedLegacy };
+  const setup = f.mutation("write", { path: "source", content: "original" }, "setup"); await setup.prepare(); await setup.execute(f.session, append, hooks);
+  const change = operation === "delete" ? { operation, path: "source" } : { operation, mode: "overwrite", path: "source", content: "after" };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, change] : [change, independent] }); await mutation.prepare();
+  function replace() { unlinkSync(source); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), source, "file"); }
+  if (phase === "preflight") replace();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = append(kind, data), payload = JSON.parse(data.payload);
+    if (phase === "item" && payload.phase === "intent" && payload.index === (finalItem ? 1 : 0)) replace();
+    return id;
+  }, hooks);
+  assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+  assert.equal(result.details.succeeded, replacement === "missing" || phase === "item" && finalItem ? 1 : 0);
+  if (replacement === "dangling-link") { assert.match(result.details.reason!, /STALE_STATE/); assert.equal((await lstat(source)).isSymbolicLink(), true); }
 });
 
 test("publication wrapping cannot turn authority loss into an ordinary batch failure", async t => {

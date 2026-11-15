@@ -3,7 +3,8 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { SHA256_PATTERN } from "./regex.ts";
-import { fileInvocationMustStop } from "./file-batch-outcome.ts";
+import { fileInvocationMustStop, assertFilePathAuthority, FileAuthorityError } from "./file-mutation-failure.mjs";
+import { captureTreeIdentity } from "./file-tree-core.mjs";
 
 export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
@@ -123,10 +124,11 @@ async function hashOpened(handle: FileHandle, expectedBytes: number, signal?: Ab
 
 async function assertPrepared(plan: FileCommitPlan, hooks: FileCommitHooks, handle: FileHandle): Promise<void> {
   hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
-  if (await hooks.assertPathAllowed() !== plan.target.canonical
-    || await realpath(plan.parent.path) !== plan.parent.canonical
-    || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)
-    || !sameIdentity(plan.target, await capturePathIdentity(plan.target.path))
+  if (await hooks.assertPathAllowed() !== plan.target.canonical) throw new FileAuthorityError("Prepared path no longer carries publication authority.");
+  const parent = await captureTreeIdentity(plan.parent.path), target = await captureTreeIdentity(plan.target.path);
+  assertFilePathAuthority(plan.parent, parent); assertFilePathAuthority(plan.target, target);
+  if (!sameIdentity(plan.parent, parent, false)) throw new FileAuthorityError("Prepared publication parent changed.");
+  if (!sameIdentity(plan.target, target)
     || !sameObject(await handle.stat({ bigint: true }), plan.target)) throw new Error("[STALE_STATE] Prepared target or parent identity changed.");
   await plan.metadata.assertCurrent(handle);
   // Permission/metadata callbacks may await. Content must be checked after them.
