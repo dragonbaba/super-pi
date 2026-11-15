@@ -93,6 +93,33 @@ for (const operation of ["write", "copy", "move"]) for (const replacement of [fa
   const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
 });
 
+for (const operation of ["copy", "move"]) test(`sandbox ${operation} cannot adopt a replacement created parent`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "new"); await writeFile(join(f.cwd, "source"), "original");
+  const original = fsPromises.lstat; let observations = 0, injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    if (path === parent && options?.bigint && ++observations === 3) { await fsPromises.rename(parent, join(f.cwd, "retained")); await mkdir(parent); injected++; }
+    return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    const result = await f.call(operation, { path: "source", destination: "new/target" });
+    assert.equal(injected, 1); assert.equal(result.details.partial, 1, JSON.stringify(result)); assert.equal(result.details.requiresVerification, true); assert.match(result.details.reason!, /STALE_STATE/);
+    assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "original"); await assert.rejects(lstat(join(parent, "target")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ["copy", "move"]) test(`sandbox ${operation} keeps a parent that appears during preparation`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "new"); await writeFile(join(f.cwd, "source"), "original");
+  const original = fsPromises.realpath; let injected = 0;
+  t.mock.method(fsPromises, "realpath", async (path: any, ...args: any[]) => {
+    try { return await (original as any)(path, ...args); }
+    catch (error) { if (path === parent && !injected && (error as any).code === "ENOENT") { await mkdir(parent); injected++; } throw error; }
+  }); syncBuiltinESMExports();
+  try {
+    const result = await f.call(operation, { path: "source", destination: "new/target" });
+    assert.equal(injected, 1); assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(await readFile(join(parent, "target"), "utf8"), "original"); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("sandbox batch validation detects a changed preimage before effects and continues independent files", async t => {
   let changed = false;
   const f = await fixture(t, (request) => {

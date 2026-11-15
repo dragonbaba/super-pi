@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, writeFile, readFile, mkdir, lstat, symlink, realpath, rm } from "node:fs/promises";
 import { existsSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
@@ -37,6 +39,38 @@ test("native tree owner supports recursive copy/move/delete with v3 outcomes", a
   assert.equal(removed.status, "succeeded"); await assert.rejects(lstat(join(root, "moved")), { code: "ENOENT" });
   assert.equal(await readFile(join(root, "source", "nested", "file"), "utf8"), "data");
 });
+for (const operation of ["copy", "move"] as const) test(`native ${operation} cannot adopt a replacement created parent`, async t => {
+  const root = await realpath(await fixture(t)); await writeFile(join(root, "source"), "original");
+  const plan = await prepareNativeTreeOperation(root, operation, { path: "source", destination: "new/target" }), parent = dirname(plan.destination!);
+  const original = fsPromises.lstat; let observations = 0, injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    // First: capture our mkdir. Second: revalidate that pinned parent.
+    // Third: acquire the destination parent used by the actual tree executor.
+    if (path === parent && options?.bigint && ++observations === 3) { await fsPromises.rename(parent, join(root, "retained")); await mkdir(parent); injected++; }
+    return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    const receipt = await executeNativeTreePlan(plan, current);
+    assert.equal(injected, 1); assert.equal(receipt.stopInvocation, true, JSON.stringify(receipt)); assert.equal(receipt.status, "partial"); assert.equal(receipt.requiresVerification, true);
+    assert.equal(await readFile(join(root, "source"), "utf8"), "original"); await assert.rejects(lstat(join(parent, "target")), { code: "ENOENT" });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ["copy", "move"] as const) test(`native ${operation} keeps a parent that appears during preparation`, async t => {
+  const root = await realpath(await fixture(t)), parent = join(root, "new"); await writeFile(join(root, "source"), "original");
+  const original = fsPromises.realpath; let injected = 0;
+  t.mock.method(fsPromises, "realpath", async (path: any, ...args: any[]) => {
+    try { return await (original as any)(path, ...args); }
+    catch (error) { if (path === parent && !injected && (error as any).code === "ENOENT") { await mkdir(parent); injected++; } throw error; }
+  }); syncBuiltinESMExports();
+  try {
+    const plan = await prepareNativeTreeOperation(root, operation, { path: "source", destination: "new/target" });
+    assert.equal(injected, 1); assert.equal(plan.creation!.directories.length, 0);
+    const receipt = await executeNativeTreePlan(plan, current); assert.equal(receipt.status, "succeeded", JSON.stringify(receipt));
+    assert.equal(await readFile(join(parent, "target"), "utf8"), "original");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("native copy overwrite uses its pinned destination and source digest", async t => {
   const root = await fixture(t); await writeFile(join(root, "source"), Buffer.alloc(1024 * 1024 + 13, 0x91)); await writeFile(join(root, "target"), "old");
   await assert.rejects(prepareNativeTreeOperation(root, "copy", { path: "source", destination: "target" }), /destination_exists/);

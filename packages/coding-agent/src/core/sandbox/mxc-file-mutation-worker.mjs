@@ -113,8 +113,10 @@ class WorkerItemExecution {
         this.shared ??= new Map();
         createdParents = await executeFileCreationDirectories(prepared.creation, this.assertCreationPath, undefined, this.shared, this.current);
         await revalidateFileWorkerManifest(request, item, prepared, false, this.shared);
-        destinationParent = await capturePathIdentity(dirname(header.destination));
-        need(destinationParent.directory && directoryKey(destinationParent.canonical) === directoryKey(dirname(header.destination)), 'Created destination parent changed');
+        const parentPath = prepared.creation.directories[prepared.creation.directories.length - 1];
+        const expectedParent = parentPath === undefined ? prepared.creation.ancestor : this.shared.get(directoryKey(parentPath));
+        need(expectedParent, 'Created destination parent identity was released');
+        destinationParent = await capturePathIdentity(dirname(header.destination), expectedParent);
       }
       if (prepared.creation && header.text) {
         if (prepared.creation.directories.length) need(control.effects, 'Missing preassigned created-parent output');

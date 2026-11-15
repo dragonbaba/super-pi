@@ -7,7 +7,7 @@ import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { assertIndependent } from "./file-path-conflicts.ts";
 import { commitPreparedFile, commitFailure, FileCommitError, type FileCommitPlan, type FileCommitStream, type FileCommitHooks, type FileCommitReceipt } from "./file-commit.ts";
 import { selectCommitMetadata } from "./file-commit-metadata.ts";
-import { fileInvocationMustStop } from "./file-batch-outcome.ts";
+import { fileInvocationMustStop, FileAuthorityError } from "./file-batch-outcome.ts";
 import type { PathIdentity, MutationStatus } from "./native-file-core.ts";
 import { prepareFileCreation, verifyCreationAncestor, executeFileCreationDirectories, FileCreationFailure, directoryKey,
   type FileCreationPlan, type CreatedDirectory } from "./file-creation.ts";
@@ -157,8 +157,10 @@ class NativeTreeExecution implements FileCommitStream {
       if (plan.creation) {
         created = await executeFileCreationDirectories(plan.creation, this.assertPath, this.signal, this.sharedDirectories, this.current);
         await revalidateNativeTreePlan(plan, this.current, this.signal, false, this.sharedDirectories);
-        destinationParent = await capturePathIdentity(dirname(plan.destination!));
-        if (!destinationParent.directory || directoryKey(destinationParent.canonical) !== directoryKey(dirname(plan.destination!))) throw new Error("[STALE_STATE] Created destination parent changed.");
+        const parentPath = plan.creation.directories[plan.creation.directories.length - 1];
+        const expectedParent = parentPath === undefined ? plan.creation.ancestor : this.sharedDirectories?.get(directoryKey(parentPath));
+        if (!expectedParent) throw new FileAuthorityError("Created destination parent identity was released.");
+        destinationParent = await capturePathIdentity(dirname(plan.destination!), expectedParent);
       }
       const result = await executeTree(plan.tree, plan.operation, plan.sourceParent, plan.destination, destinationParent, this.current, this.signal);
       if (created?.length && result.stateChanged === false) { result.stateChanged = true; result.status = "partial"; result.requiresVerification = true; }
