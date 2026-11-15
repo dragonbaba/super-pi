@@ -140,6 +140,24 @@ for (const replacement of ["directory-file", "directory-empty", "missing"]) for 
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
+for (const replacement of ["directory", "missing"]) for (const finalItem of [false, true]) test(`sandbox missing nested parent checks ${replacement} recorded root, final=${finalItem}`, async t => {
+  let armed = false;
+  const f = await fixture(t, request => { if (request.phase === "prepare") armed = true; }), parent = join(f.cwd, "source"), child = join(parent, "nested/inner/file");
+  await mkdir(join(parent, "nested/inner"), { recursive: true }); await writeFile(child, "original");
+  const original = fsPromises.lstat; let injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    if (armed && path === child && !injected) { await fsPromises.rename(parent, join(f.cwd, "retained")); injected++; if (replacement === "directory") await mkdir(parent); }
+    return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    const remove = { operation: "delete", path: "source", recursive: true }, independent = { operation: "write", path: "independent", mode: "create", content: "kept" };
+    const result = await f.call("file_batch", { operations: finalItem ? [independent, remove] : [remove, independent] });
+    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
+    assert.equal(await readFile(join(f.cwd, "retained/nested/inner/file"), "utf8"), "original"); assert.equal(f.owned.size, 0);
+    const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test("sandbox batch validation detects a changed preimage before effects and continues independent files", async t => {
   let changed = false;
   const f = await fixture(t, (request) => {

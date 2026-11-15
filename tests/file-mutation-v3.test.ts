@@ -315,9 +315,9 @@ for (const replacement of ["directory-file", "directory-empty", "missing"]) for 
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
-for (const phase of ["validate", "execute"]) for (const replacement of ["directory-file", "directory-empty", "missing"]) test(`nested tree ${phase} checks ${replacement} parent on child failure`, async t => {
-  const f = await fixture(t), parent = join(f.cwd, "original"); await mkdir(parent); await writeFile(join(parent, "source"), "original");
-  const item = await f.service.prepareV3("delete", { path: "original", recursive: true }), plan = item.tree!, child = plan.tree.entries[1].identity.path, original = fsPromises.lstat; let injected = 0;
+for (const depth of [0, 2]) for (const phase of ["validate", "execute"]) for (const replacement of ["directory-file", "directory-empty", "missing"]) test(`nested tree ${phase} checks ${replacement} parent on child failure, depth=${depth}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"), suffix = depth ? "nested/inner/source" : "source"; await mkdir(dirname(join(parent, suffix)), { recursive: true }); await writeFile(join(parent, suffix), "original");
+  const item = await f.service.prepareV3("delete", { path: "original", recursive: true }), plan = item.tree!, child = plan.tree.entries[plan.tree.entries.length - 1].identity.path, original = fsPromises.lstat; let injected = 0;
   t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
     if (path === child && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++;
       if (replacement !== "missing") { fsSync.mkdirSync(parent); if (replacement === "directory-file") writeFileSync(join(parent, "source"), "external"); }
@@ -326,7 +326,22 @@ for (const phase of ["validate", "execute"]) for (const replacement of ["directo
   try {
     if (phase === "validate") await assert.rejects(revalidateTree(plan.tree), (error: any) => { assert.equal(error.stopInvocation === true, replacement !== "missing"); return true; });
     else { const receipt = await executeTree(plan.tree, "delete", plan.sourceParent, undefined, undefined, current); assert.equal(receipt.status, "failed_no_change"); assert.equal(receipt.stopInvocation === true, replacement !== "missing", JSON.stringify(receipt)); }
-    assert.equal(injected, 1); assert.equal(await readFile(join(f.cwd, "retained/source"), "utf8"), "original");
+    assert.equal(injected, 1); assert.equal(await readFile(join(f.cwd, "retained", suffix), "utf8"), "original");
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ["delete", "copy"] as const) for (const replacement of ["directory", "missing"]) test(`deep tree ${operation} syscall checks ${replacement} recorded ancestors`, async t => {
+  const f = await fixture(t), source = join(f.cwd, "source"), destination = join(f.cwd, "target"); await mkdir(join(source, "nested/inner"), { recursive: true }); await writeFile(join(source, "nested/inner/file"), "original");
+  const item = await f.service.prepareV3(operation, { path: "source", ...(operation === "delete" ? { recursive: true } : { destination: "target" }) }), plan = item.tree!;
+  const syscall = operation === "delete" ? "unlink" : "open", original = fsPromises[syscall], boundary = operation === "delete" ? plan.tree.entries[plan.tree.entries.length - 1].identity.path : join(plan.destination!, "nested/inner/file"), parent = operation === "delete" ? source : destination; let injected = 0;
+  t.mock.method(fsPromises, syscall, async (path: any, ...args: any[]) => {
+    if (path === boundary && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++; if (replacement === "directory") fsSync.mkdirSync(parent); }
+    return (original as any)(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    const receipt = await executeTree(plan.tree, operation, plan.sourceParent, plan.destination, plan.destinationParent, current);
+    assert.equal(injected, 1); assert.equal(receipt.stopInvocation === true, replacement === "directory", JSON.stringify(receipt)); assert.equal(receipt.status, operation === "delete" ? "failed_no_change" : "partial");
+    assert.equal(await readFile(join(operation === "delete" ? join(f.cwd, "retained") : source, "nested/inner/file"), "utf8"), "original");
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 

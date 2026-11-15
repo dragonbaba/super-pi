@@ -215,6 +215,15 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
   return text.slice(0, index);
 }
 
+/** Error lifecycle only. A missing parent may hide a recorded higher replacement. */
+async function assertTreeParentsAfterFailure(tree, parentIndex, created) {
+  while (parentIndex >= 0) {
+    const entry = tree.entries[parentIndex], identity = created ? created.get(parentIndex) : entry.identity;
+    if (identity) await assertFilePathAfterFailure(identity);
+    parentIndex = entry.parent;
+  }
+}
+
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
@@ -222,7 +231,7 @@ export async function revalidateTree(tree, authority, signal) {
       const observed = await captureTreeIdentity(entry.identity.path, entry.identity);
       if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
     } catch (error) {
-      if (!fileInvocationMustStop(error) && entry.parent >= 0) await assertFilePathAfterFailure(tree.entries[entry.parent].identity);
+      if (!fileInvocationMustStop(error)) await assertTreeParentsAfterFailure(tree, entry.parent);
       throw error;
     }
   }
@@ -242,6 +251,7 @@ class TreeExecution {
     this.moveByCopy = moveByCopy || operation === 'move' && tree.entries[0].identity.directory;
     this.created = new Map(); this.groups = new Map(); this.changed = false; this.attempted = false; this.effectPending = false;
     this.files = 0; this.bytes = 0; this.directories = 0; this.sha256 = undefined;
+    this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
     if (operation !== 'copy') {
       const reverse = operation === 'delete';
       for (let index = reverse ? tree.entries.length - 1 : 0; reverse ? index >= 0 : index < tree.entries.length; index += reverse ? -1 : 1) {
@@ -279,6 +289,7 @@ class TreeExecution {
   }
   async checkSource(entry, metadata = true) {
     this.current();
+    this.checkedSourceIndex = entry.parent;
     this.checkedSourceParent = entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity;
     await this.checkParent(this.checkedSourceParent);
     const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path, expected);
@@ -349,6 +360,7 @@ class TreeExecution {
   }
   async finalizeDirectoryMetadata(index) {
     const entry = this.tree.entries[index], expected = this.created.get(index);
+    this.checkedDestinationIndex = entry.parent;
     const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
     await this.checkParent(parent); this.current();
     // Windows needs a writable directory handle for futimes; no path-based
@@ -391,6 +403,7 @@ class TreeExecution {
         for (let index = 0; index < this.tree.entries.length; index++) {
           const entry = this.tree.entries[index], destination = index === 0 ? this.destination : resolve(this.destination, relative(source.path, entry.identity.path));
           const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
+          this.checkedDestinationIndex = entry.parent;
           await this.checkSource(entry, !entry.identity.directory); await this.checkParent(parent);
           if (entry.identity.directory) {
             // Keep the whole incomplete tree private. Restore prepared access
@@ -431,7 +444,10 @@ class TreeExecution {
       // Preserve the syscall's effect facts while checking the prepared parents.
       if (!fileInvocationMustStop(error)) {
         try {
-          await assertFilePathAfterFailure(this.checkedSourceParent ?? this.sourceParent);
+          await assertFilePathAfterFailure(this.sourceParent);
+          await assertTreeParentsAfterFailure(this.tree, this.checkedSourceIndex);
+          await assertTreeParentsAfterFailure(this.tree, this.checkedDestinationIndex, this.created);
+          if (this.destinationParent) await assertFilePathAfterFailure(this.destinationParent);
           if (this.checkedParent) await assertFilePathAfterFailure(this.checkedParent);
         } catch (authorityError) { error = authorityError; }
       }
@@ -442,6 +458,7 @@ class TreeExecution {
       this.created.clear(); this.groups.clear(); this.authority = undefined; this.signal = undefined; this.tree = undefined;
       this.sourceParent = undefined; this.destinationParent = undefined;
       this.checkedSourceParent = undefined; this.checkedParent = undefined;
+      this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
     }
   }
   receipt(status, reason) {
