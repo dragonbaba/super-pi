@@ -15,6 +15,7 @@ import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-
 import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
 import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
+import { prepareFileCreation, verifyCreationAncestor, executeFileCreation, FileCreationFailure } from "../packages/coding-agent/src/core/files/file-creation.ts";
 
 async function fixture(t: test.TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), "file-mutation-v3-")); t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -201,12 +202,50 @@ test("publication wrapping cannot turn authority loss into an ordinary batch fai
     { operation: "write", mode: "create", path: "next", content: "unstarted" },
   ] }); await mutation.prepare();
   const snapshot = mutation.items[0].snapshot!;
-  t.mock.method(snapshot.metadata!, "prepareTemporary", async () => { throw new FileAuthorityError("Authority changed before publication."); });
+  let injected = 0;
+  t.mock.method(snapshot.metadata!, "assertCurrent", () => { injected++; throw new FileAuthorityError("Authority changed before publication."); });
   const result = await mutation.execute(f.session, append, hooks);
+  assert.equal(injected, 1, "inject on both staged and protected-in-place publication strategies");
   assert.equal(result.details.failed, 1); assert.equal(result.details.notStarted, 1, JSON.stringify(result));
   assert.equal(completedFileBatchFailure(result.details), false);
   assert.equal(await readFile(join(f.cwd, "existing"), "utf8"), "before");
   await assert.rejects(lstat(join(f.cwd, "next")), { code: "ENOENT" });
+});
+
+for (const phase of ["preflight", "item"] as const) for (const finalItem of [false, true])
+for (const replacement of ["dangling-link", "missing"] as const)
+test(`native creation ancestor distinguishes ${replacement} during ${phase}, final=${finalItem}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"); await mkdir(parent);
+  const create = { operation: "write", mode: "create", path: "original/new/file", content: "created" };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, create] : [create, independent] }); await mutation.prepare();
+  function replace() { renameSync(parent, join(f.cwd, "retained")); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), parent, process.platform === "win32" ? "junction" : "dir"); }
+  if (phase === "preflight") replace();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = f.session.appendCustomEntry(kind, data), payload = JSON.parse(data.payload);
+    if (phase === "item" && payload.phase === "intent" && payload.index === (finalItem ? 1 : 0)) replace();
+    return id;
+  }, { assertCurrent: current, record: unexpectedLegacy });
+  assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+  assert.equal(result.details.succeeded, replacement === "missing" || phase === "item" && finalItem ? 1 : 0);
+  if (replacement === "dangling-link") assert.match(result.details.reason!, /STALE_STATE/);
+  await assert.rejects(lstat(join(f.cwd, "retained/new")), { code: "ENOENT" });
+});
+
+for (const phase of ["precheck", "open"]) for (const replacement of ["dangling-link", "missing"]) test(`creation mechanics preserve ${replacement} ancestor provenance during ${phase}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"); await mkdir(parent);
+  const plan = (await prepareFileCreation(join(parent, phase === "open" ? "file" : "new/file"), true))!;
+  function replace() { renameSync(parent, join(f.cwd, "retained")); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), parent, process.platform === "win32" ? "junction" : "dir"); }
+  if (phase === "precheck") { replace(); await assert.rejects(verifyCreationAncestor(plan), (error: any) => { assert.equal(error.stopInvocation === true, replacement === "dangling-link"); return true; }); }
+  else {
+    const originalOpen = fsPromises.open;
+    t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => { if (path === plan.path) replace(); return (originalOpen as any)(path, ...args); }); syncBuiltinESMExports();
+  }
+  try {
+    await assert.rejects(executeFileCreation(plan, "new", async () => plan.canonicalTarget, undefined, undefined, undefined, undefined, true), (error: any) => {
+      assert(error instanceof FileCreationFailure); assert.equal(error.stopInvocation, replacement === "dangling-link"); assert.equal(error.facts.stateChanged, false); return true;
+    });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test("large all-failed batch bounds failure excerpts while retaining every terminal outcome", async t => {

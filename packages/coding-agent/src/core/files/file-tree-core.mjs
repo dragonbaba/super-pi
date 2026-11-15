@@ -94,7 +94,9 @@ function sameOpened(info, expected) {
 export async function writeIdentityTo(source, target, authority, signal) {
   current(authority, signal);
   if (!sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed before open.');
-  const input = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let input, failure, failed = false;
+  try { input = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+  catch (error) { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); throw error; }
   try {
     if (!sameOpened(await input.stat({ bigint: true }), source)) throw new Error('[STALE_STATE] Copy source identity changed before read.');
     const buffer = Buffer.allocUnsafe(FILE_STREAM_BUFFER_BYTES), hash = createHash('sha256'), size = Number(source.size);
@@ -119,12 +121,21 @@ export async function writeIdentityTo(source, target, authority, signal) {
       || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed during read; verify the candidate.');
     current(authority, signal);
     return hash.digest('hex');
-  } finally { await input.close(); }
+  } catch (error) {
+    failed = true; failure = error;
+    try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); } catch (authorityError) { failure = authorityError; }
+    throw failure;
+  } finally {
+    try { await input.close(); }
+    catch (error) { if (!fileInvocationMustStop(failure)) await assertFilePathAfterFailure(source); throw failed ? failure : error; }
+  }
 }
 
 export async function hashIdentity(source, authority, signal) {
   current(authority, signal);
-  const file = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let file, failure, failed = false;
+  try { file = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+  catch (error) { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); throw error; }
   try {
     if (!sameOpened(await file.stat({ bigint: true }), source)) throw new Error('[STALE_STATE] Hash source identity changed.');
     const hash = createHash('sha256'), buffer = Buffer.allocUnsafe(FILE_STREAM_BUFFER_BYTES), size = Number(source.size);
@@ -141,7 +152,14 @@ export async function hashIdentity(source, authority, signal) {
       || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Hash source changed.');
     current(authority, signal);
     return hash.digest('hex');
-  } finally { await file.close(); }
+  } catch (error) {
+    failed = true; failure = error;
+    try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); } catch (authorityError) { failure = authorityError; }
+    throw failure;
+  } finally {
+    try { await file.close(); }
+    catch (error) { if (!fileInvocationMustStop(failure)) await assertFilePathAfterFailure(source); throw failed ? failure : error; }
+  }
 }
 
 export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {

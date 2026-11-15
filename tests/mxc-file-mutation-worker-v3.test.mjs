@@ -70,6 +70,21 @@ for (const phase of ['validate', 'execute']) for (const replacement of ['danglin
   await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
 });
 
+for (const replacement of ['dangling-link', 'missing']) test(`worker hash-open classifies ${replacement} after identity validation`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'target', overwrite: true }]);
+  const source = join(f.workspace, 'source'), target = join(f.workspace, 'target'); await writeFile(source, 'source'); await writeFile(target, 'original');
+  const prepared = await f.prepare(), originalOpen = fsPromises.open; let injected = false;
+  t.mock.method(fsPromises, 'open', async (path, ...args) => {
+    if (!injected && path === source) { injected = true; await unlink(target); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), target, 'file'); }
+    return originalOpen(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const rows = await f.validate(prepared); assert.match(rows[0].error, /ENOENT/); assert.equal(rows[0].noEffects, true); }
+    assert.equal(injected, true); assert.equal(await readFile(source, 'utf8'), 'source');
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {
   const f = await fixture(t, [{ operation: 'write', mode: 'create', path: 'first', content: 'kept' }]);
   await writeFile(join(f.exchange, f.request.id + '-0.manifest'), 'foreign bytes');
