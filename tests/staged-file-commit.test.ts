@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, writeFile, readFile, readdir, rm, rename, link, lstat, realpath, unlink, symlink, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -43,6 +45,42 @@ for (const replacement of ["dangling-link", "missing"]) test(`publication open c
     assert(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed"); assert.equal(error.stopInvocation === true, replacement === "dangling-link"); return true;
   });
   assert.equal(await readFile(join(f.root, "retained/inner/file"), "utf8"), f.content);
+});
+
+for (const replacement of ["dangling-link", "directory", "missing"]) test(`candidate creation failure preserves ${replacement} parent provenance`, async t => {
+  const f = await fixture(t), original = fsPromises.open, retained = `${f.root}-retained`; let injected = 0, sourceHandle: Awaited<ReturnType<typeof original>> | undefined;
+  t.after(() => rm(retained, { recursive: true, force: true }));
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    if (injected === 0 && args[0] === "wx" && dirname(path) === f.root) {
+      // Windows pins ancestors of an open child; release only the fixture's
+      // read handle to exercise the portable failed-syscall classifier.
+      if (process.platform === "win32") await sourceHandle!.close();
+      await rename(f.root, retained); injected++;
+      if (replacement === "dangling-link") await symlink(join(dirname(f.root), "absent-target"), f.root, process.platform === "win32" ? "junction" : "dir");
+      else if (replacement === "directory") { await mkdir(f.root); throw Object.assign(new Error("fixture denied candidate creation"), { code: "EACCES" }); }
+    }
+    const handle = await (original as any)(path, ...args); if (path === f.target) sourceHandle = handle; return handle;
+  }); syncBuiltinESMExports();
+  try {
+    await assert.rejects(commitPreparedFile(f.plan, Buffer.from("next"), f.hooks), (error: unknown) => {
+      assert(error instanceof FileCommitError); assert.equal(error.receipt.outcome, "not_committed"); assert.equal(error.receipt.retainedTemporary, undefined);
+      assert.equal(error.stopInvocation, replacement !== "missing"); return true;
+    });
+    assert.equal(injected, 1); assert.equal(await readFile(join(retained, "中文.txt"), "utf8"), f.content);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("publication authority failure survives temporary privacy recovery failure", async t => {
+  const f = await fixture(t); let protections = 0;
+  f.plan.metadata.protectTemporary = async () => {
+    if (++protections === 1) throw Object.assign(new Error("fixture authority revoked"), { stopInvocation: true });
+    throw new Error("fixture privacy restoration failed");
+  };
+  await assert.rejects(commitPreparedFile(f.plan, Buffer.from("next"), f.hooks), (error: unknown) => {
+    assert(error instanceof FileCommitError); assert.equal(error.stopInvocation, true); assert.equal(error.receipt.outcome, "not_committed");
+    assert.match(error.message, /authority revoked.*privacy restoration failed/); return true;
+  });
+  assert.equal(protections, 2); assert.equal(await readFile(f.target, "utf8"), f.content);
 });
 
 test("N2 shared commit publishes a complete BOM/CRLF candidate and releases its temporary", async t => {

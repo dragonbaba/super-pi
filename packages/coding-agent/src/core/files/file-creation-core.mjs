@@ -128,7 +128,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
             }
             await verifyCreatedDirectories(created);
             if (reused) for (const parent of reused)
-                if (!sameIdentity(parent, await capturePathIdentity(parent.path), false))
+                if (!sameIdentity(parent, await capturePathIdentity(parent.path, parent), false))
                     throw new Error("[STALE_STATE] Shared created parent changed before descendant creation.");
             assertAuthority?.();
             signal?.throwIfAborted();

@@ -6,12 +6,18 @@ import { resolve, dirname, relative, basename } from 'node:path';
 import { FILE_STREAM_BUFFER_BYTES, FILE_RESULT_REASON_BYTES } from './file-operation-limits.mjs';
 import { assertFilePathAuthority, fileInvocationMustStop, FileAuthorityError } from './file-mutation-failure.mjs';
 
+function assertPreparedDirectory(expected, observed) {
+  if (expected.directory && !sameIdentity(expected, observed, false)) throw new FileAuthorityError('Prepared directory identity changed.');
+}
+
 export async function capturePathIdentity(path, expected) {
   try {
     const canonical = await realpath(path), info = await lstat(path, { bigint: true });
     if (expected) assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
     if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('[unsupported] Links, reparse points and special files are unsupported.');
-    return pathIdentityFromStat(path, canonical, info, false);
+    const observed = pathIdentityFromStat(path, canonical, info, false);
+    if (expected) assertPreparedDirectory(expected, observed);
+    return observed;
   } catch (error) {
     if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
     throw error;
@@ -25,7 +31,7 @@ export async function assertFilePathAfterFailure(expected) {
     try { info = await lstat(cursor, { bigint: true }); }
     catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
     const leaf = cursor === expected.path, link = info.isSymbolicLink();
-    if (leaf) assertFilePathAuthority(expected, expected.canonical, link);
+    if (leaf) { assertFilePathAuthority(expected, expected.canonical, link); if (expected.directory) assertPreparedDirectory(expected, pathIdentityFromStat(cursor, expected.canonical, info, link)); }
     let canonical;
     try { canonical = await realpath(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
     catch {
@@ -44,9 +50,9 @@ export function assertFilePathAfterFailureSync(expected) {
     try { info = lstatSync(cursor, { bigint: true }); }
     catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
     const leaf = cursor === expected.path, link = info.isSymbolicLink();
-    if (leaf) assertFilePathAuthority(expected, expected.canonical, link);
+    if (leaf) { assertFilePathAuthority(expected, expected.canonical, link); if (expected.directory) assertPreparedDirectory(expected, pathIdentityFromStat(cursor, expected.canonical, info, link)); }
     let canonical;
-    try { canonical = realpathSync(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
+    try { canonical = realpathSync.native(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
     catch {
       if (!leaf && link) throw new FileAuthorityError('Prepared path ancestor is an unresolved link.');
       const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue;
@@ -74,10 +80,11 @@ export async function captureTreeIdentity(path, expected) {
     // Canonical resolution is asynchronous too. Observe the leaf last, without
     // following a link's target, and reject mixed observations of two objects.
     const checked = await lstat(path, { bigint: true });
-    if (expected) assertFilePathAuthority(expected, canonical, checked.isSymbolicLink());
+    const observed = pathIdentityFromStat(path, canonical, checked, symbolicLink);
+    if (expected) { assertFilePathAuthority(expected, canonical, checked.isSymbolicLink()); assertPreparedDirectory(expected, observed); }
     if (info.dev !== checked.dev || info.ino !== checked.ino || info.mode !== checked.mode || info.size !== checked.size
       || info.mtimeNs !== checked.mtimeNs || info.ctimeNs !== checked.ctimeNs || info.nlink !== checked.nlink) throw new Error('[STALE_STATE] Tree entry changed during identity capture.');
-    return pathIdentityFromStat(path, canonical, checked, symbolicLink);
+    return observed;
   } catch (error) {
     if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
     throw error;
@@ -260,6 +267,7 @@ class TreeExecution {
     this.current(); group.ctime = observed.ctime; group.links = links; group.changed = true;
   }
   async checkParent(expected) {
+    this.checkedParent = expected;
     this.current();
     try { if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path, expected), false)) throw new FileAuthorityError('Prepared parent changed.'); }
     catch (error) { if (error instanceof FileAuthorityError) throw error; throw new FileAuthorityError('Prepared parent cannot be verified: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
@@ -267,7 +275,8 @@ class TreeExecution {
   }
   async checkSource(entry, metadata = true) {
     this.current();
-    await this.checkParent(entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity);
+    this.checkedSourceParent = entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity;
+    await this.checkParent(this.checkedSourceParent);
     const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path, expected);
     if (!sameIdentity(expected, observed, metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
   }
@@ -414,12 +423,21 @@ class TreeExecution {
     } catch (error) {
       const status = this.effectPending && !knownNoEffectError(error) ? 'state_unknown' : this.changed ? 'partial'
         : this.signal?.aborted ? 'cancelled' : 'failed_no_change';
+      // Failed mutation syscalls can precede the next normal identity check.
+      // Preserve the syscall's effect facts while checking the prepared parents.
+      if (!fileInvocationMustStop(error)) {
+        try {
+          await assertFilePathAfterFailure(this.checkedSourceParent ?? this.sourceParent);
+          if (this.checkedParent) await assertFilePathAfterFailure(this.checkedParent);
+        } catch (authorityError) { error = authorityError; }
+      }
       const receipt = this.receipt(status, boundedReason(error instanceof Error ? error.message : String(error)));
       if (fileInvocationMustStop(error)) receipt.stopInvocation = true;
       return receipt;
     } finally {
       this.created.clear(); this.groups.clear(); this.authority = undefined; this.signal = undefined; this.tree = undefined;
       this.sourceParent = undefined; this.destinationParent = undefined;
+      this.checkedSourceParent = undefined; this.checkedParent = undefined;
     }
   }
   receipt(status, reason) {
