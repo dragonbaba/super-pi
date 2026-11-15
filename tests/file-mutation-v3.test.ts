@@ -300,16 +300,16 @@ for (const replacement of ["directory-file", "directory-empty", "missing"]) for 
   const f = await fixture(t), parent = join(f.cwd, "original"), source = join(f.cwd, "source"); await mkdir(parent); await writeFile(source, "source"); await writeFile(join(parent, "target"), "original");
   const copy = { operation: "copy", path: "source", destination: "original/target", overwrite: true }, independent = { operation: "write", path: "independent", mode: "create", content: "kept" };
   const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, copy] : [copy, independent] }); await mutation.prepare();
-  const sourceCanonical = await fsPromises.realpath(source), original = fsPromises.open; let injected = 0;
+  const sourcePath = mutation.items[finalItem ? 1 : 0].tree!.source.path, original = fsPromises.open; let injected = 0;
   t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
     const handle = await (original as any)(path, ...args);
-    if (path === sourceCanonical && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++;
+    if (path === sourcePath && !injected) { renameSync(parent, join(f.cwd, "retained")); injected++;
       if (replacement !== "missing") { fsSync.mkdirSync(parent); if (replacement === "directory-file") writeFileSync(join(parent, "target"), "external"); }
     } return handle;
   }); syncBuiltinESMExports();
   try {
     const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy });
-    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
+    assert.equal(injected, 1, JSON.stringify(result)); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
     assert.equal(await readFile(join(f.cwd, "retained/target"), "utf8"), "original"); assert.equal(await readFile(source, "utf8"), "source");
     const next = f.mutation("write", { path: "after", content: "next" }, "after"); await next.prepare(); assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
