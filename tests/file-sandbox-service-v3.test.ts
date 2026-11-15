@@ -15,6 +15,7 @@ import { FileResultReader } from "../packages/coding-agent/src/core/files/file-r
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import fsSync from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { completedFileBatchFailure } from "../packages/coding-agent/src/core/files/file-batch-outcome.ts";
 
 async function fixture(t: test.TestContext, changeReply?: (request: any, reply: any) => void) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "sandbox-session-v3-")));
@@ -88,6 +89,45 @@ test("sandbox batch validation detects a changed preimage before effects and con
   assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "external change");
   assert.equal(await readFile(join(f.cwd, "independent"), "utf8"), "kept");
   await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+});
+
+for (const phase of ["prepare", "validate"]) for (const finalItem of [false, true]) test(`sandbox retargeted parent stops the script after ${phase}, final=${finalItem}`, async t => {
+  let changed = false;
+  const f = await fixture(t, request => {
+    if (!changed && request.phase === phase) {
+      changed = true; fsSync.renameSync(join(f.cwd, "original"), join(f.cwd, "retained"));
+      fsSync.symlinkSync(join(f.cwd, "replacement"), join(f.cwd, "original"), process.platform === "win32" ? "junction" : "dir");
+    }
+  });
+  for (const parent of ["original", "replacement"]) { await mkdir(join(f.cwd, parent)); await writeFile(join(f.cwd, parent, "source"), "same content"); }
+  const copy = { operation: "copy", path: "original/source", destination: "copied" };
+  const write = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [write, copy] : [copy, write] });
+  assert.equal(completedFileBatchFailure(result.details), false, JSON.stringify(result));
+  assert.match(result.details.reason, /STALE_STATE/);
+  assert.equal(result.details.succeeded, phase === "validate" && finalItem ? 1 : 0);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, phase === "prepare" ? 0 : finalItem ? 2 : 1);
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  for (const parent of ["retained", "replacement"]) assert.equal(await readFile(join(f.cwd, parent, "source"), "utf8"), "same content");
+});
+
+for (const fault of ["integrity", "io"]) test(`sandbox preparation artifact ${fault} failure stops all effects and releases exact artifacts`, async t => {
+  const f = await fixture(t);
+  const original = fsSync.writeFileSync;
+  t.mock.method(fsSync, "writeFileSync", (file: any, ...args: any[]) => {
+    if (fault === "io") throw Object.assign(new Error("ENOSPC artifact write"), { code: "ENOSPC" });
+    return original(file, ...args as [any]);
+  });
+  const originalCreate = (f.owner as any).backend.createFileManifest.bind((f.owner as any).backend);
+  if (fault === "integrity") t.mock.method((f.owner as any).backend, "createFileManifest", async (...args: any[]) => {
+    const owned = await originalCreate(...args); await writeFile(join(args[0].exchange, owned.name), "foreign bytes"); return owned;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "first", content: "kept" }, { operation: "write", mode: "create", path: "last", content: "kept" }] }), /FILE_MANIFEST_INVALID/);
+    assert.equal(f.sends.some(row => row.phase === "execute"), false); assert.equal(f.owned.size, 0);
+    await assert.rejects(lstat(join(f.cwd, "first")), { code: "ENOENT" });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test("sandbox invalid per-item refusal is a protocol failure before any effect", async t => {

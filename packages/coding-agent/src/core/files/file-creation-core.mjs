@@ -102,7 +102,7 @@ function retainUnprovenDirectories(created) {
 }
 /** Single write and file_batch share this exclusive create core. Never removes a partially written file. */
 export class FileCreationFailure extends Error {
-    constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; }
+    constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; this.stopInvocation = facts.stopInvocation === true; }
 }
 /** Shared parent effects for text creation and copy/move destinations. Preparation
  * remains read-only; callers retain this complete inventory until publication. */
@@ -152,6 +152,7 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
         throw new FileCreationFailure({ ok: false, status: stateChanged === "unknown" ? "state_unknown" : changed ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
+            stopInvocation: error?.stopInvocation === true || undefined,
             fileCreated: false, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) });
     } finally { if (reused) reused.length = 0; attempted = undefined; }
 }
@@ -221,6 +222,7 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
         const facts = { ok: false, operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
+            stopInvocation: error?.stopInvocation === true || undefined,
             fileCreated, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) };
         throw structuredFailure ? new FileCreationFailure(facts) : new Error(JSON.stringify(facts));
     }

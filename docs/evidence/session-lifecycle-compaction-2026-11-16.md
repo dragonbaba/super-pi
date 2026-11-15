@@ -34,11 +34,15 @@ CodeMode 保留子工具的失败事实，对已完成且仅有明确未修改�
 
 授权对话框期间路径改向仍在第一个效果前拒绝；执行期间把已批准目录替换为指向其他位置的链接时，停止后续项并保留两个位置的文件，下一次独立请求成功。任务完成检查继续阻止未修复失败，成功项不会进入修复请求或重开会话后的执行。
 
+Native 发布/创建异常及 MXC 验证/执行回执共享无副作用的致命失败判定，跨包装保留 `stopInvocation`。MXC 的父目录改向和准备清单的完整性、写入、发布失败不能降为普通文件拒绝；只读预检中的文件内容变化仍按项失败。旧候选回放三个 worker 回归均失败，修复后通过；宿主集成覆盖验证/执行两个阶段、首/末项改向、同 inode 清单污染及 ENOSPC，并验证 0 越界文件效果和归属清理。新增共享模块同时加入宿主包和 MXC 的精确运行时资产表。
+
 ## 验证
 
 在旧源码上回放新增断言，两例分别复现临时 daemon cwd 和错误的 `TOOL_UNAVAILABLE` 引导；修复后通过。Python 离线夹具验证脚本 cwd、三次搜索复用、八标签边界和只关闭归属标签；生命周期夹具验证失败保留、取消等待和引用释放。模拟检查点写入失败后，重开 JSONL 能读到 provider receipt 和有界失败诊断，下一次普通请求不自动重新付费压缩。
 
 `npm run check` 和离线构建通过（12/12 包）。全量 runner 完成 461 个执行单元，6,094 项通过、116 项平台跳过、0 失败。最后补充最终项授权失效的停止边界后重新检查、构建，受影响的 Native/MXC、SDK、权限、恢复、协议和源码分配约束检查 367 项：366 通过、1 平台跳过、0 失败。失败生命周期断言继续验证原消息/提供商上下文不变、撤销授权后 0 请求、0 陈旧检查点及引用释放；允许的新增条目只有精确检查的诊断记录。这里不是声称原始真实长会话的压缩失败已被复现或解决。
+
+致命失败标记与 MXC 清单边界补全后，重新检查及构建通过；扩展后的相关检查 405 项，402 通过、3 平台跳过、0 失败。新增错误标记仅分配在失败生命周期，MXC 顶层预检复用同一次身份采集，没有新增逐目录叶子、delta、progress 或 frame 回调；异常包装只保留布尔归因，不保留原始请求或大对象。
 
 分配审计覆盖 `SessionFiles.prepareInvocation → FileMutation.prepare/execute → FileService.withPreparedItems / SandboxFileService → worker → FileResultWriter/Reader`，以及 `CodemodeController.runChild → boundCodemodeResult → show → parent completion/disposal`。新增分配是请求级失败占位/Map、仅存在预检失败时的有效项引用数组、有界失败展示和每个结果一个布尔标记；未新增 per-delta/progress/frame 回调、Promise、AbortController 或 wrapper。数组/Map 归属于单次调用，结束、异常、取消与 disposal 清空并释放；无对象池。
 

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { FileService } from "../packages/coding-agent/src/core/files/file-service.ts";
 import { FileMutation } from "../packages/coding-agent/src/core/files/file-mutation.ts";
-import { completedFileBatchFailure } from "../packages/coding-agent/src/core/files/file-batch-outcome.ts";
+import { completedFileBatchFailure, FileAuthorityError } from "../packages/coding-agent/src/core/files/file-batch-outcome.ts";
 import { FileResultReader } from "../packages/coding-agent/src/core/files/file-result-store.ts";
 import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-result-protocol.ts";
 import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
@@ -149,6 +149,23 @@ for (const withSuccessor of [true, false]) test(`a retargeted path stops even th
   await assert.rejects(lstat(join(f.cwd, "last")), { code: "ENOENT" });
   const next = f.mutation("write", { path: "next", content: "allowed" }, "next-call"); await next.prepare();
   assert.equal((await next.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { assertCurrent: current, record: unexpectedLegacy })).isError, false);
+});
+
+test("publication wrapping cannot turn authority loss into an ordinary batch failure", async t => {
+  const f = await fixture(t), append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data);
+  const hooks = { assertCurrent: current, record: unexpectedLegacy };
+  const setup = f.mutation("write", { path: "existing", content: "before" }, "setup"); await setup.prepare(); await setup.execute(f.session, append, hooks);
+  const mutation = f.mutation("file_batch", { operations: [
+    { operation: "write", mode: "overwrite", path: "existing", content: "after" },
+    { operation: "write", mode: "create", path: "next", content: "unstarted" },
+  ] }); await mutation.prepare();
+  const snapshot = mutation.items[0].snapshot!;
+  t.mock.method(snapshot.metadata!, "prepareTemporary", async () => { throw new FileAuthorityError("Authority changed before publication."); });
+  const result = await mutation.execute(f.session, append, hooks);
+  assert.equal(result.details.failed, 1); assert.equal(result.details.notStarted, 1, JSON.stringify(result));
+  assert.equal(completedFileBatchFailure(result.details), false);
+  assert.equal(await readFile(join(f.cwd, "existing"), "utf8"), "before");
+  await assert.rejects(lstat(join(f.cwd, "next")), { code: "ENOENT" });
 });
 
 test("large all-failed batch bounds failure excerpts while retaining every terminal outcome", async t => {

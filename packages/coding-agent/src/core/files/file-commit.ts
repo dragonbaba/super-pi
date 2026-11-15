@@ -3,6 +3,7 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { SHA256_PATTERN } from "./regex.ts";
+import { fileInvocationMustStop } from "./file-batch-outcome.ts";
 
 export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
@@ -63,10 +64,12 @@ export function originalCommittedFileIdentity(receipt: FileCommitReceipt): Reado
 
 export class FileCommitError extends Error {
   readonly receipt: FileCommitReceipt;
+  readonly stopInvocation: boolean;
   readonly committedSha256: string | undefined;
   constructor(cause: unknown, receipt: FileCommitReceipt, candidateSha256: string) {
     super(`${cause instanceof Error ? cause.message : String(cause)}${receipt.retainedTemporary ? `; temporary retained: ${receipt.retainedTemporary} (${receipt.cleanupReason})` : ""}`);
     this.name = "FileCommitError";
+    this.stopInvocation = fileInvocationMustStop(cause);
     this.receipt = receipt;
     this.committedSha256 = receipt.outcome === "committed" ? candidateSha256 : undefined;
   }
@@ -82,7 +85,8 @@ export function commitFailure(error: FileCommitError) {
   const stateChanged = error.receipt.outcome === "unknown" ? "unknown" as const : error.receipt.outcome === "committed";
   return { ok: false, category: stateChanged === false ? "COMMIT_FAILED" : "PARTIAL_MUTATION", stateChanged,
     status: stateChanged === "unknown" ? "state_unknown" as const : stateChanged ? "partial" as const : "failed_no_change" as const,
-    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, sha256: error.committedSha256, cause: error.message };
+    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), stopInvocation: error.stopInvocation || undefined,
+    commit: error.receipt, sha256: error.committedSha256, cause: error.message };
 }
 
 interface OwnedTemporary { path: string; device: string; inode: string }

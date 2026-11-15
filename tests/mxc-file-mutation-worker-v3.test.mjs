@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm, rename, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -42,6 +42,25 @@ async function fixture(t, operations, operation = 'file_batch') {
   }
   return { root, workspace, exchange, request, items, prepare, validate, execute, rpc };
 }
+
+for (const phase of ['validate', 'execute']) test(`worker parent retargeting is invocation-fatal during ${phase}`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'original/source', destination: 'copied' }]);
+  for (const parent of ['original', 'replacement']) { await mkdir(join(f.workspace, parent)); await writeFile(join(f.workspace, parent, 'source'), 'same content'); }
+  const prepared = await f.prepare(), validated = phase === 'execute' ? await f.validate(prepared) : undefined;
+  await rename(join(f.workspace, 'original'), join(f.workspace, 'retained'));
+  await symlink(join(f.workspace, 'replacement'), join(f.workspace, 'original'), process.platform === 'win32' ? 'junction' : 'dir');
+  if (phase === 'validate') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+  else { const receipt = await f.execute(0, prepared, validated); assert.equal(receipt.status, 'failed_no_change'); assert.equal(receipt.stopInvocation, true, JSON.stringify(receipt)); }
+  await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
+  for (const parent of ['retained', 'replacement']) assert.equal(await readFile(join(f.workspace, parent, 'source'), 'utf8'), 'same content');
+});
+
+test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {
+  const f = await fixture(t, [{ operation: 'write', mode: 'create', path: 'first', content: 'kept' }]);
+  await writeFile(join(f.exchange, f.request.id + '-0.manifest'), 'foreign bytes');
+  await assert.rejects(f.prepare(), /FILE_MANIFEST_INVALID/);
+  await assert.rejects(lstat(join(f.workspace, 'first')), { code: 'ENOENT' });
+});
 
 test('worker-only v3 preparation is read-only and recursive copy preserves every prepared file', async t => {
   const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }], 'copy');

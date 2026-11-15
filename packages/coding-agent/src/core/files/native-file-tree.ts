@@ -7,6 +7,7 @@ import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import { assertIndependent } from "./file-path-conflicts.ts";
 import { commitPreparedFile, commitFailure, FileCommitError, type FileCommitPlan, type FileCommitStream, type FileCommitHooks, type FileCommitReceipt } from "./file-commit.ts";
 import { selectCommitMetadata } from "./file-commit-metadata.ts";
+import { fileInvocationMustStop } from "./file-batch-outcome.ts";
 import type { PathIdentity, MutationStatus } from "./native-file-core.ts";
 import { prepareFileCreation, verifyCreationAncestor, executeFileCreationDirectories, FileCreationFailure, directoryKey,
   type FileCreationPlan, type CreatedDirectory } from "./file-creation.ts";
@@ -168,9 +169,11 @@ class NativeTreeExecution implements FileCommitStream {
       if (error instanceof FileCommitError) return { ...base, ...commitFailure(error) };
       if (error instanceof FileCreationFailure) return { ...base, ok: false, status: error.facts.status as MutationStatus,
         stateChanged: error.facts.stateChanged as boolean | "unknown", requiresVerification: error.facts.requiresVerification === true,
+        stopInvocation: error.stopInvocation || undefined,
         creation: { createdDirectories: error.facts.createdDirectories, bytes: 0 }, cause: boundedReason(String(error.facts.cause)) };
       const changed = !!created?.length;
       return { ...base, ok: false, status: changed ? "partial" : this.signal?.aborted ? "cancelled" : "failed_no_change", stateChanged: changed,
+        stopInvocation: fileInvocationMustStop(error) || undefined,
         requiresVerification: changed || undefined, creation: created ? { createdDirectories: created, bytes: 0 } : undefined,
         cause: boundedReason(error instanceof Error ? error.message : String(error)) };
     } finally { this.plan = undefined; this.authority = undefined; this.signal = undefined; if (this.ownsDirectories) this.sharedDirectories?.clear(); this.sharedDirectories = undefined; }

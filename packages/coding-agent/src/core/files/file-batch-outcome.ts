@@ -1,7 +1,5 @@
-/** A path or owner no longer carries the authority granted to the whole call. */
-export class FileAuthorityError extends Error {
-  constructor(message: string) { super("[STALE_STATE] " + message); this.name = "FileAuthorityError"; }
-}
+import { fileInvocationMustStop } from "./file-mutation-failure.mjs";
+export { FileAuthorityError, fileInvocationMustStop } from "./file-mutation-failure.mjs";
 
 /** A completed batch may contain item failures without failing its containing script. */
 export function completedFileBatchFailure(value: unknown): boolean {
@@ -16,8 +14,5 @@ export function completedFileBatchFailure(value: unknown): boolean {
 
 /** Protocol/authority failures are invocation failures, never ordinary file mismatches. */
 export function assertFileBatchItemFailure(error: unknown): void {
-  const message = error instanceof Error ? error.message : "";
-  if (error instanceof FileAuthorityError || message.startsWith("[FILE_RPC_") || message.startsWith("[FILE_RESULT_")
-    || message.startsWith("[EXECUTION_") || message.startsWith("[POLICY_BLOCKED]")
-    || message.startsWith("[SANDBOX_") || error instanceof Error && error.name === "AbortError") throw error;
+  if (fileInvocationMustStop(error)) throw error;
 }

@@ -13,7 +13,7 @@ import {
 } from "./file-parameters.ts";
 import { resolveToolPath, sha256 } from "./file-path.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
-import { FileAuthorityError } from "./file-batch-outcome.ts";
+import { FileAuthorityError, fileInvocationMustStop } from "./file-batch-outcome.ts";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
   prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
@@ -201,7 +201,8 @@ class FileExecution {
         const changed = creationFailure?.stateChanged === "unknown" ? "unknown" : creationFailure?.stateChanged === true;
         receipt = { ...creationFailure, mutationReceiptVersion: 2, operation: item.operation, target: item.target,
           ok: false, status: changed === "unknown" ? "state_unknown" : changed ? "partial" : hooks.signal?.aborted ? "cancelled" : "failed_no_change",
-          stateChanged: changed, requiresVerification: changed !== false, stopInvocation: error instanceof FileAuthorityError || undefined,
+          stateChanged: changed, requiresVerification: changed !== false,
+          stopInvocation: creationFailure?.stopInvocation === true || fileInvocationMustStop(error) || undefined,
           cause: creationFailure?.cause ?? (error instanceof Error ? error.message : String(error)) };
       }
     }

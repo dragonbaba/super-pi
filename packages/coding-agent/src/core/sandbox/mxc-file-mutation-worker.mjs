@@ -9,6 +9,7 @@ import { workspaceFilePath } from '../files/file-workspace-path.mjs';
 import { MxcFilePublication } from '../files/mxc-file-publication.mjs';
 import { prepareTextMutation, executePreparedTextMutation } from './mxc-file-worker.mjs';
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES, FILE_MUTATION_TEXT_BYTES } from '../files/file-operation-limits.mjs';
+import { fileInvocationMustStop } from '../files/file-mutation-failure.mjs';
 
 const OWNER_ID = /^[a-f0-9]{32}$/, SHA256 = /^[a-f0-9]{64}$/, ENTRY_ID = /^(?:[a-f0-9]{8}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 const REQUEST_FIELDS = new Set(['id', 'mode', 'workspaces', 'operation', 'exchange', 'maxWriteBytes', 'callId', 'requestHash', 'generation', 'workspaceIdentities', 'version', 'rpc', 'itemCount', 'start', 'items', 'phase', 'control']);
@@ -160,6 +161,7 @@ class WorkerItemExecution {
         receipt = { status: this.effectsPossible ? 'state_unknown' : parentChanged ? 'partial' : 'failed_no_change', stateChanged: this.effectsPossible ? 'unknown' : parentChanged,
           requiresVerification: this.effectsPossible || parentChanged || undefined, stopInvocation: !this.controlAccepted || undefined, reason: boundedReason(String(error.message)) };
       }
+      if (fileInvocationMustStop(error)) receipt.stopInvocation = true;
     }
     try {
       if (this.publication) {
@@ -209,7 +211,7 @@ export async function runFileMutationRequest(request, serializedRequest) {
         } else reply.items.push({ index, readyHash: request.control.readyHash, intentId: request.control.intentId,
           receipt: await new WorkerItemExecution(request, item, index, control).run() });
       } catch (error) {
-        if (request.operation !== 'file_batch' || request.phase === 'execute') throw error;
+        if (request.operation !== 'file_batch' || request.phase === 'execute' || fileInvocationMustStop(error)) throw error;
         reply.items.push({ index, error: boundedReason(error instanceof Error ? error.message : String(error)), noEffects: true });
       }
     }
