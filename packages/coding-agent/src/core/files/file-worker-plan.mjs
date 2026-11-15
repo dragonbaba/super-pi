@@ -241,7 +241,7 @@ async function assertPreparedFile(identity) {
   // Observe the leaf before resolving it: a dangling replacement link is an
   // authority change, while an absent original file remains an item mismatch.
   const observed = await captureTreeIdentity(identity.path);
-  assertFilePathAuthority(identity, observed);
+  assertFilePathAuthority(identity, observed.canonical, observed.symbolicLink);
   need(sameIdentity(identity, observed), 'Prepared source or overwrite destination changed');
 }
 

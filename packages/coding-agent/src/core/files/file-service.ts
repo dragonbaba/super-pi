@@ -398,9 +398,9 @@ export class FileService {
       }
     } else {
       const plan = item.artifact?.commit ?? item.snapshot!;
-      const observed = await captureTreeIdentity(plan.target.path); assertFilePathAuthority(plan.target, observed);
+      const observed = await captureTreeIdentity(plan.target.path); assertFilePathAuthority(plan.target, observed.canonical, observed.symbolicLink);
       if (!sameIdentity(plan.target, observed)
-        || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
+        || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new Error("[STALE_STATE] Prepared file or parent changed.");
       if (item.snapshot) await readSnapshotSource(item.snapshot.receipt, this.revisions);
     }
     this.assertPrepared(item); hooks.signal?.throwIfAborted(); hooks.assertCurrent();

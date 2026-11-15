@@ -3,8 +3,8 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { SHA256_PATTERN } from "./regex.ts";
-import { fileInvocationMustStop, assertFilePathAuthority, FileAuthorityError } from "./file-mutation-failure.mjs";
-import { captureTreeIdentity } from "./file-tree-core.mjs";
+import { fileInvocationMustStop, FileAuthorityError } from "./file-mutation-failure.mjs";
+import { assertFilePathAfterFailure } from "./file-tree-core.mjs";
 
 export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
@@ -125,8 +125,7 @@ async function hashOpened(handle: FileHandle, expectedBytes: number, signal?: Ab
 async function assertPrepared(plan: FileCommitPlan, hooks: FileCommitHooks, handle: FileHandle): Promise<void> {
   hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
   if (await hooks.assertPathAllowed() !== plan.target.canonical) throw new FileAuthorityError("Prepared path no longer carries publication authority.");
-  const parent = await captureTreeIdentity(plan.parent.path), target = await captureTreeIdentity(plan.target.path);
-  assertFilePathAuthority(plan.parent, parent); assertFilePathAuthority(plan.target, target);
+  const parent = await capturePathIdentity(plan.parent.path, plan.parent), target = await capturePathIdentity(plan.target.path, plan.target);
   if (!sameIdentity(plan.parent, parent, false)) throw new FileAuthorityError("Prepared publication parent changed.");
   if (!sameIdentity(plan.target, target)
     || !sameObject(await handle.stat({ bigint: true }), plan.target)) throw new Error("[STALE_STATE] Prepared target or parent identity changed.");
@@ -137,7 +136,7 @@ async function assertPrepared(plan: FileCommitPlan, hooks: FileCommitHooks, hand
 }
 
 async function assertTemporary(temporary: OwnedTemporary, plan: FileCommitPlan): Promise<void> {
-  if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Temporary parent identity changed.");
+  if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new Error("[STALE_STATE] Temporary parent identity changed.");
   const info = await lstat(temporary.path, { bigint: true });
   if (info.isSymbolicLink() || !sameObject(info, temporary) || info.nlink !== 1n) throw new Error("[STALE_STATE] Temporary file identity changed.");
 }
@@ -180,7 +179,8 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
   try {
     hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
     if (plan.target.directory || plan.parent.canonical !== dirname(plan.target.canonical)) throw new Error("[STALE_STATE] Invalid prepared commit target.");
-    source = await open(plan.target.canonical, plan.metadata.strategy === "protected_in_place" ? "r+" : "r");
+    try { source = await open(plan.target.canonical, plan.metadata.strategy === "protected_in_place" ? "r+" : "r"); }
+    catch (error) { await assertFilePathAfterFailure(plan.parent); await assertFilePathAfterFailure(plan.target); throw error; }
     await assertPrepared(plan, hooks, source);
     if (plan.metadata.strategy === "staged_replace") {
       const path = join(plan.parent.canonical, `.pi-file-commit-${process.pid}-${randomBytes(12).toString("hex")}.tmp`);

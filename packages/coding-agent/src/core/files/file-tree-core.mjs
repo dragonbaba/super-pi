@@ -6,10 +6,25 @@ import { resolve, dirname, relative, basename } from 'node:path';
 import { FILE_STREAM_BUFFER_BYTES, FILE_RESULT_REASON_BYTES } from './file-operation-limits.mjs';
 import { assertFilePathAuthority, fileInvocationMustStop, FileAuthorityError } from './file-mutation-failure.mjs';
 
-export async function capturePathIdentity(path) {
-  const canonical = await realpath(path), info = await lstat(path, { bigint: true });
-  if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('[unsupported] Links, reparse points and special files are unsupported.');
-  return pathIdentityFromStat(path, canonical, info, false);
+export async function capturePathIdentity(path, expected) {
+  try {
+    const canonical = await realpath(path), info = await lstat(path, { bigint: true });
+    if (expected) assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('[unsupported] Links, reparse points and special files are unsupported.');
+    return pathIdentityFromStat(path, canonical, info, false);
+  } catch (error) {
+    if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
+    throw error;
+  }
+}
+/** Error lifecycle only: a failed resolution/open may hide a dangling replacement. */
+export async function assertFilePathAfterFailure(expected) {
+  let info;
+  try { info = await lstat(expected.path, { bigint: true }); } catch { return; }
+  assertFilePathAuthority(expected, expected.canonical, info.isSymbolicLink());
+  let canonical;
+  try { canonical = await realpath(expected.path); } catch { return; }
+  assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
 }
 export function pathIdentityFromStat(path, canonical, info, symbolicLink = false) {
   return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino), size: String(info.size),
@@ -78,7 +93,7 @@ function sameOpened(info, expected) {
 /** Copy at most the prepared size plus one growth-detection byte, with fixed memory and independent write offsets. */
 export async function writeIdentityTo(source, target, authority, signal) {
   current(authority, signal);
-  if (!sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Copy source changed before open.');
+  if (!sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed before open.');
   const input = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     if (!sameOpened(await input.stat({ bigint: true }), source)) throw new Error('[STALE_STATE] Copy source identity changed before read.');
@@ -101,7 +116,7 @@ export async function writeIdentityTo(source, target, authority, signal) {
       position += read.bytesRead;
     }
     if (position !== size || !sameOpened(await input.stat({ bigint: true }), source)
-      || !sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Copy source changed during read; verify the candidate.');
+      || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed during read; verify the candidate.');
     current(authority, signal);
     return hash.digest('hex');
   } finally { await input.close(); }
@@ -123,7 +138,7 @@ export async function hashIdentity(source, authority, signal) {
       hash.update(read.bytesRead === buffer.length ? buffer : buffer.subarray(0, read.bytesRead)); position += read.bytesRead;
     }
     if (position !== size || !sameOpened(await file.stat({ bigint: true }), source)
-      || !sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Hash source changed.');
+      || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Hash source changed.');
     current(authority, signal);
     return hash.digest('hex');
   } finally { await file.close(); }
@@ -143,7 +158,7 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
-    const observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(entry.identity, observed);
+    const observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(entry.identity, observed.canonical, observed.symbolicLink);
     if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
   }
   current(authority, signal);
@@ -193,14 +208,14 @@ class TreeExecution {
   }
   async checkParent(expected) {
     this.current();
-    try { if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path), false)) throw new FileAuthorityError('Prepared parent changed.'); }
+    try { if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path, expected), false)) throw new FileAuthorityError('Prepared parent changed.'); }
     catch (error) { if (error instanceof FileAuthorityError) throw error; throw new FileAuthorityError('Prepared parent cannot be verified: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
     this.current();
   }
   async checkSource(entry, metadata = true) {
     this.current();
     await this.checkParent(entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity);
-    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(expected, observed);
+    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path); assertFilePathAuthority(expected, observed.canonical, observed.symbolicLink);
     if (!sameIdentity(expected, observed, metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
   }
   async copyFile(entry, destination, parent) {

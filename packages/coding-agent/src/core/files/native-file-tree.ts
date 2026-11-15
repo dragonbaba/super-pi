@@ -97,11 +97,11 @@ async function assertProtected(plan: NativeTreePlan): Promise<void> {
 export async function revalidateNativeTreePlan(plan: NativeTreePlan, assertCurrent?: () => void, signal?: AbortSignal, includeTree = true, sharedDirectories?: Map<string, PathIdentity>): Promise<void> {
   signal?.throwIfAborted(); assertCurrent?.();
   await assertProtected(plan);
-  if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path), false)
-    || plan.destinationParent && !sameIdentity(plan.destinationParent, await capturePathIdentity(plan.destinationParent.path), false)) throw new Error("[STALE_STATE] Prepared operation parent changed.");
+  if (!sameIdentity(plan.sourceParent, await capturePathIdentity(plan.sourceParent.path, plan.sourceParent), false)
+    || plan.destinationParent && !sameIdentity(plan.destinationParent, await capturePathIdentity(plan.destinationParent.path, plan.destinationParent), false)) throw new Error("[STALE_STATE] Prepared operation parent changed.");
   if (plan.destination) {
     if (plan.destinationIdentity) {
-      if (!sameIdentity(plan.destinationIdentity, await capturePathIdentity(plan.destination))) throw new Error("[STALE_STATE] Prepared overwrite destination changed.");
+      if (!sameIdentity(plan.destinationIdentity, await capturePathIdentity(plan.destination, plan.destinationIdentity))) throw new Error("[STALE_STATE] Prepared overwrite destination changed.");
     } else await absent(plan.destination);
   }
   if (plan.creation) {
@@ -109,7 +109,7 @@ export async function revalidateNativeTreePlan(plan: NativeTreePlan, assertCurre
     for (const path of plan.creation.directories) {
       const shared = sharedDirectories?.get(directoryKey(path));
       if (shared) {
-        if (!sameIdentity(shared, await capturePathIdentity(path), false)) throw new Error("[STALE_STATE] Shared created destination parent changed.");
+        if (!sameIdentity(shared, await capturePathIdentity(path, shared), false)) throw new Error("[STALE_STATE] Shared created destination parent changed.");
       } else await absent(path);
     }
   }
@@ -134,7 +134,7 @@ class NativeTreeExecution implements FileCommitStream {
   readonly current = (): void => { this.signal?.throwIfAborted(); this.authority?.(); if (!this.plan) throw new Error("[STALE_STATE] Released tree execution."); };
   readonly assertPath = async (): Promise<string> => { this.current(); await assertProtected(this.plan!); this.current(); return this.plan!.destination!; };
   readonly beforeCommit = async (): Promise<void> => {
-    this.current(); if (!sameIdentity(this.plan!.source, await capturePathIdentity(this.plan!.source.path))) throw new Error("[STALE_STATE] Copy source changed before publication."); this.current();
+    this.current(); if (!sameIdentity(this.plan!.source, await capturePathIdentity(this.plan!.source.path, this.plan!.source))) throw new Error("[STALE_STATE] Copy source changed before publication."); this.current();
   };
   async writeTo(handle: FileHandle, _hooks: FileCommitHooks): Promise<void> {
     const digest = await writeIdentityTo(this.plan!.source, handle, this.current, this.signal);

@@ -172,6 +172,26 @@ test(`native ${operation} distinguishes ${replacement} during ${phase}, final=${
   if (replacement === "dangling-link") { assert.match(result.details.reason!, /STALE_STATE/); assert.equal((await lstat(source)).isSymbolicLink(), true); }
 });
 
+for (const phase of ["preflight", "item"] as const) for (const finalItem of [false, true])
+for (const replacement of ["dangling-link", "missing"] as const)
+test(`native copy overwrite destination distinguishes ${replacement} during ${phase}, final=${finalItem}`, async t => {
+  const f = await fixture(t), destination = join(f.cwd, "destination"); await writeFile(join(f.cwd, "source"), "source"); await writeFile(destination, "original");
+  const copy = { operation: "copy", path: "source", destination: "destination", overwrite: true };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const mutation = f.mutation("file_batch", { operations: finalItem ? [independent, copy] : [copy, independent] }); await mutation.prepare();
+  function replace() { unlinkSync(destination); if (replacement === "dangling-link") symlinkSync(join(f.cwd, "absent-target"), destination, "file"); }
+  if (phase === "preflight") replace();
+  const result = await mutation.execute(f.session, (kind, data) => {
+    const id = f.session.appendCustomEntry(kind, data), payload = JSON.parse(data.payload);
+    if (phase === "item" && payload.phase === "intent" && payload.index === (finalItem ? 1 : 0)) replace();
+    return id;
+  }, { assertCurrent: current, record: unexpectedLegacy });
+  assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+  assert.equal(result.details.succeeded, replacement === "missing" || phase === "item" && finalItem ? 1 : 0);
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "source");
+  if (replacement === "dangling-link") { assert.match(result.details.reason!, /STALE_STATE/); assert.equal((await lstat(destination)).isSymbolicLink(), true); }
+});
+
 test("publication wrapping cannot turn authority loss into an ordinary batch failure", async t => {
   const f = await fixture(t), append = (kind: string, data: any) => f.session.appendCustomEntry(kind, data);
   const hooks = { assertCurrent: current, record: unexpectedLegacy };

@@ -5,8 +5,8 @@ export class FileAuthorityError extends Error {
 }
 
 /** Compare already observed identities; never allocate or resolve a path here. */
-export function assertFilePathAuthority(expected, observed) {
-  if (expected.canonical !== observed.canonical || Boolean(expected.symbolicLink) !== Boolean(observed.symbolicLink)) throw new FileAuthorityError('Prepared file path was retargeted.');
+export function assertFilePathAuthority(expected, canonical, symbolicLink = false) {
+  if (expected.canonical !== canonical || Boolean(expected.symbolicLink) !== symbolicLink) throw new FileAuthorityError('Prepared file path was retargeted.');
 }
 
 export function fileInvocationMustStop(error) {
