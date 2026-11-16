@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+import { accessSync, chmodSync, constants, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { arch, platform } from "os";
-import { join } from "path";
+import { delimiter, join, sep } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
@@ -71,15 +71,56 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): boolean {
+function isToolExecutable(path: string): boolean {
 	try {
-		const result = spawnSync(cmd, ["--version"], { stdio: "pipe" });
-		// Check for ENOENT error (command not found)
-		return result.error === undefined || result.error === null;
+		if (!statSync(path).isFile()) return false;
+		if (platform() !== "win32") accessSync(path, constants.X_OK);
+		return true;
 	} catch {
 		return false;
 	}
+}
+
+function toolExistsInDirectory(directory: string, binaryName: string, windows: boolean): boolean {
+	// Do not normalize '..': a preceding symlink changes filesystem traversal.
+	const prefix = `${directory || "."}${sep}${binaryName}`;
+	if (windows && isToolExecutable(`${prefix}.com`)) return true;
+	return isToolExecutable(prefix + (windows ? ".exe" : ""));
+}
+
+/** Inspect metadata only; native spawn retains PATH fallback and launch semantics. */
+function systemToolExists(binaryName: string): boolean {
+	const windows = platform() === "win32";
+	// Preserve libuv's portable-tool lookup and its opt-out environment boundary.
+	if (windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
+		if (toolExistsInDirectory(".", binaryName, true)) return true;
+	}
+	let pathValue = process.env.PATH;
+	if (windows) {
+		for (const key of Object.keys(process.env)) {
+			if (key.toLowerCase() === "path") { pathValue = process.env[key]; break; }
+		}
+	}
+	// Match Node's Unix executable lookup when PATH is absent.
+	pathValue ??= windows ? "" : "/usr/bin:/bin";
+	let start = 0;
+	while (start <= pathValue.length) {
+		const quote = windows ? pathValue[start] : undefined;
+		const quoted = quote === '"' || quote === "'";
+		const closingQuote = quoted ? pathValue.indexOf(quote, start + 1) : -1;
+		const separator = pathValue.indexOf(delimiter, quoted ? (closingQuote < 0 ? pathValue.length : closingQuote) : start);
+		const end = separator < 0 ? pathValue.length : separator;
+		let directory = pathValue.slice(start, end);
+		// libuv skips empty Windows entries; Unix empty entries explicitly mean cwd.
+		if (!windows || end > start) {
+			if (quoted) directory = directory.slice(1);
+			if (windows && (directory.endsWith('"') || directory.endsWith("'"))) directory = directory.slice(0, -1);
+			if (toolExistsInDirectory(directory, binaryName, windows)) return true;
+		}
+		if (separator < 0) break;
+		start = separator + delimiter.length;
+	}
+	return false;
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
@@ -89,16 +130,14 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 
 	// Check our tools directory first
 	const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-	if (existsSync(localPath)) {
+	if (isToolExecutable(localPath)) {
 		return localPath;
 	}
 
-	// Check system PATH - if found, just return the command name (it's in PATH)
+	// Keep native lookup for actual launch; do not probe or cache it.
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		if (commandExists(systemBinaryName)) {
-			return systemBinaryName;
-		}
+		if (systemToolExists(systemBinaryName)) return systemBinaryName;
 	}
 
 	return null;
