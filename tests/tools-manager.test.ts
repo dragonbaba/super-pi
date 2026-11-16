@@ -44,6 +44,27 @@ test("external tool discovery uses executable paths without version subprocesses
     assert.equal(probes, 0);
   });
 
+  await t.test("Windows portable tools in cwd precede PATH unless current-directory lookup is disabled", { skip: process.platform !== "win32" }, () => {
+    const oldCwd = process.cwd(), oldDisable = process.env.NoDefaultCurrentDirectoryInExePath;
+    const cwd = join(owned.root, "portable cwd"), system = join(owned.root, "system bin");
+    const portable = executable(join(cwd, "rg.exe")), onPath = executable(join(system, "rg.exe"));
+    try {
+      process.chdir(cwd); process.env.PATH = system;
+      delete process.env.NoDefaultCurrentDirectoryInExePath;
+      assert.equal(getToolPath("rg"), portable);
+      process.env.NoDefaultCurrentDirectoryInExePath = "1";
+      assert.equal(getToolPath("rg"), onPath);
+      delete process.env.NoDefaultCurrentDirectoryInExePath;
+      unlinkSync(portable); assert.equal(getToolPath("rg"), onPath);
+      assert.equal(probes, 0);
+    } finally {
+      process.chdir(oldCwd);
+      if (oldDisable === undefined) delete process.env.NoDefaultCurrentDirectoryInExePath;
+      else process.env.NoDefaultCurrentDirectoryInExePath = oldDisable;
+      process.env.PATH = join(owned.root, "second bin");
+    }
+  });
+
   await t.test("managed binaries retain precedence; directories and unavailable offline tools are not reported present", async () => {
     const managed = executable(join(owned.root, "bin", name("rg")));
     assert.equal(getToolPath("rg"), managed); unlinkSync(managed);

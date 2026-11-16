@@ -84,6 +84,12 @@ function isToolExecutable(path: string): boolean {
 /** Resolve current executable metadata; discovery must never execute a version probe. */
 function findSystemTool(binaryName: string): string | null {
 	const windows = platform() === "win32";
+	const executable = binaryName + (windows ? ".exe" : "");
+	// Preserve libuv's portable-tool lookup and its opt-out environment boundary.
+	if (windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
+		const currentPath = resolve(executable);
+		if (isToolExecutable(currentPath)) return currentPath;
+	}
 	let pathValue = process.env.PATH;
 	if (windows) {
 		for (const key of Object.keys(process.env)) {
@@ -92,14 +98,12 @@ function findSystemTool(binaryName: string): string | null {
 	}
 	// Match Node's Unix executable lookup when PATH is absent.
 	pathValue ??= windows ? "" : "/usr/bin:/bin";
-	const executable = binaryName + (windows ? ".exe" : "");
 	let start = 0;
 	while (start <= pathValue.length) {
 		const separator = pathValue.indexOf(delimiter, start);
 		const end = separator < 0 ? pathValue.length : separator;
 		let directory = pathValue.slice(start, end);
 		if (windows) {
-			directory = directory.trim();
 			if (directory.startsWith('"') && directory.endsWith('"')) directory = directory.slice(1, -1);
 		}
 		const candidate = resolve(directory || ".", executable);
