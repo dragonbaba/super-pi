@@ -10,6 +10,7 @@
 		"./declarations": { "types": "./dist/declarations.d.ts", "import": "./dist/declarations.js" },
 		"./source": { "types": "./dist/source.d.ts", "import": "./dist/source.js" },
 		"./bounded-json": { "types": "./dist/bounded-json.d.ts", "import": "./dist/bounded-json.js" },
+		"./limits": { "types": "./dist/limits.d.ts", "import": "./dist/limits.js" },
 		"./worker": { "types": "./dist/runtime/worker.d.ts", "import": "./dist/runtime/worker.js" }
 	},
 	"files": ["dist", "README.md", "LICENSE", "LICENSE-MIT", "NOTICE.md"],

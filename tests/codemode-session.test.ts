@@ -1310,6 +1310,37 @@ test("successful state writes persist as a versioned branch entry; failed script
 	assert.equal(saved.length, 1);
 });
 
+test("full store recovery preserves completed writes and restores capacity metadata across branches", async t => {
+	let writes = 0;
+	const f = await fixture(t, { tools: ["write"] }, [pi => {
+		pi.on("tool_call", event => { if (event.toolName === "write") writes++; });
+	}]);
+	await f.run(['for(let i=0;i<4;i++) store("blob"+i,"x".repeat(250000));']);
+	const fullBranch = f.manager.getLeafId()!;
+	const failed = await f.run(['const r=await tools.write({path:"completed.txt",content:"done"}); await show(r.ref); store("overflow","y".repeat(100000));']);
+	const failure = failed.results.at(-1)!;
+	assert.equal(failure.isError, true);
+	assert.match(JSON.stringify(failure.content), /storeInfo/);
+	assert.equal((failure.details as any).codemode.succeeded, 1);
+	assert.equal((failure.details as any).codemode.failed, 0);
+	assert.equal(readFileSync(join(f.cwd, "completed.txt"), "utf8"), "done");
+	const failedCleanup = await f.run(['store("blob0",undefined); store("oversized","z".repeat(262145));']);
+	assert.equal(failedCleanup.results.at(-1)?.isError, true);
+	const cleaned = await f.run(['text(storeInfo()); store("blob0",undefined); store("lastFile","completed.txt");']);
+	assert.equal(cleaned.results.at(-1)?.isError, false);
+	assert.deepEqual((cleaned.results.at(-1)?.details as any).codemode.calls, []);
+	assert.match(JSON.stringify(cleaned.results.at(-1)?.content), /1000028/);
+	await f.session.reload();
+	const restored = await f.run(['text(storeInfo()); text(load("lastFile"));']);
+	assert.match(JSON.stringify(restored.results.at(-1)?.content), /750044/);
+	assert.doesNotMatch(JSON.stringify(restored.results.at(-1)?.content), /blob0/);
+	await f.session.navigateTree(fullBranch);
+	const earlier = await f.run(['text(storeInfo()); text(load("lastFile")===undefined);']);
+	assert.match(JSON.stringify(earlier.results.at(-1)?.content), /1000028/);
+	assert.match(JSON.stringify(earlier.results.at(-1)?.content), /blob0/);
+	assert.equal(writes, 1, "cleanup, reload and branch recovery never replay the completed write");
+});
+
 for (const [label, code, allowed] of [
 	["shown native read", 'const r=await tools.read({path:"file.txt"}); await show(r.ref)', true],
 	["hidden native read", 'await tools.read({path:"file.txt"})', true],

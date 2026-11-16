@@ -13,6 +13,7 @@ export const MAX_STORE_VALUE_CHARS = 256 * 1024;
 export const MAX_STORE_TOTAL_CHARS = 1024 * 1024;
 export const MAX_STORE_KEYS = 4096;
 export const MAX_STORE_KEY_CHARS = 1024;
+export const DEFAULT_STORE_INFO_LIMIT = 16;
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const MAX_TIMEOUT_MS = 300_000;
 export const DEFAULT_MEMORY_BYTES = 256 * 1024 * 1024;

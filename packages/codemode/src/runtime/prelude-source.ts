@@ -26,9 +26,8 @@
  */
 import {
 	MAX_ARGUMENT_CHARS, MAX_CALLS, MAX_TIMERS, MAX_TIMEOUT_MS, MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, MAX_OUTPUT_ITEMS,
-	MAX_STORE_KEY_CHARS, MAX_STORE_KEYS, MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS, MAX_VALUE_CHARS,
+	DEFAULT_STORE_INFO_LIMIT, MAX_STORE_KEY_CHARS, MAX_STORE_KEYS, MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS, MAX_VALUE_CHARS,
 } from "../limits.ts";
-export { MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS } from "../limits.ts";
 
 const IMAGE_HELPER_EXPECTS =
 	"image expects a non-empty image URL string, an object with image_url, or a raw MCP image block";
@@ -268,7 +267,9 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	for (const [key, json] of stored) storedChars += key.length + json.length;
 
 	const STORE_HINT =
-		"store() is for small state such as IDs or summaries. Show images with image(), keep large data in variables, or write it to a file with a tool.";
+		"Inspect keys and sizes with text(storeInfo()). Delete unneeded keys in a cleanup-only script with store(key, undefined). " +
+		"Uncaught script errors do not commit store writes. Do not rerun completed tools. " +
+		"Keep only small IDs, paths or summaries; show tool results directly instead of storing their full content.";
 
 	function checkKey(name, key) {
 		if (typeof key !== "string") throw new TypeError(name + "() key must be a string");
@@ -304,7 +305,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		const next = storedChars - previous + key.length + json.length;
 		if (next > ${MAX_STORE_TOTAL_CHARS}) {
 			throw new RangeError(
-				"store is full: stored values would exceed ${MAX_STORE_TOTAL_CHARS} characters of JSON. Delete keys with store(key, undefined). " +
+				"store is full: " + storedChars + "/${MAX_STORE_TOTAL_CHARS} characters used; this write would use " + next + ". " +
 					STORE_HINT,
 			);
 		}
@@ -319,6 +320,27 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		return json === undefined ? undefined : parse(json);
 	}
 
+	// Explicit inspection only. Reuse serialized lengths, never parse/copy values.
+	function storeInfo(options = {}) {
+		if (!options || typeof options !== "object" || Array.isArray(options)) throw new TypeError("storeInfo() expects an options object");
+		const offset = options.offset ?? 0;
+		const limit = options.limit ?? ${DEFAULT_STORE_INFO_LIMIT};
+		if (!Number.isSafeInteger(offset) || offset < 0) throw new RangeError("storeInfo() offset must be a non-negative safe integer");
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > ${MAX_STORE_KEYS}) throw new RangeError("storeInfo() limit must be 1..${MAX_STORE_KEYS}");
+		const entries = [];
+		let index = 0;
+		for (const key of stored.keys()) {
+			if (index < offset) { index++; continue; }
+			if (entries.length >= limit) break;
+			entries.push({ key, chars: key.length + stored.get(key).length });
+			index++;
+		}
+		return {
+			usedChars: storedChars, maxChars: ${MAX_STORE_TOTAL_CHARS}, maxValueChars: ${MAX_STORE_VALUE_CHARS},
+			keyCount: stored.size, entries, nextOffset: index < stored.size ? index : null,
+		};
+	}
+
 	function serializeWrites() {
 		const entries = [];
 		for (const [key, json] of writes) entries.push(json === undefined ? [key] : [key, json]);
@@ -327,6 +349,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 
 	Object.defineProperty(globalThis, "store", { value: store, enumerable: true });
 	Object.defineProperty(globalThis, "load", { value: load, enumerable: true });
+	Object.defineProperty(globalThis, "storeInfo", { value: storeInfo, enumerable: true });
 
 	// Primitives become their string form, everything else JSON.
 	function outputText(value) {

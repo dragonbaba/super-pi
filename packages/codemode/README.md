@@ -26,6 +26,27 @@ tools. Hosts must also settle their own tool/observation lifecycle before commit
 state. The Super Pi controller applies these checks and reports handled ordinary
 tool failures as partial completion; unobserved failures do not commit its store.
 
+`store(key, value)` / `load(key)` keep small branch state. Store IDs, paths,
+cursors or short summaries; show tool results directly rather than storing their
+full content. The total is 1,048,576 UTF-16 key+JSON characters, with 262,144 JSON
+characters per value and 4,096 keys. Limits are shared by the VM and host through
+the lightweight `@super-pi/codemode/limits` export.
+
+`storeInfo({ offset: 0, limit: 16 })` synchronously returns
+`{ usedChars, maxChars, maxValueChars, keyCount, entries: [{ key, chars }], nextOffset }`.
+It reads existing serialized lengths, never values. Default offset/limit are 0/16;
+limit accepts 1..4096. Each entry's `chars` includes its key and JSON value. Use
+`nextOffset` for another page; restart from 0 after changing state. Metadata
+reflects the current script snapshot, including staged writes, and is not cached
+between scripts. Existing snapshot transfer into each VM still occurs.
+
+After an uncaught capacity error, inspect with `text(storeInfo())` in a new
+script, then remove only keys no longer needed with `store(key, undefined)` in a
+cleanup-only script. Cleanup must succeed to commit. Failed scripts discard all
+their store writes, including staged deletions, while completed tool effects
+remain real. Do not repeat completed tools. Optional caching can catch a store
+error and continue using the result already held in a local variable.
+
 `setTimeout(callback, ms, ...args)` returns a numeric ID for `clearTimeout(id)`.
 Use `await new Promise(resolve => setTimeout(resolve, 1000))` to wait. Each script
 may create at most 256 timers; delays must be finite numbers from 0 to 300000 ms.
