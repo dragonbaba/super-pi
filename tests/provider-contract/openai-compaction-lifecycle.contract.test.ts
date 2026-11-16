@@ -620,6 +620,38 @@ function tokenOwner(f: Awaited<ReturnType<typeof fixture>>) {
   return f.session.extensionRunner.getOpenAICodexDispatch().owner;
 }
 
+test("manual Codex compaction immediately after session resume sends saved history without replaying tools", async () => {
+  const f = await fixture(true);
+  try {
+    f.manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "saved_completed_call", name: "finished_file_batch", arguments: {} }],
+      api: f.model.api, provider: f.model.provider, model: f.model.id, usage: responsesUsage, stopReason: "toolUse", timestamp: 5 });
+    f.manager.appendMessage({ role: "toolResult", toolCallId: "saved_completed_call", toolName: "finished_file_batch",
+      content: [{ type: "text", text: "SUCCESSFUL_FILE_SENTINEL" }], isError: false, timestamp: 6 });
+    f.manager.appendMessage({ role: "assistant", content: [], api: f.model.api, provider: f.model.provider, model: f.model.id,
+      usage: responsesUsage, stopReason: "aborted", errorMessage: "Request aborted", timestamp: 7 });
+    const file = f.manager.getSessionFile()!;
+    await f.sessionRuntime.switchSession(file);
+    assert.equal(tokenOwner(f).diagnostics.commitments, 0);
+    const saved = structuredClone(f.manager.getEntries());
+    await f.session.compact();
+    assert.equal(f.requests.length, 1, "only the native compaction request is sent");
+    const request = f.requests[0].payload;
+    assert.equal(request.previous_response_id, undefined);
+    assert.deepEqual(request.input.at(-1), { type: "compaction_trigger" });
+    assert.equal(request.input.filter((item: any) => item.type === "function_call").length, 1);
+    assert.equal(request.input.filter((item: any) => item.type === "function_call_output").length, 1);
+    assert.match(JSON.stringify(request.input), /SUCCESSFUL_FILE_SENTINEL/);
+    assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 1);
+    await f.session.prompt("NEXT_AFTER_RESUMED_MANUAL_COMPACT");
+    assert.equal(f.requests.length, 2);
+    assert.equal(f.requests[1].payload.previous_response_id, undefined);
+    assert.ok(f.requests[1].payload.input.some((item: any) => item.type === "compaction"));
+    assert.match(JSON.stringify(f.requests[1].payload.input), /NEXT_AFTER_RESUMED_MANUAL_COMPACT/);
+    const disk = SessionManager.open(file, f.root).getEntries();
+    for (const entry of saved) assert.deepEqual(disk.find(candidate => candidate.id === entry.id), entry);
+  } finally { await f.release(); }
+});
+
 test("SDK summary dispatch uses configured transport and explicit requests retain their transport", async () => {
   const f = await fixture(false, undefined, "gpt-5.1", { noExtensions: true });
   const dispatch = f.runtime.streamSimple.bind(f.runtime);
