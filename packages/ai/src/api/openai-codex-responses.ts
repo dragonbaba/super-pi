@@ -1583,7 +1583,7 @@ async function* parseWebSocket(owner: CodexTransportOwner,
     let decoder: InstanceType<typeof TextDecoder> | undefined;
     let pendingDecodes = 0;
     let done = false, closed = false, sawCompletion = false;
-    let failed: Error | null = null, closeFailure: Error | undefined;
+    let failed: Error | null = null, closeFailure: Error | undefined, idleFailure: Error | undefined;
     // ArrayBuffer.isView guarantees a native view. Node-only and DOM typings
     // describe that union differently; both decoders accept it without a copy.
     const decodeBuffer = (data: ArrayBuffer | ArrayBufferView): string => (decoder ??= new TextDecoder()).decode(
@@ -1597,7 +1597,7 @@ async function* parseWebSocket(owner: CodexTransportOwner,
     const onIdleTimeout = () => {
         const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
         const reject = rejectPending;
-        failed = error; done = true; pending = null; rejectPending = null;
+        idleFailure = error; failed = error; done = true; pending = null; rejectPending = null;
         closeWebSocketSilently(owner, socket, 1000, "idle_timeout");
         reject?.(error);
     };
@@ -1653,9 +1653,13 @@ async function* parseWebSocket(owner: CodexTransportOwner,
                     }
                 } catch (cause) {
                     if (signal?.aborted) throw cause;
+                    if (idleFailure) throw idleFailure;
                     throw new CodexProtocolError(`Invalid Codex WebSocket data: ${formatThrownValue(cause)}`, { cause });
                 }
-                if (failed) throw failed;
+                // An elapsed read deadline wins over a late conversion result.
+                // Other transport errors follow the frames admitted before them,
+                // so observed output still prevents automatic request replay.
+                if (idleFailure) throw idleFailure;
                 if (!text) continue;
                 let parsed: CodexEvent;
                 let type: string;

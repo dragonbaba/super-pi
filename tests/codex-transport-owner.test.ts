@@ -222,7 +222,7 @@ test("Codex malformed WebSocket JSON stays a protocol error and does not trigger
   } finally { owner.revoke(); await owner.dispose(); f.release(); }
 });
 
-test("Codex idle timeout covers an admitted Blob and joins conversion before settling", { timeout: 5000 }, async () => {
+for (const rejectConversion of [false, true]) test(`Codex idle timeout covers an admitted Blob and joins conversion; reject=${rejectConversion}`, { timeout: 5000 }, async () => {
   const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), gate = deferred();
   let http = 0;
   f.mode("output");
@@ -232,7 +232,11 @@ test("Codex idle timeout covers an admitted Blob and joins conversion before set
   try {
     await f.sent; await nextTurn();
 	f.sockets[0]!.emit("message", { data: JSON.stringify(textEvents()[0]) }); await nextTurn();
-    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { await gate.promise; return new TextEncoder().encode(JSON.stringify(textEvents()[0])).buffer; } } });
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() {
+      await gate.promise;
+      if (rejectConversion) throw new Error("late conversion rejection");
+      return new TextEncoder().encode(JSON.stringify(textEvents()[0])).buffer;
+    } } });
     await delay(100);
     assert.equal(f.sockets[0]!.readyState, 3, "idle timeout must still close a connection during conversion");
     assert.equal(owner.diagnostics.pending, 1, "already-started conversion remains owned until joined");
@@ -244,6 +248,31 @@ test("Codex idle timeout covers an admitted Blob and joins conversion before set
     assert.equal((await owner.stream(codexModel, responsesContext, options).result()).stopReason, "stop");
     assert.equal(http, 1, "the next request follows the existing session fallback");
   } finally { gate.release(); owner.revoke(); await owner.dispose(); f.release(); }
+});
+
+for (const blob of [false, true]) test(`Codex delivers admitted frames before a later transport error; Blob=${blob}`, { timeout: 5000 }, async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), gate = deferred();
+  let http = 0;
+  f.mode("output");
+  const options = { apiKey: codexToken(), sessionId: `admitted-error-${blob}`, transport: "auto" as const, maxRetries: 0,
+    fetch: (async () => { http++; return new Response(sseFrames(textEvents()), { headers: { "content-type": "text/event-stream" } }); }) as typeof fetch };
+  const request = owner.stream(codexModel, responsesContext, options), deltas: string[] = [];
+  const consumed = (async () => { for await (const event of request) if (event.type === "text_delta") deltas.push(event.delta); return request.result(); })();
+  try {
+    await f.sent; await nextTurn();
+    const added = JSON.stringify(textEvents()[0]);
+    f.sockets[0]!.emit("message", { data: blob ? { async arrayBuffer() { await gate.promise; return new TextEncoder().encode(added).buffer; } } : added });
+    f.sockets[0]!.emit("message", { data: JSON.stringify({ ...(textEvents()[1] as Record<string, unknown>), delta: "A" }) });
+    f.sockets[0]!.emit("error", new Error("later socket failure"));
+    gate.release();
+    const result = await consumed;
+    assert.equal(http, 0, "already admitted output must prevent SSE replay");
+    assert.equal(result.stopReason, "error"); assert.match(result.errorMessage!, /later socket failure/);
+    assert.deepEqual(deltas, ["A"]);
+    f.mode("success");
+    assert.equal((await owner.stream(codexModel, responsesContext, options).result()).stopReason, "stop");
+    assert.equal(http, 1, "only the next request follows the session fallback");
+  } finally { gate.release(); owner.revoke(); await consumed.catch(() => {}); await owner.dispose(); f.release(); }
 });
 
 test("Codex handles a later rejected Blob while an earlier conversion is pending", { timeout: 5000 }, async () => {
