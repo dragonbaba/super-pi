@@ -51,6 +51,7 @@ const CATEGORY_ALIASES: Readonly<Record<string, readonly string[]>> = {
 };
 
 const CATEGORY_ENTRIES = Object.entries(CATEGORY_ALIASES);
+const CATEGORY_PREFIX_BOUNDARY = /[\s:]/u;
 const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntries(
   CATEGORY_ENTRIES.map(([category, aliases]) => [category, aliases.join(" ")]),
 );
@@ -127,10 +128,18 @@ function normalizedTerms(query: string): string[] {
 }
 
 function requestedCategory(query: string): string | undefined {
+  let longest = 0;
+  let requested: string | undefined;
   for (const [category, aliases] of CATEGORY_ENTRIES) {
-    if (aliases.includes(query)) return category;
+    for (let index = 0; index < aliases.length; index++) {
+      const alias = aliases[index]!;
+      if (query === alias) return category;
+      if (alias.length > longest && query.startsWith(alias) && CATEGORY_PREFIX_BOUNDARY.test(query.charAt(alias.length))) {
+        longest = alias.length; requested = category;
+      }
+    }
   }
-  return undefined;
+  return requested;
 }
 
 interface ToolCandidate {
@@ -171,8 +180,9 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
       const query = params.query.trim().toLowerCase().normalize("NFC");
-      const category = requestedCategory(query);
-      const browserDebug = category === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
+      const requested = requestedCategory(query);
+      const browserDebug = requested === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
+      const category = browserDebug ? "browser_debug" : requested;
       const terms = normalizedTerms(query);
       const wordScoreLimit = (terms.length + 1) ** 2;
       const limit = params.limit ?? 6;
@@ -226,11 +236,11 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         };
       }
 
-      const requested = candidates.map((candidate) => candidate.name);
-      pi.setActiveTools([...active, ...requested]);
+      const requestedTools = candidates.map((candidate) => candidate.name);
+      pi.setActiveTools([...active, ...requestedTools]);
       const activeAfter = new Set(pi.getActiveTools());
-      const added = requested.filter((name) => activeAfter.has(name));
-      const rejected = requested.filter((name) => !activeAfter.has(name));
+      const added = requestedTools.filter((name) => activeAfter.has(name));
+      const rejected = requestedTools.filter((name) => !activeAfter.has(name));
       return {
         content: [{
           type: "text",

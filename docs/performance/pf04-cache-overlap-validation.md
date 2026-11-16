@@ -1,5 +1,7 @@
 # PF04-A 缓存统计口径验证
 
+此记录保留交付时的历史文案。当前提示已改为显示记录的 prompt/cache-read 用量、长度上限和可用的响应身份绑定客户端变更；不再只显示“cache cause unknown”。当前行为与验证见[脚本输出与缓存诊断](../evidence/session-script-cache-2026-11-16.md)。
+
 日期：2026-11-05。基线 `f1b4963d42489c6e1a59a742425f13aa5aa7b56a`，分支 `codex/perf-pf04-cache-attribution`。状态：[PR #221](https://github.com/dragonbaba/super-pi/pull/221) 已交付。审查 head `e3edf77009a83ec8351c895c37c72396780b381e` 的 reviewer 状态 completed、无发现/未解决项，CI `41919935415` 六分片均首次通过；squash `8668da9def5a41fa701cce159b718462580ba9ec` 与审查树一致并进入 main。遵循[总方案](../super-pi-performance-followup-plan.md)、[PF00 门禁](pf00-baseline-validation.md)和 [Hot-path allocation contract](hot-path-allocation-contract.md)。PF04 拆为两个顺序 PR：A 修正统计/界面断言；B 核对有效派发与响应身份、retry/reconnect/账号和历史边界。B 结束后才进入 PF05 增量统计。复现代码、所有正式样本、失败和进程退出记录见 [PF04-A 证据](../evidence/performance-pf04-cache-overlap-2026-11-05.json)。
 
 ## 复现与语义

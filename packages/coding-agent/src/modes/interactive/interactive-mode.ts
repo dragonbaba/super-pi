@@ -5499,7 +5499,7 @@ export class InteractiveMode {
 				}
 				if (message.stopReason !== "aborted" && message.stopReason !== "error") {
 					const estimate = cacheEstimates?.get(message);
-					if (estimate) this.addCacheOverlapNotice(estimate);
+					if (estimate) this.addCacheOverlapNotice(estimate, message);
 				} else finalizeRebuildReadGroup();
 			} else if (message.role === "toolResult") {
 				// Match tool results to pending tool components
@@ -5566,7 +5566,7 @@ export class InteractiveMode {
 		// Entries don't contain `message` yet: message_end fires before persistence.
 		this.cacheOverlapCursor ??= new CacheOverlapCursor();
 		const estimate = this.cacheOverlapCursor.estimate(this.sessionManager, message);
-		if (estimate) this.addCacheOverlapNotice(estimate);
+		if (estimate) this.addCacheOverlapNotice(estimate, message);
 	}
 
 	private clearCacheOverlapCursor(): void {
@@ -5580,10 +5580,15 @@ export class InteractiveMode {
 		this.rebuildChatFromMessages();
 	}
 
-	private addCacheOverlapNotice(estimate: CacheOverlapEstimate): void {
+	private addCacheOverlapNotice(estimate: CacheOverlapEstimate, message: AssistantMessage): void {
 		if (estimate.uncachedOverlapUpperBound < 20_000) return;
+		const usage = message.usage;
+		const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+		const observation = this.session.getPrefixObservation?.(message);
+		const requestChange = observation?.comparisonState === "available" && observation.diagnostic
+			? ` Observed client request change: ${observation.diagnostic.reasonCode}; this is not a server diagnosis.` : "";
 		const text = theme.fg("dim",
-			`Cache overlap estimate: up to ${formatTokens(estimate.uncachedOverlapUpperBound)} uncached prompt tokens; repeated content and cache cause unknown.`);
+			`Recorded prompt usage: ${formatLocaleInteger(promptTokens)} tokens; cache read: ${formatLocaleInteger(usage.cacheRead)} (${(usage.cacheRead / promptTokens * 100).toFixed(1)}%). Length-only overlap bound: up to ${formatTokens(estimate.uncachedOverlapUpperBound)} tokens. Token counts do not establish shared content or a cache-miss cause.${requestChange}`);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(text, 1, 0));
 	}
