@@ -123,6 +123,23 @@ async function fixture(t: TestContext) {
 
 const REMOTE = "mcp__fixture__lookup";
 
+test("MCP discovery reports exact accepted names and current-contract guidance without executing or retrying tools", async t => {
+	const f = await fixture(t), h = f.host();
+	await h.start();
+	const first = await h.search();
+	assert.deepEqual(first.details, { status: "matched", matches: [REMOTE], activated: [REMOTE], alreadyActive: [], rejected: [] });
+	assert.match(JSON.stringify(first.content), /describeTools.*callTool/);
+	const active = await h.search();
+	assert.deepEqual(active.details, { status: "matched", matches: [REMOTE], activated: [], alreadyActive: [REMOTE], rejected: [] });
+	const empty = await h.search("does_not_exist");
+	assert.equal(empty.details.status, "no_matches");
+	assert.deepEqual(empty.details.matches, []);
+	const denied = f.host(SessionManager.inMemory(f.root), name => name !== REMOTE);
+	await denied.start();
+	assert.deepEqual((await denied.search()).details, { status: "rejected", matches: [REMOTE], activated: [], alreadyActive: [], rejected: [REMOTE] });
+	assert.equal(f.endpoint.calls, 0, "discovery never executes a remote tool");
+});
+
 test("MCP execution owner joins startup and discovery, then lazily reconnects the existing catalog", { timeout: 5000 }, async t => {
 	const f = await fixture(t), h = f.host();
 	// A revoke in the import/preparation window must not leave a late runtime.

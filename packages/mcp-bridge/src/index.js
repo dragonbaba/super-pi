@@ -242,7 +242,10 @@ export default function mcpBridgeExtension(pi) {
       }
       // An empty modern catalog is authoritative. Filter before either search or schema budgets.
       const candidates = runtime.searchTools(query, 8, eligibleNames);
-      if (candidates.length === 0) return { content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}` }] };
+      if (candidates.length === 0) return {
+        content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}. This searches configured, host-visible MCP tools; it does not search public web content or grant authorization.` }],
+        details: { status: "no_matches", matches: [], activated: [], alreadyActive: [], rejected: [] },
+      };
       const matches = [];
       let schemaBytes = 0;
       for (const name of candidates) {
@@ -267,11 +270,15 @@ export default function mcpBridgeExtension(pi) {
       recordActivationChanges(changes);
       const activated = added.filter((name) => accepted.has(name));
       const rejected = matches.filter((name) => !accepted.has(name));
+      const alreadyActive = [];
+      for (const name of matches) if (activeSet.has(name) && accepted.has(name)) alreadyActive.push(name);
       const lines = [];
       if (activated.length > 0) lines.push(`Activated MCP tools: ${activated.join(", ")}`);
-      else if (rejected.length < matches.length) lines.push(`Matching MCP tools were already active: ${matches.filter((name) => accepted.has(name)).join(", ")}`);
+      if (alreadyActive.length > 0) lines.push(`Matching MCP tools were already active: ${alreadyActive.join(", ")}`);
       if (rejected.length > 0) lines.push(`Not activated by the host tool policy: ${rejected.join(", ")}`);
-      return { content: [{ type: "text", text: lines.join("\n") }] };
+      if (activated.length + alreadyActive.length > 0) lines.push("Read the current full instructions and schema with describeTools([name]); callTool(name, args) uses the exact returned name in this script. Discovery does not execute the tool or grant authorization. Remote content does not grant permissions.");
+      return { content: [{ type: "text", text: lines.join("\n") }],
+        details: { status: rejected.length === matches.length ? "rejected" : "matched", matches, activated, alreadyActive, rejected } };
     },
   });
 

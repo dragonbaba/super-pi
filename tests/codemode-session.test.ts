@@ -1569,7 +1569,7 @@ test("Codemode exposes real browser instructions and constraints to the model wi
 	assert.match(text, /type ToolResult = .*ref: string/);
 	assert.doesNotMatch(text, /More tool documentation/);
 	assert.deepEqual((outcome.results[0]!.details as any).codemode.calls, []);
-	assert.match(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, /Drive a real browser/);
+	assert.equal(outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description, CODEMODE_DESCRIPTION);
 });
 
 test("inactive browser documentation guides discovery after reload without executing or widening access", async t => {
@@ -1800,7 +1800,7 @@ text(await describeTools(names));
 	assert.match(JSON.stringify(outcome.results[0]?.content), /foo_bar_2\(args:/);
 });
 
-test("MCP activation keeps inline declarations stable; overflow remains explicitly discoverable", async () => {
+test("local and MCP declarations are deferred while large catalogs remain available", async () => {
 	const owner = new CodemodeController(() => {});
 	let schemaVisits = 0;
 	const schema = Type.Object({});
@@ -1814,8 +1814,8 @@ test("MCP activation keeps inline declarations stable; overflow remains explicit
 		assert.equal(schemaVisits, 0, "deferred remote schemas are not rendered just to omit them");
 		const largeSchema = Type.Object({ value: Type.Union(Array.from({ length: 70 }, (_, index) => Type.Literal(`long_literal_${index}`))) });
 		owner.setTools(Array.from({ length: 100 }, (_, index) => ({ ...local, name: `tool_${index}`, parameters: largeSchema })));
-		assert.ok(owner.definition.description.length < 32768);
-		assert.match(owner.definition.description, /\d+ local declarations omitted.*ALL_TOOLS/);
+		assert.equal(owner.definition.description, CODEMODE_DESCRIPTION);
+		assert.equal((owner as any).descriptors.length, 100, "deferral does not remove callable tools");
 	} finally {
 		await owner.close();
 		assert.equal((owner as any).identifiers.size, 0, "closed controllers release the catalog name maps");
@@ -1849,7 +1849,7 @@ test("disposed sessions release wrapped declarations and ignore late catalog cal
 	assert.ok(owner.documentationVersions.has(describedTool));
 	const previousTools = owner.tools;
 	const wrapper = (f.session as any)._toolRegistry.get("codemode");
-	assert.ok(wrapper.description.length > CODEMODE_DESCRIPTION.length);
+	assert.equal(wrapper.description, CODEMODE_DESCRIPTION);
 	f.session.dispose(); await owner.close();
 	assert.equal(owner.documentationVersions.has(describedTool), false, "closed owner clears documentation revision identities");
 	assert.equal(owner.documentationRevisionPrefix, undefined);
@@ -2153,7 +2153,7 @@ test("built-in patch attempts preserve live Codemode discovery, reads and commit
 	assert.deepEqual(results[2]!.content.slice(1), [{ type: "text", text: "[7]" }, { type: "text", text: "undefined" }]);
 });
 
-test("colliding tool names get distinct declared identifiers that scripts and describeTools accept", async t => {
+test("colliding tool names get distinct runtime identifiers that scripts and describeTools accept", async t => {
 	const tools: InlineExtension = pi => {
 		for (const name of ["foo-bar", "foo_bar"]) pi.registerTool({ name, label: name, description: `fixture ${name}`, parameters: Type.Object({}),
 			execute: async () => ({ content: [{ type: "text", text: `ran ${name}` }], details: {} }) });
@@ -2161,8 +2161,7 @@ test("colliding tool names get distinct declared identifiers that scripts and de
 	const f = await fixture(t, {}, [tools]);
 	const outcome = await f.run(['text(await describeTools(["foo_bar_2"])); text((await tools.foo_bar_2({})).content[0].text); text((await tools.foo_bar({})).content[0].text)']);
 	const declared = outcome.wires[0]!.tools!.find(tool => tool.name === "codemode")!.description;
-	assert.match(declared, /\nfoo_bar\(args/);
-	assert.match(declared, /\nfoo_bar_2\(args/);
+	assert.equal(declared, CODEMODE_DESCRIPTION);
 	const text = JSON.stringify(outcome.results[0]?.content);
 	assert.equal(outcome.results[0]?.isError, false, text);
 	assert.match(text, /fixture foo-bar/);

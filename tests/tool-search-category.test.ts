@@ -5,6 +5,20 @@ import toolClassification from "../packages/tool-classification/src/index.ts";
 import { searchFixture } from "./helpers/tool-search-fixture.ts";
 import { body, sessionFixture } from "./codemode-recovery/fixture.ts";
 
+test("exact active tool discovery reports the current name without activating description matches", async () => {
+  const f = searchFixture([
+    { name: "known_tool", description: "Current tool" },
+    { name: "browser_exec", description: "known_tool helper" },
+  ]);
+  f.setActive(["tool_search", "known_tool"]);
+  const result = await f.search("known_tool");
+  assert.deepEqual(result.details.alreadyActive, ["known_tool"]);
+  assert.deepEqual(result.details.added, []);
+  assert.match(body(result.content), /describeTools.*callTool/);
+  assert.equal(f.counters.activationCalls, 0);
+  assert.equal(f.counters.catalogReads, 1);
+});
+
 test("category-prefixed searches cannot activate unrelated verb matches when the category is already active", async () => {
   const f = searchFixture([
     { name: "memory_search", description: "Find stored knowledge" },
@@ -42,7 +56,7 @@ test("debug words do not override non-browser categories or borrow the browser a
   }
 });
 
-test("production activation changes the request prefix once; an exhausted category does not cause another change", async t => {
+test("production activation and exhausted-category discovery preserve the fixed entry prefix", async t => {
   const custom = (name: string, description: string) => ({ name, label: name, description, parameters: Type.Object({}),
     execute: async () => ({ content: [{ type: "text" as const, text: "fixture" }] }) });
   const f = await sessionFixture(t, { g2: false, extensions: [toolClassification], customTools: [
@@ -56,7 +70,7 @@ test("production activation changes the request prefix once; an exhausted catego
   const activated = (await f.run('await show((await tools.tool_search({query:"memory",limit:1})).ref);')).result;
   assert.equal(activated.isError, false, body(activated.content));
   assert.match(body(activated.content), /Activated conditional tools: memory_search/);
-  const after = prefix(); assert.ok(after !== before, "a legitimate catalog activation changes provider input");
+  const after = prefix(); assert.equal(after, before, "catalog activation must not expand the fixed provider entry");
   const next = (await f.run('await show((await tools.tool_search({query:"memory action add replace remove",limit:1})).ref);')).result;
   assert.equal(next.isError, false, body(next.content));
   assert.doesNotMatch(body(next.content), /Activated conditional tools: browser_exec/);

@@ -24,16 +24,21 @@ shorter browser prefix, so `browser DOM inspection` selects DevTools.
 - MCP: `mcp_search_tools`.
 - Other registered tools remain searchable by name and description, except policy-owned Goal, Plan-mode, and `inspect_image` tools. English and Chinese category aliases are supported.
 
-Search considers inactive tools. An empty result does not establish that a tool
+Search activates inactive tools and reports an exact active-name match without
+activating unrelated description matches. Exhausted categories report active
+names too. Results include `alreadyActive` alongside `added` and `rejected`;
+read the current full contract with `describeTools([name])` before unfamiliar use,
+then use the exact accepted name with `callTool(name, args)` in the same script.
+Search does not execute tools or grant authorization. An empty result does not establish that a tool
 is missing: `subagent` may already be exposed directly to the model. Call that
 top-level tool using its schema; CodeMode deliberately excludes orchestration
 tools and now identifies them as `TOOL_DIRECT_ONLY` when documentation is requested.
 Do not replace this route with an external agent CLI merely because it is absent
 from CodeMode's `ALL_TOOLS`.
 
-The session-start reset occurs before the first provider request. Later activation is additive. Provider-native deferred-tool support does not make CodeMode's wrapper definition invariant: activating a local tool can change its inline declarations. Inspect the actual provider input when investigating cache reuse across activation.
+The session-start reset occurs before the first provider request. Later activation is additive. CodeMode's provider entry definition stays fixed across local/MCP tool activation, ordering and schema refresh. Current contracts are read on demand. Top-level controls and authoritative prompt guidelines still affect the actual request; a fixed entry does not guarantee provider cache hits.
 
-Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. This avoids new provider-specific system-prompt guidelines, but activation can still change CodeMode's inline tool declarations and therefore the actual provider request prefix. A cache hit is not guaranteed across that change. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
+Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. Keep those instructions available through paged `describeTools`, rather than rebuilding the entry definition. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
 
 Generic browsing searches do not activate DevTools. An actual Browser Harness
 permission-required result (or a timeout after a reported approval prompt) pauses

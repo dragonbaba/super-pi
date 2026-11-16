@@ -18,7 +18,7 @@
  *
  * Evaluates to a function `(bridge, toolsJson, globalsJson, storeJson) => { settle, run, stalled }`.
  * `toolsJson` lists `{ name, jsName, description }`: `tools[jsName]` and `tools[name]` call the
- * tool, and `ALL_TOOLS` lists `{ name: jsName, description }`.
+ * tool, and `ALL_TOOLS` lists `{ name: jsName, toolName: name, description }`.
  * `stalled()` reports a script that has neither pending host calls nor timers.
  * `globalsJson` lists `{ name, spread }`; `a.b` names are grouped into a frozen `a` object.
  * `bridge(kind, a, b, c)` with kind "call" or "global" (id, name, argsJson),
@@ -208,7 +208,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		// a duplicate means a malformed catalog and fails the execution instead.
 		if (jsName in tools) throw new ErrorCtor("Codemode tool catalog has a duplicate identifier: " + jsName);
 		tools[jsName] = fn;
-		allTools.push(Object.freeze({ name: jsName, description }));
+		allTools.push(Object.freeze({ name: jsName, toolName: name, description }));
 		if (!(name in tools)) tools[name] = fn;
 	}
 	Object.freeze(tools);

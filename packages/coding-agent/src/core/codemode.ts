@@ -8,7 +8,7 @@ import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolDefinition, CodemodeReadEvent, ExtensionContext } from "./extensions/types.ts";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
 import { CODEMODE_DESCRIPTION, CODEMODE_FAILURE_GUIDANCE, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
-	MAX_CODEMODE_DESCRIPTION_CHARS, MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
+	MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
 import { saveCodemodeImages } from "./codemode-images.ts";
@@ -63,13 +63,11 @@ const MAX_SHOWN_IMAGE_CHARS = 16 * 1024 * 1024;
 /** Image data handed to the script per result; larger images stay host-side behind show(ref). */
 const MAX_SCRIPT_IMAGE_CHARS = 256 * 1024;
 const MAX_RETAINED_RECORDS = 256;
-const TOOL_SIGNATURE_OPTIONS = Object.freeze({ inputMaxChars: 2048, outputType: "ToolResult" });
 const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details?: unknown; isError?: boolean; ref: string };\n';
 const MAX_DESCRIBE_PAGE_CHARS = 16_000;
 const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
 const MAX_DESCRIBE_TOOLS = 16;
 const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. If tools.tool_search is available, search the exact name, then read describeTools again. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
-const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS and use await describeTools([names]) for their current schemas.\n";
 const ALLOW_FAILURE = Object.freeze({ allowFailure: true });
 const REQUEST_REVIEW = Object.freeze({ review: true });
 const REVIEW_ALLOW_FAILURE = Object.freeze({ review: true, allowFailure: true });
@@ -213,8 +211,6 @@ export class CodemodeController {
 		this.documentationCatalogRevision++;
 		this.documentationSnapshot = undefined;
 		const descriptors: CodemodeTool[] = [];
-		let description = CODEMODE_DESCRIPTION + DEFERRED_DECLARATIONS + "\nCurrent local tool declarations:\n" + TOOL_RESULT_DECLARATION;
-		let omitted = 0;
 		for (const tool of tools) {
 			if (!nestedAllowed(tool)) continue;
 			const name = tool.name;
@@ -224,15 +220,6 @@ export class CodemodeController {
 				execute: (args, context) => this.invoke(name, args, undefined, context.callId) });
 		}
 		const identifiers = assignCodemodeIdentifiers(descriptors.map(descriptorName));
-		for (const descriptor of descriptors) {
-			if (descriptor.name.startsWith("mcp__")) continue;
-			if (description.length >= MAX_CODEMODE_DESCRIPTION_CHARS - 256) { omitted++; continue; }
-			const purpose = unicodePrefix(descriptor.description ?? "", 256).replace(/[\r\n\u2028\u2029]/g, " ");
-			const signature = `// ${purpose}\n` + renderToolSignature(descriptor, { ...TOOL_SIGNATURE_OPTIONS, identifier: identifiers.get(descriptor.name) });
-			if (description.length + signature.length + 1 < MAX_CODEMODE_DESCRIPTION_CHARS - 256) description += signature + "\n";
-			else omitted++;
-		}
-		if (omitted) description += `\n${omitted} local declarations omitted by the inline budget. Filter ALL_TOOLS for names; await describeTools([names]) for schemas.\n`;
 		if (this.sandbox) {
 			for (const previous of this.descriptors) this.sandbox.unregisterTool(previous.name);
 			for (const descriptor of descriptors) this.sandbox.registerTool(descriptor);
@@ -241,7 +228,6 @@ export class CodemodeController {
 		this.identifiers = identifiers;
 		this.identifierNames.clear();
 		for (const [name, identifier] of identifiers) this.identifierNames.set(identifier, name);
-		this.definition.description = description;
 	}
 
 	restoreStore(value?: unknown): void { this.pendingStore = undefined; this.store.restore(value); this.restoreError = undefined; this.clearReadEvidence(); }
@@ -613,6 +599,7 @@ export class CodemodeController {
 		for (let index = 0; index < described.length; index++) {
 			const tool = described[index]!;
 			parts.push(`\nTool: ${tool.name}\n`, tool.fullDescription ?? tool.description, "\n");
+			parts.push(`Call: await callTool(${JSON.stringify(tool.name)}, args). Use this exact registered name with the current schema below.\n`);
 			if (format === "json") parts.push("Input JSON Schema:\n", snapshot.schemas[index]!, "\nResult: ToolResult\n");
 			else parts.push(snapshot.schemas[index]!, "\n");
 		}
