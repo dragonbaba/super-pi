@@ -9,8 +9,8 @@ function addUniqueGuideline(guidelines: string[], guideline: string): void {
 	if (!guidelines.includes(guideline)) guidelines.push(guideline);
 }
 
-/** Direct model tools and Codemode children are both callable for guideline purposes. */
-function hasCallableTool(tools: string[], nestedTools: string[] | undefined, name: string): boolean {
+/** Direct tools and discoverable Codemode children supply general capabilities, not authority. */
+function hasToolCapability(tools: string[], nestedTools: string[] | undefined, name: string): boolean {
 	return tools.includes(name) || nestedTools?.includes(name) === true;
 }
 
@@ -19,7 +19,7 @@ export interface BuildSystemPromptOptions {
 	customPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write] */
 	selectedTools?: string[];
-	/** Callable through Codemode, not declared as direct model tools. */
+	/** Permitted ordinary tool catalog discoverable through Codemode; not the active set or authority. */
 	nestedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
@@ -87,7 +87,7 @@ export function buildSystemPromptComposition(options: BuildSystemPromptOptions):
 		}
 		workspace += "</project_context>\n";
 	}
-	const hasRead = !selectedTools || hasCallableTool(selectedTools, nestedTools, "read");
+	const hasRead = !selectedTools || hasToolCapability(selectedTools, nestedTools, "read");
 	let visibleSkillCount = 0, maxSkillPathChars = 0;
 	if (hasRead) {
 		for (const skill of skills) {
@@ -123,11 +123,11 @@ function buildDefaultPrompt({ selectedTools, nestedTools, toolSnippets, promptGu
 	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
 
-	const hasBash = hasCallableTool(tools, nestedTools, "bash");
-	const hasPowerShell = hasCallableTool(tools, nestedTools, "powershell");
-	const hasGrep = hasCallableTool(tools, nestedTools, "grep");
-	const hasFind = hasCallableTool(tools, nestedTools, "find");
-	const hasLs = hasCallableTool(tools, nestedTools, "ls");
+	const hasBash = hasToolCapability(tools, nestedTools, "bash");
+	const hasPowerShell = hasToolCapability(tools, nestedTools, "powershell");
+	const hasGrep = hasToolCapability(tools, nestedTools, "grep");
+	const hasFind = hasToolCapability(tools, nestedTools, "find");
+	const hasLs = hasToolCapability(tools, nestedTools, "ls");
 	if (hasBash || hasPowerShell || hasGrep) {
 		addUniqueGuideline(guidelinesList, "Use available search tools directly; do not run rg/fd version or availability probes before searches. Reuse verified environment facts; investigate only after an actual executable error or a change of execution environment.");
 	}

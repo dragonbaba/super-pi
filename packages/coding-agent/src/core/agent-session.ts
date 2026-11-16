@@ -188,6 +188,9 @@ import { MCP_INLINE_BYTES, prepareMcpHookContent } from "./tool-result-source.ts
 import { addUsageToTotals, createUsageTotals, getUnboundCompactionLedgerUsages } from "./usage-totals.ts";
 
 function hasImageRecoveryToolCall(block: AssistantMessage["content"][number]): boolean { return block.type === "toolCall"; }
+function compareActiveToolNames(left: AgentTool, right: AgentTool): number {
+	return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+}
 function getBuiltinExecutionPath(name: string, cwd: string) {
 	switch (name) {
 		case "read": return { access: "read" as const, cwd, argument: "path" };
@@ -2757,6 +2760,7 @@ export class AgentSession {
 	 * Set active tools by name.
 	 * Only tools in the registry can be enabled. Unknown tool names are ignored.
 	 * Also rebuilds the system prompt to reflect the new tool set.
+	 * Active definitions use exact-name order so discovery order cannot churn provider prefixes.
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
@@ -2784,14 +2788,16 @@ export class AgentSession {
 			const tool = this._toolRegistry.get(name);
 			if (tool) {
 				tools.push(tool);
-				validToolNames.push(name);
 			}
 		}
 		const codemode = this._toolRegistry.get(CODEMODE_NAME);
 		if (tools.length > 0 && codemode && !tools.includes(codemode)) {
 			tools.push(codemode);
-			validToolNames.push(CODEMODE_NAME);
 		}
+		// Selection setup only: definitions and prompt guidance share one canonical
+		// order, independent of discovery/activation order. Execution order is unchanged.
+		tools.sort(compareActiveToolNames);
+		for (const tool of tools) validToolNames.push(tool.name);
 		this._codemode.setTools(tools);
 		if (codemode) codemode.description = this._codemode.definition.description;
 		this.agent.state.tools = tools;
@@ -2881,22 +2887,39 @@ export class AgentSession {
 		// A model-auth await may finish after disposal. Do not reacquire prompt ownership.
 		if (this._operationDisposed) return this._baseSystemPrompt;
 		const toolCalling = this.model ? getModelCapabilities(this.model).toolCalling : true;
-		const validToolNames = toolCalling ? toolNames.filter((name) => this._toolRegistry.has(name)) : [];
+		const validToolNames: string[] = [];
+		if (toolCalling) {
+			for (const name of toolNames) if (this._toolRegistry.has(name)) validToolNames.push(name);
+		}
 		const toolSnippets: Record<string, string> = {};
 		const promptGuidelines: string[] = [];
 		const modelToolNames: string[] = [];
 		const nestedToolNames: string[] = [];
 		for (const name of validToolNames) {
 			const nested = this._toolRegistry.get(name)!.modelExposure === "nested";
-			(nested ? nestedToolNames : modelToolNames).push(name);
+			if (!nested) modelToolNames.push(name);
 			const snippet = this._toolPromptSnippets.get(name);
 			if (snippet && !nested) {
 				setOwnProperty(toolSnippets, name, snippet);
 			}
 
+			const toolGuidelines = nested ? undefined : this._toolPromptGuidelines.get(name);
+			if (toolGuidelines) {
+				for (const guideline of toolGuidelines) promptGuidelines.push(guideline);
+			}
+		}
+		// Ordinary tools are discoverable through the fixed gateway. General shell/
+		// read/Skills guidance follows the permitted registry, not activation churn.
+		if (modelToolNames.includes(CODEMODE_NAME)) {
+			for (const tool of this._toolRegistry.values()) {
+				if (tool.modelExposure === "nested") nestedToolNames.push(tool.name);
+			}
+		}
+		nestedToolNames.sort();
+		for (const name of nestedToolNames) {
 			const toolGuidelines = this._toolPromptGuidelines.get(name);
 			if (toolGuidelines) {
-				for (const guideline of toolGuidelines) promptGuidelines.push(nested ? `For ${name} inside codemode: ${guideline}` : guideline);
+				for (const guideline of toolGuidelines) promptGuidelines.push(`For ${name} inside codemode: ${guideline}`);
 			}
 		}
 

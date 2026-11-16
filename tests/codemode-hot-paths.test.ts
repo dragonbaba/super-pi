@@ -267,3 +267,28 @@ test("browser routing event guards use stable callbacks and primitive state with
 	}
 	assert.deepEqual(found, new Set(["reset", "dispose", "observeSelection", "observeInput", "observeResult", "checkCall"]));
 });
+
+test("tool selection and prompt setup use a module comparator without callback or regex factories", () => {
+	const path = "packages/coding-agent/src/core/agent-session.ts";
+	const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+	const owner = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "AgentSession");
+	assert.ok(owner && ts.isClassDeclaration(owner));
+	const names = new Set(["setActiveToolsByName", "_rebuildSystemPrompt"]);
+	let methods = 0, namedSorts = 0;
+	function audit(node: ts.Node): void {
+		assert.equal(ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isAwaitExpression(node)
+			|| node.kind === ts.SyntaxKind.RegularExpressionLiteral, false, node.getText(source));
+		if (ts.isNewExpression(node)) assert.equal(["Promise", "AbortController", "RegExp"].includes(node.expression.getText(source)), false);
+		if (ts.isCallExpression(node) && node.expression.getText(source) === "tools.sort") {
+			namedSorts++; assert.equal(node.arguments[0]?.getText(source), "compareActiveToolNames");
+		}
+		ts.forEachChild(node, audit);
+	}
+	for (const member of owner.members) if (ts.isMethodDeclaration(member) && names.has(member.name.getText(source)) && member.body) {
+		methods++; audit(member.body);
+	}
+	const comparator = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "compareActiveToolNames");
+	assert.ok(comparator && ts.isFunctionDeclaration(comparator) && comparator.body);
+	audit(comparator.body);
+	assert.equal(methods, 2); assert.equal(namedSorts, 1);
+});

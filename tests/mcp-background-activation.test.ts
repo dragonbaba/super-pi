@@ -505,7 +505,7 @@ test("MCP automatic restoration preserves the real Plan selection", async t => {
 	assert.notEqual(newActive, oldActive, "same-name registration must replace the actual active wrapper");
 	assert.match(JSON.stringify(newActive.parameters), /"required":\["query"\]/);
 	state.tools.delete("lookup"); runtime.onToolsChanged();
-	assert.deepEqual(session.getActiveToolNames(), [...selected, "mcp_search_tools"], "removed remote tools still deactivate in Plan");
+	assert.deepEqual(session.getActiveToolNames(), [...selected, "mcp_search_tools"].sort(), "removed remote tools still deactivate in Plan");
 	state.tools.set("lookup", remote);
 	await session.extensionRunner!.getCommand("plan")!.handler("exit", session.extensionRunner!.createCommandContext());
 	assert.equal(session.getToolCatalog().selectionMode, "default");
