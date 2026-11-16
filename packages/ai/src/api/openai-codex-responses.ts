@@ -49,6 +49,7 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { requestBodyUtf8Bytes } from "../utils/request-body-observer.ts";
 import { annotateRequestBodyFailure } from "../utils/request-body-size.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { FifoQueue } from "../utils/fifo-queue.ts";
 import { deliverEffectiveDispatchObservation } from "../utils/effective-dispatch.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
@@ -197,6 +198,7 @@ const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
+const MAX_PENDING_WEBSOCKET_DECODES = 128;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
 const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
@@ -1562,160 +1564,148 @@ function extractWebSocketCloseError(event: unknown): Error {
     }
     return new Error("WebSocket closed");
 }
-function decodeWebSocketBuffer(data: ArrayBuffer): string { return new TextDecoder().decode(new Uint8Array(data)); }
-
-function decodeWebSocketData(data: unknown): string | null | Promise<string> {
-    if (typeof data === "string")
-        return data;
-    if (data instanceof ArrayBuffer) {
-        return new TextDecoder().decode(new Uint8Array(data));
-    }
-    if (ArrayBuffer.isView(data)) {
-        const view = data;
-        return new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-    }
-    if (data && typeof data === "object" && "arrayBuffer" in data) {
-        const blobLike = data as { arrayBuffer(): Promise<ArrayBuffer> };
-        return blobLike.arrayBuffer().then(decodeWebSocketBuffer);
-    }
-    return null;
+function isAsyncWebSocketData(data: unknown): data is { arrayBuffer(): Promise<ArrayBuffer> } {
+    return data !== null && typeof data === "object" && !(data instanceof ArrayBuffer) &&
+        !ArrayBuffer.isView(data) && "arrayBuffer" in data;
 }
+
 async function* parseWebSocket(owner: CodexTransportOwner,
     socket: WebSocketLike,
     signal: AbortSignal | undefined,
     idleTimeoutMs: number | undefined,
 ): AsyncGenerator<CodexEvent> {
-    const queue: CodexEvent[] = [];
+    // Request-owned admission queue. Decode in arrival order, including mixed
+    // Blob/text frames; an asynchronous conversion cannot be overtaken by close.
+    const queue = new FifoQueue<string | Promise<ArrayBuffer>>();
     let pending: (() => void) | null = null;
-    let done = false;
-    let failed: Error | null = null;
-    let sawCompletion = false;
-    let closed = false, decoding = 0;
-    let decodeDrain: Promise<void> | undefined;
-    let finishDecodeDrain: (() => void) | undefined;
-    const wake = () => {
-        if (!pending)
-            return;
-        const resolve = pending;
-        pending = null;
-        resolve();
+    let rejectPending: ((error: Error) => void) | null = null;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let decoder: InstanceType<typeof TextDecoder> | undefined;
+    let pendingDecodes = 0;
+    let done = false, closed = false, sawCompletion = false;
+    let failed: Error | null = null, closeFailure: Error | undefined;
+    // ArrayBuffer.isView guarantees a native view. Node-only and DOM typings
+    // describe that union differently; both decoders accept it without a copy.
+    const decodeBuffer = (data: ArrayBuffer | ArrayBufferView): string => (decoder ??= new TextDecoder()).decode(
+        data as Parameters<InstanceType<typeof TextDecoder>["decode"]>[0],
+    );
+    const finishDecode = (): void => { pendingDecodes--; };
+    const wake = () => { const resolve = pending; pending = null; resolve?.(); };
+    const capturePending = (resolve: () => void, reject: (error: Error) => void) => {
+        pending = resolve; rejectPending = reject;
     };
-    const onDecoded = (text: string | null) => {
-        if (closed || !text) return;
-        try {
-                const parsed = JSON.parse(text) as CodexEvent;
-                const type = typeof parsed.type === "string" ? parsed.type : "";
-                if (type === "response.completed" || type === "response.done" || type === "response.incomplete") {
-                    sawCompletion = true;
-                    done = true;
-                }
-                queue.push(parsed);
-                wake();
-            }
-        catch (cause) {
-                failed = new CodexProtocolError(`Invalid Codex WebSocket JSON: ${formatThrownValue(cause)}`, {
-                    cause,
-                    payload: text,
-                });
-                done = true;
-                wake();
-        }
-    };
-    const onDecodeFailure = (cause: unknown) => {
-        if (closed) return;
-        failed = new CodexProtocolError(`Invalid Codex WebSocket data: ${formatThrownValue(cause)}`, { cause });
-        done = true; wake();
-    };
-    const finishDecode = () => {
-        if (--decoding !== 0) return;
-        const finish = finishDecodeDrain;
-        finishDecodeDrain = undefined; decodeDrain = undefined; finish?.();
-    };
-    const beginDecodeCycle = () => {
-        // Blob conversion owns one shared deferred per idle-to-busy cycle, never per text delta.
-        decodeDrain = new Promise<void>(resolve => { finishDecodeDrain = resolve; });
+    const onIdleTimeout = () => {
+        const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
+        const reject = rejectPending;
+        failed = error; done = true; pending = null; rejectPending = null;
+        closeWebSocketSilently(owner, socket, 1000, "idle_timeout");
+        reject?.(error);
     };
     const onMessage = (event: unknown) => {
-        if (closed || !event || typeof event !== "object" || !("data" in event)) return;
+        if (closed || done || !event || typeof event !== "object" || !("data" in event)) return;
         try {
-            if (decoding >= 128) throw new Error("Codex WebSocket decode capacity exceeded");
-            const decoded = decodeWebSocketData(event.data);
-            if (typeof decoded === "string" || decoded === null) { onDecoded(decoded); return; }
-            if (decoding++ === 0) beginDecodeCycle();
-            void decoded.then(onDecoded, onDecodeFailure).finally(finishDecode);
-        } catch (error) { onDecodeFailure(error); }
-    };
-    const onError = (event: unknown) => {
-        failed = extractWebSocketError(event);
-        done = true;
-        wake();
-    };
-    const onClose = (event: unknown) => {
-        if (sawCompletion) {
-            done = true;
+            if (pendingDecodes >= MAX_PENDING_WEBSOCKET_DECODES) throw new Error("Codex WebSocket decode capacity exceeded");
+            const data = event.data;
+            if (typeof data === "string") queue.enqueue(data);
+            else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) queue.enqueue(decodeBuffer(data));
+            else if (isAsyncWebSocketData(data)) {
+                const conversion = data.arrayBuffer();
+                pendingDecodes++;
+                // One stable completion observer per admitted Blob. Mark rejection
+                // handled now; consume its original result/error later in order.
+                void conversion.then(finishDecode, finishDecode);
+                queue.enqueue(conversion);
+            }
             wake();
-            return;
+        } catch (cause) {
+            failed = new CodexProtocolError(`Invalid Codex WebSocket data: ${formatThrownValue(cause)}`, { cause });
+            done = true; wake();
         }
-        if (!failed) {
-            failed = extractWebSocketCloseError(event);
-        }
-        done = true;
-        wake();
     };
-    const onAbort = () => {
-        failed = new Error("Request was aborted");
-        done = true;
-        wake();
+    const onError = (event: unknown) => { failed = extractWebSocketError(event); done = true; wake(); };
+    const onClose = (event: unknown) => {
+        closeFailure = extractWebSocketCloseError(event);
+        done = true; wake();
     };
+    const onAbort = () => { failed = new Error("Request was aborted"); done = true; wake(); };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
     signal?.addEventListener("abort", onAbort);
     try {
         while (true) {
-            if (signal?.aborted) {
-                throw new Error("Request was aborted");
-            }
+            if (signal?.aborted) throw new Error("Request was aborted");
             if (queue.length > 0) {
-                yield queue.shift()!;
+                let data = queue.dequeue()!;
+                let text: string | undefined;
+                try {
+                    if (typeof data === "string") text = data;
+                    else {
+                        if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) timeout = setTimeout(onIdleTimeout, idleTimeoutMs);
+                        try {
+                            const buffer = await data;
+                            if (signal?.aborted) throw new Error("Request was aborted");
+                            text = decodeBuffer(buffer);
+                        } finally {
+                            if (timeout !== undefined) clearTimeout(timeout);
+                            timeout = undefined;
+                        }
+                    }
+                } catch (cause) {
+                    if (signal?.aborted) throw cause;
+                    throw new CodexProtocolError(`Invalid Codex WebSocket data: ${formatThrownValue(cause)}`, { cause });
+                }
+                if (failed) throw failed;
+                if (!text) continue;
+                let parsed: CodexEvent;
+                let type: string;
+                try {
+                    parsed = JSON.parse(text) as CodexEvent;
+                    type = typeof parsed.type === "string" ? parsed.type : "";
+                }
+                catch (cause) {
+                    throw new CodexProtocolError(`Invalid Codex WebSocket JSON: ${formatThrownValue(cause)}`, { cause, payload: text });
+                }
+                if (type === "response.completed" || type === "response.done" || type === "response.incomplete") {
+                    sawCompletion = true; done = true;
+                }
+                // The yield retains the parsed event only, never its raw frame/buffer.
+                data = ""; text = undefined;
+                yield parsed;
                 continue;
             }
-            if (done)
-                break;
-            let timeout: ReturnType<typeof setTimeout> | undefined;
-            await new Promise<void>((resolve, reject) => {
-                pending = resolve;
-                if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) {
-                    timeout = setTimeout(() => {
-                        const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
-                        failed = error;
-                        done = true;
-                        pending = null;
-                        closeWebSocketSilently(owner, socket, 1000, "idle_timeout");
-                        reject(error);
-                    }, idleTimeoutMs);
-                }
-            }).finally(() => {
-                if (timeout) {
-                    clearTimeout(timeout);
-                }
-            });
+            if (done) break;
+            // One idle-to-busy handoff; stable request callbacks, no Promise tail.
+            const ready = new Promise<void>(capturePending);
+            if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) timeout = setTimeout(onIdleTimeout, idleTimeoutMs);
+            try { await ready; }
+            finally {
+                if (timeout !== undefined) clearTimeout(timeout);
+                timeout = undefined; pending = null; rejectPending = null;
+            }
         }
-        if (failed) {
-            throw failed;
-        }
-        if (!sawCompletion) {
-            throw new Error("WebSocket stream closed before response.completed");
-        }
-    }
-    finally {
+        if (failed) throw failed;
+        if (!sawCompletion) throw closeFailure ?? new Error("WebSocket stream closed before response.completed");
+    } finally {
         closed = true;
+        if (timeout !== undefined) clearTimeout(timeout);
         socket.removeEventListener("message", onMessage);
         socket.removeEventListener("error", onError);
         socket.removeEventListener("close", onClose);
         signal?.removeEventListener("abort", onAbort);
-        queue.length = 0; pending = null;
-        await decodeDrain;
+        pending = null; rejectPending = null; decoder = undefined;
+        // Release text frames immediately, then join every already-started Blob
+        // conversion. No new per-frame callbacks or Promise.all cleanup array.
+        const remaining = queue.length;
+        for (let index = 0; index < remaining; index++) {
+            const data = queue.dequeue()!;
+            if (typeof data !== "string") queue.enqueue(data);
+        }
+        try {
+            while (queue.length > 0) {
+                try { await queue.dequeue()!; } catch { /* Request already ended. */ }
+            }
+        } finally { queue.clear(); pendingDecodes = 0; }
     }
 }
 function requestBodyWithoutInput(body: RequestBody): RequestBody {

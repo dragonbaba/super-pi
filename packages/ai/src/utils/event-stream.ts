@@ -1,4 +1,7 @@
 import type { AssistantMessage, AssistantMessageEvent } from "../types.ts";
+import { FifoQueue } from "./fifo-queue.ts";
+
+const DONE_ITERATOR_RESULT = Object.freeze({ value: undefined, done: true as const });
 
 /** Synchronous, observational terminal notification; never invoked for deltas. */
 export interface StreamResultObserver<R> {
@@ -12,28 +15,6 @@ function notifyResultObserver<R>(observer: StreamResultObserver<R>, result: R | 
 		const returned = observer.onResult(result);
 		if (returned && typeof returned.then === "function") void Promise.resolve(returned).catch(ignoreResultObserverRejection);
 	} catch { /* Observers cannot affect provider delivery. */ }
-}
-
-class FifoQueue<T> {
-	private incoming: T[] = [];
-	private outgoing: T[] = [];
-
-	get length(): number {
-		return this.incoming.length + this.outgoing.length;
-	}
-
-	enqueue(value: T): void {
-		this.incoming.push(value);
-	}
-
-	dequeue(): T | undefined {
-		if (this.outgoing.length === 0) {
-			while (this.incoming.length > 0) {
-				this.outgoing.push(this.incoming.pop()!);
-			}
-		}
-		return this.outgoing.pop();
-	}
 }
 
 // Generic event stream class for async iteration
@@ -78,6 +59,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		} else {
 			this.queue.enqueue(event);
 		}
+		if (this.done) this.finishWaitingConsumers();
 	}
 
 	end(result?: R): void {
@@ -90,10 +72,14 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 		if (result !== undefined) {
 			this.resolveFinalResult(result);
 		}
-		// Notify all waiting consumers that we're done
+		this.finishWaitingConsumers();
+	}
+
+	/** Terminal lifecycle only; normal deltas neither scan nor allocate completion results. */
+	private finishWaitingConsumers(): void {
 		while (this.waiting.length > 0) {
 			const waiter = this.waiting.dequeue()!;
-			waiter({ value: undefined as any, done: true });
+			waiter(DONE_ITERATOR_RESULT);
 		}
 	}
 

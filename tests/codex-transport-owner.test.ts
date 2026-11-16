@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { setImmediate as nextTurn } from "node:timers/promises";
+import { setImmediate as nextTurn, setTimeout as delay } from "node:timers/promises";
 import { zstdDecompressSync } from "node:zlib";
 import test from "node:test";
 import { buildOpenAICodexRequestBody, closeOpenAICodexWebSocketSessions, compactOpenAICodexRequest,
@@ -97,6 +97,7 @@ test("Codex full-history compaction cannot replace a busy owner connection or us
 
 function socketsFixture() {
   const original = globalThis.WebSocket;
+  const sent = deferred();
   let mode: "success" | "connecting" | "failure" | "output" = "success";
   const sockets: Socket[] = [], bodies: any[] = [];
   class Socket {
@@ -117,6 +118,7 @@ function socketsFixture() {
     emit(type: string, value: any) { for (const listener of this.listeners.get(type) ?? []) listener(value); }
     send(json: string) {
       const body = JSON.parse(json); bodies.push(body);
+      sent.release();
       if (mode === "output") return;
       const events = body.input?.some((item: any) => item.type === "compaction_trigger") ? compactEvents : textEvents();
       queueMicrotask(() => { for (const event of events) this.emit("message", { data: JSON.stringify(event) }); });
@@ -124,8 +126,146 @@ function socketsFixture() {
     close() { this.readyState = 3; }
   }
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
-  return { sockets, bodies, mode(value: typeof mode) { mode = value; }, release() { globalThis.WebSocket = original; } };
+  return { sockets, bodies, sent: sent.promise, mode(value: typeof mode) { mode = value; }, release() { globalThis.WebSocket = original; } };
 }
+
+for (const laterBlob of [false, true]) test(`Codex decodes mixed WebSocket frames in arrival order; later Blob=${laterBlob}`, async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner();
+  const first = deferred(), second = deferred();
+  f.mode("output");
+  const options = { apiKey: codexToken(), sessionId: `ordered-frames-${laterBlob}`, transport: "websocket" as const, maxRetries: 0 };
+  const request = owner.stream(codexModel, responsesContext, options);
+  const deltas: string[] = [];
+  const consumed = (async () => { for await (const event of request) if (event.type === "text_delta") deltas.push(event.delta); return request.result(); })();
+  try {
+    await Promise.race([f.sent, request.result().then(result => { throw new Error(`Request ended before WebSocket send: ${result.errorMessage}`); })]);
+    await nextTurn();
+    const socket = f.sockets[0]!, events = structuredClone(textEvents()) as any[];
+    events[2].item.content[0].text = "AB";
+    events[3].response.output[0].content[0].text = "AB";
+    const a = new TextEncoder().encode(JSON.stringify({ ...events[1], delta: "A" })).buffer;
+    const b = new TextEncoder().encode(JSON.stringify({ ...events[1], delta: "B" })).buffer;
+    socket.emit("message", { data: JSON.stringify(events[0]) });
+    socket.emit("message", { data: { async arrayBuffer() { await first.promise; return a; } } });
+    socket.emit("message", { data: laterBlob ? { async arrayBuffer() { await second.promise; return b; } } : new TextDecoder().decode(b) });
+    socket.emit("message", { data: JSON.stringify(events[2]) });
+    socket.emit("message", { data: JSON.stringify(events[3]) });
+    if (laterBlob) { socket.readyState = 3; socket.emit("close", { code: 1000, wasClean: true }); }
+    second.release(); await nextTurn();
+    assert.deepEqual(deltas, [], "later frames cannot overtake the first admitted Blob");
+    first.release();
+    const result = await consumed;
+    assert.equal(result.stopReason, "stop", result.errorMessage);
+    assert.deepEqual(deltas, ["A", "B"]);
+    assert.equal(socket.listeners.get("message")?.size, 0);
+    f.mode("success");
+    assert.equal((await owner.stream(codexModel, responsesContext, options).result()).stopReason, "stop");
+    assert.equal(f.sockets.length, laterBlob ? 2 : 1);
+  } finally { first.release(); second.release(); owner.revoke(); await consumed.catch(() => {}); await owner.dispose(); f.release(); }
+});
+
+test("Codex snapshots borrowed binary buffers and reuses one decoder per request", async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), originalDecoder = globalThis.TextDecoder;
+  let decoders = 0;
+  const request = owner.stream(codexModel, responsesContext, { apiKey: codexToken(), sessionId: "borrowed-buffer", transport: "websocket", maxRetries: 0 });
+  const deltas: string[] = [];
+  const consumed = (async () => { for await (const event of request) if (event.type === "text_delta") deltas.push(event.delta); return request.result(); })();
+  f.mode("output");
+  try {
+    await f.sent; await nextTurn();
+    globalThis.TextDecoder = class extends originalDecoder {
+      constructor(...args: ConstructorParameters<typeof TextDecoder>) { super(...args); decoders++; }
+    };
+    const socket = f.sockets[0]!, events = structuredClone(textEvents()) as any[];
+    events[2].item.content[0].text = "AB"; events[3].response.output[0].content[0].text = "AB";
+    const a = new TextEncoder().encode(JSON.stringify({ ...events[1], delta: "A" }));
+    const b = new TextEncoder().encode(JSON.stringify({ ...events[1], delta: "B" }));
+    assert.equal(a.byteLength, b.byteLength);
+    socket.emit("message", { data: JSON.stringify(events[0]) });
+    socket.emit("message", { data: a }); a.set(b); socket.emit("message", { data: a });
+    socket.emit("message", { data: JSON.stringify(events[2]) }); socket.emit("message", { data: JSON.stringify(events[3]) });
+    assert.equal((await consumed).stopReason, "stop");
+    assert.deepEqual(deltas, ["A", "B"], "borrowing a buffer must not change an earlier admitted frame");
+    assert.equal(decoders, 1);
+  } finally { owner.revoke(); await consumed.catch(() => {}); await owner.dispose(); globalThis.TextDecoder = originalDecoder; f.release(); }
+});
+
+test("Codex drain joins every admitted Blob after cancellation and releases listeners", async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), a = deferred(), b = deferred();
+  f.mode("output");
+  const request = owner.stream(codexModel, responsesContext, { apiKey: codexToken(), sessionId: "ordered-abort", transport: "websocket", maxRetries: 0 });
+  try {
+    await f.sent; await nextTurn();
+    const data = new TextEncoder().encode(JSON.stringify(textEvents()[0])).buffer;
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { await a.promise; return data; } } });
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { await b.promise; return data; } } });
+    owner.revoke(); let settled = false;
+    const draining = owner.drain().then(() => { settled = true; });
+    a.release(); await nextTurn();
+    assert.equal(settled, false, "the second conversion was already admitted and must be joined too");
+    b.release(); await draining;
+    assert.equal((await request.result()).stopReason, "aborted");
+    assert.equal(owner.diagnostics.pending, 0);
+    for (const set of f.sockets[0]!.listeners.values()) assert.equal(set.size, 0);
+  } finally { a.release(); b.release(); owner.revoke(); await owner.dispose(); f.release(); }
+});
+
+test("Codex malformed WebSocket JSON stays a protocol error and does not trigger HTTP replay", async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(); let http = 0;
+  f.mode("output");
+  const request = owner.stream(codexModel, responsesContext, { apiKey: codexToken(), sessionId: "null-frame", transport: "auto", maxRetries: 0,
+    fetch: (async () => { http++; throw new Error("unexpected replay"); }) as typeof fetch });
+  try {
+    await f.sent; await nextTurn(); f.sockets[0]!.emit("message", { data: "null" });
+    const result = await request.result();
+    assert.equal(result.stopReason, "error"); assert.match(result.errorMessage!, /Invalid Codex WebSocket JSON/); assert.equal(http, 0);
+  } finally { owner.revoke(); await owner.dispose(); f.release(); }
+});
+
+test("Codex idle timeout covers an admitted Blob and joins conversion before settling", { timeout: 5000 }, async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), gate = deferred();
+  let http = 0;
+  f.mode("output");
+  const options = { apiKey: codexToken(), sessionId: "blob-idle-timeout", transport: "websocket" as const, timeoutMs: 40, maxRetries: 0,
+    fetch: (async () => { http++; return new Response(sseFrames(textEvents()), { headers: { "content-type": "text/event-stream" } }); }) as typeof fetch };
+  const request = owner.stream(codexModel, responsesContext, options);
+  try {
+    await f.sent; await nextTurn();
+	f.sockets[0]!.emit("message", { data: JSON.stringify(textEvents()[0]) }); await nextTurn();
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { await gate.promise; return new TextEncoder().encode(JSON.stringify(textEvents()[0])).buffer; } } });
+    await delay(100);
+    assert.equal(f.sockets[0]!.readyState, 3, "idle timeout must still close a connection during conversion");
+    assert.equal(owner.diagnostics.pending, 1, "already-started conversion remains owned until joined");
+    gate.release();
+    const result = await request.result();
+    assert.equal(result.stopReason, "error"); assert.match(result.errorMessage!, /WebSocket idle timeout/);
+    assert.equal(http, 0, "a started request is never replayed after timeout");
+    f.mode("success");
+    assert.equal((await owner.stream(codexModel, responsesContext, options).result()).stopReason, "stop");
+    assert.equal(http, 1, "the next request follows the existing session fallback");
+  } finally { gate.release(); owner.revoke(); await owner.dispose(); f.release(); }
+});
+
+test("Codex handles a later rejected Blob while an earlier conversion is pending", { timeout: 5000 }, async () => {
+  const f = socketsFixture(), owner = createOpenAICodexTransportOwner(), gate = deferred();
+  f.mode("output");
+  const options = { apiKey: codexToken(), sessionId: "rejected-blob", transport: "auto" as const, maxRetries: 0,
+    fetch: (async () => { throw new Error("unexpected HTTP replay"); }) as typeof fetch };
+  const request = owner.stream(codexModel, responsesContext, options);
+  try {
+    await f.sent; await nextTurn();
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { await gate.promise; return new TextEncoder().encode(JSON.stringify(textEvents()[0])).buffer; } } });
+    f.sockets[0]!.emit("message", { data: { async arrayBuffer() { throw new Error("conversion failed"); } } });
+    await nextTurn(); gate.release();
+    const result = await request.result();
+    assert.equal(result.stopReason, "error"); assert.match(result.errorMessage!, /Invalid Codex WebSocket data: conversion failed/);
+	owner.revoke(); await owner.drain(); owner.resume();
+    assert.equal(owner.diagnostics.pending, 0);
+    for (const listeners of f.sockets[0]!.listeners.values()) assert.equal(listeners.size, 0);
+    f.mode("success");
+    assert.equal((await owner.stream(codexModel, responsesContext, options).result()).stopReason, "stop");
+  } finally { gate.release(); owner.revoke(); await owner.dispose(); f.release(); }
+});
 
 test("Codex explicit owners isolate same-ID connections, fallback, commitments and legacy cleanup", { timeout: 5000 }, async () => {
   const f = socketsFixture(), left = createOpenAICodexTransportOwner(), right = createOpenAICodexTransportOwner();

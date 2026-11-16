@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext, SystemPromptComposition } from "@super-pi/coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext, SessionEntry, SystemPromptComposition } from "@super-pi/coding-agent";
 
 const MESSAGE_TYPE = "dynamic-instructions-v1";
 const VERSION = 1;
@@ -56,21 +56,55 @@ function validHash(value: unknown): value is string {
   return typeof value === "string" && SHA256_PATTERN.test(value);
 }
 
+function messageHashes(value: unknown): HashState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const message = value as { type?: unknown; role?: unknown; customType?: unknown; details?: unknown };
+  if ((message.type !== "custom_message" && message.role !== "custom") || message.customType !== MESSAGE_TYPE) return undefined;
+  const details = message.details as { version?: unknown; workspaceSha256?: unknown; skillsSha256?: unknown } | undefined;
+  if (details?.version !== VERSION) return undefined;
+  return {
+    workspaceSha256: validHash(details.workspaceSha256) ? details.workspaceSha256 : undefined,
+    skillsSha256: validHash(details.skillsSha256) ? details.skillsSha256 : undefined,
+  };
+}
+
+function visibleEntryHashes(entry: SessionEntry): HashState | undefined {
+  if (entry.type !== "compaction") return messageHashes(entry);
+  const tail = entry.retainedTail;
+  if (tail) {
+    for (let index = tail.length - 1; index >= 0; index--) {
+      const hashes = messageHashes(tail[index]);
+      if (hashes) return hashes;
+    }
+  }
+  return undefined;
+}
+
 function restoreHashes(ctx: ExtensionContext): HashState {
-  const branch = ctx.sessionManager.getBranch();
-  for (let index = branch.length - 1; index >= 0; index -= 1) {
-    const entry = branch[index] as unknown as {
-      type?: unknown;
-      customType?: unknown;
-      details?: unknown;
-    };
-    if (entry.type !== "custom_message" || entry.customType !== MESSAGE_TYPE) continue;
-    const details = entry.details as { version?: unknown; workspaceSha256?: unknown; skillsSha256?: unknown } | undefined;
-    if (details?.version !== VERSION) continue;
-    return {
-      workspaceSha256: validHash(details.workspaceSha256) ? details.workspaceSha256 : undefined,
-      skillsSha256: validHash(details.skillsSha256) ? details.skillsSha256 : undefined,
-    };
+  const manager = ctx.sessionManager;
+  // Current hosts provide indexed parent lookup. Legacy hosts retain the array
+  // fallback; neither path trusts a summarized entry as visible model context.
+  const indexed = typeof manager.getLeafEntry === "function" && typeof manager.getEntry === "function";
+  const branch = indexed ? undefined : manager.getBranch();
+  let index = (branch?.length ?? 0) - 1;
+  let entry = branch ? branch[index] : manager.getLeafEntry();
+  let firstKeptId: string | undefined;
+  let candidate: HashState | undefined;
+  while (entry) {
+    if (firstKeptId !== undefined) {
+      candidate ??= visibleEntryHashes(entry);
+      // Validate the boundary is on this branch before accepting a candidate.
+      if (entry.id === firstKeptId) return candidate ?? NO_HASH_STATE;
+    } else {
+      const hashes = messageHashes(entry);
+      if (hashes) return hashes;
+      if (entry.type === "compaction") {
+        if (entry.retainedTail) return visibleEntryHashes(entry) ?? NO_HASH_STATE;
+        if (!entry.firstKeptEntryId) return NO_HASH_STATE;
+        firstKeptId = entry.firstKeptEntryId;
+      }
+    }
+    entry = branch ? branch[--index] : entry.parentId ? manager.getEntry(entry.parentId) : undefined;
   }
   return NO_HASH_STATE;
 }
@@ -102,7 +136,7 @@ function escapeXml(value: string): string {
 }
 
 function formatSkills(options: BuildSystemPromptOptions): string | undefined {
-  if (!(options.selectedTools ?? DEFAULT_SELECTED_TOOLS).includes("read")) return "";
+  if (!(options.selectedTools ?? DEFAULT_SELECTED_TOOLS).includes("read") && !options.nestedTools?.includes("read")) return "";
   const skills = options.skills ?? [];
   let visibleCount = 0;
   let output = SKILL_HEADER;

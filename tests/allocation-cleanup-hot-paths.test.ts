@@ -37,7 +37,10 @@ const paths: Record<string, readonly string[]> = {
 	"packages/tui/src/components/scroll-view.ts": ["render", "markScrollbarActivity"],
 	"packages/tui/src/components/stack.ts": ["visibleStackEntries", "removeChild"],
 	"packages/tui/src/components/settings-list.ts": ["renderMainList", "applyFilter", "getSettingLabel"],
-	"packages/tui/src/components/markdown.ts": ["renderToken", "renderInlineTokens", "renderList", "renderTable"],
+	"packages/tui/src/components/markdown.ts": ["renderToken", "renderInlineTokens", "renderList", "renderTable", "trimPartialClosingFences", "appendLines"],
+	"packages/ai/src/utils/fifo-queue.ts": ["enqueue", "dequeue", "clear"],
+	"packages/ai/src/utils/event-stream.ts": ["push", "end", "finishWaitingConsumers"],
+	"packages/dynamic-instructions/src/index.ts": ["restoreHashes", "messageHashes", "visibleEntryHashes"],
 	"packages/tui/src/layout.ts": ["getScrollViewBox", "findScrollViewBox", "getScrollViewsAt", "collectScrollViews"],
 	"packages/tui/src/tui-alt-screen.ts": ["prepareKittyScreen"],
 	"packages/chrome-devtools/src/render.ts": ["render", "truncateLine", "textContent"],
@@ -102,6 +105,27 @@ test("allocation source gate detects module-callback arrays and callable RegExp 
 	const failures: string[] = [];
 	inspectAllocationBody(accepted.statements[0]!, accepted, failures);
 	assert.deepEqual(failures, []);
+});
+
+test("Codex frame admission reuses request callbacks and a single lazy decoder", () => {
+	const tree = ts.createSourceFile("codex.ts", readFileSync(new URL("packages/ai/src/api/openai-codex-responses.ts", root), "utf8"), ts.ScriptTarget.Latest, true);
+	const parser = tree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "parseWebSocket")!;
+	const inspected = new Set<string>();
+	function visit(node: ts.Node): void {
+		if (ts.isVariableDeclaration(node) && ["onMessage", "finishDecode", "decodeBuffer"].includes(node.name.getText(tree))) {
+			assert.ok(node.initializer && ts.isArrowFunction(node.initializer));
+			const failures: string[] = [];
+			inspectAllocationBody(node.initializer.body, tree, failures);
+			assert.deepEqual(failures, [], node.name.getText(tree));
+			inspected.add(node.name.getText(tree));
+		}
+		if (ts.isNewExpression(node) && node.expression.getText(tree) === "Promise") {
+			assert.equal(node.arguments?.[0]?.getText(tree), "capturePending", "idle waits reuse the request executor");
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(parser);
+	assert.deepEqual([...inspected].sort(), ["decodeBuffer", "finishDecode", "onMessage"]);
 });
 
 test("LaTeX matrices, alignment, cases, fractions and malformed inputs retain the pre-cleanup golden", () => {

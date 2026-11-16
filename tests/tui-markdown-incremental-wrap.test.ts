@@ -30,6 +30,29 @@ const PLAIN_THEME: MarkdownTheme = {
 	underline: identityStyle,
 };
 
+test("large Markdown lists and wrapped paragraphs append every rendered line", () => {
+	const count = 150000;
+	const list = new Markdown("- a\n".repeat(count), 0, 0, PLAIN_THEME).render(12);
+	assert.equal(list.length, count);
+	for (const line of list) assert.equal(line, "- a".padEnd(12));
+	const paragraph = new Markdown("x".repeat(count), 0, 0, PLAIN_THEME).render(1);
+	assert.equal(paragraph.length, count);
+	for (const line of paragraph) assert.equal(line, "x");
+});
+
+test("Markdown tail inspection and line append avoid whole-block splits and argument spreads", () => {
+	const file = ts.createSourceFile("markdown.ts", readFileSync(resolve("packages/tui/src/components/markdown.ts"), "utf8"), ts.ScriptTarget.Latest, true);
+	const tail = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "trimPartialClosingFences")!;
+	function visit(node: ts.Node): void {
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			if (node.expression.name.text === "push") assert.ok(!node.arguments.some(ts.isSpreadElement), "unbounded push spread");
+			if (node.pos >= tail.pos && node.end <= tail.end) assert.notEqual(node.expression.name.text, "split", "tail inspection must scan the last line directly");
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(file);
+});
+
 const ANSI_THEME: MarkdownTheme = {
 	...PLAIN_THEME,
 	heading: (text: string): string => `\x1b[35m${text}\x1b[39m`,

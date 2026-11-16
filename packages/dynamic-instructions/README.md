@@ -10,8 +10,8 @@ Append-on-change workspace instructions and skill catalogs, using Super Pi's nat
 - Only absent composition uses the legacy path: reproduce sections from `systemPromptOptions`, remove exact unique matches, and compact the uniquely matched old Pi documentation directory. Missing/duplicate matches preserve the prompt.
 - Appends one hidden `dynamic-instructions-v1` custom message on first non-empty state or when effective bytes change.
 - Writes complete replacements and explicit empty tombstones; older values remain immutable Session history.
-- Restores the latest valid SHA-256 pair from the active Session branch, so resume/reload/branch does not duplicate unchanged guidance.
-- Keeps one current projection. Unchanged turns reuse composition/result identity (options/result identity for legacy hosts), with no formatting, hashing or new projection. Active-branch lookup and the host's hook/context allocations still occur.
+- Restores the latest valid SHA-256 pair from visible Session context, including retained compaction tails and kept-entry boundaries. Summarized replacements are emitted again once; kept replacements are reused on resume/reload/branch.
+- Keeps one current projection. Unchanged turns reuse composition/result identity (options/result identity for legacy hosts), with no formatting, hashing or new projection. Current hosts walk indexed ancestry without copying the full branch; legacy hosts use the branch-array fallback. The host's hook/context allocations still occur.
 - Clears the projection on session start, shutdown or invalid provenance. A synchronous host dispose that only invalidates the API, without sending shutdown, may retain this one cache with its old Runner until collection. It does not advance durable hashes.
 
 Skill bodies are never copied: only Pi's existing skill catalog metadata is moved. Permission checks and tool availability remain runtime-owned.

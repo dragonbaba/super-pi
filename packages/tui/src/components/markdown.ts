@@ -189,12 +189,22 @@ function trimPartialClosingFences(tokens: readonly Token[]): void {
 	// Trim streamed partial closing fences so code blocks do not shrink/flicker
 	// when the final fence character arrives. See https://github.com/earendil-works/pi/issues/5825.
 	const marker = MARKDOWN_FENCE_START_PATTERN.exec(token.raw)?.[1];
-	const lastLine = token.raw.split("\n").pop();
-	if (!marker || !lastLine || lastLine.length >= marker.length || lastLine !== marker[0]?.repeat(lastLine.length)) {
+	if (!marker) return;
+	const lastLineStart = token.raw.lastIndexOf("\n") + 1;
+	const lastLineLength = token.raw.length - lastLineStart;
+	if (lastLineLength === 0 || lastLineLength >= marker.length) {
 		return;
 	}
+	for (let index = lastLineStart; index < token.raw.length; index++) {
+		if (token.raw[index] !== marker[0]) return;
+	}
 
-	token.text = token.text.slice(0, -lastLine.length).replace(TRAILING_LINE_FEED_PATTERN, "");
+	token.text = token.text.slice(0, -lastLineLength).replace(TRAILING_LINE_FEED_PATTERN, "");
+}
+
+function appendLines(target: string[], source: readonly string[]): void {
+	const count = source.length;
+	for (let index = 0; index < count; index++) target.push(source[index]);
 }
 
 const markdownParser = new Marked();
@@ -592,7 +602,7 @@ export class Markdown implements Component {
 				const wrappedLines: string[] = [];
 				for (const line of tokenLines) {
 					if (isImageLine(line)) wrappedLines.push(line);
-					else wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
+					else appendLines(wrappedLines, wrapTextWithAnsi(line, contentWidth));
 				}
 				if (plainKind !== 0 && i === 0) plainWrappedLines = wrappedLines;
 				lines = [];
@@ -1358,7 +1368,7 @@ export class Markdown implements Component {
 
 			case "list": {
 				const listLines = this.renderList(token as Tokens.List, 0, width, styleContext);
-				lines.push(...listLines);
+				appendLines(lines, listLines);
 				// Don't add spacing after lists if a space token follows
 				// (the space token will handle it)
 				break;
@@ -1366,7 +1376,7 @@ export class Markdown implements Component {
 
 			case "table": {
 				const tableLines = this.renderTable(token as Tokens.Table, width, nextTokenType, styleContext);
-				lines.push(...tableLines);
+				appendLines(lines, tableLines);
 				break;
 			}
 
@@ -1389,8 +1399,9 @@ export class Markdown implements Component {
 				for (let i = 0; i < quoteTokens.length; i++) {
 					const quoteToken = quoteTokens[i];
 					const nextQuoteToken = quoteTokens[i + 1];
-					renderedQuoteLines.push(
-						...this.renderToken(quoteToken, quoteContentWidth, nextQuoteToken?.type, quoteInlineStyleContext),
+					appendLines(
+						renderedQuoteLines,
+						this.renderToken(quoteToken, quoteContentWidth, nextQuoteToken?.type, quoteInlineStyleContext),
 					);
 				}
 
@@ -1586,7 +1597,7 @@ export class Markdown implements Component {
 
 			for (const itemToken of item.tokens) {
 				if (itemToken.type === "list") {
-					lines.push(...this.renderList(itemToken as Tokens.List, depth + 1, width, styleContext));
+					appendLines(lines, this.renderList(itemToken as Tokens.List, depth + 1, width, styleContext));
 					renderedAnyLine = true;
 					continue;
 				}
