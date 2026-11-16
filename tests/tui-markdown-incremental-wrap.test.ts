@@ -580,6 +580,24 @@ test("long ASCII wrapping bypasses Unicode segmentation and keeps only the reque
 	} finally { segmenter.segment = original; }
 });
 
+test("ASCII Markdown checkpoint scans avoid per-character Unicode segment records", () => {
+	const segmenter = getGraphemeSegmenter(), original = segmenter.segment, metrics = createMetrics();
+	let segmentations = 0;
+	segmenter.segment = function (input: string) { segmentations++; return original.call(this, input); };
+	try {
+		let source = "word";
+		const markdown = new Markdown(source, 0, 0, PLAIN_THEME, undefined, { incrementalRenderCache: true }, metrics);
+		markdown.render(40);
+		for (let index = 0; index < 200; index++) { source += " next"; markdown.setText(source); markdown.render(40); }
+		assert.deepEqual(markdown.render(40), new Markdown(source, 0, 0, PLAIN_THEME).render(40));
+		assert.equal(metrics.incrementalUpdates, 200);
+		assert.equal(segmentations, 0, "ASCII checkpoint scanning must not allocate Intl records for each character");
+		markdown.setText(source + " 中文e\u0301");
+		assert.deepEqual(markdown.render(40), new Markdown(source + " 中文e\u0301", 0, 0, PLAIN_THEME).render(40));
+		assert.ok(segmentations > 0, "mixed Unicode keeps grapheme-aware scanning");
+	} finally { segmenter.segment = original; }
+});
+
 test("interrupted CSI OSC and APC scanning remains linear without retained scanner state", () => {
 	const file = ts.createSourceFile("utils.ts", readFileSync(resolve("packages/tui/src/utils.ts"), "utf8"), ts.ScriptTarget.Latest, true);
 	const scanner = file.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "findTerminalSequenceEnd")!;

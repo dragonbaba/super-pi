@@ -341,6 +341,7 @@ const itemCount = readIntegerOption("--items", 5_000);
 const measuredFrames = readIntegerOption("--frames", 20_000);
 const warmupFrames = readIntegerOption("--warmup", 1_000);
 const lifecycleCycles = readIntegerOption("--lifecycle-cycles", 0);
+const allocationSamplingEnabled = !process.argv.includes("--timing-only");
 const width = readIntegerOption("--width", 120);
 const height = readIntegerOption("--height", 40);
 const altControlIndex = process.argv.indexOf("--alt-control");
@@ -389,19 +390,21 @@ observer.observe({ entryTypes: ["gc"] });
 const session = new Session();
 session.connect();
 await session.post("HeapProfiler.enable");
-await session.post("HeapProfiler.startSampling", {
+if (allocationSamplingEnabled) await session.post("HeapProfiler.startSampling", {
 	samplingInterval: 1024,
 	includeObjectsCollectedByMajorGC: true,
 	includeObjectsCollectedByMinorGC: true,
 });
 const durations = new Array<number>(measuredFrames);
+const cpuBefore = allocationSamplingEnabled ? undefined : process.cpuUsage();
 for (let index = 0; index < measuredFrames; index++) {
 	const started = performance.now();
 	runtime.advanceActive();
 	runtime.tui.renderNow();
 	durations[index] = performance.now() - started;
 }
-const stopped = await session.post("HeapProfiler.stopSampling");
+const cpuUsed = cpuBefore ? process.cpuUsage(cpuBefore) : undefined;
+const stopped = allocationSamplingEnabled ? await session.post("HeapProfiler.stopSampling") : undefined;
 await session.post("HeapProfiler.disable");
 session.disconnect();
 // GC performance entries are delivered on a later observer turn than the
@@ -414,7 +417,7 @@ globalThis.gc();
 globalThis.gc();
 const controlledGcAfterHeapBytes = process.memoryUsage().heapUsed;
 const sortedDurations = durations.slice().sort((left, right) => left - right);
-const sampled = allocationSites(stopped.profile.head as SamplingNode);
+const sampled = stopped ? allocationSites(stopped.profile.head as SamplingNode) : undefined;
 const metrics = runtime.instrumentation.snapshot();
 const retainedReferencesBeforeDispose = runtime.getAltLayoutRetainedReferenceCounts();
 const compositionReferencesBeforeDispose = runtime.getAltCompositionRetainedReferenceCounts();
@@ -458,14 +461,17 @@ process.stdout.write(`${JSON.stringify({
 	height,
 	warmupFrames,
 	measuredFrames,
+	allocationSamplingEnabled,
 	node: process.version,
 	platform: process.platform,
 	arch: process.arch,
 	metrics: {
 		cpuP50Ms: percentile(sortedDurations, 0.5),
 		cpuP95Ms: percentile(sortedDurations, 0.95),
-		sampledAllocationBytes: sampled.sampledBytes,
-		sampledAllocationBytesPerFrame: sampled.sampledBytes / measuredFrames,
+		cpuUserMicroseconds: cpuUsed?.user ?? null,
+		cpuSystemMicroseconds: cpuUsed?.system ?? null,
+		sampledAllocationBytes: sampled?.sampledBytes ?? null,
+		sampledAllocationBytesPerFrame: sampled ? sampled.sampledBytes / measuredFrames : null,
 		minorGcCount,
 		majorGcCount,
 		incrementalGcCount,
@@ -476,6 +482,7 @@ process.stdout.write(`${JSON.stringify({
 		controlledGcAfterHeapBytes,
 		controlledGcHeapDeltaBytes: controlledGcAfterHeapBytes - controlledGcBeforeHeapBytes,
 		controlledGcAfterDisposeHeapBytes,
+		processPeakRssBytes: process.resourceUsage().maxRSS * 1024,
 		controlledGcAfterDisposeHeapDeltaBytes: controlledGcAfterDisposeHeapBytes - controlledGcBeforeHeapBytes,
 		retainedReferencesBeforeDispose,
 		retainedReferencesAfterDispose,
@@ -545,5 +552,5 @@ process.stdout.write(`${JSON.stringify({
 		sourceInvariantSelectionTemporaryArraysPerFrame: 0,
 		sourceInvariantOverlaySelectionWrapperObjectsPerFrame: 0,
 	},
-	topAllocationSites: sampled.top,
+	topAllocationSites: sampled?.top ?? null,
 }, null, 2)}\n`);

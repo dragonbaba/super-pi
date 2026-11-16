@@ -63,6 +63,8 @@
 
 ## 开发和性能契约
 
+- [渲染热路径核实](evidence/render-hot-paths-2026-11-16.md)：选区/覆盖层、ASCII Markdown 与帧 UTF-8 计量的分配及 CPU 对照，视口和资源释放证据。
+
 - [测试与文档清理核实](evidence/test-doc-cleanup-2026-11-14.md)：失效验证入口与链接修正；R0 冻结断言及七项未通过验收目标保持完整。
 - [Responses 审计的当前复跑入口](evidence/responses-claude-audit-2026-11-12.md#当前离线复跑入口)：reasoning、图片预算和实际传输的正式回归，不依赖旧任务目录；历史真实中转探针单列。
 - [LSP 大批量诊断修复记录](evidence/post-review-lsp-diagnostics-2026-11-14.md)：88 文件的 tsserver OOM 复现、16 文档滑动窗口、到期就绪余量、逐文件失败与部分结果续查。

@@ -1,3 +1,5 @@
+import { utf8ByteLength } from "./utf8-byte-length.ts";
+
 export interface TerminalFrameQueueSnapshot {
 	activeWrites: 0 | 1;
 	pendingFrames: 0 | 1;
@@ -33,23 +35,6 @@ export interface TerminalFrameSink {
 	/** Returns false only when the physical writer cannot accept this frame yet. */
 	writeFrame(data: string, generation: number): void | boolean;
 	cancelFrameWrite(generation: number): void;
-}
-
-function utf8ByteLength(value: string): number {
-	let bytes = 0;
-	for (let index = 0; index < value.length; index++) {
-		const codeUnit = value.charCodeAt(index);
-		if (codeUnit <= 0x7f) bytes++;
-		else if (codeUnit <= 0x7ff) bytes += 2;
-		else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < value.length) {
-			const next = value.charCodeAt(index + 1);
-			if (next >= 0xdc00 && next <= 0xdfff) {
-				bytes += 4;
-				index++;
-			} else bytes += 3;
-		} else bytes += 3;
-	}
-	return bytes;
 }
 
 function asError(error: unknown): Error {

@@ -28,6 +28,7 @@ import {
 	cjkBreakRegex,
 	getGraphemeSegmenter,
 	isWhitespaceChar,
+	isPrintableAscii,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "../utils.ts";
@@ -1070,7 +1071,19 @@ export class Markdown implements Component {
 		let tokenEnd = 0;
 		let tokenWidth = 0;
 		let tokenKind = 0;
-		for (const part of getGraphemeSegmenter().segment(source)) {
+		if (isPrintableAscii(source)) {
+			for (let index = 0; index < source.length; index++) {
+				const nextKind = source.charCodeAt(index) === 0x20 ? 1 : 2;
+				if (tokenKind !== 0 && tokenKind !== nextKind) {
+					this.consumeIncrementalPlainToken(source, tokenStart, tokenEnd, tokenWidth, tokenKind === 1, width);
+					tokenKind = 0;
+					tokenWidth = 0;
+				}
+				if (tokenKind === 0) { tokenStart = index; tokenKind = nextKind; }
+				tokenEnd = index + 1;
+				tokenWidth++;
+			}
+		} else for (const part of getGraphemeSegmenter().segment(source)) {
 			const segment = part.segment;
 			const segmentStart = part.index;
 			const segmentEnd = segmentStart + segment.length;
