@@ -179,7 +179,7 @@ async function catalogCycle(count: number, pagedJson = false) {
         if (selectionModeSupported) assert.equal(snapshot.selectionMode, selectionState.enabled ? "plan" : "default");
         configuredCount = snapshot.tools.length;
         for (const name of names) assert.ok(snapshot.tools.some((tool: { name: string }) => tool.name === name));
-        assert.deepEqual(snapshot.activeTools, [...names, "codemode"]);
+        assert.deepEqual(snapshot.activeTools, [...names, "codemode"].sort());
         if (index === 31) return [new WeakRef(snapshot), new WeakRef(snapshot.tools), new WeakRef(snapshot.activeTools)];
       }
       throw new Error("missing directory sample");

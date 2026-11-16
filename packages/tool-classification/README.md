@@ -38,6 +38,14 @@ from CodeMode's `ALL_TOOLS`.
 
 The session-start reset occurs before the first provider request. Later activation is additive. CodeMode's provider entry definition stays fixed across local/MCP tool activation, ordering and schema refresh. Current contracts are read on demand. Top-level controls and authoritative prompt guidelines still affect the actual request; a fixed entry does not guarantee provider cache hits.
 
+The session canonicalizes active definitions by exact registered name, including
+top-level controls and the gateway. Equivalent selections do not reorder provider
+declarations or prompt guidance. Ordinary-tool capability hints, Skills visibility
+and scoped operating guidelines use the permitted registry rather than the active
+subset; discovery still grants no authority. Actual rule updates and control-set
+changes remain visible. The maintained wire matrix covers all ten built-in APIs;
+see [cross-provider evidence](../../docs/evidence/provider-prefix-matrix-2026-11-16.md).
+
 Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. Keep those instructions available through paged `describeTools`, rather than rebuilding the entry definition. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
 
 Generic browsing searches do not activate DevTools. An actual Browser Harness

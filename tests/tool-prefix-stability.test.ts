@@ -50,6 +50,8 @@ test("real Codex request prefix stays stable across nested selection and MCP met
   let bridge: any, api: ExtensionAPI;
   const extension = (pi: ExtensionAPI) => {
     api = pi;
+    pi.registerTool(b);
+    pi.registerTool(policy);
     bridge = new McpBridgeRuntime(pi, "fixture");
     const state = { status: "connected", catalogReady: true, config: { id: "fixture" }, tools: new Map([["query", {}]]), client: { async close() {} } };
     bridge.states.set("fixture", state);
@@ -58,7 +60,7 @@ test("real Codex request prefix stays stable across nested selection and MCP met
   };
   const control = { ...local("update_plan"), modelOnly: true, promptSnippet: "Update a plan" };
   const policy = { ...local("policy_probe"), promptGuidelines: ["An authoritative fixture guideline."] };
-  const f = await alphaSession({ codemode: true, g2: false, runtime, customTools: [a, b, control, policy], extensions: [extension],
+  const f = await alphaSession({ codemode: true, g2: false, runtime, customTools: [a, control], extensions: [extension],
     settings: { compaction: { enabled: false }, retry: { enabled: false } } });
   t.after(() => f.release());
   const probe = async (names: string[]) => {
@@ -78,12 +80,14 @@ test("real Codex request prefix stays stable across nested selection and MCP met
   }
   bridge.registerRemoteTool(bridge.states.get("fixture"), { name: "query", description: "Refreshed remote instructions", inputSchema: { type: "object", properties: { revised: { type: "string" } }, required: ["revised"] } });
   api!.registerTool({ ...b, description: "Replaced local instructions", parameters: Type.Object({ revised: Type.String() }) });
+  assert.equal(f.session.getToolDefinition("beta")!.description, "Replaced local instructions");
   const refreshed = await probe(["alpha", "beta", "mcp__fixture__query"]);
   assert.equal(refreshed.tools, first.tools);
   assert.equal(refreshed.instructions, first.instructions);
   assert.equal(refreshed.cacheKey, first.cacheKey);
   const direct = await probe(["alpha", "update_plan"]);
   assert.ok(direct.tools !== first.tools, "direct model control schemas must remain visible");
+  api!.registerTool({ ...policy, promptGuidelines: ["An updated authoritative fixture guideline."] });
   const guided = await probe(["alpha", "policy_probe"]);
   assert.notEqual(guided.instructions, first.instructions, "authoritative custom guidelines must not be hidden for cache reuse");
   t.diagnostic(JSON.stringify({ requests: sent.length, stableNestedRequests: sent.length - 2, toolsUtf8Bytes: Buffer.byteLength(first.tools),

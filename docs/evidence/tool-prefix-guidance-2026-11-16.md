@@ -1,5 +1,7 @@
 # 固定工具入口与按需契约
 
+历史覆盖边界：本记录只在 Codex 发送体上验证了前缀，且“本地替换”夹具受到 SDK 同名覆盖影响。后续[跨 provider 验证](provider-prefix-matrix-2026-11-16.md)修正夹具并核对最终注册定义，扩展至全部十类 API，也替代下文的活动工具顺序及激活时规则注入行为。
+
 ## 结论与根因
 
 PR #317 修正了误激活和缓存诊断；当时本地工具仍由 `CodemodeController.setTools` 拼接声明。激活、重排、替换说明或 Schema 都可能改变 provider 的 CodeMode 定义。这是客户端前缀变化的证据，不能单独解释历史服务端 cache-read 为零的原因。

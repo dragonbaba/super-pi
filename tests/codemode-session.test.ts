@@ -616,7 +616,7 @@ test("SDK defaults to Codemode declarations and native control tools, retaining 
 	assert.match(toolsSection, /- codemode:/);
 	assert.doesNotMatch(toolsSection, /- (read|bash|powershell|edit|write):/);
 	assert.match(prompt, /For read inside codemode:/);
-	assert.match(prompt, /for file operations/, "shell guidance counts Codemode children as callable tools");
+	assert.match(prompt, /Use available search tools directly/, "general search guidance follows the discoverable ordinary catalog");
 	assert.equal(outcome.results[0]?.isError, false, JSON.stringify(outcome.results[0]?.content));
 	assert.match(JSON.stringify(outcome.results[0]?.content), /hello/);
 	assert.match(JSON.stringify(outcome.results[0]?.content), /native-minimal/);
@@ -851,7 +851,7 @@ test("SDK allowlist constrains children while adding the default transport; no-t
 	const catalog = f.session.getToolCatalog();
 	assert.equal(catalog.selectionMode, "default");
 	assert.deepEqual(catalog.tools.map(tool => tool.name).sort(), ["codemode", "read"]);
-	assert.deepEqual(catalog.activeTools, ["read", "codemode"]);
+	assert.deepEqual(catalog.activeTools, ["codemode", "read"]);
 	catalog.tools[0]!.description = "caller-owned entry";
 	catalog.tools.length = 0; catalog.activeTools.length = 0;
 	assert.equal(f.session.getToolCatalog().tools.length, 2);
@@ -977,7 +977,7 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	catalogReads = 0;
 	f.session.setActiveToolsByName(["tool_search"]);
 	const before = f.session.getToolCatalog();
-	assert.deepEqual(before.activeTools, ["tool_search", "codemode"]);
+	assert.deepEqual(before.activeTools, ["codemode", "tool_search"]);
 	assert.equal(before.tools.find(tool => tool.name === "catalog_lookup")?.available, true);
 	const outcome = await f.run([
 		'const r=await tools.tool_search({query:"catalog",limit:1});text(r.details);text(ALL_TOOLS.some(t=>t.name==="catalog_lookup"));text((await callTool("catalog_lookup",{})).content);text(await describeTools(["catalog_delete"]));',
@@ -991,8 +991,8 @@ test("real tool_search activates allowed tools inside Codemode without exposing 
 	assert.equal(outcome.results[1]?.isError, true);
 	assert.match(JSON.stringify(outcome.results[1]?.content), /catalog_lookup/);
 	assert.equal(catalogReads, 1, "one explicit search reads one catalog; output does not rescan");
-	assert.deepEqual(f.session.getToolCatalog().activeTools, ["tool_search", "codemode", "catalog_lookup"]);
-	assert.deepEqual(before.activeTools, ["tool_search", "codemode"]);
+	assert.deepEqual(f.session.getToolCatalog().activeTools, ["catalog_lookup", "codemode", "tool_search"]);
+	assert.deepEqual(before.activeTools, ["codemode", "tool_search"]);
 	assert.deepEqual(f.session.getActiveToolNames().sort(), ["catalog_lookup", "codemode", "tool_search"]);
 });
 
@@ -1035,7 +1035,7 @@ test("explicit selection mode distinguishes Plan from tool names while older cat
 	olderCatalog = true;
 	f.session.setActiveToolsByName(names);
 	await f.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
-	assert.deepEqual(f.session.getActiveToolNames(), [...names, "codemode"]);
+	assert.deepEqual(f.session.getActiveToolNames(), [...names, "codemode"].sort());
 	olderCatalog = false;
 	await f.session.extensionRunner.emit({ type: "session_start", reason: "reload" });
 	for (const name of names) assert.equal(f.session.getActiveToolNames().includes(name), false);
