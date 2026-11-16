@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import cp, { type SpawnOptions, type SpawnSyncOptions } from "node:child_process";
+import cp, { type SpawnOptions } from "node:child_process";
 import { getEventListeners } from "node:events";
 import fs from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -37,13 +37,10 @@ const file = join(data, "sample.txt");
 writeFileSync(file, scene === "utf16" ? Buffer.from("\uFEFF" + content, "utf16le") : scene === "bytes" ? Buffer.concat([Buffer.from(content), Buffer.from([255])]) : content);
 if (scene === "multi") writeFileSync(join(data, "second.txt"), "HIT first\nend");
 const processes: Array<{ pid: number | undefined; startedAt: string; code: number | null; purpose: string }> = [];
-const originalSpawn = cp.spawn, originalSync = cp.spawnSync, originalRead = fs.readFile;
+const originalSpawn = cp.spawn, originalRead = fs.readFile;
 let child: ReturnType<typeof cp.spawn> | undefined, reads = 0, readBytes = 0;
 const controller = new AbortController();
-cp.spawnSync = ((command: string, args: string[], options: SpawnSyncOptions) => {
-  const startedAt = new Date().toISOString(), result = originalSync(command, args, options);
-  processes.push({ pid: result.pid, startedAt, code: result.status, purpose: "availability" }); return result;
-}) as typeof cp.spawnSync;
+cp.spawnSync = (() => assert.fail("grep preparation must not execute a version or availability subprocess")) as typeof cp.spawnSync;
 cp.spawn = ((command: string, args: string[], options: SpawnOptions) => {
   const startedAt = new Date().toISOString(); child = originalSpawn(command, args, options);
   const record = { pid: child.pid, startedAt, code: null as number | null, purpose: "grep" }; processes.push(record);

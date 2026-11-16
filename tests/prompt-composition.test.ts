@@ -10,13 +10,13 @@ import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } fro
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { promptFixture } from "./helpers/prompt-fixture.ts";
 
-test("native composition preserves pre-refactor golden bytes and owns five immutable segments", () => {
-	// Captured from the old builder; normalize only its installation-specific README path.
+test("native composition preserves current golden bytes and owns five immutable segments", () => {
+	// Frozen prompt bytes, including intentional tool guidance; normalize only the installation path.
 	const golden = {
-		default: "85fd3a3d57e39f264069ff5f2787f48571f77a39720607c5b7c7bf4c34ec05d6",
+		default: "186d4f519fb840147d94a312000e6c62003eb51f8f77ca2b2f39d38178474c5c",
 		custom: "502bd8b859df2b38a5ce8d78645036ece28d350a6d9a66ac8ea8a9a834a29a7d",
 		empty: "ba9929d53f5a6cfe575fcbecfc79d46f6ce2d2a287a3a52bec852a279d1a3754",
-		nested: "955b788f2e9fabbf0cbde7238bcdfe3caebe1d0109084e958530e5e33c4f038c",
+		nested: "aec433746062882bc93ddc31f2c624204f7ab3678a73366f3de3c719ac639655",
 	};
 	for (const [kind, hash] of Object.entries(golden)) {
 		const options = promptFixture(kind), composition = buildSystemPromptComposition(options);

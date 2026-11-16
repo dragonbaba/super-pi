@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
+import { accessSync, chmodSync, constants, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { arch, platform } from "os";
-import { join } from "path";
+import { delimiter, join, resolve } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
@@ -71,15 +71,43 @@ const TOOLS: Record<string, ToolConfig> = {
 	},
 };
 
-// Check if a command exists in PATH by trying to run it
-function commandExists(cmd: string): boolean {
+function isToolExecutable(path: string): boolean {
 	try {
-		const result = spawnSync(cmd, ["--version"], { stdio: "pipe" });
-		// Check for ENOENT error (command not found)
-		return result.error === undefined || result.error === null;
+		if (!statSync(path).isFile()) return false;
+		if (platform() !== "win32") accessSync(path, constants.X_OK);
+		return true;
 	} catch {
 		return false;
 	}
+}
+
+/** Resolve current executable metadata; discovery must never execute a version probe. */
+function findSystemTool(binaryName: string): string | null {
+	const windows = platform() === "win32";
+	let pathValue = process.env.PATH;
+	if (windows) {
+		for (const key of Object.keys(process.env)) {
+			if (key.toLowerCase() === "path") { pathValue = process.env[key]; break; }
+		}
+	}
+	// Match Node's Unix executable lookup when PATH is absent.
+	pathValue ??= windows ? "" : "/usr/bin:/bin";
+	const executable = binaryName + (windows ? ".exe" : "");
+	let start = 0;
+	while (start <= pathValue.length) {
+		const separator = pathValue.indexOf(delimiter, start);
+		const end = separator < 0 ? pathValue.length : separator;
+		let directory = pathValue.slice(start, end);
+		if (windows) {
+			directory = directory.trim();
+			if (directory.startsWith('"') && directory.endsWith('"')) directory = directory.slice(1, -1);
+		}
+		const candidate = resolve(directory || ".", executable);
+		if (isToolExecutable(candidate)) return candidate;
+		if (separator < 0) break;
+		start = separator + delimiter.length;
+	}
+	return null;
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
@@ -89,16 +117,15 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 
 	// Check our tools directory first
 	const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-	if (existsSync(localPath)) {
+	if (isToolExecutable(localPath)) {
 		return localPath;
 	}
 
-	// Check system PATH - if found, just return the command name (it's in PATH)
+	// Return the selected absolute executable, without spawning it or retaining PATH state.
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		if (commandExists(systemBinaryName)) {
-			return systemBinaryName;
-		}
+		const systemPath = findSystemTool(systemBinaryName);
+		if (systemPath) return systemPath;
 	}
 
 	return null;

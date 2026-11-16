@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import childProcess, { type SpawnOptions, type SpawnSyncOptions } from "node:child_process";
+import childProcess, { type SpawnOptions } from "node:child_process";
 import { getEventListeners } from "node:events";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -20,23 +20,15 @@ writeFileSync(join(searchRoot, "excluded.log"), "alpha77\n");
 writeFileSync(configPath, "--fixed-strings\n");
 if (scene !== "no-config") assert.equal(process.env.RIPGREP_CONFIG_PATH, configPath);
 else assert.equal(process.env.RIPGREP_CONFIG_PATH, "");
-const version = childProcess.spawnSync("rg", ["--version"], { encoding: "utf8" });
-assert.ifError(version.error); assert.equal(version.status, 0, "Install ripgrep to run this integration test");
+assert.ok(statSync(rgPath).isFile(), "The installed test dependency must provide the rg executable");
 const manifest: { root: string; resources: string[]; processes: Array<{ pid: number; startedAt: string; purpose: string; code: number | null }>; args: string[] } = {
   root, resources: [searchRoot, join(searchRoot, "sample.txt"), join(searchRoot, "excluded.log"), configPath],
-  processes: [{ pid: version.pid, startedAt: new Date().toISOString(), purpose: "rg version", code: version.status }], args: [] as string[] };
+  processes: [], args: [] as string[] };
 const manifestPath = join(root, "children.json");
 manifest.resources.push(manifestPath);
 writeFileSync(manifestPath, JSON.stringify(manifest));
 const originalSpawn = childProcess.spawn;
-const originalSpawnSync = childProcess.spawnSync;
-childProcess.spawnSync = ((command: string, args: string[], options: SpawnSyncOptions) => {
-  const startedAt = new Date().toISOString();
-  const result = originalSpawnSync(command, args, options);
-  manifest.processes.push({ pid: result.pid, startedAt, purpose: "rg availability", code: result.status });
-  writeFileSync(manifestPath, JSON.stringify(manifest));
-  return result;
-}) as typeof originalSpawnSync;
+childProcess.spawnSync = (() => assert.fail("grep preparation must not execute a version or availability subprocess")) as typeof childProcess.spawnSync;
 let searchChild: ReturnType<typeof originalSpawn> | undefined;
 childProcess.spawn = ((command: string, args: string[], options: SpawnOptions) => {
   const startedAt = new Date().toISOString();
@@ -80,4 +72,4 @@ assert.equal(manifest.args.includes("--ignore-case"), scene === "ignore-case");
 assert.deepEqual(manifest.args.slice(-3), ["--", input.pattern, searchRoot]);
 assert.equal(readFileSync(configPath, "utf8"), "--fixed-strings\n");
 console.log(JSON.stringify({ scene, custom, matches: details.matchCount, reads, directoryChecks, authorityChecks,
-  searchProcesses: 1, closed: true, listeners: 0, rgVersion: version.stdout.split("\n")[0] }));
+  searchProcesses: 1, closed: true, listeners: 0, availabilityProcesses: 0 }));

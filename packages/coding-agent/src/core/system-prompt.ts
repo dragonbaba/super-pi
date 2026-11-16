@@ -128,6 +128,9 @@ function buildDefaultPrompt({ selectedTools, nestedTools, toolSnippets, promptGu
 	const hasGrep = hasCallableTool(tools, nestedTools, "grep");
 	const hasFind = hasCallableTool(tools, nestedTools, "find");
 	const hasLs = hasCallableTool(tools, nestedTools, "ls");
+	if (hasBash || hasPowerShell || hasGrep) {
+		addUniqueGuideline(guidelinesList, "Use available search tools directly; do not run rg/fd version or availability probes before searches. Reuse verified environment facts; investigate only after an actual executable error or a change of execution environment.");
+	}
 
 	// File exploration guidelines
 	if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {
