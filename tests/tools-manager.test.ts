@@ -54,9 +54,43 @@ test("external tool discovery uses executable paths without version subprocesses
       assert.equal(getToolPath("rg"), portable);
       process.env.NoDefaultCurrentDirectoryInExePath = "1";
       assert.equal(getToolPath("rg"), onPath);
+      for (const path of [`;${system}`, `${system};;`, "", ";;"]) {
+        process.env.PATH = path;
+        assert.equal(getToolPath("rg"), path.includes(system) ? onPath : null, "empty PATH entries must not bypass the cwd opt-out");
+      }
+      delete process.env.PATH; assert.equal(getToolPath("rg"), null);
+      process.env.PATH = "."; assert.equal(getToolPath("rg"), portable, "explicit cwd remains supported");
+      process.env.PATH = system;
       delete process.env.NoDefaultCurrentDirectoryInExePath;
       unlinkSync(portable); assert.equal(getToolPath("rg"), onPath);
       assert.equal(probes, 0);
+    } finally {
+      process.chdir(oldCwd);
+      if (oldDisable === undefined) delete process.env.NoDefaultCurrentDirectoryInExePath;
+      else process.env.NoDefaultCurrentDirectoryInExePath = oldDisable;
+      process.env.PATH = join(owned.root, "second bin");
+    }
+  });
+
+  await t.test("PATH keeps platform empty-entry semantics and quoted Windows semicolons/native suffix precedence", () => {
+    const oldCwd = process.cwd(), oldDisable = process.env.NoDefaultCurrentDirectoryInExePath;
+    const cwd = join(owned.root, "path semantics");
+    const portable = executable(join(cwd, name("rg")));
+    try {
+      process.chdir(cwd);
+      if (process.platform === "win32") {
+        const quoted = executable(join(owned.root, "quoted;bin", "rg.exe"));
+        process.env.NoDefaultCurrentDirectoryInExePath = "1";
+        for (const quote of ['"', "'"]) {
+          process.env.PATH = `${quote}${dirname(quoted)}${quote};;`;
+          assert.equal(getToolPath("rg"), quoted);
+        }
+        const com = executable(join(dirname(quoted), "rg.com"));
+        assert.equal(getToolPath("rg"), com); unlinkSync(com);
+      } else {
+        process.env.PATH = delimiter + join(owned.root, "absent");
+        assert.equal(getToolPath("rg"), portable);
+      }
     } finally {
       process.chdir(oldCwd);
       if (oldDisable === undefined) delete process.env.NoDefaultCurrentDirectoryInExePath;

@@ -81,14 +81,22 @@ function isToolExecutable(path: string): boolean {
 	}
 }
 
+function findToolInDirectory(directory: string, binaryName: string, windows: boolean): string | null {
+	if (windows) {
+		const comPath = resolve(directory || ".", `${binaryName}.com`);
+		if (isToolExecutable(comPath)) return comPath;
+	}
+	const candidate = resolve(directory || ".", binaryName + (windows ? ".exe" : ""));
+	return isToolExecutable(candidate) ? candidate : null;
+}
+
 /** Resolve current executable metadata; discovery must never execute a version probe. */
 function findSystemTool(binaryName: string): string | null {
 	const windows = platform() === "win32";
-	const executable = binaryName + (windows ? ".exe" : "");
 	// Preserve libuv's portable-tool lookup and its opt-out environment boundary.
 	if (windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
-		const currentPath = resolve(executable);
-		if (isToolExecutable(currentPath)) return currentPath;
+		const currentPath = findToolInDirectory(".", binaryName, true);
+		if (currentPath) return currentPath;
 	}
 	let pathValue = process.env.PATH;
 	if (windows) {
@@ -100,14 +108,19 @@ function findSystemTool(binaryName: string): string | null {
 	pathValue ??= windows ? "" : "/usr/bin:/bin";
 	let start = 0;
 	while (start <= pathValue.length) {
-		const separator = pathValue.indexOf(delimiter, start);
+		const quote = windows ? pathValue[start] : undefined;
+		const quoted = quote === '"' || quote === "'";
+		const closingQuote = quoted ? pathValue.indexOf(quote, start + 1) : -1;
+		const separator = pathValue.indexOf(delimiter, quoted ? (closingQuote < 0 ? pathValue.length : closingQuote) : start);
 		const end = separator < 0 ? pathValue.length : separator;
 		let directory = pathValue.slice(start, end);
-		if (windows) {
-			if (directory.startsWith('"') && directory.endsWith('"')) directory = directory.slice(1, -1);
+		// libuv skips empty Windows entries; Unix empty entries explicitly mean cwd.
+		if (!windows || end > start) {
+			if (quoted) directory = directory.slice(1);
+			if (windows && (directory.endsWith('"') || directory.endsWith("'"))) directory = directory.slice(0, -1);
+			const candidate = findToolInDirectory(directory, binaryName, windows);
+			if (candidate) return candidate;
 		}
-		const candidate = resolve(directory || ".", executable);
-		if (isToolExecutable(candidate)) return candidate;
 		if (separator < 0) break;
 		start = separator + delimiter.length;
 	}
