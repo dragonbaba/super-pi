@@ -253,6 +253,15 @@ function isSimpleTerminalAsciiRun(text: string, start: number, end: number): boo
 	return true;
 }
 
+/** Share only proportionate backing storage; clipped output must release a large source. */
+function terminalAsciiFragment(source: string, start: number, end: number): string {
+	const length = end - start;
+	if (source.length - length <= length) return source.substring(start, end);
+	let result = "";
+	for (let index = start; index < end; index++) result += String.fromCharCode(source.charCodeAt(index));
+	return result;
+}
+
 /**
  * Calculate the visible width of a string in terminal columns.
  */
@@ -1559,11 +1568,11 @@ export function extractSegmentsInto(
 			}
 			if (beforeStart >= 0) {
 				if (pendingAnsiBefore) { before += pendingAnsiBefore; pendingAnsiBefore = ""; }
-				before += line.substring(beforeStart, beforeStop);
+				before += terminalAsciiFragment(line, beforeStart, beforeStop);
 			}
 			if (afterStartIndex >= 0) {
 				if (!afterStarted) { after += pooledStyleTracker.getActiveCodes(); afterStarted = true; }
-				after += line.substring(afterStartIndex, afterStop);
+				after += terminalAsciiFragment(line, afterStartIndex, afterStop);
 			}
 		} else {
 			for (const part of graphemeSegmenter.segment(line.substring(i, textEnd))) {
@@ -1661,14 +1670,14 @@ export function highlightTerminalColumns(line: string, startColumn: number, endC
 				currentColumn += width;
 				if (currentColumn >= lineWidth) break;
 			}
-			if (beforeStart >= 0) before += line.substring(beforeStart, beforeStop);
+			if (beforeStart >= 0) before += terminalAsciiFragment(line, beforeStart, beforeStop);
 			if (selectedStart >= 0) {
 				if (pendingSelected) { selected += pendingSelected; pendingSelected = ""; }
-				selected += line.substring(selectedStart, selectedStop);
+				selected += terminalAsciiFragment(line, selectedStart, selectedStop);
 			}
 			if (afterStart >= 0) {
 				if (pendingAfter) { after += pendingAfter; pendingAfter = ""; }
-				after += line.substring(afterStart, afterStop);
+				after += terminalAsciiFragment(line, afterStart, afterStop);
 			}
 		} else {
 			for (const part of graphemeSegmenter.segment(line.substring(index, textEnd))) {

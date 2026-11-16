@@ -98,6 +98,7 @@ test("Alt overlay and selection frame leaves avoid wrapper and collection alloca
 		{ node: findFunction(utils, "sliceWithWidthInto"), source: utils },
 		{ node: findFunction(utils, "findTerminalSequenceEnd"), source: utils },
 		{ node: findFunction(utils, "isSimpleTerminalAsciiRun"), source: utils },
+		{ node: findFunction(utils, "terminalAsciiFragment"), source: utils },
 	];
 	const violations: string[] = [];
 	for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
@@ -171,7 +172,7 @@ test("single-pass selection composition matches legacy slicing across every cell
 	}
 });
 
-test("ASCII overlay and selection loops collect ranges without per-column string materialization", () => {
+test("ASCII overlay and selection loops collect ranges before materializing bounded fragments", () => {
 	const source = ts.createSourceFile("utils.ts", readFileSync("packages/tui/src/utils.ts", "utf8"), ts.ScriptTarget.Latest, true);
 	const violations: string[] = [];
 	for (const name of ["extractSegmentsInto", "highlightTerminalColumns"]) {
@@ -189,6 +190,23 @@ test("ASCII overlay and selection loops collect ranges without per-column string
 		inspect(target);
 	}
 	assert.deepEqual(violations, []);
+});
+
+test("small ASCII overlay fragments release an oversized source backing string", () => {
+	const script = `
+		import { extractSegments } from './packages/tui/src/utils.ts';
+		import { setImmediate as tick } from 'node:timers/promises';
+		async function collect() { for (let index = 0; index < 4; index++) { await tick(); globalThis.gc(); } }
+		function result() { const source = 'a'.repeat(16 * 1024 * 1024 - 1) + 'z'; return extractSegments(source, 4, 8, 64, true); }
+		await collect(); const before = process.memoryUsage().heapUsed;
+		const selected = result(); await collect();
+		console.log(JSON.stringify({ delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+	`;
+	const run = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "--input-type=module", "--eval", script], { cwd: process.cwd(), windowsHide: true, encoding: "utf8", env: process.env });
+	assert.equal(run.status, 0, run.stderr);
+	const report = JSON.parse(run.stdout);
+	assert.equal(report.before, "a".repeat(4)); assert.equal(report.after, "a".repeat(64));
+	assert.ok(report.delta < 4 * 1024 * 1024, `small output retained source backing: ${report.delta} bytes`);
 });
 
 test("timing-only frame benchmark reports unavailable allocation data without omitting frames", () => {
