@@ -29,6 +29,7 @@
 ## 工具、权限和项目上下文
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、读取与修改、失败处理、工具发现和分支存储。
+- [CodeMode 存储容量恢复](evidence/codemode-store-recovery-2026-11-17.md)：查看键名和占用、独立清理、失败写入不提交以及成功工具不重放。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
 - [人工交互持续等待](evidence/human-approval-wait-2026-11-14.md)：TUI/RPC 忽略旧对话超时，原生审批、沙箱联网及项目信任持续等待；取消后的迟到答复不授予联网权限，旧测试及工具提示同步修正。
 - [Auto 风险筛选与会话排查](evidence/session-auto-risk-review-2026-11-15.md)：普通操作免去模型审查，风险元数据沿 CodeMode 子调用传递；记录文档续页错误和历史缓存证据的边界。

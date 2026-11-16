@@ -2,6 +2,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { PRELUDE_SOURCE } from "../packages/codemode/src/runtime/prelude-source.ts";
+
+test("explicit store inspection reuses JSON lengths with no value parsing or per-key callback factories", () => {
+	const source = ts.createSourceFile("codemode-prelude.js", PRELUDE_SOURCE, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+	let inspected = 0;
+	function audit(node: ts.Node): void {
+		assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isAwaitExpression(node));
+		if (ts.isNewExpression(node)) {
+			assert.ok(["TypeError", "RangeError"].includes(node.expression.getText(source)) && ts.isThrowStatement(node.parent), "only invalid inspection arguments allocate errors");
+		}
+		assert.notEqual(node.kind, ts.SyntaxKind.RegularExpressionLiteral);
+		if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /^(?:parse|stringify|load)$|\.(?:parse|stringify|map|filter|slice|entries)$/);
+		ts.forEachChild(node, audit);
+	}
+	function find(node: ts.Node): void {
+		if (ts.isFunctionDeclaration(node) && node.name?.text === "storeInfo") { inspected++; audit(node.body!); }
+		else ts.forEachChild(node, find);
+	}
+	find(source);
+	assert.equal(inspected, 1);
+});
 
 test("rejection provenance owns bounded VM errors and releases primitive host metadata",()=>{
   const worker=readFileSync("packages/codemode/src/runtime/worker.ts","utf8");

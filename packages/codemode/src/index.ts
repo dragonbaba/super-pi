@@ -11,7 +11,7 @@ export {
 } from "./declarations.ts";
 export { assignCodemodeIdentifiers, toCodemodeIdentifier } from "./identifier.ts";
 export { CodemodeSandbox } from "./runtime/host.ts";
-export { MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS } from "./runtime/prelude-source.ts";
+export { MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS } from "./limits.ts";
 export {
 	CODEMODE_OPTIONS_PREFIX,
 	CODEMODE_SOURCE_GRAMMAR,

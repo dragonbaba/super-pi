@@ -1,9 +1,6 @@
 import type { CodemodeStoreWrites } from "@super-pi/codemode";
 import { BoundedJson } from "@super-pi/codemode/bounded-json";
-
-const MAX_VALUE = 256 * 1024;
-const MAX_TOTAL = 1024 * 1024;
-const MAX_KEYS = 4096;
+import { MAX_STORE_VALUE_CHARS, MAX_STORE_TOTAL_CHARS, MAX_STORE_KEYS, MAX_STORE_KEY_CHARS } from "@super-pi/codemode/limits";
 const EMPTY: Readonly<Record<string, unknown>> = Object.freeze(Object.create(null));
 
 /** Session-branch data only. Never stores tool capabilities or read/permission receipts. */
@@ -19,13 +16,13 @@ export class CodemodeStore {
 		const next: Record<string, unknown> = Object.create(null);
 		let total = 0, count = 0;
 		const keys = Object.keys(input);
-		if (keys.length > MAX_KEYS) throw new RangeError("Codemode store keys exceed limits");
+		if (keys.length > MAX_STORE_KEYS) throw new RangeError("Codemode store keys exceed limits");
 		for (const key of keys) {
-			if (++count > MAX_KEYS || key.length > 1024) throw new RangeError("Codemode store keys exceed limits");
-			const json = this.serializer.stringify(input[key], MAX_VALUE);
-			if (json === undefined || json.length > MAX_VALUE) throw new RangeError("Codemode store value exceeds limits");
+			if (++count > MAX_STORE_KEYS || key.length > MAX_STORE_KEY_CHARS) throw new RangeError("Codemode store keys exceed limits");
+			const json = this.serializer.stringify(input[key], MAX_STORE_VALUE_CHARS);
+			if (json === undefined || json.length > MAX_STORE_VALUE_CHARS) throw new RangeError("Codemode store value exceeds limits");
 			total += key.length + json.length;
-			if (total > MAX_TOTAL) throw new RangeError("Codemode store exceeds limits");
+			if (total > MAX_STORE_TOTAL_CHARS) throw new RangeError("Codemode store exceeds limits");
 			next[key] = JSON.parse(json);
 		}
 		this.values = next;
