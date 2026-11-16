@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { rgPath } from "@vscode/ripgrep";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
-test("external tool discovery uses executable paths without version subprocesses or stale environment state", async t => {
+test("external tool discovery preserves native lookup without version subprocesses or stale environment state", async t => {
   const owned = createOwnedTaskFixture("tool-resolution-");
   const previousAgent = process.env.SP_CODING_AGENT_DIR, previousPath = process.env.PATH, previousOffline = process.env.SP_OFFLINE;
   process.env.SP_CODING_AGENT_DIR = owned.root;
@@ -30,17 +30,17 @@ test("external tool discovery uses executable paths without version subprocesses
     const results: Array<string | null | undefined> = [];
     for (let index = 0; index < 25; index++) { results.push(getToolPath("rg")); results.push(await ensureTool("rg", true)); }
     assert.equal(probes, 0, "availability discovery must not run --version or another subprocess");
-    for (const result of results) assert.equal(result, resolve(rgPath));
+    for (const result of results) assert.equal(result, "rg");
   });
 
   await t.test("PATH changes and removed files are reflected without a retained resolver cache", () => {
     const first = executable(join(owned.root, "first bin", name("rg")));
     const second = executable(join(owned.root, "second bin", name("rg")));
     process.env.PATH = dirname(first) + delimiter + dirname(second);
-    assert.equal(getToolPath("rg"), first);
-    unlinkSync(first); assert.equal(getToolPath("rg"), second);
+    assert.equal(getToolPath("rg"), "rg");
+    unlinkSync(first); assert.equal(getToolPath("rg"), "rg");
     process.env.PATH = dirname(first); assert.equal(getToolPath("rg"), null);
-    process.env.PATH = dirname(second); assert.equal(getToolPath("rg"), second);
+    process.env.PATH = dirname(second); assert.equal(getToolPath("rg"), "rg");
     assert.equal(probes, 0);
   });
 
@@ -51,18 +51,18 @@ test("external tool discovery uses executable paths without version subprocesses
     try {
       process.chdir(cwd); process.env.PATH = system;
       delete process.env.NoDefaultCurrentDirectoryInExePath;
-      assert.equal(getToolPath("rg"), portable);
+      assert.equal(getToolPath("rg"), "rg");
       process.env.NoDefaultCurrentDirectoryInExePath = "1";
-      assert.equal(getToolPath("rg"), onPath);
+      assert.equal(getToolPath("rg"), "rg");
       for (const path of [`;${system}`, `${system};;`, "", ";;"]) {
         process.env.PATH = path;
-        assert.equal(getToolPath("rg"), path.includes(system) ? onPath : null, "empty PATH entries must not bypass the cwd opt-out");
+        assert.equal(getToolPath("rg"), path.includes(system) ? "rg" : null, "empty PATH entries must not bypass the cwd opt-out");
       }
       delete process.env.PATH; assert.equal(getToolPath("rg"), null);
-      process.env.PATH = "."; assert.equal(getToolPath("rg"), portable, "explicit cwd remains supported");
+      process.env.PATH = "."; assert.equal(getToolPath("rg"), "rg", "explicit cwd remains supported");
       process.env.PATH = system;
       delete process.env.NoDefaultCurrentDirectoryInExePath;
-      unlinkSync(portable); assert.equal(getToolPath("rg"), onPath);
+      unlinkSync(portable); assert.equal(getToolPath("rg"), "rg");
       assert.equal(probes, 0);
     } finally {
       process.chdir(oldCwd);
@@ -83,13 +83,13 @@ test("external tool discovery uses executable paths without version subprocesses
         process.env.NoDefaultCurrentDirectoryInExePath = "1";
         for (const quote of ['"', "'"]) {
           process.env.PATH = `${quote}${dirname(quoted)}${quote};;`;
-          assert.equal(getToolPath("rg"), quoted);
+          assert.equal(getToolPath("rg"), "rg");
         }
         const com = executable(join(dirname(quoted), "rg.com"));
-        assert.equal(getToolPath("rg"), com); unlinkSync(com);
+        unlinkSync(quoted); assert.equal(getToolPath("rg"), "rg"); unlinkSync(com);
       } else {
         process.env.PATH = delimiter + join(owned.root, "absent");
-        assert.equal(getToolPath("rg"), portable);
+        assert.equal(getToolPath("rg"), "rg");
       }
     } finally {
       process.chdir(oldCwd);
@@ -99,15 +99,35 @@ test("external tool discovery uses executable paths without version subprocesses
     }
   });
 
+  await t.test("Unix actual launches preserve missing-interpreter fallback and symlink/parent traversal", { skip: process.platform === "win32" }, async () => {
+    const broken = executable(join(owned.root, "broken", "rg"));
+    writeFileSync(broken, "#!/no/such/pi-test-interpreter\n");
+    const working = executable(join(owned.root, "installed", "bin", "rg"));
+    writeFileSync(working, "#!/bin/sh\nprintf 'native search result\\n'\n");
+    const link = join(owned.root, "links", "link");
+    mkdirSync(dirname(link), { recursive: true });
+    mkdirSync(join(owned.root, "installed", "sub"));
+    symlinkSync(join(owned.root, "installed", "sub"), link);
+    try {
+      for (const path of [dirname(broken) + delimiter + dirname(working), `${link}/../bin`]) {
+        process.env.PATH = path;
+        const command = getToolPath("rg"); assert.equal(command, "rg");
+        const output = await new Promise<string>((resolve, reject) => childProcess.execFile(command!, ["--files"], (error, stdout) => error ? reject(error) : resolve(stdout)));
+        assert.equal(output.trim(), "native search result");
+      }
+      assert.equal(probes, 0);
+    } finally { unlinkSync(link); process.env.PATH = join(owned.root, "second bin"); }
+  });
+
   await t.test("managed binaries retain precedence; directories and unavailable offline tools are not reported present", async () => {
     const managed = executable(join(owned.root, "bin", name("rg")));
     assert.equal(getToolPath("rg"), managed); unlinkSync(managed);
     mkdirSync(managed);
-    assert.equal(getToolPath("rg"), join(owned.root, "second bin", name("rg")));
+    assert.equal(getToolPath("rg"), "rg");
     process.env.PATH = join(owned.root, "absent"); process.env.SP_OFFLINE = "1";
     assert.equal(await ensureTool("rg", true), undefined);
     const alias = executable(join(owned.root, "fd alias", name("fdfind")));
-    process.env.PATH = dirname(alias); assert.equal(getToolPath("fd"), alias);
+    process.env.PATH = dirname(alias); assert.equal(getToolPath("fd"), "fdfind");
     if (process.platform !== "win32") { chmodSync(alias, 0o644); assert.equal(getToolPath("fd"), null); }
     assert.equal(probes, 0);
   });

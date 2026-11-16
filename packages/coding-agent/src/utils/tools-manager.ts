@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
 import { accessSync, chmodSync, constants, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
 import { arch, platform } from "os";
-import { delimiter, join, resolve } from "path";
+import { delimiter, join, sep } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
@@ -81,22 +81,19 @@ function isToolExecutable(path: string): boolean {
 	}
 }
 
-function findToolInDirectory(directory: string, binaryName: string, windows: boolean): string | null {
-	if (windows) {
-		const comPath = resolve(directory || ".", `${binaryName}.com`);
-		if (isToolExecutable(comPath)) return comPath;
-	}
-	const candidate = resolve(directory || ".", binaryName + (windows ? ".exe" : ""));
-	return isToolExecutable(candidate) ? candidate : null;
+function toolExistsInDirectory(directory: string, binaryName: string, windows: boolean): boolean {
+	// Do not normalize '..': a preceding symlink changes filesystem traversal.
+	const prefix = `${directory || "."}${sep}${binaryName}`;
+	if (windows && isToolExecutable(`${prefix}.com`)) return true;
+	return isToolExecutable(prefix + (windows ? ".exe" : ""));
 }
 
-/** Resolve current executable metadata; discovery must never execute a version probe. */
-function findSystemTool(binaryName: string): string | null {
+/** Inspect metadata only; native spawn retains PATH fallback and launch semantics. */
+function systemToolExists(binaryName: string): boolean {
 	const windows = platform() === "win32";
 	// Preserve libuv's portable-tool lookup and its opt-out environment boundary.
 	if (windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
-		const currentPath = findToolInDirectory(".", binaryName, true);
-		if (currentPath) return currentPath;
+		if (toolExistsInDirectory(".", binaryName, true)) return true;
 	}
 	let pathValue = process.env.PATH;
 	if (windows) {
@@ -118,13 +115,12 @@ function findSystemTool(binaryName: string): string | null {
 		if (!windows || end > start) {
 			if (quoted) directory = directory.slice(1);
 			if (windows && (directory.endsWith('"') || directory.endsWith("'"))) directory = directory.slice(0, -1);
-			const candidate = findToolInDirectory(directory, binaryName, windows);
-			if (candidate) return candidate;
+			if (toolExistsInDirectory(directory, binaryName, windows)) return true;
 		}
 		if (separator < 0) break;
 		start = separator + delimiter.length;
 	}
-	return null;
+	return false;
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
@@ -138,11 +134,10 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 		return localPath;
 	}
 
-	// Return the selected absolute executable, without spawning it or retaining PATH state.
+	// Keep native lookup for actual launch; do not probe or cache it.
 	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
 	for (const systemBinaryName of systemBinaryNames) {
-		const systemPath = findSystemTool(systemBinaryName);
-		if (systemPath) return systemPath;
+		if (systemToolExists(systemBinaryName)) return systemBinaryName;
 	}
 
 	return null;
