@@ -73,6 +73,14 @@ const DEFERRED_DECLARATIONS = "\nMCP declarations are deferred. Filter ALL_TOOLS
 const ALLOW_FAILURE = Object.freeze({ allowFailure: true });
 const REQUEST_REVIEW = Object.freeze({ review: true });
 const REVIEW_ALLOW_FAILURE = Object.freeze({ review: true, allowFailure: true });
+
+/** Exception context only; successful tool effects and script failure stay distinct. */
+function scriptFailureMessage(error: string, facts: readonly ChildFact[]): string {
+	for (const fact of facts) {
+		if (!fact.isError && fact.outputTruncated) return `${error}; successful ${fact.toolName.slice(0, 80)} output is truncated. Its content is display text, not a complete document. Inspect the existing Output path when available. Do not repeat completed commands.`;
+	}
+	return error;
+}
 /** Host-local distinction only; ordinary rejection handling is proved by the VM. */
 class ChildToolFailure extends Error {}
 
@@ -375,7 +383,7 @@ export class CodemodeController {
 			executed: raw.executionStatus !== "not_executed", resultComplete: "unknown", displayLimited: false, failureHandled };
 		if (name === "bash" || name === "powershell") {
 			const execution = readShellExecution(raw.details);
-			if (execution) { fact.executionStatus = execution.executionStatus; fact.exitCode = execution.exitCode; fact.executed = execution.started; fact.resultComplete = execution.output.complete; }
+			if (execution) { fact.executionStatus = execution.executionStatus; fact.exitCode = execution.exitCode; fact.executed = execution.started; fact.resultComplete = execution.output.complete; fact.outputTruncated = execution.output.tailTruncated; }
 		}
 		if (raw.executionStatus === "not_executed") { fact.executionStatus = "not_executed"; fact.executed = false; }
 		invocation.facts.push(fact);
@@ -688,7 +696,7 @@ export class CodemodeController {
 			if (failed) this.documentationSnapshot = undefined;
 			const content: (TextContent | ImageContent)[] = result.output;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
-			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${result.error.message}` });
+			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${scriptFailureMessage(result.error.message, invocation.facts)}` });
 			if (result.unobservedGlobals) for (const failure of result.unobservedGlobals) if (!hasRuntimeFact(invocation.facts, failure.id)) content.push({ type: "text",
 				text: `[CODEMODE_UNOBSERVED_CALL] ${failure.name}: ${failure.status}${failure.error ? "; " + unicodePrefix(failure.error, 512) : "; not awaited before script completion"}` });
 			// Compact causes stay in the summary. A separate bounded tail preserves status
@@ -709,7 +717,7 @@ export class CodemodeController {
 			// and out of the trailing native-read group.
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
-			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.outputTruncated ? "; output truncated" : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
 			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			for (const fact of invocation.facts) if (fact.evicted && fact.displayLimited) summary += `\n[CODEMODE_REF_EVICTED] ${fact.ref}: result left the memory cache.${fact.outputPath ? " Recover with read: " + fact.outputPath : " Recovery unavailable."}`;
 			if (failed || failedChildren) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";

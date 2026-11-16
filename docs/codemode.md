@@ -36,6 +36,8 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 文件修改派发后若回执传输丢失、JSON 损坏、身份不匹配或快照事实无效，也按需要核验处理：可能已经发生修改，不能当作“未执行”或自动重放。派发前的明确配置/校验失败，以及工作进程返回的有效拒绝事实保留原有处理方式。
 
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
+
+工具的 `content` 是展示文本，不保证是完整 JSON。Bash/PowerShell 合并 stdout/stderr，并可能返回截断尾部和显示说明；解析前先检查 `details.truncation?.truncated`。若已截断，使用普通工具读取已有 `details.fullOutputPath` 并提取需要的数据，不要解析尾部、删除显示标记来猜补缺失内容，或重新运行已成功的命令。`details.spillFileCapped` 表示日志也不完整。流已排空与返回文本完整是两件事；CodeMode 的 `resultComplete` 表示捕获完成，`outputTruncated` 单独表示原生 shell 返回文本截断。脚本后处理失败仍会显示错误并撤销本次 store 写入，成功的命令及副作用不会回滚。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
 
 `image(...)` 和 `show(ref)` 展示的图片会在脚本结束后尝试保存为私有临时文件，结果中的 `Image files: read .../images.json` 指向清单。下一回合用普通 `read` 读取清单，按其中的绝对路径读取、复制或移动图片；文件操作仍受原有工具权限控制。清单中的 `image` 是本次结果里从 1 开始的图片序号，重复图片共用文件。
