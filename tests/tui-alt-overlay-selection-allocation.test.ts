@@ -192,21 +192,32 @@ test("ASCII overlay and selection loops collect ranges before materializing boun
 	assert.deepEqual(violations, []);
 });
 
-test("small ASCII overlay fragments release an oversized source backing string", () => {
+test("ASCII overlay fragments release direct and pre-sliced oversized sources across the next call", () => {
 	const script = `
 		import { extractSegments } from './packages/tui/src/utils.ts';
 		import { setImmediate as tick } from 'node:timers/promises';
 		async function collect() { for (let index = 0; index < 4; index++) { await tick(); globalThis.gc(); } }
-		function result() { const source = 'a'.repeat(16 * 1024 * 1024 - 1) + 'z'; return extractSegments(source, 4, 8, 64, true); }
-		await collect(); const before = process.memoryUsage().heapUsed;
-		const selected = result(); await collect();
-		console.log(JSON.stringify({ delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+		function result(sliced) {
+			const source = 'a'.repeat(16 * 1024 * 1024 - 1) + 'z';
+			return sliced ? extractSegments(source.substring(0, 120), 80, 100, 20, true) : extractSegments(source, 4, 8, 64, true);
+		}
+		for (const sliced of [false, true]) {
+			await collect(); const before = process.memoryUsage().heapUsed;
+			const selected = result(sliced); await collect();
+			console.log(JSON.stringify({ sliced, next: false, delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+			extractSegments('next frame', 4, 6, 4, true); await collect();
+			console.log(JSON.stringify({ sliced, next: true, delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+		}
 	`;
 	const run = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "--input-type=module", "--eval", script], { cwd: process.cwd(), windowsHide: true, encoding: "utf8", env: process.env });
 	assert.equal(run.status, 0, run.stderr);
-	const report = JSON.parse(run.stdout);
-	assert.equal(report.before, "a".repeat(4)); assert.equal(report.after, "a".repeat(64));
-	assert.ok(report.delta < 4 * 1024 * 1024, `small output retained source backing: ${report.delta} bytes`);
+	const reports = run.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+	assert.equal(reports.length, 4);
+	for (const report of reports) {
+		assert.equal(report.before, "a".repeat(report.sliced ? 80 : 4));
+		assert.equal(report.after, "a".repeat(report.sliced ? 20 : 64));
+		assert.ok(report.delta < 4 * 1024 * 1024, `sliced=${report.sliced} next=${report.next} retained source backing: ${report.delta} bytes`);
+	}
 });
 
 test("timing-only frame benchmark reports unavailable allocation data without omitting frames", () => {

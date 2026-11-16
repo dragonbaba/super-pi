@@ -253,12 +253,19 @@ function isSimpleTerminalAsciiRun(text: string, start: number, end: number): boo
 	return true;
 }
 
-/** Share only proportionate backing storage; clipped output must release a large source. */
+/** Own the fragment: even a short input may be a slice of a much larger backing string. */
 function terminalAsciiFragment(source: string, start: number, end: number): string {
-	const length = end - start;
-	if (source.length - length <= length) return source.substring(start, end);
 	let result = "";
-	for (let index = start; index < end; index++) result += String.fromCharCode(source.charCodeAt(index));
+	let index = start;
+	// Fixed argument blocks avoid per-column cons strings without arrays, buffers or source slices.
+	const blockLength = 8;
+	for (; index + blockLength <= end; index += blockLength) {
+		result += String.fromCharCode(
+			source.charCodeAt(index), source.charCodeAt(index + 1), source.charCodeAt(index + 2), source.charCodeAt(index + 3),
+			source.charCodeAt(index + 4), source.charCodeAt(index + 5), source.charCodeAt(index + 6), source.charCodeAt(index + 7),
+		);
+	}
+	for (; index < end; index++) result += String.fromCharCode(source.charCodeAt(index));
 	return result;
 }
 
