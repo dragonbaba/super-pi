@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, writeFile, readFile, lstat, rm, rename, symlink, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import fsPromises from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { runFileMutationRequest } from '../packages/coding-agent/src/core/sandbox/mxc-file-mutation-worker.mjs';
 import { capturePathIdentity } from '../packages/coding-agent/src/core/files/file-tree-core.mjs';
@@ -42,6 +43,99 @@ async function fixture(t, operations, operation = 'file_batch') {
   }
   return { root, workspace, exchange, request, items, prepare, validate, execute, rpc };
 }
+
+for (const phase of ['validate', 'execute']) test(`worker parent retargeting is invocation-fatal during ${phase}`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'original/source', destination: 'copied' }]);
+  for (const parent of ['original', 'replacement']) { await mkdir(join(f.workspace, parent)); await writeFile(join(f.workspace, parent, 'source'), 'same content'); }
+  const prepared = await f.prepare(), validated = phase === 'execute' ? await f.validate(prepared) : undefined;
+  await rename(join(f.workspace, 'original'), join(f.workspace, 'retained'));
+  await symlink(join(f.workspace, 'replacement'), join(f.workspace, 'original'), process.platform === 'win32' ? 'junction' : 'dir');
+  if (phase === 'validate') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+  else { const receipt = await f.execute(0, prepared, validated); assert.equal(receipt.status, 'failed_no_change'); assert.equal(receipt.stopInvocation, true, JSON.stringify(receipt)); }
+  await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
+  for (const parent of ['retained', 'replacement']) assert.equal(await readFile(join(f.workspace, parent, 'source'), 'utf8'), 'same content');
+});
+
+for (const phase of ['validate', 'execute']) for (const replacement of ['dangling-link', 'missing']) test(`worker distinguishes ${replacement} from ordinary missing content during ${phase}`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }]);
+  const source = join(f.workspace, 'source'); await writeFile(source, 'original');
+  const prepared = await f.prepare(), validated = phase === 'execute' ? await f.validate(prepared) : undefined;
+  await unlink(source); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), source, 'file');
+  if (phase === 'validate') {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const refused = await f.validate(prepared); assert.match(refused[0].error, /ENOENT/); assert.equal(refused[0].noEffects, true); }
+  } else {
+    const receipt = await f.execute(0, prepared, validated); assert.equal(receipt.status, 'failed_no_change');
+    assert.equal(receipt.stopInvocation === true, replacement === 'dangling-link', JSON.stringify(receipt));
+  }
+  await assert.rejects(lstat(join(f.workspace, 'copied')), { code: 'ENOENT' });
+});
+
+for (const replacement of ['dangling-link', 'missing']) test(`worker hash-open classifies ${replacement} after identity validation`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'target', overwrite: true }]);
+  const source = join(f.workspace, 'source'), target = join(f.workspace, 'target'); await writeFile(source, 'source'); await writeFile(target, 'original');
+  const prepared = await f.prepare(), originalOpen = fsPromises.open; let injected = false;
+  t.mock.method(fsPromises, 'open', async (path, ...args) => {
+    if (!injected && path === source) { injected = true; await unlink(target); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), target, 'file'); }
+    return originalOpen(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const rows = await f.validate(prepared); assert.match(rows[0].error, /ENOENT/); assert.equal(rows[0].noEffects, true); }
+    assert.equal(injected, true); assert.equal(await readFile(source, 'utf8'), 'source');
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ['write', 'edit']) for (const replacement of ['dangling-link', 'missing']) test(`worker ${operation} publication-open preserves ${replacement} provenance`, async t => {
+  const input = { operation, path: 'target', snapshot: createHash('sha256').update('original').digest('hex'), ...(operation === 'write' ? { mode: 'overwrite', content: 'next' } : { edits: [{ oldText: 'original', newText: 'next' }] }) };
+  const f = await fixture(t, [input]), target = join(f.workspace, 'target'); await writeFile(target, 'original');
+  const prepared = await f.prepare(), validated = await f.validate(prepared), originalOpen = fsSync.openSync; let injected = false;
+  t.mock.method(fsSync, 'openSync', (path, ...args) => {
+    if (!injected && path === target && args[0] === 'r') { injected = true; fsSync.unlinkSync(target); if (replacement === 'dangling-link') fsSync.symlinkSync(join(f.workspace, 'absent-target'), target, 'file'); }
+    return originalOpen(path, ...args);
+  });
+  try {
+    const receipt = await f.execute(0, prepared, validated); assert.equal(injected, true); assert.equal(receipt.status, 'failed_no_change');
+    assert.equal(receipt.stopInvocation === true, replacement === 'dangling-link', JSON.stringify(receipt));
+  } finally { t.mock.restoreAll(); }
+});
+
+for (const replacement of ['dangling-link', 'missing']) test(`worker hash-open classifies higher ${replacement} ancestor`, async t => {
+  const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'original/inner/target', overwrite: true }]);
+  const source = join(f.workspace, 'source'), ancestor = join(f.workspace, 'original'); await mkdir(join(ancestor, 'inner'), { recursive: true });
+  await writeFile(source, 'source'); await writeFile(join(ancestor, 'inner/target'), 'original');
+  const prepared = await f.prepare(), originalOpen = fsPromises.open; let injected = false;
+  t.mock.method(fsPromises, 'open', async (path, ...args) => {
+    if (!injected && path === source) { injected = true; await rename(ancestor, join(f.workspace, 'retained')); if (replacement === 'dangling-link') await symlink(join(f.workspace, 'absent-target'), ancestor, process.platform === 'win32' ? 'junction' : 'dir'); }
+    return originalOpen(path, ...args);
+  }); syncBuiltinESMExports();
+  try {
+    if (replacement === 'dangling-link') await assert.rejects(f.validate(prepared), /STALE_STATE/);
+    else { const rows = await f.validate(prepared); assert.match(rows[0].error, /ENOENT/); assert.equal(rows[0].noEffects, true); }
+    assert.equal(injected, true); assert.equal(await readFile(join(f.workspace, 'retained/inner/target'), 'utf8'), 'original');
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test('worker assigned workspace paths and owned artifact names remain invocation protocol failures', async t => {
+  const outside = await fixture(t, [{ operation: 'delete', path: '../outside' }]);
+  await assert.rejects(outside.prepare(), /FILE_WORKSPACE_PATH/);
+  const escaped = await fixture(t, [{ operation: 'copy', path: 'original/inner/source', destination: 'target' }]);
+  const external = join(escaped.root, 'external'); await mkdir(join(external, 'inner'), { recursive: true }); await writeFile(join(external, 'inner/source'), 'kept');
+  await symlink(external, join(escaped.workspace, 'original'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(escaped.prepare(), /FILE_WORKSPACE_PATH/);
+  assert.equal(await readFile(join(external, 'inner/source'), 'utf8'), 'kept');
+  const owned = await fixture(t, [{ operation: 'write', mode: 'create', path: 'target', content: 'new' }]);
+  const info = await lstat(join(owned.exchange, owned.request.id + '-0.manifest'), { bigint: true });
+  const reply = await owned.rpc('prepare', 0, owned.items, [{ owned: { name: owned.request.id + '-99.manifest', device: String(info.dev), inode: String(info.ino) } }]);
+  assert.equal(reply.ok, false); assert.equal(reply.noEffects, true); assert.match(reply.error, /FILE_MANIFEST_INVALID/);
+});
+
+test('worker refuses a changed host-owned preparation artifact as a protocol failure', async t => {
+  const f = await fixture(t, [{ operation: 'write', mode: 'create', path: 'first', content: 'kept' }]);
+  await writeFile(join(f.exchange, f.request.id + '-0.manifest'), 'foreign bytes');
+  await assert.rejects(f.prepare(), /FILE_MANIFEST_INVALID/);
+  await assert.rejects(lstat(join(f.workspace, 'first')), { code: 'ENOENT' });
+});
 
 test('worker-only v3 preparation is read-only and recursive copy preserves every prepared file', async t => {
   const f = await fixture(t, [{ operation: 'copy', path: 'source', destination: 'copied' }], 'copy');

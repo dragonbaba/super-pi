@@ -67,15 +67,18 @@ async function fixture(t: test.TestContext) {
   }
   return { cwd, manager, session, runner, call, say, goals: () => goals };
 }
-test("a batch beyond the retired inline count repairs its preflight failure on retry", async t => {
+test("a batch beyond the retired inline count repairs only its failed item", async t => {
   const f = await fixture(t), operations = [];
   for (let index = 0; index < 17; index++) {
     operations.push({ operation: "copy", path: "source-" + index, destination: "target-" + index });
     if (index < 16) writeFileSync(join(f.cwd, "source-" + index), String(index));
   }
-  assert.equal((await f.call("file_batch", { operations })).isError, true); assert.equal((await f.call("goal_complete", {})).isError, true);
+  const first = await f.call("file_batch", { operations });
+  assert.equal(first.isError, true); assert.equal((first.details as any).succeeded, 16);
+  assert.equal((await f.call("goal_complete", {})).isError, true);
   writeFileSync(join(f.cwd, "source-16"), "16");
-  assert.equal((await f.call("file_batch", { operations })).isError, false);
+  assert.equal((await f.call("file_batch", { operations: [operations[16]] })).isError, false);
+  for (let index = 0; index < 17; index++) assert.equal(readFileSync(join(f.cwd, "target-" + index), "utf8"), String(index));
   assert.equal((await f.call("goal_complete", {})).isError, false, "No retired 16-item fallback may leave a cwd obligation");
 });
 
@@ -203,7 +206,8 @@ test("R4 incomplete disclosure, unrelated success and same-target repair", async
   const honest = "尚未完成，后续项目仍需要处理。"; assert.equal(await f.say(honest), honest);
   await f.call("write", { path: "unrelated", content: "ok" });
   assert.equal((await f.call("goal_complete", {})).isError, true);
-  assert.equal((await f.call("file_batch", { operations: [{ operation: "delete", path: "current" }, { operation: "write", mode: "create", path: "last", content: "last" }] })).isError, false);
+  assert.equal(readFileSync(join(f.cwd, "last"), "utf8"), "last");
+  assert.equal((await f.call("file_batch", { operations: [{ operation: "delete", path: "current" }] })).isError, false);
   assert.equal(await f.say("已完成。"), "已完成。"); assert.equal((await f.call("goal_complete", {})).isError, false);
 });
 test("R4 uncertain result needs authoritative same-scope verification after retry", async t => {

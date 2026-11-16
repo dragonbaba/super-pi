@@ -49,8 +49,9 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
   private disposal: Promise<void> | undefined;
   private readonly generation: number;
   private readonly continuationOwner: string;
-  constructor(owner: SessionFiles, service: FileMutationService, event: ToolCallEvent, ctx: ExtensionContext) {
-    this.owner = owner; this.service = service; this.original = event.input; this.ctx = ctx;
+  private canonicalPaths: readonly string[] | undefined;
+  constructor(owner: SessionFiles, service: FileMutationService, event: ToolCallEvent, ctx: ExtensionContext, canonicalPaths?: readonly string[]) {
+    this.owner = owner; this.service = service; this.original = event.input; this.ctx = ctx; this.canonicalPaths = canonicalPaths;
     this.id = event.toolCallId; this.name = event.toolName as FileToolName; this.generation = service.revisions.generation;
     this.continuationOwner = event.parentToolCallId ?? event.toolCallId;
   }
@@ -68,8 +69,8 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
     this.working = true;
     try {
       this.assertCurrent();
-      this.mutation = new FileMutation(this.service!, this.id, this.name, this.original);
-      await this.mutation.prepare(this.ctx!.signal); this.hash = this.mutation.requestHash;
+      this.mutation = new FileMutation(this.service!, this.id, this.name, this.original, this.canonicalPaths);
+      await this.mutation.prepare(this.ctx!.signal); this.canonicalPaths = undefined; this.hash = this.mutation.requestHash;
       this.assertCurrent();
       Object.defineProperty(this.original, PREPARATION, { configurable: true, value: this.mutation });
       this.assertCurrent();
@@ -97,8 +98,8 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
           for (const path of item.paths) {
             if (cursor >= approvedPaths.length || directoryKey(approvedPaths[cursor++]!) !== directoryKey(path)) throw new Error(STALE);
           }
-          if (externalCreates.has(item.target) && !item.creation
-            || item.tree?.destination && externalCreates.has(item.tree.destination) && item.tree.destinationIdentity)
+          if (!item.unprepared && (externalCreates.has(item.target) && !item.creation
+            || item.tree?.destination && externalCreates.has(item.tree.destination) && item.tree.destinationIdentity))
             throw new Error("[TARGET_APPEARED] An external create cannot overwrite a file that appeared after authorization.");
         }
         if (cursor !== approvedPaths.length) throw new Error(STALE);
@@ -127,7 +128,7 @@ class NativeFileInvocation implements ToolInvocationAuthorization {
     if (this.service) this.owner?.releaseSandboxService(this.service);
     this.mutation?.release();
     this.owner = undefined; this.service = undefined; this.ctx = undefined; this.original = undefined;
-    this.mutation = undefined; this.permission = undefined; this.hash = "";
+    this.mutation = undefined; this.permission = undefined; this.canonicalPaths = undefined; this.hash = "";
   };
   private dispose(): Promise<void> | void {
     if (this.disposal) return this.disposal;
@@ -324,7 +325,7 @@ export class SessionFiles implements ObservationPermissions {
       if (!this.sandboxFactory || !canonicalPaths) throw new Error("[SANDBOX_UNSUPPORTED] File mutation requires its complete sandbox preflight and policy path table.");
       service = this.sandboxFactory(event, ctx, canonicalPaths); this.sandboxServices.add(service);
     } else service = this.getService(ctx);
-    const invocation = new NativeFileInvocation(this, service, event, ctx);
+    const invocation = new NativeFileInvocation(this, service, event, ctx, canonicalPaths);
     this.calls.set(event.toolCallId, invocation);
     try { await this.track(invocation.prepare()); return invocation; }
     catch (error) { invocation.release(); await invocation.waitForDisposal(); throw error; }
@@ -377,7 +378,7 @@ export class SessionFiles implements ObservationPermissions {
           : name === "delete" ? "Irreversibly delete one target or nonempty paths array. Nonempty directories require recursive: true. Links are unlinked without following them. No target count cap; independent ordinary failures continue. Use resultRef with file_result for full outcomes."
           : name === "move" ? "Move one source/destination or nonempty items array without overwriting, including directories and cross-volume files. Missing permitted parents are prepared and created after authorization using the write tool's shared creation logic; failures report retained parents. Source links refuse preflight; partial effects retain unverified sources. No target count cap or automatic replay; full outcomes are paged by file_result."
           : name === "copy" ? "Copy one source/destination or nonempty items array, including directories. Missing permitted parents are prepared and created after authorization using the write tool's shared creation logic; failures report retained parents. No directory merge; nested links are skipped and counted. overwrite: true only replaces existing regular files through the metadata commit owner. No target count cap; full outcomes are paged by file_result."
-          : "Prepare all independent file operations, then apply in fixed order with no target count cap. Write requires create or overwrite mode. Stop on first failure; retain each outcome in resultRef for file_result. No rollback or automatic replay.",
+          : "Batch independent file operations after checking the actual source paths and unique edit matches from current reads or clean own committed versions. Use dryRun first when uncertain; correct failed preflight items before applying. Write requires explicit create (absent target) or overwrite (existing current version). Each item is preflighted before effects; ordinary item failures do not stop other independent items. Success returns a short count; failures identify only affected items and reasons. Inspect failed/unstarted items and submit only those that need correction, never replay successful items. Cancellation, revoked authority, unknown outcomes or lost journals stop execution. Full outcomes remain in resultRef for file_result. No rollback or automatic retry; no target count cap.",
         promptGuidelines: name === "edit" || name === "write" ? sandbox ? ["Use the verified details.snapshot SHA-256 from a read, clean own write/edit, or its file_result record. resultRef and result.ref are references, never file versions. A stale SHA requires read and reconciliation."] : ["Read and edit may share one script without show(). After a clean own edit/write with details.revisionContinuation=available, exact-text edits continue automatically without a reread. New LINE#ID anchors still require read. On external change, conflict, eviction or unavailable continuation, read the exact target; never invent a snapshot or use result.ref as a version."] : undefined,
         async execute(id, input, signal) {
           const invocation = (input as { [EXECUTION]?: NativeFileInvocation } | undefined)?.[EXECUTION];

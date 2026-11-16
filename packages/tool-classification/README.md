@@ -18,6 +18,13 @@ pause after an incomplete Browser Harness approval.
 - MCP: `mcp_search_tools`.
 - Other registered tools remain searchable by name and description, except policy-owned Goal, Plan-mode, and `inspect_image` tools. English and Chinese category aliases are supported.
 
+Search considers inactive tools. An empty result does not establish that a tool
+is missing: `subagent` may already be exposed directly to the model. Call that
+top-level tool using its schema; CodeMode deliberately excludes orchestration
+tools and now identifies them as `TOOL_DIRECT_ONLY` when documentation is requested.
+Do not replace this route with an external agent CLI merely because it is absent
+from CodeMode's `ALL_TOOLS`.
+
 The session-start reset occurs before the first provider request. Later activation is additive. Claude 4.5+ and OpenAI 5.4+ can use Pi's native deferred-tool protocol; other providers receive one deliberate tool-surface cache reset when a conditional tool is first activated.
 
 Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. Therefore additive activation does not rebuild the system prompt. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.

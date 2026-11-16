@@ -1,14 +1,65 @@
 // Shared filesystem mechanics for native and controlled MXC owners. No policy, session or global payload state.
-import { constants } from 'node:fs';
+import { constants, lstatSync, realpathSync } from 'node:fs';
 import { lstat, realpath, opendir, open, link, unlink, mkdir, rmdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, relative, basename } from 'node:path';
 import { FILE_STREAM_BUFFER_BYTES, FILE_RESULT_REASON_BYTES } from './file-operation-limits.mjs';
+import { assertFilePathAuthority, fileInvocationMustStop, FileAuthorityError } from './file-mutation-failure.mjs';
 
-export async function capturePathIdentity(path) {
-  const canonical = await realpath(path), info = await lstat(path, { bigint: true });
-  if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('[unsupported] Links, reparse points and special files are unsupported.');
-  return pathIdentityFromStat(path, canonical, info, false);
+function assertPreparedDirectory(expected, observed) {
+  if (expected.directory && !sameIdentity(expected, observed, false)) throw new FileAuthorityError('Prepared directory identity changed.');
+}
+
+export async function capturePathIdentity(path, expected) {
+  try {
+    const canonical = await realpath(path), info = await lstat(path, { bigint: true });
+    if (expected) assertFilePathAuthority(expected, canonical, info.isSymbolicLink());
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error('[unsupported] Links, reparse points and special files are unsupported.');
+    const observed = pathIdentityFromStat(path, canonical, info, false);
+    if (expected) assertPreparedDirectory(expected, observed);
+    return observed;
+  } catch (error) {
+    if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
+    throw error;
+  }
+}
+/** Error lifecycle only: a failed resolution/open may hide a dangling replacement. */
+export async function assertFilePathAfterFailure(expected) {
+  let cursor = expected.path;
+  for (;;) {
+    let info;
+    try { info = await lstat(cursor, { bigint: true }); }
+    catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
+    const leaf = cursor === expected.path, link = info.isSymbolicLink();
+    if (leaf) { assertFilePathAuthority(expected, expected.canonical, link); if (expected.directory) assertPreparedDirectory(expected, pathIdentityFromStat(cursor, expected.canonical, info, link)); }
+    let canonical;
+    try { canonical = await realpath(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
+    catch {
+      if (!leaf && link) throw new FileAuthorityError('Prepared path ancestor is an unresolved link.');
+      const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue;
+    }
+    const target = leaf ? expected.symbolicLink ? resolve(canonical, basename(cursor)) : canonical : resolve(canonical, relative(cursor, expected.path));
+    assertFilePathAuthority(expected, target, leaf ? link : Boolean(expected.symbolicLink)); return;
+  }
+}
+/** Controlled synchronous text publication has the same error-only boundary. */
+export function assertFilePathAfterFailureSync(expected) {
+  let cursor = expected.path;
+  for (;;) {
+    let info;
+    try { info = lstatSync(cursor, { bigint: true }); }
+    catch { const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue; }
+    const leaf = cursor === expected.path, link = info.isSymbolicLink();
+    if (leaf) { assertFilePathAuthority(expected, expected.canonical, link); if (expected.directory) assertPreparedDirectory(expected, pathIdentityFromStat(cursor, expected.canonical, info, link)); }
+    let canonical;
+    try { canonical = realpathSync.native(leaf && expected.symbolicLink ? dirname(cursor) : cursor); }
+    catch {
+      if (!leaf && link) throw new FileAuthorityError('Prepared path ancestor is an unresolved link.');
+      const parent = dirname(cursor); if (parent === cursor) return; cursor = parent; continue;
+    }
+    const target = leaf ? expected.symbolicLink ? resolve(canonical, basename(cursor)) : canonical : resolve(canonical, relative(cursor, expected.path));
+    assertFilePathAuthority(expected, target, leaf ? link : Boolean(expected.symbolicLink)); return;
+  }
 }
 export function pathIdentityFromStat(path, canonical, info, symbolicLink = false) {
   return Object.freeze({ path, canonical, device: String(info.dev), inode: String(info.ino), size: String(info.size),
@@ -20,17 +71,24 @@ export function sameIdentity(a, b, metadata = true) {
     && a.mode === b.mode && Boolean(a.symbolicLink) === Boolean(b.symbolicLink)
     && (!metadata || a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.links === b.links);
 }
-export async function captureTreeIdentity(path) {
-  const info = await lstat(path, { bigint: true });
-  const symbolicLink = info.isSymbolicLink();
-  if (!symbolicLink && !info.isFile() && !info.isDirectory()) throw new Error('[unsupported] Special files are unsupported.');
-  const canonical = symbolicLink ? resolve(await realpath(dirname(path)), basename(path)) : await realpath(path);
-  // Canonical resolution is asynchronous too. Observe the leaf last, without
-  // following a link's target, and reject mixed observations of two objects.
-  const checked = await lstat(path, { bigint: true });
-  if (info.dev !== checked.dev || info.ino !== checked.ino || info.mode !== checked.mode || info.size !== checked.size
-    || info.mtimeNs !== checked.mtimeNs || info.ctimeNs !== checked.ctimeNs || info.nlink !== checked.nlink) throw new Error('[STALE_STATE] Tree entry changed during identity capture.');
-  return pathIdentityFromStat(path, canonical, checked, symbolicLink);
+export async function captureTreeIdentity(path, expected) {
+  try {
+    const info = await lstat(path, { bigint: true });
+    const symbolicLink = info.isSymbolicLink();
+    if (!symbolicLink && !info.isFile() && !info.isDirectory()) throw new Error('[unsupported] Special files are unsupported.');
+    const canonical = symbolicLink ? resolve(await realpath(dirname(path)), basename(path)) : await realpath(path);
+    // Canonical resolution is asynchronous too. Observe the leaf last, without
+    // following a link's target, and reject mixed observations of two objects.
+    const checked = await lstat(path, { bigint: true });
+    const observed = pathIdentityFromStat(path, canonical, checked, symbolicLink);
+    if (expected) { assertFilePathAuthority(expected, canonical, checked.isSymbolicLink()); assertPreparedDirectory(expected, observed); }
+    if (info.dev !== checked.dev || info.ino !== checked.ino || info.mode !== checked.mode || info.size !== checked.size
+      || info.mtimeNs !== checked.mtimeNs || info.ctimeNs !== checked.ctimeNs || info.nlink !== checked.nlink) throw new Error('[STALE_STATE] Tree entry changed during identity capture.');
+    return observed;
+  } catch (error) {
+    if (expected && !fileInvocationMustStop(error)) await assertFilePathAfterFailure(expected);
+    throw error;
+  }
 }
 export function protectedTreeName(name) {
   if (process.platform === 'win32') name = name.toLowerCase();
@@ -77,8 +135,10 @@ function sameOpened(info, expected) {
 /** Copy at most the prepared size plus one growth-detection byte, with fixed memory and independent write offsets. */
 export async function writeIdentityTo(source, target, authority, signal) {
   current(authority, signal);
-  if (!sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Copy source changed before open.');
-  const input = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  if (!sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed before open.');
+  let input, failure, failed = false;
+  try { input = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+  catch (error) { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); throw error; }
   try {
     if (!sameOpened(await input.stat({ bigint: true }), source)) throw new Error('[STALE_STATE] Copy source identity changed before read.');
     const buffer = Buffer.allocUnsafe(FILE_STREAM_BUFFER_BYTES), hash = createHash('sha256'), size = Number(source.size);
@@ -100,15 +160,24 @@ export async function writeIdentityTo(source, target, authority, signal) {
       position += read.bytesRead;
     }
     if (position !== size || !sameOpened(await input.stat({ bigint: true }), source)
-      || !sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Copy source changed during read; verify the candidate.');
+      || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Copy source changed during read; verify the candidate.');
     current(authority, signal);
     return hash.digest('hex');
-  } finally { await input.close(); }
+  } catch (error) {
+    failed = true; failure = error;
+    try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); } catch (authorityError) { failure = authorityError; }
+    throw failure;
+  } finally {
+    try { await input.close(); }
+    catch (error) { if (!fileInvocationMustStop(failure)) await assertFilePathAfterFailure(source); throw failed ? failure : error; }
+  }
 }
 
 export async function hashIdentity(source, authority, signal) {
   current(authority, signal);
-  const file = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let file, failure, failed = false;
+  try { file = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+  catch (error) { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); throw error; }
   try {
     if (!sameOpened(await file.stat({ bigint: true }), source)) throw new Error('[STALE_STATE] Hash source identity changed.');
     const hash = createHash('sha256'), buffer = Buffer.allocUnsafe(FILE_STREAM_BUFFER_BYTES), size = Number(source.size);
@@ -122,10 +191,17 @@ export async function hashIdentity(source, authority, signal) {
       hash.update(read.bytesRead === buffer.length ? buffer : buffer.subarray(0, read.bytesRead)); position += read.bytesRead;
     }
     if (position !== size || !sameOpened(await file.stat({ bigint: true }), source)
-      || !sameIdentity(source, await capturePathIdentity(source.path))) throw new Error('[STALE_STATE] Hash source changed.');
+      || !sameIdentity(source, await capturePathIdentity(source.path, source))) throw new Error('[STALE_STATE] Hash source changed.');
     current(authority, signal);
     return hash.digest('hex');
-  } finally { await file.close(); }
+  } catch (error) {
+    failed = true; failure = error;
+    try { if (!fileInvocationMustStop(error)) await assertFilePathAfterFailure(source); } catch (authorityError) { failure = authorityError; }
+    throw failure;
+  } finally {
+    try { await file.close(); }
+    catch (error) { if (!fileInvocationMustStop(failure)) await assertFilePathAfterFailure(source); throw failed ? failure : error; }
+  }
 }
 
 export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
@@ -139,10 +215,25 @@ export function boundedReason(text, budget = FILE_RESULT_REASON_BYTES) {
   return text.slice(0, index);
 }
 
+/** Error lifecycle only. A missing parent may hide a recorded higher replacement. */
+async function assertTreeParentsAfterFailure(tree, parentIndex, created) {
+  while (parentIndex >= 0) {
+    const entry = tree.entries[parentIndex], identity = created ? created.get(parentIndex) : entry.identity;
+    if (identity) await assertFilePathAfterFailure(identity);
+    parentIndex = entry.parent;
+  }
+}
+
 export async function revalidateTree(tree, authority, signal) {
   for (const entry of tree.entries) {
     current(authority, signal);
-    if (!sameIdentity(entry.identity, await captureTreeIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
+    try {
+      const observed = await captureTreeIdentity(entry.identity.path, entry.identity);
+      if (!sameIdentity(entry.identity, observed)) throw new Error('[STALE_STATE] Prepared tree changed before execution.');
+    } catch (error) {
+      if (!fileInvocationMustStop(error)) await assertTreeParentsAfterFailure(tree, entry.parent);
+      throw error;
+    }
   }
   current(authority, signal);
 }
@@ -160,6 +251,7 @@ class TreeExecution {
     this.moveByCopy = moveByCopy || operation === 'move' && tree.entries[0].identity.directory;
     this.created = new Map(); this.groups = new Map(); this.changed = false; this.attempted = false; this.effectPending = false;
     this.files = 0; this.bytes = 0; this.directories = 0; this.sha256 = undefined;
+    this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
     if (operation !== 'copy') {
       const reverse = operation === 'delete';
       for (let index = reverse ? tree.entries.length - 1 : 0; reverse ? index >= 0 : index < tree.entries.length; index += reverse ? -1 : 1) {
@@ -184,20 +276,24 @@ class TreeExecution {
     if (!group) return;
     if (group.entries[group.next++] !== entry) throw new Error('[STALE_STATE] Source alias order changed.');
     if (group.next === group.entries.length) return;
-    const next = group.entries[group.next].identity, observed = await captureTreeIdentity(next.path);
+    const next = group.entries[group.next].identity, observed = await captureTreeIdentity(next.path, next);
     const links = String(BigInt(identity.links) - (decremented ? 1n : 0n));
     if (!sameIdentity(next, observed, false) || next.size !== observed.size || next.mtime !== observed.mtime || observed.links !== links) throw new Error('[STALE_STATE] Remaining source alias changed after the completed operation.');
     this.current(); group.ctime = observed.ctime; group.links = links; group.changed = true;
   }
   async checkParent(expected) {
+    this.checkedParent = expected;
     this.current();
-    if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path), false)) throw new Error('[STALE_STATE] Prepared parent changed.');
+    if (!expected || !sameIdentity(expected, await capturePathIdentity(expected.path, expected), false)) throw new FileAuthorityError('Prepared parent changed.');
     this.current();
   }
   async checkSource(entry, metadata = true) {
     this.current();
-    await this.checkParent(entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity);
-    if (!sameIdentity(this.sourceIdentity(entry), await captureTreeIdentity(entry.identity.path), metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
+    this.checkedSourceIndex = entry.parent;
+    this.checkedSourceParent = entry.parent < 0 ? this.sourceParent : this.tree.entries[entry.parent].identity;
+    await this.checkParent(this.checkedSourceParent);
+    const expected = this.sourceIdentity(entry), observed = await captureTreeIdentity(entry.identity.path, expected);
+    if (!sameIdentity(expected, observed, metadata)) throw new Error('[STALE_STATE] Prepared source changed; it was not removed.');
   }
   async copyFile(entry, destination, parent) {
     await this.checkSource(entry); await this.checkParent(parent); this.current();
@@ -257,12 +353,14 @@ class TreeExecution {
     const copied = await this.copyFile(entry, destination, parent);
     await this.checkSource(entry); await this.checkParent(parent); this.current();
     if (!sameIdentity(copied, await capturePathIdentity(destination))) throw new Error('[STALE_STATE] Copied destination changed before source deletion; source retained.');
-    if (!sameIdentity(this.sourceIdentity(entry), await captureTreeIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Copied source changed at the final deletion boundary; source retained.');
+    const expected = this.sourceIdentity(entry);
+    if (!sameIdentity(expected, await captureTreeIdentity(entry.identity.path, expected))) throw new Error('[STALE_STATE] Copied source changed at the final deletion boundary; source retained.');
     this.current(); this.effectPending = true; await unlink(entry.identity.path); this.effectPending = false; this.files++;
     if (entry.identity.links !== '1') await this.advanceSource(entry, true);
   }
   async finalizeDirectoryMetadata(index) {
     const entry = this.tree.entries[index], expected = this.created.get(index);
+    this.checkedDestinationIndex = entry.parent;
     const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
     await this.checkParent(parent); this.current();
     // Windows needs a writable directory handle for futimes; no path-based
@@ -305,6 +403,7 @@ class TreeExecution {
         for (let index = 0; index < this.tree.entries.length; index++) {
           const entry = this.tree.entries[index], destination = index === 0 ? this.destination : resolve(this.destination, relative(source.path, entry.identity.path));
           const parent = entry.parent < 0 ? this.destinationParent : this.created.get(entry.parent);
+          this.checkedDestinationIndex = entry.parent;
           await this.checkSource(entry, !entry.identity.directory); await this.checkParent(parent);
           if (entry.identity.directory) {
             // Keep the whole incomplete tree private. Restore prepared access
@@ -341,10 +440,25 @@ class TreeExecution {
     } catch (error) {
       const status = this.effectPending && !knownNoEffectError(error) ? 'state_unknown' : this.changed ? 'partial'
         : this.signal?.aborted ? 'cancelled' : 'failed_no_change';
-      return this.receipt(status, boundedReason(error instanceof Error ? error.message : String(error)));
+      // Failed mutation syscalls can precede the next normal identity check.
+      // Preserve the syscall's effect facts while checking the prepared parents.
+      if (!fileInvocationMustStop(error)) {
+        try {
+          await assertFilePathAfterFailure(this.sourceParent);
+          await assertTreeParentsAfterFailure(this.tree, this.checkedSourceIndex);
+          await assertTreeParentsAfterFailure(this.tree, this.checkedDestinationIndex, this.created);
+          if (this.destinationParent) await assertFilePathAfterFailure(this.destinationParent);
+          if (this.checkedParent) await assertFilePathAfterFailure(this.checkedParent);
+        } catch (authorityError) { error = authorityError; }
+      }
+      const receipt = this.receipt(status, boundedReason(error instanceof Error ? error.message : String(error)));
+      if (fileInvocationMustStop(error)) receipt.stopInvocation = true;
+      return receipt;
     } finally {
       this.created.clear(); this.groups.clear(); this.authority = undefined; this.signal = undefined; this.tree = undefined;
       this.sourceParent = undefined; this.destinationParent = undefined;
+      this.checkedSourceParent = undefined; this.checkedParent = undefined;
+      this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
     }
   }
   receipt(status, reason) {

@@ -74,6 +74,7 @@ const { session } = await createAgentSession({ cwd: root, agentDir: root, model,
 let ended = 0;
 const unsubscribe = session.subscribe(event => { if (event.type === "compaction_end") { ended++; assert.equal(event.result, undefined); } });
 const before = manager.getEntries().length;
+const originalEntries = manager.getEntries().slice();
 try {
   const operation = session.compact(compactionFocus);
   const rejected = assert.rejects(operation, failure === "abort" ? /Compaction cancelled/ : /Turn prefix summarization failed/);
@@ -81,7 +82,17 @@ try {
   await rejected;
   assert.equal(requests, 2);
   assert.ok(authCalls >= 1);
-  assert.equal(manager.getEntries().length, before);
+  assert.deepEqual(manager.getEntries().slice(0, before), originalEntries, "a failed summary preserves the complete original branch");
+  assert.equal(manager.getEntries().length, before + 1);
+  const diagnostic = manager.getEntries().at(-1)!;
+  assert.equal(diagnostic.type, "custom");
+  if (diagnostic.type === "custom") {
+    assert.equal(diagnostic.customType, "compaction-failure-v1");
+    const data = diagnostic.data as { aborted: boolean; reason: string; errorMessage?: string };
+    assert.equal(data.aborted, failure === "abort");
+    assert.equal(data.reason, "manual");
+    if (data.errorMessage) assert.ok(data.errorMessage.length <= 512);
+  }
   assert.equal(manager.getEntries().filter(entry => entry.type === "compaction").length, 0);
   assert.equal(session.isCompacting, false);
   assert.equal(ended, 1);

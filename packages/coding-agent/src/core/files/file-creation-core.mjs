@@ -1,6 +1,7 @@
 import { lstat, mkdir, open } from "node:fs/promises";
 import { dirname, resolve, relative } from "node:path";
-import { capturePathIdentity, sameIdentity, knownNoEffectError } from "./file-tree-core.mjs";
+import { capturePathIdentity, sameIdentity, knownNoEffectError, assertFilePathAfterFailure } from "./file-tree-core.mjs";
+import { fileInvocationMustStop } from "./file-mutation-failure.mjs";
 import { FILE_RESULT_INLINE_BYTES, FILE_RESULT_FAILURE_SAMPLES } from "./file-operation-limits.mjs";
 export const MAX_CREATED_DIRECTORIES = 32;
 /** Display/journal samples only. Full directory ownership remains in the
@@ -63,7 +64,7 @@ export async function prepareFileCreation(path, createOnly = false, maxDirectori
     }
 }
 export async function verifyCreationAncestor(plan) {
-    if (!sameIdentity(plan.ancestor, await capturePathIdentity(plan.ancestor.path), false))
+    if (!sameIdentity(plan.ancestor, await capturePathIdentity(plan.ancestor.path, plan.ancestor), false))
         throw new Error("[STALE_STATE] Existing parent ancestor changed after preflight.");
 }
 /** No target I/O, no line arrays or copy of the content. A trailing newline does not add a line. */
@@ -90,7 +91,7 @@ export function addedContentSummary(content) {
 }
 async function verifyCreatedDirectories(created) {
     for (const directory of created) {
-        if (!directory.identity || !sameIdentity(directory.identity, await capturePathIdentity(directory.path), false))
+        if (!directory.identity || !sameIdentity(directory.identity, await capturePathIdentity(directory.path, directory.identity), false))
             throw new Error("[STALE_STATE] Created directory changed before file creation.");
     }
 }
@@ -100,9 +101,18 @@ function retainUnprovenDirectories(created) {
     for (const directory of created)
         directory.status = "retained";
 }
+/** Failure lifecycle only: shared parents can be below the original ancestor. */
+async function assertCreationPathsAfterFailure(plan, created, sharedDirectories) {
+    await assertFilePathAfterFailure(plan.ancestor);
+    for (const directory of created) if (directory.identity) await assertFilePathAfterFailure(directory.identity);
+    if (sharedDirectories) for (const path of plan.directories) {
+        const identity = sharedDirectories.get(directoryKey(path));
+        if (identity) await assertFilePathAfterFailure(identity);
+    }
+}
 /** Single write and file_batch share this exclusive create core. Never removes a partially written file. */
 export class FileCreationFailure extends Error {
-    constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; }
+    constructor(facts) { super(String(facts.cause)); this.name = "FileCreationFailure"; this.facts = facts; this.stopInvocation = facts.stopInvocation === true; }
 }
 /** Shared parent effects for text creation and copy/move destinations. Preparation
  * remains read-only; callers retain this complete inventory until publication. */
@@ -120,14 +130,14 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
             await verifyCreationAncestor(plan);
             const shared = sharedDirectories?.get(directoryKey(path));
             if (shared) {
-                if (!sameIdentity(shared, await capturePathIdentity(path), false))
+                if (!sameIdentity(shared, await capturePathIdentity(path, shared), false))
                     throw new Error("[STALE_STATE] Shared created parent changed.");
                 (reused ??= []).push(shared);
                 continue;
             }
             await verifyCreatedDirectories(created);
             if (reused) for (const parent of reused)
-                if (!sameIdentity(parent, await capturePathIdentity(parent.path), false))
+                if (!sameIdentity(parent, await capturePathIdentity(parent.path, parent), false))
                     throw new Error("[STALE_STATE] Shared created parent changed before descendant creation.");
             assertAuthority?.();
             signal?.throwIfAborted();
@@ -145,13 +155,16 @@ export async function executeFileCreationDirectories(plan, assertPathAllowed, si
         }
         return created;
     } catch (error) {
-        if (effectPending && attempted && !knownNoEffectError(error)) created.push(attempted);
+        const noEffect = knownNoEffectError(error);
+        try { if (!fileInvocationMustStop(error)) await assertCreationPathsAfterFailure(plan, created, sharedDirectories); } catch (authorityError) { error = authorityError; }
+        if (effectPending && attempted && !noEffect) created.push(attempted);
         retainUnprovenDirectories(created);
         const changed = created.length > 0;
-        const stateChanged = effectPending && !knownNoEffectError(error) ? "unknown" : changed;
+        const stateChanged = effectPending && !noEffect ? "unknown" : changed;
         throw new FileCreationFailure({ ok: false, status: stateChanged === "unknown" ? "state_unknown" : changed ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
+            stopInvocation: fileInvocationMustStop(error) || undefined,
             fileCreated: false, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) });
     } finally { if (reused) reused.length = 0; attempted = undefined; }
 }
@@ -169,7 +182,7 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
         if (sharedDirectories)
             for (const path of plan.directories) {
                 const identity = sharedDirectories.get(directoryKey(path));
-                if (!identity || !sameIdentity(identity, await capturePathIdentity(path), false))
+                if (!identity || !sameIdentity(identity, await capturePathIdentity(path, identity), false))
                     throw new Error("[STALE_STATE] Shared parent identity changed before file creation.");
             }
         if (directoryKey(await assertPathAllowed()) !== directoryKey(plan.canonicalTarget))
@@ -209,6 +222,8 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
     }
     catch (error) {
         if (error instanceof FileCreationFailure) throw structuredFailure ? error : new Error(JSON.stringify(error.facts));
+        const noEffect = knownNoEffectError(error);
+        try { if (!fileInvocationMustStop(error)) await assertCreationPathsAfterFailure(plan, created, sharedDirectories); } catch (authorityError) { error = authorityError; }
         retainUnprovenDirectories(created);
         for (const directory of created)
             if (directory.status === "removed")
@@ -217,10 +232,11 @@ export async function executeFileCreation(plan, content, assertPathAllowed, sign
         for (const directory of created)
             if (directory.status !== "removed")
                 stateChanged = true;
-        if (effectPending && !knownNoEffectError(error)) stateChanged = "unknown";
+        if (effectPending && !noEffect) stateChanged = "unknown";
         const facts = { ok: false, operation: "write", category: error.code === "EEXIST" ? "TARGET_APPEARED" : stateChanged ? "PARTIAL_MUTATION" : "WRITE_FAILED",
             status: stateChanged === "unknown" ? "state_unknown" : stateChanged ? "partial" : signal?.aborted ? "cancelled" : "failed_no_change",
             target: plan.path, stateChanged, requiresVerification: stateChanged !== false, retryable: stateChanged === false,
+            stopInvocation: fileInvocationMustStop(error) || undefined,
             fileCreated, createdDirectories: created, cause: error instanceof Error ? error.message : String(error) };
         throw structuredFailure ? new FileCreationFailure(facts) : new Error(JSON.stringify(facts));
     }

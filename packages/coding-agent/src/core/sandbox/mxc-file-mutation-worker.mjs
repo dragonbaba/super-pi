@@ -9,6 +9,7 @@ import { workspaceFilePath } from '../files/file-workspace-path.mjs';
 import { MxcFilePublication } from '../files/mxc-file-publication.mjs';
 import { prepareTextMutation, executePreparedTextMutation } from './mxc-file-worker.mjs';
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES, FILE_MUTATION_TEXT_BYTES } from '../files/file-operation-limits.mjs';
+import { fileInvocationMustStop } from '../files/file-mutation-failure.mjs';
 
 const OWNER_ID = /^[a-f0-9]{32}$/, SHA256 = /^[a-f0-9]{64}$/, ENTRY_ID = /^(?:[a-f0-9]{8}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/;
 const REQUEST_FIELDS = new Set(['id', 'mode', 'workspaces', 'operation', 'exchange', 'maxWriteBytes', 'callId', 'requestHash', 'generation', 'workspaceIdentities', 'version', 'rpc', 'itemCount', 'start', 'items', 'phase', 'control']);
@@ -112,8 +113,10 @@ class WorkerItemExecution {
         this.shared ??= new Map();
         createdParents = await executeFileCreationDirectories(prepared.creation, this.assertCreationPath, undefined, this.shared, this.current);
         await revalidateFileWorkerManifest(request, item, prepared, false, this.shared);
-        destinationParent = await capturePathIdentity(dirname(header.destination));
-        need(destinationParent.directory && directoryKey(destinationParent.canonical) === directoryKey(dirname(header.destination)), 'Created destination parent changed');
+        const parentPath = prepared.creation.directories[prepared.creation.directories.length - 1];
+        const expectedParent = parentPath === undefined ? prepared.creation.ancestor : this.shared.get(directoryKey(parentPath));
+        need(expectedParent, 'Created destination parent identity was released');
+        destinationParent = await capturePathIdentity(dirname(header.destination), expectedParent);
       }
       if (prepared.creation && header.text) {
         if (prepared.creation.directories.length) need(control.effects, 'Missing preassigned created-parent output');
@@ -160,6 +163,7 @@ class WorkerItemExecution {
         receipt = { status: this.effectsPossible ? 'state_unknown' : parentChanged ? 'partial' : 'failed_no_change', stateChanged: this.effectsPossible ? 'unknown' : parentChanged,
           requiresVerification: this.effectsPossible || parentChanged || undefined, stopInvocation: !this.controlAccepted || undefined, reason: boundedReason(String(error.message)) };
       }
+      if (fileInvocationMustStop(error)) receipt.stopInvocation = true;
     }
     try {
       if (this.publication) {
@@ -199,12 +203,19 @@ export async function runFileMutationRequest(request, serializedRequest) {
     await validateFileMutationEnvelope(request);
     for (let offset = 0; offset < request.items.length; offset++) {
       const item = request.items[offset], index = request.start + offset, control = request.control.prepared[offset];
-      if (request.phase === 'prepare') reply.items.push(await prepareFileWorkerManifest(request, item, index, control.owned, prepareTextMutation));
-      else if (request.phase === 'validate') {
-        const prepared = await readFileWorkerManifest(request, item, index, control.manifest);
-        reply.items.push({ index, validated: await revalidateFileWorkerManifest(request, item, prepared, request.control.preview === true) });
-      } else reply.items.push({ index, readyHash: request.control.readyHash, intentId: request.control.intentId,
-        receipt: await new WorkerItemExecution(request, item, index, control).run() });
+      // Artifact identity/protocol failures poison the invocation; only a valid
+      // prepared plan's changed file precondition is an ordinary item failure.
+      const prepared = request.phase === 'validate' ? await readFileWorkerManifest(request, item, index, control.manifest) : undefined;
+      try {
+        if (request.phase === 'prepare') reply.items.push(await prepareFileWorkerManifest(request, item, index, control.owned, prepareTextMutation));
+        else if (request.phase === 'validate') {
+          reply.items.push({ index, validated: await revalidateFileWorkerManifest(request, item, prepared, request.control.preview === true) });
+        } else reply.items.push({ index, readyHash: request.control.readyHash, intentId: request.control.intentId,
+          receipt: await new WorkerItemExecution(request, item, index, control).run() });
+      } catch (error) {
+        if (request.operation !== 'file_batch' || request.phase === 'execute' || fileInvocationMustStop(error)) throw error;
+        reply.items.push({ index, error: boundedReason(error instanceof Error ? error.message : String(error)), noEffects: true });
+      }
     }
     reply.ok = true;
   } catch (error) { reply.error = boundedReason(error instanceof Error ? error.message : String(error)); reply.noEffects = request?.phase !== 'execute'; }

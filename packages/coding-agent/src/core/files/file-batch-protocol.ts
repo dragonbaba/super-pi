@@ -18,7 +18,7 @@ const ItemParameters = Type.Object({
   edits: Type.Optional(Type.Array(PublicEditOperationParameters, { minItems: 1, maxItems: 20 })),
 }, { additionalProperties: false });
 export const FileBatchParameters = Type.Object({
-  operations: Type.Array(ItemParameters, { minItems: 1, description: "Fixed-order independent items. Put all edits of one file in one item. No chains, aliases, overlap or automatic reorder. Target count is unrestricted; mutation text and transport byte budgets still apply." }),
+  operations: Type.Array(ItemParameters, { minItems: 1, description: "Independent items in fixed order; ordinary failures do not stop the others. Confirm actual paths and unique oldText matches from current reads or clean own versions before assembling the batch; use dryRun when uncertain. Put all edits of one file in one item. No chains, aliases, overlap, automatic reorder or retry of successful items. Target count is unrestricted; mutation text and transport byte budgets still apply." }),
   dryRun: Type.Optional(Type.Boolean({ description: "Preflight only: no mutation, directory creation, evidence or approval token." })),
   purpose: Type.Optional(Type.String({ maxLength: 800 })),
 }, { additionalProperties: false });

@@ -6,6 +6,13 @@ registration when that owner is present. Native and MXC calls share the v3
 preflight, authorization, result journal and paged query path; see
 [current file operations](../../../docs/execution-environments.md#文件结果的完整性)
 and [candidate validation](../../../docs/evidence/file-operations-v3-2026-11-13.md).
+Current v3 `file_batch` checks every item before effects, continues independent
+items after confirmed ordinary file failures, and reports success counts plus
+failure excerpts. Codemode exposes completed item failures as `CODEMODE_PARTIAL`;
+successful items are never automatically retried. Confirm actual source paths and
+unique matches from current reads or clean own versions before submitting a batch;
+use `dryRun` when uncertain. Cancellation, revoked authority, unknown effects and
+journal/transport failures still stop execution.
 
 The sections below preserve the legacy compatibility implementation and v1/v2
 design/evidence history. Their 16-target and 512-entry windows, same-volume move

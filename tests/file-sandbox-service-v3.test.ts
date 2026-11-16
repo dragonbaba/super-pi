@@ -15,6 +15,7 @@ import { FileResultReader } from "../packages/coding-agent/src/core/files/file-r
 import { FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import fsSync from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { completedFileBatchFailure } from "../packages/coding-agent/src/core/files/file-batch-outcome.ts";
 
 async function fixture(t: test.TestContext, changeReply?: (request: any, reply: any) => void) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "sandbox-session-v3-")));
@@ -43,6 +44,236 @@ async function fixture(t: test.TestContext, changeReply?: (request: any, reply: 
   cleanup = async () => { await owner.close(); await f.close(); assert.equal(owned.size, 0); };
   return { ...f, cwd, definitions, owner, sends, owned, call: (name: string, input: any) => f.invoke(definitions, name, input) };
 }
+
+for (const failedIndex of [0, 1, 2]) test(`sandbox batch retains item ${failedIndex} preflight failure and executes independent items once`, async t => {
+  const f = await fixture(t);
+  const operations: any[] = [];
+  for (let index = 0; index < 3; index++) operations.push(index === failedIndex
+    ? { operation: "copy", path: "missing", destination: "failed-copy" }
+    : { operation: "write", mode: "create", path: "new/file-" + index, content: "kept" });
+  const preview = await f.call("file_batch", { operations, dryRun: true });
+  assert.equal(preview.details.failed, 1, JSON.stringify(preview)); assert.equal(preview.details.preview, true);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false);
+  await assert.rejects(lstat(join(f.cwd, "new")), { code: "ENOENT" });
+  assert.equal(f.owned.size, 0);
+  const result = await f.call("file_batch", { operations });
+  assert.equal(result.details.succeeded, 2, JSON.stringify(result)); assert.equal(result.details.failed, 1);
+  assert.equal(result.details.notStarted, 0); assert.equal(result.details.complete, true);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 2);
+  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose());
+  const rows = reader.read(result.details.resultRef).records.filter(row => row.record.phase === "result");
+  assert.equal(rows.length, 3); assert.equal(rows.find(row => row.record.index === failedIndex)!.record.status, "failed_no_change");
+  for (let index = 0; index < 3; index++) if (index !== failedIndex) {
+    assert.equal(await readFile(join(f.cwd, "new/file-" + index), "utf8"), "kept");
+    assert.doesNotMatch(result.content[0].text, new RegExp("file-" + index));
+  }
+  await writeFile(join(f.cwd, "missing"), "fixed");
+  const corrected = await f.call("file_batch", { operations: [operations[failedIndex]] });
+  assert.equal(corrected.isError, false, JSON.stringify(corrected));
+  assert.equal(await readFile(join(f.cwd, "failed-copy"), "utf8"), "fixed");
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 3); assert.equal(f.owned.size, 0);
+});
+
+for (const operation of ["write", "copy", "move"]) for (const replacement of [false, true]) for (const finalItem of [false, true]) test(`sandbox shared parent precedes ${operation} target-appeared failure, replacement=${replacement}, final=${finalItem}`, async t => {
+  let injected = 0;
+  const f = await fixture(t, request => {
+    if (request.phase === "execute" && request.start === 0 && !injected) {
+      const parent = join(f.cwd, "new");
+      if (replacement) { fsSync.renameSync(parent, join(f.cwd, "retained")); fsSync.mkdirSync(parent); }
+      fsSync.writeFileSync(join(parent, "second"), "external"); injected++;
+    }
+  });
+  await writeFile(join(f.cwd, "source"), "source");
+  const first = { operation: "write", mode: "create", path: "new/first", content: "committed" }, second = operation === "write" ? { operation, mode: "create", path: "new/second", content: "next" } : { operation, path: "source", destination: "new/second" }, independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [first, independent, second] : [first, second, independent] });
+  assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), !replacement, JSON.stringify(result));
+  assert.equal(result.details.succeeded, !replacement || finalItem ? 2 : 1); assert.equal(await readFile(join(f.cwd, replacement ? "retained/first" : "new/first"), "utf8"), "committed");
+  assert.equal(await readFile(join(f.cwd, "new/second"), "utf8"), "external"); assert.equal(f.owned.size, 0);
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "source");
+  const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
+});
+
+for (const operation of ["copy", "move"]) test(`sandbox ${operation} cannot adopt a replacement created parent`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "new"); await writeFile(join(f.cwd, "source"), "original");
+  const original = fsPromises.lstat; let observations = 0, injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    if (path === parent && options?.bigint && ++observations === 3) { await fsPromises.rename(parent, join(f.cwd, "retained")); await mkdir(parent); injected++; }
+    return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    const result = await f.call(operation, { path: "source", destination: "new/target" });
+    assert.equal(injected, 1); assert.equal(result.details.partial, 1, JSON.stringify(result)); assert.equal(result.details.requiresVerification, true); assert.match(result.details.reason!, /STALE_STATE/);
+    assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "original"); await assert.rejects(lstat(join(parent, "target")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const operation of ["copy", "move"]) test(`sandbox ${operation} keeps a parent that appears during preparation`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "new"); await writeFile(join(f.cwd, "source"), "original");
+  const original = fsPromises.realpath; let injected = 0;
+  t.mock.method(fsPromises, "realpath", async (path: any, ...args: any[]) => {
+    try { return await (original as any)(path, ...args); }
+    catch (error) { if (path === parent && !injected && (error as any).code === "ENOENT") { await mkdir(parent); injected++; } throw error; }
+  }); syncBuiltinESMExports();
+  try {
+    const result = await f.call(operation, { path: "source", destination: "new/target" });
+    assert.equal(injected, 1); assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(await readFile(join(parent, "target"), "utf8"), "original"); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const replacement of ["directory-file", "directory-empty", "missing"]) for (const finalItem of [false, true]) test(`sandbox hash failure checks ${replacement} destination parent, final=${finalItem}`, async t => {
+  const f = await fixture(t), parent = join(f.cwd, "original"), source = join(f.cwd, "source"); await mkdir(parent); await writeFile(source, "source"); await writeFile(join(parent, "target"), "original");
+  const original = fsPromises.open; let injected = 0;
+  t.mock.method(fsPromises, "open", async (path: any, ...args: any[]) => {
+    const handle = await (original as any)(path, ...args);
+    if (path === source && !injected) {
+      await fsPromises.rename(parent, join(f.cwd, "retained")); injected++;
+      if (replacement !== "missing") { await mkdir(parent); if (replacement === "directory-file") await writeFile(join(parent, "target"), "external"); }
+    } return handle;
+  }); syncBuiltinESMExports();
+  try {
+    const copy = { operation: "copy", path: "source", destination: "original/target", overwrite: true }, independent = { operation: "write", path: "independent", mode: "create", content: "kept" };
+    const result = await f.call("file_batch", { operations: finalItem ? [independent, copy] : [copy, independent] });
+    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
+    assert.equal(await readFile(source, "utf8"), "source"); assert.equal(await readFile(join(f.cwd, "retained/target"), "utf8"), "original");
+    if (replacement === "directory-file") assert.equal(await readFile(join(parent, "target"), "utf8"), "external"); assert.equal(f.owned.size, 0);
+    const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+for (const replacement of ["directory", "missing"]) for (const finalItem of [false, true]) test(`sandbox missing nested parent checks ${replacement} recorded root, final=${finalItem}`, async t => {
+  let armed = false;
+  const f = await fixture(t, request => { if (request.phase === "prepare") armed = true; }), parent = join(f.cwd, "source"), child = join(parent, "nested/inner/file");
+  await mkdir(join(parent, "nested/inner"), { recursive: true }); await writeFile(child, "original");
+  const original = fsPromises.lstat; let injected = 0;
+  t.mock.method(fsPromises, "lstat", async (path: any, options: any) => {
+    if (armed && path === child && !injected) { await fsPromises.rename(parent, join(f.cwd, "retained")); injected++; if (replacement === "directory") await mkdir(parent); }
+    return (original as any)(path, options);
+  }); syncBuiltinESMExports();
+  try {
+    const remove = { operation: "delete", path: "source", recursive: true }, independent = { operation: "write", path: "independent", mode: "create", content: "kept" };
+    const result = await f.call("file_batch", { operations: finalItem ? [independent, remove] : [remove, independent] });
+    assert.equal(injected, 1); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result)); assert.equal(result.details.succeeded, replacement === "missing" ? 1 : 0);
+    assert.equal(await readFile(join(f.cwd, "retained/nested/inner/file"), "utf8"), "original"); assert.equal(f.owned.size, 0);
+    const next = await f.call("write", { path: "after", content: "next" }); assert.equal(next.isError, false, JSON.stringify(next)); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("sandbox batch validation detects a changed preimage before effects and continues independent files", async t => {
+  let changed = false;
+  const f = await fixture(t, (request) => {
+    if (!changed && request.phase === "prepare") { changed = true; fsSync.writeFileSync(join(f.cwd, "source"), "external change"); }
+  });
+  await writeFile(join(f.cwd, "source"), "original");
+  const result = await f.call("file_batch", { operations: [
+    { operation: "copy", path: "source", destination: "copied" },
+    { operation: "write", mode: "create", path: "independent", content: "kept" },
+  ] });
+  assert.equal(result.details.succeeded, 1, JSON.stringify(result)); assert.equal(result.details.failed, 1);
+  assert.equal(result.details.notStarted, 0); assert.equal(f.sends.filter(row => row.phase === "execute").length, 1);
+  assert.equal(await readFile(join(f.cwd, "source"), "utf8"), "external change");
+  assert.equal(await readFile(join(f.cwd, "independent"), "utf8"), "kept");
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+});
+
+for (const phase of ["prepare", "validate"]) for (const finalItem of [false, true]) test(`sandbox retargeted parent stops the script after ${phase}, final=${finalItem}`, async t => {
+  let changed = false;
+  const f = await fixture(t, request => {
+    if (!changed && request.phase === phase) {
+      changed = true; fsSync.renameSync(join(f.cwd, "original"), join(f.cwd, "retained"));
+      fsSync.symlinkSync(join(f.cwd, "replacement"), join(f.cwd, "original"), process.platform === "win32" ? "junction" : "dir");
+    }
+  });
+  for (const parent of ["original", "replacement"]) { await mkdir(join(f.cwd, parent)); await writeFile(join(f.cwd, parent, "source"), "same content"); }
+  const copy = { operation: "copy", path: "original/source", destination: "copied" };
+  const write = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [write, copy] : [copy, write] });
+  assert.equal(completedFileBatchFailure(result.details), false, JSON.stringify(result));
+  assert.match(result.details.reason, /STALE_STATE/);
+  assert.equal(result.details.succeeded, phase === "validate" && finalItem ? 1 : 0);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, phase === "prepare" ? 0 : finalItem ? 2 : 1);
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  for (const parent of ["retained", "replacement"]) assert.equal(await readFile(join(f.cwd, parent, "source"), "utf8"), "same content");
+});
+
+for (const phase of ["prepare", "validate"]) for (const finalItem of [false, true]) test(`sandbox dangling source link stops after ${phase}, final=${finalItem}`, async t => {
+  let changed = false;
+  const f = await fixture(t, request => {
+    if (!changed && request.phase === phase) {
+      changed = true; fsSync.unlinkSync(join(f.cwd, "source")); fsSync.symlinkSync(join(f.cwd, "absent-target"), join(f.cwd, "source"), "file");
+    }
+  });
+  await writeFile(join(f.cwd, "source"), "original");
+  const copy = { operation: "copy", path: "source", destination: "copied" };
+  const write = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const result = await f.call("file_batch", { operations: finalItem ? [write, copy] : [copy, write] });
+  assert.equal(completedFileBatchFailure(result.details), false, JSON.stringify(result)); assert.match(result.details.reason, /STALE_STATE/);
+  assert.equal(result.details.succeeded, phase === "validate" && finalItem ? 1 : 0);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, phase === "prepare" ? 0 : finalItem ? 2 : 1);
+  assert.equal((await lstat(join(f.cwd, "source"))).isSymbolicLink(), true);
+  await assert.rejects(lstat(join(f.cwd, "copied")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+  assert.equal((await f.call("write", { path: "after-failure", content: "allowed" })).isError, false); assert.equal(f.owned.size, 0);
+});
+
+for (const operation of ["write", "edit"]) for (const finalItem of [false, true]) for (const replacement of ["dangling-link", "missing"])
+test(`sandbox ${operation} text publication distinguishes ${replacement}, final=${finalItem}`, async t => {
+  const f = await fixture(t), target = join(f.cwd, "target");
+  const snapshot = (await f.call("write", { path: "target", content: "original" })).details.snapshot;
+  const change = { operation, path: "target", snapshot, ...(operation === "write" ? { mode: "overwrite", content: "next" } : { edits: [{ oldText: "original", newText: "next" }] }) };
+  const independent = { operation: "write", mode: "create", path: "independent", content: "kept" };
+  const originalOpen = fsSync.openSync; let injected = false;
+  t.mock.method(fsSync, "openSync", (path: any, ...args: any[]) => {
+    if (!injected && path === target && args[0] === "r" && f.sends.at(-1)?.phase === "execute") {
+      injected = true; fsSync.unlinkSync(target); if (replacement === "dangling-link") fsSync.symlinkSync(join(f.cwd, "absent-target"), target, "file");
+    }
+    return (originalOpen as any)(path, ...args);
+  });
+  try {
+    const result = await f.call("file_batch", { operations: finalItem ? [independent, change] : [change, independent] });
+    assert.equal(injected, true); assert.equal(completedFileBatchFailure(result.details), replacement === "missing", JSON.stringify(result));
+    assert.equal(result.details.succeeded, replacement === "missing" || finalItem ? 1 : 0); assert.equal(f.owned.size, 0);
+  } finally { t.mock.restoreAll(); }
+});
+
+for (const fault of ["integrity", "io"]) test(`sandbox preparation artifact ${fault} failure stops all effects and releases exact artifacts`, async t => {
+  const f = await fixture(t);
+  const original = fsSync.writeFileSync;
+  t.mock.method(fsSync, "writeFileSync", (file: any, ...args: any[]) => {
+    if (fault === "io") throw Object.assign(new Error("ENOSPC artifact write"), { code: "ENOSPC" });
+    return original(file, ...args as [any]);
+  });
+  const originalCreate = (f.owner as any).backend.createFileManifest.bind((f.owner as any).backend);
+  if (fault === "integrity") t.mock.method((f.owner as any).backend, "createFileManifest", async (...args: any[]) => {
+    const owned = await originalCreate(...args); await writeFile(join(args[0].exchange, owned.name), "foreign bytes"); return owned;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.call("file_batch", { operations: [{ operation: "write", mode: "create", path: "first", content: "kept" }, { operation: "write", mode: "create", path: "last", content: "kept" }] }), /FILE_MANIFEST_INVALID/);
+    assert.equal(f.sends.some(row => row.phase === "execute"), false); assert.equal(f.owned.size, 0);
+    await assert.rejects(lstat(join(f.cwd, "first")), { code: "ENOENT" });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("sandbox invalid per-item refusal is a protocol failure before any effect", async t => {
+  const f = await fixture(t, (request, reply) => {
+    if (request.phase === "prepare") reply.items[1] = { index: 1, error: "not a confirmed refusal", noEffects: false };
+  });
+  await assert.rejects(f.call("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "first", content: "kept" },
+    { operation: "write", mode: "create", path: "last", content: "kept" },
+  ] }), /FILE_RPC_INVALID/);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false);
+  await assert.rejects(lstat(join(f.cwd, "first")), { code: "ENOENT" }); assert.equal(f.owned.size, 0);
+});
+
+test("sandbox batch with no prepared files publishes complete failures and releases artifacts", async t => {
+  const f = await fixture(t);
+  const result = await f.call("file_batch", { operations: [
+    { operation: "delete", path: "absent-one" }, { operation: "copy", path: "absent-two", destination: "copy" },
+  ] });
+  assert.equal(result.details.succeeded, 0, JSON.stringify(result)); assert.equal(result.details.failed, 2);
+  assert.equal(result.details.complete, true); assert.equal(result.details.notStarted, 0);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false); assert.equal(f.owned.size, 0);
+});
 
 test("sandbox v3 uses the session journal and SHA continuation without native versions", async t => {
   const f = await fixture(t);

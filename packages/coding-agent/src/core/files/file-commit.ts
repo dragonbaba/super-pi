@@ -3,6 +3,8 @@ import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capturePathIdentity, sameIdentity, type PathIdentity } from "./native-file-core.ts";
 import { SHA256_PATTERN } from "./regex.ts";
+import { fileInvocationMustStop, FileAuthorityError } from "./file-mutation-failure.mjs";
+import { assertFilePathAfterFailure } from "./file-tree-core.mjs";
 
 export interface CommitMetadata {
   strategy: "staged_replace" | "protected_in_place";
@@ -63,10 +65,12 @@ export function originalCommittedFileIdentity(receipt: FileCommitReceipt): Reado
 
 export class FileCommitError extends Error {
   readonly receipt: FileCommitReceipt;
+  readonly stopInvocation: boolean;
   readonly committedSha256: string | undefined;
-  constructor(cause: unknown, receipt: FileCommitReceipt, candidateSha256: string) {
+  constructor(cause: unknown, receipt: FileCommitReceipt, candidateSha256: string, stopInvocation = false) {
     super(`${cause instanceof Error ? cause.message : String(cause)}${receipt.retainedTemporary ? `; temporary retained: ${receipt.retainedTemporary} (${receipt.cleanupReason})` : ""}`);
     this.name = "FileCommitError";
+    this.stopInvocation = stopInvocation || fileInvocationMustStop(cause);
     this.receipt = receipt;
     this.committedSha256 = receipt.outcome === "committed" ? candidateSha256 : undefined;
   }
@@ -82,7 +86,8 @@ export function commitFailure(error: FileCommitError) {
   const stateChanged = error.receipt.outcome === "unknown" ? "unknown" as const : error.receipt.outcome === "committed";
   return { ok: false, category: stateChanged === false ? "COMMIT_FAILED" : "PARTIAL_MUTATION", stateChanged,
     status: stateChanged === "unknown" ? "state_unknown" as const : stateChanged ? "partial" as const : "failed_no_change" as const,
-    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), commit: error.receipt, sha256: error.committedSha256, cause: error.message };
+    requiresVerification: stateChanged !== false || Boolean(error.receipt.retainedTemporary), stopInvocation: error.stopInvocation || undefined,
+    commit: error.receipt, sha256: error.committedSha256, cause: error.message };
 }
 
 interface OwnedTemporary { path: string; device: string; inode: string }
@@ -119,10 +124,10 @@ async function hashOpened(handle: FileHandle, expectedBytes: number, signal?: Ab
 
 async function assertPrepared(plan: FileCommitPlan, hooks: FileCommitHooks, handle: FileHandle): Promise<void> {
   hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
-  if (await hooks.assertPathAllowed() !== plan.target.canonical
-    || await realpath(plan.parent.path) !== plan.parent.canonical
-    || !sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)
-    || !sameIdentity(plan.target, await capturePathIdentity(plan.target.path))
+  if (await hooks.assertPathAllowed() !== plan.target.canonical) throw new FileAuthorityError("Prepared path no longer carries publication authority.");
+  const parent = await capturePathIdentity(plan.parent.path, plan.parent), target = await capturePathIdentity(plan.target.path, plan.target);
+  if (!sameIdentity(plan.parent, parent, false)) throw new FileAuthorityError("Prepared publication parent changed.");
+  if (!sameIdentity(plan.target, target)
     || !sameObject(await handle.stat({ bigint: true }), plan.target)) throw new Error("[STALE_STATE] Prepared target or parent identity changed.");
   await plan.metadata.assertCurrent(handle);
   // Permission/metadata callbacks may await. Content must be checked after them.
@@ -131,7 +136,7 @@ async function assertPrepared(plan: FileCommitPlan, hooks: FileCommitHooks, hand
 }
 
 async function assertTemporary(temporary: OwnedTemporary, plan: FileCommitPlan): Promise<void> {
-  if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path), false)) throw new Error("[STALE_STATE] Temporary parent identity changed.");
+  if (!sameIdentity(plan.parent, await capturePathIdentity(plan.parent.path, plan.parent), false)) throw new Error("[STALE_STATE] Temporary parent identity changed.");
   const info = await lstat(temporary.path, { bigint: true });
   if (info.isSymbolicLink() || !sameObject(info, temporary) || info.nlink !== 1n) throw new Error("[STALE_STATE] Temporary file identity changed.");
 }
@@ -170,7 +175,7 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
   const buffered = content instanceof Uint8Array;
   const expectedHash = buffered ? createHash("sha256").update(content).digest("hex") : content.sha256;
   if (!Number.isSafeInteger(content.byteLength) || content.byteLength < 0 || !SHA256_PATTERN.test(expectedHash)) throw new Error("[STALE_STATE] Invalid commit source size or digest.");
-  let failure: unknown, failed = false;
+  let failure: unknown, failed = false, stopInvocation = false;
   try {
     hooks.signal?.throwIfAborted(); hooks.assertCurrent?.();
     if (plan.target.directory || plan.parent.canonical !== dirname(plan.target.canonical)) throw new Error("[STALE_STATE] Invalid prepared commit target.");
@@ -277,7 +282,16 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
       if (!sameObject(await post.stat({ bigint: true }), publishedObject!) || await hashOpened(post, content.byteLength) !== expectedHash) throw new Error("Postcommit object/content verification failed.");
       await plan.metadata.assertPostimage?.(post);
     } finally { await post.close(); }
-  } catch (error) { failure = error; failed = true; }
+  } catch (error) {
+    failure = error; failed = true;
+    // Includes later candidate creation and failed publication syscalls. The
+    // receipt keeps its physical outcome; lost authority only stops continuation.
+    if (!fileInvocationMustStop(failure)) {
+      try { await assertFilePathAfterFailure(plan.parent); await assertFilePathAfterFailure(plan.target); }
+      catch (authorityError) { failure = authorityError; }
+    }
+    stopInvocation = fileInvocationMustStop(failure);
+  }
   finally {
     // Re-restrict only a proved owned, unpublished object. Never chmod a name
     // that may have become the published target or someone else's replacement.
@@ -289,12 +303,13 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
         if (!sameObject(await recovery.stat({ bigint: true }), temporary)) throw new Error("Temporary identity changed before privacy restoration.");
         await plan.metadata.protectTemporary(recovery, temporary.path);
       } catch (error) {
+        stopInvocation ||= fileInvocationMustStop(error);
         failure = new Error(`${failure instanceof Error ? failure.message : String(failure)}; temporary privacy not confirmed: ${error instanceof Error ? error.message : String(error)}`);
         failed = true;
-      } finally { if (recovery) try { await recovery.close(); } catch (error) { failure ??= error; failed = true; } }
+      } finally { if (recovery) try { await recovery.close(); } catch (error) { failure ??= error; failed = true; stopInvocation ||= fileInvocationMustStop(error); } }
     }
-    if (staged) try { await staged.close(); } catch (error) { failure ??= error; failed = true; }
-    if (source) try { await source.close(); } catch (error) { failure ??= error; failed = true; }
+    if (staged) try { await staged.close(); } catch (error) { failure ??= error; failed = true; stopInvocation ||= fileInvocationMustStop(error); }
+    if (source) try { await source.close(); } catch (error) { failure ??= error; failed = true; stopInvocation ||= fileInvocationMustStop(error); }
     if (temporary && receipt.outcome === "unknown") {
       receipt.retainedTemporary = temporary.path;
       receipt.cleanupReason = "Publication outcome is unknown; temporary retained for explicit recovery observation. Its publication permissions may already be applied; privacy was not altered while object placement is uncertain.";
@@ -306,6 +321,6 @@ export async function commitPreparedFile(plan: FileCommitPlan, content: Uint8Arr
   // A confirmed commit followed by a postcheck/close failure keeps the same receipt.
   if (publishedObject) committedFileIdentities.set(receipt, Object.freeze({ path: plan.target.canonical,
     device: publishedObject.device, inode: publishedObject.inode }));
-  if (failed) throw new FileCommitError(failure, receipt, expectedHash);
+  if (failed) throw new FileCommitError(failure, receipt, expectedHash, stopInvocation);
   return receipt;
 }

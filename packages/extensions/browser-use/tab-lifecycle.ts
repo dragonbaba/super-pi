@@ -7,6 +7,8 @@ import json as _pi_json
 import os as _pi_os
 from pathlib import Path as _pi_Path
 _pi_tab_file = _pi_Path(${JSON.stringify(statePath.replaceAll("\\", "/"))})
+# The CLI starts in a stable parent so its daemon cannot lock this directory on Windows.
+_pi_os.chdir(_pi_tab_file.parent)
 _pi_tabs = {}
 if _pi_tab_file.exists():
     if _pi_tab_file.stat().st_size > 8192:

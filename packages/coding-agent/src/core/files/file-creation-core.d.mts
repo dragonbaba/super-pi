@@ -17,4 +17,4 @@ export function executeFileCreationDirectories(plan: FileCreationPlan, assertPat
 export function executeFileCreation(plan: FileCreationPlan, content: string | Uint8Array, assertPathAllowed: () => Promise<string>, signal?: AbortSignal,
   beforeExclusiveCreate?: (path: string) => void | Promise<void>, sharedDirectories?: Map<string, PathIdentity>, assertAuthority?: () => void,
   structuredFailure?: boolean): Promise<CreationResult>;
-export class FileCreationFailure extends Error { readonly facts: Record<string, unknown>; }
+export class FileCreationFailure extends Error { readonly facts: Record<string, unknown>; readonly stopInvocation: boolean; }

@@ -84,8 +84,8 @@ test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts an
   });
   writeFileSync(join(cwd, "current"), "before");
   const partial = await call("file_batch", { operations: [{ operation: "write", mode: "create", path: "first", content: "first" }, { operation: "delete", path: "current" }, { operation: "write", mode: "create", path: "last", content: "last" }] });
-  assert.deepEqual((partial.details as any).items.map((item: any) => item.status), ["succeeded", "failed_no_change", "not_started"]);
-  assert.equal(existsSync(join(cwd, "last")), false);
+  assert.deepEqual((partial.details as any).items.map((item: any) => item.status), ["succeeded", "failed_no_change", "succeeded"]);
+  assert.equal(readFileSync(join(cwd, "last"), "utf8"), "last");
   const shellNames = process.platform === "win32" ? ["bash", "powershell"] : ["bash"];
   writeFileSync(join(cwd, "sub/marker.txt"), "sub-target");
   for (const name of shellNames) {
@@ -118,17 +118,17 @@ test("A+B+C actual SDK Session: mixed tools, final handoffs, partial receipts an
   // mutation queue would prevent this real invocation from completing.
   assert.equal((await call("file_batch", { dryRun: true, operations: [
     { operation: "delete", path: "first" }, { operation: "delete", path: "current" },
-    { operation: "write", mode: "create", path: "last", content: "not applied" },
+    { operation: "delete", path: "last" },
   ] })).isError, false);
   const beforeReceipts = await currentReceipts(manager);
-  assert.equal(beforeReceipts.filter((item: any) => item.toolCallId === partial.toolCallId && item.status === "succeeded").length, 1);
+  assert.equal(beforeReceipts.filter((item: any) => item.toolCallId === partial.toolCallId && item.status === "succeeded").length, 2);
   const file = manager.getSessionFile()!; assert.ok(file);
   session.dispose(); const reopened = SessionManager.open(file);
   await session.waitForSessionLeaseRelease(); await options.resourceLoader.reload();
   ({ session } = await createAgentSession({ ...options, sessionManager: reopened })); runner = session.extensionRunner; await session.bindExtensions({});
   const receipts = await currentReceipts(reopened);
   assert.deepEqual(receipts, beforeReceipts);
-  assert.equal(readFileSync(join(cwd, "first"), "utf8"), "first"); assert.equal(readFileSync(join(cwd, "current"), "utf8"), "concurrent"); assert.equal(existsSync(join(cwd, "last")), false);
+  assert.equal(readFileSync(join(cwd, "first"), "utf8"), "first"); assert.equal(readFileSync(join(cwd, "current"), "utf8"), "concurrent"); assert.equal(readFileSync(join(cwd, "last"), "utf8"), "last");
   assert.equal(session.agent.state.pendingToolCalls.size, 0); assert.equal(((runner as any).finalAuthorizations?.size ?? 0), 0);
   t.diagnostic(JSON.stringify({ mixedCalls: calls, approvals, receipts: receipts.length, pendingTools: 0, finalAuthorizations: 0, shellBackends: shellNames, reopened: true }));
 });

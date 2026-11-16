@@ -1,0 +1,82 @@
+# 会话故障与远端压缩核实（2026-11-16）
+
+## 已确认的问题
+
+- 排查开始时，最新长会话有 1,306 条记录、约 89.2 MB；存在三条 `provider_completed` 远端压缩用量记录，没有本地 `compaction` 条目。这证明三次返回已被解析，不能证明本地检查点完成。旧版失败事件只发给当时的界面，无法从已关闭的界面恢复具体错误。本记录不保存私人会话内容、配置或真实请求。
+- Browser Harness 在执行 Python 脚本前启动守护进程，启动代码未指定 cwd，继承 CLI 的临时工作目录。Windows 隔离进程验证：进程存活时删除该目录返回 `EBUSY`，退出后同路径删除成功。空标签归属文件也不代表目录可删除。
+- 已激活的 `subagent` 是顶层编排工具，CodeMode 故意排除它；原先 `describeTools` 却把它描述为未激活，并引导重复搜索。未激活工具搜索为空又被误读为子代理缺失。
+
+## 修改
+
+- Browser CLI 从稳定父目录启动，预置 Python 在运行模型脚本前进入任务工作目录；脚本相对路径和标签归属保持不变。清理仍等待真实进程退出、只关闭记录的标签、使用现存 daemon；失败仍保留归属，不自动重连或停止共享 daemon。旧进程仍可能占用旧目录，本次未删除它。
+- CodeMode 将顶层工具标为 `TOOL_DIRECT_ONLY`，使用顶层 schema；说明 `ALL_TOOLS` 的脚本范围，空搜索结果也明确只涉及未激活工具。没有开放嵌套编排或改变工具权限。
+- 宿主把压缩失败/取消写为 `compaction-failure-v1`。仅保留触发原因、取消及扩展标记、512 字符以内单行界面错误，不复制请求体、响应、headers 或栈；诊断写入失败不应替换原始错误。它用于下次失败后的重启诊断，不是此次历史失败的根因修复。
+
+## 压缩与更新核实
+
+- 对照 [OpenAI Codex 当前远端 V2 实现](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_remote_v2.rs)及[结果安装流程](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact_remote_v2_installation.rs)：基本协议仍为 `compaction_trigger` → `compaction`；近期 retained-history、采样 hook 和 rollout-budget 修改不足以证明本次失败由上游更新导致。
+- 本地相关历史：`492070c2e`（11 月 10 日）延迟构建保留消息分词器；`104355803`（11 月 12 日）传输计量和大请求处理。尚无复现证据把任一提交定位为此次压缩回归。
+- 长历史的隔离副本以模拟提供商响应重放，压缩可完成；这是离线控制，不是原始失败的真实重现。
+- 当前账号、相同模型、纯合成历史真实探测两次：源码工厂和路径加载扩展均完成普通请求、远端 V2 压缩和本地落盘；压缩前分别为 7,220 / 7,222 token，每次各保存一个检查点。这排除当前接口全面失效，不覆盖约 49 万 token 的原会话和当时的服务状态。
+- 三次旧远端结果只有 hash/用量，具体错误和 opaque artifact 未保存；本轮不能恢复原始 artifact，也未重发私人历史或重跑已完成工具。
+
+## 批量文件操作复核
+
+会话中有 13 次 `file_batch`：11 次成功，40 个顶层文件项的 intent、commit、result 逐项对应，每次批量有一条 complete；另两次分别是后续编辑的原文不存在、匹配不唯一。两个失败回执均为 `executed: false`，没有该调用的提交日志，之后修正的四文件批量成功。现有证据不支持把这两次预检拒绝认定为部分执行或假成功。
+
+上述是旧版整批拒绝行为的历史审计。用户要求改为：先确认实际文件/唯一匹配，每项先预检，普通失败后继续其他独立项，成功只反馈成功，失败仅提炼失败部分，成功项绝不自动重试。
+
+当前 Native 与 MXC 的 v3 `file_batch` 在任何效果前检查全部项；文件或原文不存在、匹配不唯一、版本变化等明确未修改失败作为原序号的 `failed_no_change` 保存，其余独立项继续。失败项不获得执行能力，全部失败时不进入文件执行器。结构/路径冲突和权限校验仍保持整次调用边界；取消、授权失效、未知效果、需核验修改、日志/传输故障仍停止。失败占位记录复用授权的规范路径，保留请求、intent 和分页结果的绑定。
+
+CodeMode 保留子工具的失败事实，对已完成且仅有明确未修改失败的批量返回 `CODEMODE_PARTIAL`，自动展示有界失败诊断并继续脚本；显式 `show` 不重复展示。正文仅有成功计数、失败序号/路径/原因和结果引用，失败样本上限 8 项，完整结果仍可分页查询。工具说明和 schema 要求组装批量前核实源路径及唯一匹配，不确定时先 dryRun，修正时只提交失败项。
+
+回归覆盖 Native 缺失/歧义编辑、只重试修正项且成功项 mtime 不变；MXC 首/中/尾失败、验证阶段源变化、全部失败、无效拒绝协议及精确归属的临时清理；40 个全失败项保留完整分页结果、8 个摘要样本；真实 SDK 脚本在批量部分完成后继续并提交 store。MXC 夹具运行真实 worker 和宿主编解码/归属管理，仅替代进程启动，不声称真实 MXC 进程验收。
+
+授权对话框期间路径改向仍在第一个效果前拒绝；执行期间把已批准目录替换为指向其他位置的链接时，停止后续项并保留两个位置的文件，下一次独立请求成功。任务完成检查继续阻止未修复失败，成功项不会进入修复请求或重开会话后的执行。
+
+Native 发布/创建异常及 MXC 验证/执行回执共享无副作用的致命失败判定，跨包装保留 `stopInvocation`。MXC 的父目录改向和准备清单的完整性、写入、发布失败不能降为普通文件拒绝；只读预检中的文件内容变化仍按项失败。旧候选回放三个 worker 回归均失败，修复后通过；宿主集成覆盖验证/执行两个阶段、首/末项改向、同 inode 清单污染及 ENOSPC，并验证 0 越界文件效果和归属清理。新增共享模块同时加入宿主包和 MXC 的精确运行时资产表。
+
+Native 和 MXC 叶子身份先用 lstat 观察，再解析路径，共享无分配的路径/链接身份判定，区分悬空链接替换与真实文件消失。前者跨预检、执行和发布阶段保持致命授权错误，后者仍允许独立项继续。旧候选的 MXC 悬空链接两例失败、真实缺失两例通过；原生删除/覆盖、预检/逐项执行、首/末位置的 8 个链接替换案例失败、8 个真实缺失对照通过。修复后这些回归均通过，包含失败后的下一次独立请求与精确清理。复用已有的 `captureTreeIdentity`，额外一次叶子 lstat 是防混合身份的必需预检；正常目录循环只对既有身份调用同步判定，不新增逐叶子回调、Promise、包装对象或缓存。
+
+执行边界复审补充了复制 open、移动 link、删除 unlink、替换候选创建失败的祖先核验；旧候选的 16 个目录替换断言失败、4 个真实缺失对照通过。目录被同路径新 inode 替换同样停止调用；共享身份采集复用原有返回对象判定目录身份，不重复构造统计字符串。异常时只核验当前源/目标父目录，物理回执仍按原始 I/O 的已知无效果事实计算；新增两个父目录引用归属于树执行器，在 finally 清空。发布异常跨隐私恢复/关闭失败保持致命标记。Windows 夹具仅在候选失败注入前关闭其合成读句柄，允许目录改名；不声称真实 Windows 会越过仍持有的句柄约束。
+
+Windows CI 的同步真实缺失对照暴露了 8.3 短路径差异：异步 realpath 与 `realpathSync.native` 展开 `ADMINI~1`，默认 `realpathSync` 保留短名，导致假改向。同步异常核验现使用 native，保持身份严格比较；可移植的短名模拟在旧候选失败，修复后通过，另有本机用户目录元数据对照。后续 CI 的三例复制注入未触发，原因是夹具原始路径与执行器规范路径拼写不同；故障注入改用准备计划的实际 syscall 路径，并断言注入次数。任务目录内别名临时根运行 65 项路径/真实缺失/共享目录对照全部通过。没有在全局临时目录写入探测文件。
+
+文本预检现在先校验父目录，再核对目标；共享创建目录也先于新出现的目标核验，避免普通目标失败短路掉目录授权失败。Native 和 MXC 都使用该顺序。创建的 mkdir/open 异常通过具名失败生命周期 `assertCreationPathsAfterFailure` 检查原始祖先、自己的创建记录及本项复用的共享目录；错误类别跨包装保留完整致命判定。旧候选 27 个断言失败，14 个真实缺失/目标竞争对照通过；修复后全部通过，另覆盖 Native 同类目标出现窗口；复制/移动在 Native 与 MXC 的同类共享目标窗口中，旧候选 8 个目录替换断言失败、16 个普通竞争或已修写入对照通过，修复后全部通过。正常共享父目录的预效果校验增加一次必需身份采集，使用现有文件系统 Promise，移除了 absent 中间数组；没有新增逐项回调或 Promise 包装器，异常 helper 不在正常逐文件调用链中。
+
+创建父目录交给树执行器时也继续绑定共享创建记录，不能在末次校验后重新采集并接受同路径的新目录。实际探测在旧候选中成功复制到替换目录；Native/MXC 的 copy/move 四例均复现，修复后在文件效果前拒绝，并保留已创建目录的 partial/需核验事实。准备期间目录刚好出现的四例正常对照仍成功，使用准备时记录的祖先身份。该交接只给既有身份采集传入记录，不新增 I/O、回调或缓存。
+
+失败出口同时核对已准备的父目录：Native 的 `assertNativeItemParentsAfterFailure` 覆盖预检异常和失败回执，MXC 清单验证覆盖后续叶子/哈希异常，树清单逐项异常核对该项已记录的父目录。旧候选中 Native/MXC 覆盖复制的目录替换有 8 个断言失败、4 个真实缺失对照通过；嵌套树校验/执行另有 4 个替换断言失败、2 个缺失对照通过。父目录采集不再把所有解析失败都包装为授权失败：共享分类器未发现替换时保留 ENOENT，消失时机不改变普通项失败语义。旧候选的该时机对照失败，目录/链接替换仍拒绝；修复后上述 21 项全部通过，含首/末位置、下一请求及 0 遗留交换清单。这些额外文件系统观察只在失败生命周期执行，不改变正常逐叶子 I/O 或回调数量。
+
+直接父目录缺失时，`assertTreeParentsAfterFailure` 沿不可变清单的父索引核对全部已记录祖先，覆盖树重校验、源删除 syscall 及目标复制 syscall 的失败出口。旧候选有 6 个较深祖先替换断言失败、10 个浅层/真实移除对照通过；修复后全部通过，MXC 宿主首/末位置的 4 个缺失中间层对照也通过，包含 0 遗留清单和下一次请求。源/目标各一个整数索引由树执行器持有，finally 还原；错误遍历按清单已有父关系终止，无数组、缓存或新深度限制，不增加正常 I/O。
+
+最后一次 Windows CI 的 6 个原生哈希夹具未触发注入：哈希实际打开 `plan.source.path`，夹具却使用规范路径，在 8.3 临时根下二者不同。改用准备计划记录的实际打开路径并保留恰好一次注入断言，整个 158 项原生批量模块在别名临时根及普通临时根均通过。这一修正仅涉及夹具，不触及生产热路径；沿用同一生产源码的构建与分配证据。
+
+## 验证
+
+在旧源码上回放新增断言，两例分别复现临时 daemon cwd 和错误的 `TOOL_UNAVAILABLE` 引导；修复后通过。Python 离线夹具验证脚本 cwd、三次搜索复用、八标签边界和只关闭归属标签；生命周期夹具验证失败保留、取消等待和引用释放。模拟检查点写入失败后，重开 JSONL 能读到 provider receipt 和有界失败诊断，下一次普通请求不自动重新付费压缩。
+
+最终候选的 `npm run check` 和离线构建通过（12/12 包）。受影响的 Native/MXC、SDK、权限、恢复、协议、发布与源码分配约束检查 633 项：630 通过、3 平台跳过、0 失败。`f3469b6b6` 冻结全量 runner 完成 461 个执行单元：6,308 项通过、116 项平台跳过、0 失败；祖先与 hash-open 补全后的最终 head CI 独立核对。一次较早的并发全量曾有 Windows 后台 PID 存活断言失败，整个 27 项文件独立复测通过；保留该已观察失败，不推断其根因。Windows CI 另确认故障注入不能仅依赖 staged 回调，测试改在两种发布策略都会执行的 authority 回调注入并断言恰好执行一次。失败生命周期断言继续验证原消息/提供商上下文不变、撤销授权后 0 请求、0 陈旧检查点及引用释放；允许的新增条目只有精确检查的诊断记录。这里不是声称原始真实长会话的压缩失败已被复现或解决。
+
+新增错误标记仅分配在失败生命周期，MXC 顶层预检复用同一次身份采集，没有新增逐目录叶子、delta、progress 或 frame 回调；异常包装只保留布尔归因，不保留原始请求或大对象。`capturePathIdentity(path, expected)` 与 `captureTreeIdentity(path, expected)` 在已准备源、覆盖目标、父目录、创建祖先/共享目录及流式读取核对中保留同一身份归因，覆盖第一次 lstat 后到 realpath 之间发生替换的并发窗口。解析、发布/哈希/流式源的打开、读取、关闭和创建失败才调用 `assertFilePathAfterFailure`；MXC 同步文本发布使用同语义的 `assertFilePathAfterFailureSync`。这些具名错误生命周期允许额外 lstat/realpath；叶子不可达时向上寻找现存祖先，比较重建的规范路径，识别更高祖先的悬空重定向。遍历只有调用内路径游标，按有限路径组件终止，无缓存、数组或新工具限制；未改变的原有别名下真实缺失仍保持普通错误。流式关闭失败保留先前致命错误；创建回执在提升权限归因时仍保留原始 I/O 的已知无效果事实。复制目标、发布 open、创建祖先、验证后的 hash-open、解析并发窗口、MXC 文本发布及更高祖先均有旧候选失败/真实缺失通过的对照，修复后全部通过。已分配路径的规范范围错误及错误归属清单名称仍是全调用协议失败。
+
+分配审计覆盖 `SessionFiles.prepareInvocation → FileMutation.prepare/execute → FileService.withPreparedItems / SandboxFileService → worker → FileResultWriter/Reader`，以及 `CodemodeController.runChild → boundCodemodeResult → show → parent completion/disposal`。新增分配是请求级失败占位/Map、仅存在预检失败时的有效项引用数组、有界失败展示和每个结果一个布尔标记；未新增 per-delta/progress/frame 回调、Promise、AbortController 或 wrapper。数组/Map 归属于单次调用，结束、异常、取消与 disposal 清空并释放；无对象池。
+
+同机 Node 26.13、每种操作 100 目标，以 `9cd726d6c` 和最终候选运行相同成功工作负载；两版均验证 copy/move/delete/file_batch 的全部磁盘结果、完整分页和 1,620 条历史记录。HeapProfiler 采样总字节 344,421,152 → 345,250,952；峰值 heap 55,095,192 → 57,644,576，峰值 RSS 163,024,896 → 164,376,576；四次受控 GC 后 heap 27,019,608 → 26,833,144，RSS 102,834,176 → 99,368,960。两版 701 个计划弱引用均剩余 0，pending/revision 均为 0。批量 CPU user+system 501 → 578 ms，四类合计 2,516 → 2,578 ms，批量耗时 486.79 → 505.46 ms；单次采样不支持性能改善结论。主要分配点仍是路径解析、文件系统状态/异常和日志解析；新增失败行为另由上述回归验证。
+
+CodeMode 同机等量 SDK 基准（10 采样周期、1 预热周期）：两版均完成 242 子调用，11 Worker 启动/停止，55 个弱引用经 GC 后剩余 0，待处理 evidence 为 0。宿主采样 30,079,568 → 30,151,992 字节；首次批量中位数 26.30 → 26.29 ms，暖批量中位数 12.59 → 12.60 ms。主要分配点为 split/join、createContext 和 stringify；这是离线提供商和宿主 heap，不覆盖 UI 或 Worker heap。
+
+维护的复跑入口：
+
+```powershell
+npm.cmd run check
+npm.cmd run build:offline
+node --expose-gc --experimental-strip-types --test --test-concurrency=1 tests/tool-reliability-recovery.test.ts tests/codemode-session.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts tests/alpha-task-quit.test.ts tests/alpha-compaction-quit.test.ts tests/bundled-extensions.test.ts tests/codemode-hot-paths.test.ts tests/allocation-cleanup-hot-paths.test.ts
+node --expose-gc --experimental-strip-types --test tests/file-mutation-v3.test.ts tests/file-sandbox-service-v3.test.ts tests/mxc-file-mutation-worker-v3.test.mjs tests/file-rpc-chunks-v3.test.ts tests/file-mutation-source-v3.test.ts
+# 设置 SP_FILE_BENCH_TARGETS=100 后运行等量分配检查
+node --expose-gc --experimental-strip-types --test scripts/bench/file-mutations-v3.ts
+node --expose-gc --experimental-strip-types scripts/bench/codemode-session.ts
+npm.cmd test -- --keep-going
+```
+
+测试子进程的 `TMP`、`TEMP`、`TMPDIR` 应指向各自 `.task-tmp/<task-id>-<unique-id>/`，并设置隔离的 `SP_CODING_AGENT_DIR` 和 `SP_OFFLINE=1`。真实提供商探测与上述离线回归分别计量。

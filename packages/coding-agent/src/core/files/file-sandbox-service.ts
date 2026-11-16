@@ -8,7 +8,7 @@ import { SandboxWriteParameters, SandboxEditParameters } from "./file-parameters
 import { validateWriteContent } from "./revision-mutations.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
 import { planFileRpc, serializeFileRpc, fileRpcItemChunk, type FileRpcEnvelope, type FileRpcPlan, type FileRpcChunk, type FileRpcControl } from "./file-rpc-chunks.ts";
-import { fileRpcReplyItems, fileRpcPreparedManifest, fileRpcValidatedContent, fileRpcExecutedReceipt } from "./file-rpc-replies.ts";
+import { fileRpcReplyItems, fileRpcPreparedManifest, fileRpcValidatedContent, fileRpcExecutedReceipt, fileRpcItemFailure } from "./file-rpc-replies.ts";
 import { readFileWorkerManifest, writeFileParentManifest, readFileParentManifest,
   type FileWorkerInput, type FileWorkerRequest, type PreparedFileWorkerManifest } from "./file-worker-plan.mjs";
 import type { OwnedManifestFile } from "./file-manifest-artifact.mjs";
@@ -74,6 +74,7 @@ export class SandboxFileService implements FileMutationService {
   private input: FileWorkerInput[] = [];
   private plan: FileRpcPlan | undefined;
   private rows: Array<RemoteRow | undefined> = [];
+  private readonly failures = new Map<number, string>();
   private indexes = new WeakMap<PreparedFileItem, number>();
   private readonly owned = new Map<string, Readonly<OwnedManifestFile>>();
   private selected: Set<PreparedFileItem> | undefined;
@@ -144,7 +145,9 @@ export class SandboxFileService implements FileMutationService {
       for (let index = chunk.start; index < chunk.end; index++) controls.push({ owned: await this.allocate(index) });
       const replies = await this.rpc("prepare", chunk, { prepared: controls });
       for (let offset = 0; offset < replies.length; offset++) {
-        const index = chunk.start + offset, input = this.input[index], manifest = fileRpcPreparedManifest(replies[offset], controls[offset].owned);
+        const index = chunk.start + offset, input = this.input[index], failure = fileRpcItemFailure(replies[offset]);
+        if (failure !== undefined) { this.failures.set(index, failure); continue; }
+        const manifest = fileRpcPreparedManifest(replies[offset], controls[offset].owned);
         const prepared = await readFileWorkerManifest(this.envelope!, input, index, manifest); this.current();
         const header = prepared.header, paths = [header.target]; if (header.destination) paths.push(header.destination);
         const item: PreparedFileItem = { operation: input.operation, input: { path: input.path }, target: header.target, executionPath: header.target, paths,
@@ -162,21 +165,31 @@ export class SandboxFileService implements FileMutationService {
   };
   async prepareV3(operation: FileOperation, raw: unknown, signal?: AbortSignal): Promise<PreparedFileItem> {
     this.current(); signal?.throwIfAborted();
-    const row = this.rows[this.preparingIndex++];
+    const index = this.preparingIndex++, failure = this.failures.get(index);
+    if (failure !== undefined) throw new Error(failure);
+    const row = this.rows[index];
     if (!row || row.item.operation !== operation || row.item.requestHash !== mutationRequestHash(operation, raw)) throw new Error("[STALE_STATE] Prepared sandbox item or request hash changed.");
     row.item.input = raw as FileOperationInput;
     if (row.item.tree) row.item.tree = Object.freeze({ ...row.item.tree, input: row.item.input });
     return row.item;
   }
-  private readonly validateAll = async (): Promise<void> => {
-    for (const chunk of this.plan!.chunks) {
+  private async validateChunk(chunk: FileRpcChunk): Promise<void> {
       const prepared = []; for (let index = chunk.start; index < chunk.end; index++) prepared.push({ manifest: this.rows[index]!.item.remote!.manifest });
       const replies = await this.rpc("validate", chunk, { prepared, preview: this.dryRun });
       for (let offset = 0; offset < replies.length; offset++) {
-        const row = this.rows[chunk.start + offset]!, content = fileRpcValidatedContent(replies[offset], row.prepared, this.dryRun);
+        const index = chunk.start + offset, row = this.rows[index]!, failure = fileRpcItemFailure(replies[offset]);
+        if (failure !== undefined) { this.failures.set(index, failure); continue; }
+        const content = fileRpcValidatedContent(replies[offset], row.prepared, this.dryRun);
         row.item.remote!.validated = content;
         if (row.item.tree && content.sourceSha256) row.item.tree = Object.freeze({ ...row.item.tree, sourceHash: content.sourceSha256 });
       }
+  }
+  private readonly validateAll = async (): Promise<void> => {
+    for (const chunk of this.plan!.chunks) {
+      let missing = false;
+      for (let index = chunk.start; index < chunk.end; index++) if (!this.rows[index]) { missing = true; break; }
+      if (!missing) await this.validateChunk(chunk);
+      else for (let index = chunk.start; index < chunk.end; index++) if (this.rows[index]) await this.validateChunk(fileRpcItemChunk(this.envelope!, this.input, index));
     }
     this.validated = true;
   };
@@ -184,11 +197,14 @@ export class SandboxFileService implements FileMutationService {
     this.current(); hooks.assertCurrent();
     if (!this.selected?.has(item)) throw new Error("[STALE_STATE] Sandbox item is outside its active invocation.");
     if (!this.validated) await this.validateAll();
+    const failure = this.failures.get(this.indexes.get(item)!);
+    if (failure !== undefined) throw new Error(failure);
   }
   private readonly finishEffect = (): void => { this.activeEffect = undefined; };
   private readonly executePrepared: ExecutePreparedFile = (item, id, hooks, itemId) => {
     this.current(); hooks.assertCurrent();
     const index = this.indexes.get(item);
+    while (this.failures.has(this.executingIndex)) this.executingIndex++;
     if (!this.open || this.activeEffect || !this.validated || id !== this.id || itemId !== `${id}:${index}`
       || index !== this.executingIndex || !this.selected?.delete(item)) throw new Error("[FILE_RPC_ORDER] Invalid, reused or overlapping sandbox effect.");
     this.executingIndex++;
@@ -240,7 +256,7 @@ export class SandboxFileService implements FileMutationService {
     }
   };
   async withPreparedItems<T>(items: readonly PreparedFileItem[], run: (execute: ExecutePreparedFile) => Promise<T>, hooks?: FileExecutionHooks): Promise<T> {
-    this.current(); if (this.open || this.selected || !items.length || items.length !== this.input.length) throw new Error("[FILE_RPC_ORDER] Invalid sandbox lock scope.");
+    this.current(); if (this.open || this.selected || !items.length || items.length + this.failures.size !== this.input.length) throw new Error("[FILE_RPC_ORDER] Invalid sandbox lock scope.");
     this.selected = new Set(items); if (this.selected.size !== items.length) throw new Error("[FILE_RPC_ORDER] Duplicate sandbox item.");
     this.hooks = hooks; this.applySignal = hooks?.signal ? AbortSignal.any([this.signal!, hooks.signal]) : this.signal;
     this.open = true; this.runCallback = run;
@@ -259,7 +275,7 @@ export class SandboxFileService implements FileMutationService {
         catch (error) { failure ??= error; }
       }
     } finally {
-      this.owned.clear(); this.rows = []; this.input = []; this.plan = undefined; this.indexes = new WeakMap(); this.revisions.dispose();
+      this.owned.clear(); this.rows = []; this.failures.clear(); this.input = []; this.plan = undefined; this.indexes = new WeakMap(); this.revisions.dispose();
       this.selected?.clear(); this.selected = undefined; this.runCallback = undefined; this.hooks = undefined;
       this.ctx = undefined; this.runtime = undefined; this.signal = undefined; this.applySignal = undefined; this.canonicalPaths = undefined;
       this.envelope = undefined; this.context = undefined; this.backend = undefined; this.runPhase = undefined;

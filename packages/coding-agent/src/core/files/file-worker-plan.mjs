@@ -2,8 +2,9 @@
 // manifest reader; source/destination filesystem observations run in the worker.
 import { lstat } from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
-import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity } from './file-tree-core.mjs';
-import { prepareFileCreation, verifyCreationAncestor, directoryKey } from './file-creation-core.mjs';
+import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason, assertFilePathAfterFailure } from './file-tree-core.mjs';
+import { FileAuthorityError, fileInvocationMustStop } from './file-mutation-failure.mjs';
+import { prepareFileCreation, directoryKey } from './file-creation-core.mjs';
 import { ManifestArtifactWriter, visitManifestArtifact, validateManifestArtifact } from './file-manifest-artifact.mjs';
 import { workspaceFilePath, validFileIdentity } from './file-workspace-path.mjs';
 
@@ -168,7 +169,7 @@ export async function readFileWorkerManifest(request, item, index, descriptor) {
 }
 
 export async function prepareFileWorkerManifest(request, item, index, owned, textPreparation) {
-  need(owned?.name === request.id + '-' + index + '.manifest', 'Unexpected host-assigned manifest name');
+  if (owned?.name !== request.id + '-' + index + '.manifest') throw new Error('[FILE_MANIFEST_INVALID] Unexpected host-assigned manifest name');
   const rootIndex = item.workspaceIndex, target = workspaceFilePath(request.workspaces, rootIndex, item.path, item.operation === 'copy');
   const header = { kind: 'file-plan-v3', ownerId: request.id, generation: request.generation, callId: request.callId, requestHash: request.requestHash, index, itemCount: request.itemCount,
     operation: item.operation, inputHash: item.inputHash, workspaceIndex: rootIndex, destinationWorkspaceIndex: item.destinationWorkspaceIndex,
@@ -212,39 +213,74 @@ export async function prepareFileWorkerManifest(request, item, index, owned, tex
       } else await absent(destination);
     }
   }
-  const writer = await ManifestArtifactWriter.attach(request.exchange, owned);
+  let writer;
   try {
+    writer = await ManifestArtifactWriter.attach(request.exchange, owned);
     writer.append(header);
     if (tree) for (let entry = 0; entry < tree.entries.length; entry++) writer.append({ kind: 'tree', index: entry, parent: tree.entries[entry].parent, identity: tree.entries[entry].identity });
     if (creation) for (let entry = 0; entry < creation.directories.length; entry++) writer.append({ kind: 'directory', index: entry, path: creation.directories[entry] });
     const manifest = await writer.finish();
     return { index, manifest };
-  } finally { await writer.dispose(); }
+  } catch (error) { throw new Error('[FILE_MANIFEST_INVALID] Preparation artifact failed: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
+  finally {
+    if (writer) try { await writer.dispose(); }
+    catch (error) { throw new Error('[FILE_MANIFEST_INVALID] Preparation artifact cleanup failed: ' + boundedReason(error instanceof Error ? error.message : String(error))); }
+  }
+}
+
+async function assertPreparedParent(identity) {
+  if (!sameIdentity(identity, await capturePathIdentity(identity.path, identity), false)) throw new FileAuthorityError('Prepared parent no longer identifies its approved directory.');
+}
+
+async function assertPreparedFile(identity) {
+  // Observe the leaf before resolving it: a dangling replacement link is an
+  // authority change, while an absent original file remains an item mismatch.
+  const observed = await captureTreeIdentity(identity.path, identity);
+  need(sameIdentity(identity, observed), 'Prepared source or overwrite destination changed');
 }
 
 export async function revalidateFileWorkerManifest(request, item, prepared, preview = false, sharedDirectories) {
   const { header, tree, creation } = prepared;
-  workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
-  if (header.sourceParent) need(sameIdentity(header.sourceParent, await capturePathIdentity(header.sourceParent.path), false), 'Prepared source parent changed');
-  if (header.source) need(sameIdentity(header.source, item.operation === 'delete' ? await captureTreeIdentity(header.source.path) : await capturePathIdentity(header.source.path)), 'Prepared source changed');
-  if (header.destination) {
-    workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
-    if (header.destinationParent) need(sameIdentity(header.destinationParent, await capturePathIdentity(header.destinationParent.path), false), 'Prepared destination parent changed');
-    if (header.destinationIdentity) need(sameIdentity(header.destinationIdentity, await capturePathIdentity(header.destination)), 'Prepared overwrite destination changed');
-    else await absent(header.destination);
-  }
-  if (tree) await revalidateTree(tree);
-  if (creation) {
-    await verifyCreationAncestor(creation); await absent(creation.path);
-    for (const path of creation.directories) {
-      const shared = sharedDirectories?.get(directoryKey(path));
-      if (shared) need(sameIdentity(shared, await capturePathIdentity(path), false), 'Shared created parent changed');
-      else await absent(path);
+  try {
+    workspaceFilePath(request.workspaces, item.workspaceIndex, header.target, item.operation === 'copy');
+    if (header.sourceParent) await assertPreparedParent(header.sourceParent);
+    if (header.destination) {
+      workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, header.destination);
+      if (header.destinationParent) await assertPreparedParent(header.destinationParent);
     }
+    if (creation) {
+      await assertPreparedParent(creation.ancestor);
+      for (const path of creation.directories) {
+        const shared = sharedDirectories?.get(directoryKey(path));
+        if (shared) await assertPreparedParent(shared);
+        else await absent(path);
+      }
+      await absent(creation.path);
+    }
+    if (header.source) await assertPreparedFile(header.source);
+    if (header.destination) {
+      if (header.destinationIdentity) await assertPreparedFile(header.destinationIdentity);
+      else await absent(header.destination);
+    }
+    if (tree) await revalidateTree(tree);
+    if (header.text?.exists) need(await hashIdentity(header.source) === header.text.previousSha256, 'Prepared text preimage changed');
+    if (!preview && header.destinationIdentity) return { sourceSha256: await hashIdentity(header.source), previousSha256: await hashIdentity(header.destinationIdentity) };
+    return {};
+  } catch (error) {
+    // A later hash/leaf failure can hide a parent replaced after its first check.
+    if (!fileInvocationMustStop(error)) {
+      if (header.sourceParent) await assertFilePathAfterFailure(header.sourceParent);
+      if (header.destinationParent) await assertFilePathAfterFailure(header.destinationParent);
+      if (creation) {
+        await assertFilePathAfterFailure(creation.ancestor);
+        if (sharedDirectories) for (const path of creation.directories) {
+          const identity = sharedDirectories.get(directoryKey(path));
+          if (identity) await assertFilePathAfterFailure(identity);
+        }
+      }
+    }
+    throw error;
   }
-  if (header.text?.exists) need(await hashIdentity(header.source) === header.text.previousSha256, 'Prepared text preimage changed');
-  if (!preview && header.destinationIdentity) return { sourceSha256: await hashIdentity(header.source), previousSha256: await hashIdentity(header.destinationIdentity) };
-  return {};
 }
 
 const PARENT_HEADER_FIELDS = new Set(['kind', 'ownerId', 'callId', 'generation', 'requestHash', 'index', 'target']);

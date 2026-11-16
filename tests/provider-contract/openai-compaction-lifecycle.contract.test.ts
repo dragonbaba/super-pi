@@ -1730,6 +1730,33 @@ for (const failure of ["remote", "summary"] as const) test(`GPT ${failure} failu
   }
 });
 
+test("a failed local checkpoint preserves the completed provider receipt and diagnostic across restart", async () => {
+  const f = await fixture(true);
+  try {
+    await f.session.prompt("BEFORE_CHECKPOINT_FAILURE");
+    const append = f.manager.appendCompaction;
+    f.manager.appendCompaction = () => { throw new Error("synthetic checkpoint commit failed\n" + "x".repeat(800)); };
+    try { await assert.rejects(f.session.compact(), /synthetic checkpoint commit failed/); }
+    finally { f.manager.appendCompaction = append; }
+    const restored = SessionManager.open(f.manager.getSessionFile()!, f.root);
+    assert.equal(restored.getEntries().some(entry => entry.type === "compaction"), false);
+    const ledger = restored.getEntries().filter(entry => entry.type === "custom" && entry.customType === "compaction-usage-ledger-v2");
+    assert.equal(ledger.length, 1);
+    const diagnostic: any = restored.getEntries().find(entry => entry.type === "custom" && entry.customType === "compaction-failure-v1");
+    assert.equal(diagnostic.data.schemaVersion, 1);
+    assert.equal(diagnostic.data.reason, "manual");
+    assert.equal(diagnostic.data.aborted, false);
+    assert.equal(diagnostic.data.fromExtension, true);
+    assert.match(diagnostic.data.errorMessage, /synthetic checkpoint commit failed/);
+    assert.equal(diagnostic.data.errorMessage.length, 512);
+    assert.doesNotMatch(diagnostic.data.errorMessage, /\n/);
+    const before = f.requests.length;
+    await f.session.prompt("AFTER_CHECKPOINT_FAILURE");
+    assert.equal(f.requests.length, before + 1, "the next prompt sends no automatic paid compaction retry");
+    assert.equal(f.requests.at(-1)!.payload.input.some((item: any) => item.type === "compaction"), false);
+  } finally { await f.release(); }
+});
+
 test("non-GPT native failure retains the existing local compaction fallback", async () => {
   const f = await fixture(false, "remote", "o3");
   try {
@@ -2066,12 +2093,23 @@ for (const operation of ["compact", "branch"] as const) for (const phase of ["au
       f.runtime.getAuth = async (model, options) => { started(); await gate; return original(model as any, options); };
     }
     const leaf = f.manager.getLeafId(), count = f.manager.getEntries().length;
+    const contextBefore = f.manager.buildSessionContext().messages;
     const pending = operation === "compact" ? f.session.compact() : f.session.navigateTree(f.manager.getEntries().find(entry => entry.type === "message")!.id, { summarize: true });
     const rejected = assert.rejects(pending, /credential.*changed|authentication.*changed/i);
     try {
       await entered; await f.runtime.logout("openai"); resume(); await rejected;
       assert.equal(await f.credentials.read("openai"), undefined);
-      assert.equal(f.requests.length, 0); assert.equal(f.manager.getLeafId(), leaf); assert.equal(f.manager.getEntries().length, count);
+      assert.equal(f.requests.length, 0);
+      assert.deepEqual(f.manager.buildSessionContext().messages, contextBefore, "failure diagnostics never enter provider history");
+      if (operation === "compact") {
+        const diagnostic: any = f.manager.getLeafEntry();
+        assert.equal(diagnostic.customType, "compaction-failure-v1");
+        assert.equal(diagnostic.parentId, leaf);
+        assert.equal(f.manager.getEntries().length, count + 1);
+        assert.doesNotMatch(JSON.stringify(diagnostic), /synthetic-stored-key/);
+      } else {
+        assert.equal(f.manager.getLeafId(), leaf); assert.equal(f.manager.getEntries().length, count);
+      }
       assert.equal(f.session.isCompacting, false);
     } finally { resume(); await pending.catch(() => {}); await f.release(); }
   });

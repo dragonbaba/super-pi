@@ -3,6 +3,7 @@ export const NATIVE_FILE_RUNTIME_ASSETS = Object.freeze([
   'native-file-worker.mjs', 'native-file-regex.mjs', 'file-operation-limits.mjs', 'file-tree-core.mjs',
   'file-manifest-artifact.mjs', 'mxc-file-publication.mjs', 'file-runtime-assets.mjs', 'file-creation-core.mjs', 'file-creation-core.d.mts',
   'file-worker-plan.mjs', 'file-worker-plan.d.mts', 'file-workspace-path.mjs', 'file-workspace-path.d.mts',
+  'file-mutation-failure.mjs', 'file-mutation-failure.d.mts',
   'file-operation-limits.d.mts', 'file-tree-core.d.mts', 'file-manifest-artifact.d.mts',
   'mxc-file-publication.d.mts', 'file-runtime-assets.d.mts',
 ]);
@@ -19,6 +20,7 @@ export const MXC_FILE_RUNTIME_ASSETS = Object.freeze([
   Object.freeze(['../files/mxc-file-publication.mjs', 'core/files/mxc-file-publication.mjs']),
   Object.freeze(['../files/file-creation-core.mjs', 'core/files/file-creation-core.mjs']),
   Object.freeze(['../files/file-worker-plan.mjs', 'core/files/file-worker-plan.mjs']),
+  Object.freeze(['../files/file-mutation-failure.mjs', 'core/files/file-mutation-failure.mjs']),
   Object.freeze(['../files/file-workspace-path.mjs', 'core/files/file-workspace-path.mjs']),
 ]);
 export const MXC_FILE_WORKER_PATH = 'core/sandbox/worker.mjs';
