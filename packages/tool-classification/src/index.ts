@@ -181,7 +181,8 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params) {
       const query = params.query.trim().toLowerCase().normalize("NFC");
       const requested = requestedCategory(query);
-      const browserDebug = requested === "browser_debug" || BROWSER_DEBUG_QUERY.test(query);
+      const browserDebug = requested === "browser_debug"
+        || (requested === undefined || requested === "browser") && BROWSER_DEBUG_QUERY.test(query);
       const category = browserDebug ? "browser_debug" : requested;
       const terms = normalizedTerms(query);
       const wordScoreLimit = (terms.length + 1) ** 2;

@@ -25,6 +25,23 @@ test("browser debugging phrases retain precedence over a shorter browser categor
   assert.deepEqual((await f.search("browser DOM inspection", 1)).details.added, ["chrome_devtools_evaluate"]);
 });
 
+test("debug words do not override non-browser categories or borrow the browser approval pause", async () => {
+  for (const [category, name] of [["memory", "memory_search"], ["delegation", "subagent"], ["skills", "skill_manage"], ["mcp", "mcp_search_tools"], ["navigation", "lsp_navigate"]]) {
+    const f = searchFixture([
+      { name, description: "category fixture" },
+      { name: "chrome_devtools_evaluate", description: "devtools settings" },
+    ]);
+    f.setActive(["tool_search", name]);
+    assert.deepEqual((await f.search(`${category}: recall devtools settings`, 1)).details.added, []);
+    f.setActive(["tool_search"]);
+    f.emit("tool_execution_end", { toolName: "browser_exec", isError: true,
+      result: { content: [{ type: "text", text: "[BROWSER_EXEC_PERMISSION_REQUIRED] Chrome approval pending" }] } });
+    const selected = await f.search(`${category}: devtools settings`, 1);
+    assert.equal(selected.details.blocked, undefined);
+    assert.deepEqual(selected.details.added, [name]);
+  }
+});
+
 test("production activation changes the request prefix once; an exhausted category does not cause another change", async t => {
   const custom = (name: string, description: string) => ({ name, label: name, description, parameters: Type.Object({}),
     execute: async () => ({ content: [{ type: "text" as const, text: "fixture" }] }) });
