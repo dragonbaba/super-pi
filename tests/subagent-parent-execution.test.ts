@@ -69,7 +69,7 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
     let first = true;
     session.agent.streamFunction = () => {
       requests++;
-      const content = first ? [{ type: "toolCall", id: "parent-delegation", name: "subagent", arguments: { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, timeoutMs: 60000, ...extraArguments } }]
+      const content = first ? [{ type: "toolCall", id: "parent-delegation", name: "subagent", arguments: { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, ...extraArguments } }]
         : [{ type: "text", text: "Parent complete" }];
       const stopReason = first ? "toolUse" : "stop"; first = false;
       const message: any = { role: "assistant", api: "openai-responses", provider: "fixture", model: ALPHA_MODEL.id, content, stopReason, timestamp: Date.now(),
@@ -128,7 +128,7 @@ test("live sandbox parent shares one MXC owner with real read-only children and 
   const task = { agent: "reader", task: "Read fixture", scope: "Owned files", deliverable: "Read receipt", stopCondition: "After read", cwd: f.cwd };
   const start = performance.now();
   const result = await f.run('console.log(await tools.read({path:"sample.txt"})); console.log(await tools.ls({}));', "reader", f.cwd,
-    { agent: undefined, task: undefined, tasks: [task, task], timeoutMs: 180000 });
+    { agent: undefined, task: undefined, tasks: [task, task] });
   assert.equal((result as any)?.isError, false, JSON.stringify(result));
   const entries = await f.observations(), owner = (f.session as any)._workspaceSandbox;
   assert.equal(entries.filter(entry => entry.event === "start").length, 2);
@@ -141,7 +141,7 @@ test("live sandbox parent shares one MXC owner with real read-only children and 
 
 test("live sandbox-write child uses literal additional cwd and writes directly through its parent MXC owner", { skip: !liveSandbox, timeout: 240000 }, async t => {
   const f = await fixture(t, "trusted-host", false, undefined, "sandbox-write"), owner = (f.session as any)._workspaceSandbox;
-  const result = await f.run(`const r=await tools.read({path:"sample.txt"}); console.log(await tools.write({path:"sample.txt",content:"child published",snapshot:r.details.snapshot})); console.log(await tools.powershell({command:"(Get-Location).Path",cwd:${JSON.stringify(f.additional)}})); console.log(await tools.write({path:"target/local.txt",content:"host workspace"})); console.log(await tools.find({path:"target",pattern:"local"}));`, "writer", f.cwd, { timeoutMs: 180000 });
+  const result = await f.run(`const r=await tools.read({path:"sample.txt"}); console.log(await tools.write({path:"sample.txt",content:"child published",snapshot:r.details.snapshot})); console.log(await tools.powershell({command:"(Get-Location).Path",cwd:${JSON.stringify(f.additional)}})); console.log(await tools.write({path:"target/local.txt",content:"host workspace"})); console.log(await tools.find({path:"target",pattern:"local"}));`, "writer", f.cwd);
   assert.equal((result as any)?.isError, false, JSON.stringify(result));
   const entries = await f.observations();
   assert.equal(entries.find(entry => entry.event === "profile").profile.mode, "sandbox-write");
@@ -159,7 +159,7 @@ test("live parent pause cancels a real child command and queued MXC request befo
   const backend = owner.backend, boundary = f.runtime.executionBoundary;
   // A task-owned workspace marker confirms the real command started.
   const command = `[IO.File]::WriteAllText((Join-Path $PWD "command-started.txt"),"started"); Start-Sleep 30`;
-  const running = f.run(`await tools.read({path:"sample.txt"}); await tools.powershell({command:${JSON.stringify(command)}}); await tools.write({path:"after-pause.txt",content:"must not run"});`, "writer", f.cwd, { timeoutMs: 180000 });
+  const running = f.run(`await tools.read({path:"sample.txt"}); await tools.powershell({command:${JSON.stringify(command)}}); await tools.write({path:"after-pause.txt",content:"must not run"});`, "writer", f.cwd);
   const observedRun = Promise.allSettled([running]);
   let started = false;
   for (let i = 0; i < 600; i++) {
@@ -180,7 +180,7 @@ test("live parent pause cancels a real child command and queued MXC request befo
   assert.equal(owner.diagnostics.process.active, false); assert.equal(owner.diagnostics.ownedArtifacts, 0);
   assert.equal(owner.diagnostics.active, 0); assert.equal(owner.diagnostics.queued, 0); assert.equal(owner.diagnostics.reservations, 0);
   await assert.rejects(fs.stat(join(f.cwd, "after-pause.txt")), { code: "ENOENT" });
-  const result = await f.run('console.log(await tools.read({path:"sample.txt"}));', "reader", f.cwd, { timeoutMs: 180000 });
+  const result = await f.run('console.log(await tools.read({path:"sample.txt"}));', "reader", f.cwd);
   assert.equal((result as any)?.isError, false, JSON.stringify(result)); assert.equal(owner.diagnostics.starts, 1);
   t.diagnostic(JSON.stringify({ mxcCommandStarted: true, pausedProcessReleased: true, queuedBackendCalls: 0, afterPauseWrites: 0, reusedPolicyOwner: true }));
 });

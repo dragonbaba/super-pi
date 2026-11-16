@@ -59,7 +59,7 @@ test("real child print stream completes 163 full reads while individual event li
     try {
         for (const scenario of ["long", "oversize"]) {
             const result: any = { messages: [], stderr: "", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 }, exitCode: -1 };
-            const run: any = new SubagentProcessRun(["--mode", "json", "--subagent-stream", scenario], root, undefined, false, undefined, 10000, result);
+            const run: any = new SubagentProcessRun(["--mode", "json", "--subagent-stream", scenario], root, undefined, false, undefined, result);
             const record = { pid: run.proc.pid, started: new Date().toISOString(), scenario, exited: false }; owned.push(record);
             writeFileSync(join(root, "resources.json"), JSON.stringify({ root, children: owned }));
             result.exitCode = await run.run(); record.exited = true;

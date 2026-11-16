@@ -316,7 +316,7 @@ test("ordinary children have no turn/token quota or per-turn control writes, eve
 	for (const item of result.details.results) { assert.equal(item.exitCode, 0); assert.equal(item.usage.turns, 2); }
 	assert.equal(h.entries.length, 0);
 	assert.equal(h.commands.has("task-budget"), false);
-	assert.match(h.tools.get("subagent").description, /No token or turn quotas/);
+	assert.match(h.tools.get("subagent").description, /No token, turn or total execution time quotas/);
 });
 
 test("task steering targets the same live checkpoint child and refuses stale, unowned or cancelled work", { timeout: 15_000 }, async t => {
@@ -363,7 +363,9 @@ test("responsibilities are required for every item before any child starts and r
 	assert.throws(() => tool.prepareArguments({ agent: "scout", task: "x".repeat(16384), ...responsibility }), /responsibility fields exceeds 16384/);
 	for (const item of [tool.parameters.properties.tasks.items, tool.parameters.properties.chain.items]) {
 		for (const key of ["scope", "deliverable", "stopCondition"]) assert.ok(item.required.includes(key), "models see required batch fields before calling");
+		assert.equal(item.properties.timeoutMs, undefined);
 	}
+	assert.equal(tool.parameters.properties.timeoutMs, undefined);
 	for (const key of ["scope", "deliverable", "stopCondition"]) {
 		for (const value of [undefined, "  ", "x".repeat(1025)]) {
 			const item = { agent: "scout", task: "inspect", ...responsibility, [key]: value };
@@ -380,13 +382,17 @@ test("responsibilities are required for every item before any child starts and r
 	assert.match(tool.description, /786432.*96 messages/);
 	assert.match(tool.description, /State whether the child's effective tools can run verification commands/);
 	assert.match(tool.description, /the default worker has no shell, so the parent owns command-based verification/);
-	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, timeoutMs: 120000, ...responsibility });
+	assert.match(tool.description, /execution ending does not prove the deliverable is accepted/);
+	assert.match(tool.description, /reuse successful work and assign only unresolved work/);
+	const result = await h.run({ agent: "scout", task: "inspect", readOnly: true, ...responsibility });
 	assert.equal(result.details.results[0].exitCode, 0);
 	const marker = readdirSync(h.ctx.cwd).find(file => file.endsWith(".ready.json"))!;
 	const started = JSON.parse(readFileSync(join(h.ctx.cwd, marker), "utf8"));
 	assert.equal(started.task, `Task: inspect\n\nScope: ${responsibility.scope}\nDeliverable: ${responsibility.deliverable}\nStop condition: ${responsibility.stopCondition}`);
 	assert.match(started.systemPrompt, /Return immediately when done/);
-	assert.match(started.systemPrompt, /Runtime limit: 120000ms.*return completed work/);
+	assert.match(started.systemPrompt, /no token, turn or total execution time quota/);
+	assert.match(started.systemPrompt, /without rg\/fd version or availability probes/);
+	assert.doesNotMatch(started.systemPrompt, /Runtime limit:|runtime deadline/);
 });
 
 test("capacity handoff reaches foreground/background results and stops dependent chain launches", async t => {
@@ -560,7 +566,7 @@ test("transferred foreground children keep failure, cancellation, authority and 
 	}
 });
 
-async function startedChild(cwd: string, task: string): Promise<number> {
+async function startedChild(cwd: string, task: string, pause: (ms: number) => Promise<unknown> = delay): Promise<number> {
 	for (let attempt = 0; attempt < 100; attempt++) {
 		for (const file of readdirSync(cwd)) {
 			if (!file.endsWith(".ready.json")) continue;
@@ -568,7 +574,7 @@ async function startedChild(cwd: string, task: string): Promise<number> {
 			try { value = JSON.parse(readFileSync(join(cwd, file), "utf8")); } catch { continue; }
 			if (value.task.startsWith(`Task: ${task}\n\nScope: `)) return value.pid;
 		}
-		await delay(20);
+		await pause(20);
 	}
 	throw new Error("Offline child did not start");
 }
@@ -607,6 +613,38 @@ test("foreground and background reject nested writers before launch while chains
 	assert.equal(readdirSync(workspace).filter(file => file.endsWith(".ready.json")).length, 1);
 	assert.equal(readdirSync(nested).length, 1);
 	assert.match(await h.control("list"), /0\/8 reserved/);
+});
+
+for (const background of [false, true]) test(`${background ? "background" : "foreground"} child survives former wall-clock deadlines and still cancels before the next task`, { timeout: 10_000 }, async t => {
+	const realTimeout = globalThis.setTimeout;
+	const pause = (ms: number) => new Promise<void>(resolve => realTimeout(resolve, ms));
+	const h = harness(t);
+	let settled = false;
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const observed = h.run({ agent: "scout", task: "hold", readOnly: true, background }).then(
+		(result: any) => { settled = true; return { result, error: undefined }; },
+		(error: unknown) => { settled = true; return { result: undefined, error }; },
+	);
+	let pid: number, id: string;
+	try {
+		pid = await startedChild(h.ctx.cwd, "hold", pause);
+		id = ids({ content: [{ text: await h.control("list") }] })[0];
+		assert.ok(id);
+		t.mock.timers.tick(2 * 60 * 60 * 1000 + 1);
+		await tick();
+		assert.match(await h.control("wait", id, 0), /running/);
+		assert.equal(settled, background, "foreground remains attached; background admission already returned");
+		assert.doesNotThrow(() => process.kill(pid, 0));
+		assert.equal(readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json")).length, 1);
+	} finally { t.mock.timers.reset(); }
+	await h.control("cancel", id!);
+	assert.match(await h.control("wait", id!, 5000), /cancelled/);
+	assert.throws(() => process.kill(pid!, 0), /ESRCH/);
+	await observed;
+	const next = await h.run({ agent: "scout", task: "next-after-cancel", readOnly: true });
+	assert.equal(next.details.results[0].exitCode, 0);
+	assert.equal(readdirSync(h.ctx.cwd).filter(file => file.endsWith(".ready.json")).length, 2, "only explicitly assigned work starts");
+	assert.match(await h.control("list"), /0\/2 running · 0\/8 active\/queued · 0\/8 reserved/);
 });
 
 test("background returns IDs, cancellation isolates one child, and notification arrives once", { timeout: 10_000 }, async t => {
