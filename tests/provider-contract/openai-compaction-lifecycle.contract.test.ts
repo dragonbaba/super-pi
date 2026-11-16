@@ -21,10 +21,13 @@ import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts"
 import { AgentSessionRuntime } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
+import { CLI_EXTENSION_HOST_POLICY } from "../../packages/coding-agent/src/core/extension-host-policy.ts";
+import type { ExtensionRunnerOptions } from "../../packages/coding-agent/src/core/extensions/runner.ts";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { generateSummary, generateBranchSummary } from "../../packages/coding-agent/src/core/compaction/index.ts";
 import { responsesUsage, sseFrames, textEvents } from "../helpers/responses-sse-fixture.ts";
 import { FakeCodexWebSocket } from "../helpers/codex-websocket-fixture.ts";
+import { FakeScheduler } from "../helpers/runtime-instrumentation.ts";
 import { createOpenAIResponsesOwner } from "../../packages/openai-server-compaction/src/custom-stream.ts";
 import { loadConfig } from "../../packages/openai-server-compaction/src/config.ts";
 // Match the SDK's module instance when checking its legacy compatibility domain.
@@ -518,6 +521,7 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
   noExtensions?: boolean;
   extensionPaths?: string[];
   sessionId?: string;
+  runnerOptions?: ExtensionRunnerOptions;
 }) {
   const root = mkdtempSync(join(tmpdir(), "compaction-lifecycle-"));
   const settings = SettingsManager.inMemory({ compaction: { enabled: false, keepRecentTokens: 128, reserveTokens: 128 },
@@ -594,7 +598,7 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
       provider: model.provider, model: model.id, usage: responsesUsage, stopReason: "stop", timestamp: i });
   }
   const { session } = await createAgentSession({ cwd: root, agentDir: root, settingsManager: settings, sessionManager: manager,
-    resourceLoader, model, modelRuntime: runtime, noTools: extra?.tool ? "builtin" : "all",
+    resourceLoader, model, modelRuntime: runtime, extensionRunnerOptions: extra?.runnerOptions, noTools: extra?.tool ? "builtin" : "all",
     customTools: extra?.tool ? [{ name: "note", modelOnly: true, label: "Note", description: "direct wire fixture", parameters: { type: "object", properties: {} },
       execute: async () => { await extra.tool!(session); return { content: [{ type: "text", text: "TOOL_RESULT_SENTINEL" }], details: {} }; } }] : undefined });
   await session.bindExtensions({});
@@ -604,11 +608,11 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
     await loader.reload();
     const created = await createAgentSession({ cwd: target.cwd, agentDir: target.agentDir, settingsManager: settings,
       sessionManager: target.sessionManager, sessionStartEvent: target.sessionStartEvent, resourceLoader: loader,
-      model, modelRuntime: runtime, noTools: "all" });
+      model, modelRuntime: runtime, extensionRunnerOptions: extra?.runnerOptions, noTools: "all" });
     return { ...created, services: { cwd: target.cwd, agentDir: target.agentDir } as any, diagnostics: [] };
   });
   sessionRuntime.setRebindSession(async active => { await active.bindExtensions({}); });
-  return { get session() { return sessionRuntime.session; }, get manager() { return sessionRuntime.session.sessionManager; }, sessionRuntime, runtime, credentials, requests, refreshRequests, model, root,
+  return { get session() { return sessionRuntime.session; }, get manager() { return sessionRuntime.session.sessionManager; }, sessionRuntime, runtime, credentials, requests, refreshRequests, model, root, settings,
     setAuthResolver(resolver: () => Promise<any>) { runtime.getAuth = resolver; },
     requestTool() { callTool = true; }, get headerCalls() { return headerCalls; },
     changeKey(value: string) { key = value; }, changeEndpoint(value: string) { endpoint = value; },
@@ -618,6 +622,75 @@ async function fixture(codex = false, fail?: "remote" | "summary", modelId = "gp
 
 function tokenOwner(f: Awaited<ReturnType<typeof fixture>>) {
   return f.session.extensionRunner.getOpenAICodexDispatch().owner;
+}
+
+for (const outcome of ["success", "cancel", "shutdown", "provider-error", "provider-timeout"] as const) {
+  test(`CLI native Codex compaction past 30 seconds preserves ${outcome} and next-transition ownership`, async t => {
+    const scheduler = new FakeScheduler();
+    const f = await fixture(true, outcome === "provider-error" ? "remote" : undefined, "gpt-5.1", { runnerOptions: { ...CLI_EXTENSION_HOST_POLICY, scheduler } });
+    const providerDeadline = new AbortController(); let providerDeadlines = 0;
+    if (outcome === "provider-timeout") {
+      f.settings.setHttpIdleTimeoutMs(45_000);
+      const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+      t.mock.method(AbortSignal, "timeout", (ms: number) => {
+        if (ms !== 45_000) return nativeTimeout(ms);
+        providerDeadlines++; return providerDeadline.signal;
+      });
+    }
+    const baseFetch = globalThis.fetch;
+    let enter!: () => void, release!: () => void, activeSignal: AbortSignal | undefined, settled = false, intercepted = false;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (!intercepted) {
+        intercepted = true; activeSignal = init.signal; enter(); await gate;
+        activeSignal?.throwIfAborted();
+      }
+      return baseFetch(url, init);
+    }) as typeof fetch;
+    let pending: Promise<{ value?: unknown; error?: unknown }> | undefined, disposal: Promise<void> | undefined;
+    try {
+      const file = f.manager.getSessionFile()!;
+      await f.sessionRuntime.switchSession(file);
+      pending = f.session.compact().then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+      await entered; scheduler.advanceBy(60_000); await nextTurn();
+      assert.equal(settled, false, "native provider work must outlive the generic CLI safety deadline");
+      assert.equal(activeSignal?.aborted, false);
+      assert.equal(f.session.extensionRunner.hookDeliveryStats.timeouts, 0);
+      if (outcome === "cancel") f.session.abortCompaction();
+      if (outcome === "provider-timeout") {
+        assert.equal(providerDeadlines, 1, "the configured provider deadline still owns the request");
+        providerDeadline.abort(new DOMException("fixture HTTP timeout", "TimeoutError"));
+        assert.equal(activeSignal?.aborted, true);
+      }
+      if (outcome === "shutdown") {
+        let disposed = false;
+        disposal = f.sessionRuntime.dispose().then(() => { disposed = true; });
+        await nextTurn(); assert.equal(disposed, false, "shutdown joins the real blocked provider request");
+      }
+      if (outcome === "cancel" || outcome === "shutdown") {
+        assert.equal(activeSignal?.aborted, true); assert.equal(settled, false);
+      }
+      release(); const result = await pending;
+      if (outcome === "success") {
+        assert.equal(result.error, undefined);
+        assert.equal(f.requests.length, 1);
+        assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 1);
+        await f.session.prompt("NEXT_AFTER_SLOW_COMPACT");
+        assert.equal(f.requests.length, 2);
+        assert.ok(f.requests[1].payload.input.some((item: any) => item.type === "compaction"));
+      } else {
+        assert.match(String(result.error), /abort|cancel/i);
+        assert.equal(f.manager.getEntries().filter(entry => entry.type === "compaction").length, 0);
+        if (outcome !== "shutdown") {
+          f.clearFailure(); const before = f.requests.length;
+          await f.session.prompt("NEXT_AFTER_CANCELLED_COMPACT");
+          assert.equal(f.requests.length, before + 1);
+        }
+      }
+      await disposal;
+    } finally { release(); await pending; await disposal; await f.release(); }
+  });
 }
 
 test("manual Codex compaction immediately after session resume sends saved history without replaying tools", async () => {

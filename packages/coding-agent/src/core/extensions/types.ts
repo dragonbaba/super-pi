@@ -681,7 +681,8 @@ export interface SessionBeforeCompactEvent {
 	signal: AbortSignal;
 }
 
-/** Prepared once per compaction; undefined explicitly requests the native summary fallback. */
+/** Prepared once per compaction; undefined explicitly requests the native summary fallback.
+ * Owned work honors event.signal and provider deadlines, without the legacy veto-hook timeout. */
 export type CompactionStrategyHandler = (event: SessionBeforeCompactEvent, ctx: ExtensionContext) =>
 	SessionBeforeCompactResult | undefined | Promise<SessionBeforeCompactResult | undefined>;
 

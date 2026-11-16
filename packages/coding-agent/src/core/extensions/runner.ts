@@ -1793,7 +1793,10 @@ export class ExtensionRunner {
 		this.assertCompactionCurrent(event, ctx, model, generation);
 		if (!selected || !handler) return undefined;
 		// Outside the legacy emit catch: selection/execution failures must not trigger another strategy or native summary.
-		const result = await this.invokeHook(handler as HandlerFn, event, ctx, selected.extensionPath, "session_before_compact") as SessionBeforeCompactResult | undefined;
+		// The selected handler performs the compaction, rather than a legacy veto.
+		// Its provider/caller cancellation owns the deadline; retain actual settlement
+		// ownership without imposing the generic safety-hook timeout on network work.
+		const result = await this.invokeOwnedHook(handler as HandlerFn, event, ctx) as SessionBeforeCompactResult | undefined;
 		this.assertCompactionCurrent(event, ctx, model, generation);
 		if (result !== undefined && (!result || typeof result !== "object" ||
 			(result.cancel !== true && (!result.compaction || typeof result.compaction !== "object")))) {

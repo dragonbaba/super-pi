@@ -136,6 +136,65 @@ test("manual quit confirmation waits for the user beyond the safety hook deadlin
 	assert.deepEqual(await pending, { cancel: true });
 });
 
+test("native compaction execution outlives the CLI veto deadline and remains owned until settlement", async () => {
+	const scheduler = new FakeScheduler();
+	let release!: () => void, settled = false, drained = false;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const result = { compaction: { summary: "native summary", firstKeptEntryId: "kept", tokensBefore: 100 } };
+	const runner = await createRunner(pi => {
+		assert.ok(pi.registerCompactionStrategy);
+		pi.registerCompactionStrategy({ id: "slow-native", prepare: () => async () => { await gate; return result; } });
+	}, { ...CLI_EXTENSION_HOST_POLICY, scheduler });
+	const pending = runner.emit({ type: "session_before_compact", signal: new AbortController().signal } as never)
+		.then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+	try {
+		await tick(); scheduler.advanceBy(60_000); await tick();
+		assert.equal(settled, false, "the strategy is the compaction operation, not a bounded veto hook");
+		assert.equal(runner.hookDeliveryStats.timeouts, 0);
+		const drain = runner.drainExecution().then(() => { drained = true; });
+		await tick(); assert.equal(drained, false, "drain must join the real operation");
+		release(); assert.deepEqual(await pending, { value: result }); await drain;
+		assert.equal(scheduler.pendingTasks, 0);
+	} finally { release(); await pending; await runner.drainExecution(); }
+});
+
+test("legacy compact veto keeps its CLI fail-closed deadline before native strategy execution", async () => {
+	const scheduler = new FakeScheduler(); let release!: () => void, executions = 0;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const runner = await createRunner(pi => {
+		pi.on("session_before_compact", async () => { await gate; });
+		assert.ok(pi.registerCompactionStrategy);
+		pi.registerCompactionStrategy({ id: "never-selected", prepare: () => () => { executions++; return undefined; } });
+	}, { ...CLI_EXTENSION_HOST_POLICY, scheduler });
+	const pending = runner.emit({ type: "session_before_compact", signal: new AbortController().signal } as never);
+	const rejected = assert.rejects(pending, ExtensionHookTimeoutError);
+	try {
+		scheduler.advanceBy(30_000); await rejected;
+		assert.equal(executions, 0); assert.equal(runner.hookDeliveryStats.timeouts, 1);
+	} finally { release(); await rejected; await runner.drainExecution(); }
+});
+
+test("cancelled native compaction rejects a late result while drain waits for actual settlement", async () => {
+	const scheduler = new FakeScheduler(), controller = new AbortController();
+	let release!: () => void, drained = false;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const runner = await createRunner(pi => {
+		assert.ok(pi.registerCompactionStrategy);
+		pi.registerCompactionStrategy({ id: "cancel-native", prepare: () => async () => {
+			await gate; return { compaction: { summary: "late", firstKeptEntryId: "kept", tokensBefore: 100 } };
+		} });
+	}, { ...CLI_EXTENSION_HOST_POLICY, scheduler });
+	const pending = runner.emit({ type: "session_before_compact", signal: controller.signal } as never);
+	const rejected = assert.rejects(pending, /abort/i);
+	try {
+		await tick(); controller.abort();
+		const drain = runner.drainExecution().then(() => { drained = true; });
+		await tick(); assert.equal(drained, false);
+		release(); await rejected; await drain;
+		assert.equal(runner.hookDeliveryStats.timeouts, 0);
+	} finally { release(); await rejected; await runner.drainExecution(); }
+});
+
 test("a fail-closed tool_execution_end timeout still reaches later handlers and reports the first timeout", async () => {
 	const scheduler = new FakeScheduler();
 	const calls: string[] = [];
