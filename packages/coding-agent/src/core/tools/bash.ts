@@ -1181,7 +1181,7 @@ export function createShellToolDefinition(
 	return {
 		name: config.name,
 		label: config.label,
-		description: `Execute a ${config.shellName} command in the current working directory. Returns stdout, stderr and execution details. Normal completion returns the actual exit code, including nonzero; tool completion alone does not mean the command succeeded. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
+		description: `Execute a ${config.shellName} command in the current working directory. Returns combined stdout/stderr as display text plus execution details. Before parsing JSON, check details.truncation.truncated: truncated content includes a tail and display notice, not a complete document. Recover from details.fullOutputPath without repeating the command; details.spillFileCapped means that file is also partial. Normal completion returns the actual exit code, including nonzero; tool completion alone does not mean the command succeeded. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Foreground truncated output is saved to a temp file, capped at 5 MiB. Background mode returns a task ID, retains bounded result text and removes its temporary log on completion. Optionally provide a timeout in seconds.`,
 		promptSnippet: config.promptSnippet,
 		promptGuidelines: exposeSessionEnvironment && config.promptGuidelines ? [...config.promptGuidelines] : undefined,
 		parameters,

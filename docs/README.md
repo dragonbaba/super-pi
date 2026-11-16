@@ -38,6 +38,7 @@
 - [搜索工具解析与重复探测](evidence/search-tool-resolution-2026-11-16.md)：按可执行文件元数据解析 rg/fd，去除版本探测子进程，保留真实搜索验证并指导模型复用环境事实。
 - [子代理执行期限与编排指引](evidence/subagent-lifetime-2026-11-16.md)：移除总执行计时器，保留等待/通信/清理边界；用现有纠偏、检查点和完成通知复用成功成果。
 - [Computer use 能力核实](evidence/computer-use-assessment-2026-11-16.md)：浏览器、MCP 与 Windows 验收探针的实际范围；桌面驱动及后续 provider 适配仍待实现。
+- [脚本输出与缓存诊断](evidence/session-script-cache-2026-11-16.md)：区分成功命令与截断 JSON 后处理错误，修正记忆查询误激活浏览器；显示记录的缓存用量和响应绑定的客户端变化。
 - [复制/移动的缺失父目录](evidence/post-review-file-parents-2026-11-13.md)：复用 write 的建目录身份清单、共享父目录和失败回执。
 - [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 在 #296、A 在 #297 已审核、通过原有 CI 并合并，见[B 的证据](evidence/codegraph-retirement-2026-11-12.md)和[A 的证据](evidence/file-operations-v3-2026-11-13.md)。C 的批量清理实现及本机验证见[C 的证据](evidence/memory-bulk-cleanup-2026-11-13.md)，最终交付状态见[PR #298](https://github.com/dragonbaba/super-pi/pull/298)。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。

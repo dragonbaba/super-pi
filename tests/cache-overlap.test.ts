@@ -120,7 +120,8 @@ test("optional notice and session command explicitly label bounds and preserve t
 		assert.match(footer.render(200).join("\n"), /CH0\.0%/, "footer remains the latest turn, not cumulative ratio");
 		chat.clear();
 		mode.maybeShowCacheMissNotice(message(90_000));
-		assert.match(plain(chat), /Cache overlap estimate: up to 90k uncached prompt tokens; repeated content and cache cause unknown/);
+		assert.match(plain(chat), /Recorded prompt usage: 90,000 tokens; cache read: 0 \(0\.0%\)/);
+		assert.match(plain(chat), /Length-only overlap bound: up to 90k tokens/);
 		const liveNotice = plain(chat);
 		manager.appendMessage(message(90_000));
 		Object.assign(mode, { pendingTools: new Map(), clearToolResultDiscoveries() {}, finalizeReadToolGroup() {},
@@ -133,6 +134,37 @@ test("optional notice and session command explicitly label bounds and preserve t
 		manager.getEntries = () => { throw new Error("disabled notices must not scan"); };
 		mode.maybeShowCacheMissNotice(message(90_000));
 		assert.equal(chat.children.length, 0);
+	} finally { chat.clear(); footer.dispose(); }
+});
+
+test("large zero-cache observations display recorded counts without diagnosing a cause", () => {
+	const prior = message(1167, 249472), current = message(251063);
+	const { mode, chat, footer } = uiFixture([prior]);
+	try {
+		mode.maybeShowCacheMissNotice(current);
+		const text = plain(chat);
+		assert.match(text, /Recorded prompt usage: 251,063 tokens; cache read: 0 \(0\.0%\)/);
+		assert.match(text, /Length-only overlap bound: up to 251k/);
+		assert.match(text, /Token counts do not establish shared content or a cache-miss cause/);
+		assert.doesNotMatch(text, /cache cause unknown|expired|re-billed/);
+	} finally { chat.clear(); footer.dispose(); }
+});
+
+test("notice uses only response-bound client drift and never treats it as server attribution", () => {
+	const current = message(251063);
+	const { mode, chat, footer } = uiFixture([message(1167, 249472)]);
+	let inspected: AssistantMessage | undefined;
+	mode.runtimeHost.session.getPrefixObservation = (response: AssistantMessage) => {
+		inspected = response;
+		return response === current ? { comparisonState: "available", diagnostic: { reasonCode: "TOOL_SCHEMA_CHANGED" } } : undefined;
+	};
+	try {
+		mode.maybeShowCacheMissNotice(current);
+		assert.equal(inspected, current);
+		assert.match(plain(chat), /Observed client request\s+change: TOOL_SCHEMA_CHANGED; this is not a server diagnosis/);
+		chat.clear();
+		mode.maybeShowCacheMissNotice({ ...current });
+		assert.doesNotMatch(plain(chat), /TOOL_SCHEMA_CHANGED/);
 	} finally { chat.clear(); footer.dispose(); }
 });
 
@@ -153,4 +185,21 @@ test("cache estimation adds no closures, regex, promises or controllers; live id
 	assert.equal(maps, 1, "one existing transient Map remains for explicit rebuilds");
 	assert.equal(weakRefs, 1, "only the latest preview response identity is retained weakly");
 	assert.equal(objects, 4, "estimate, previous state, totals and scan return only");
+});
+
+test("notice formatting introduces no event owners, history scans or retained observation objects", () => {
+	const source = ts.createSourceFile("interactive-mode.ts", readFileSync(new URL("../packages/coding-agent/src/modes/interactive/interactive-mode.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
+	let found = false, displayOwners = 0;
+	function inspect(node: ts.Node): void {
+		assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isObjectLiteralExpression(node) && !ts.isArrayLiteralExpression(node));
+		if (ts.isNewExpression(node)) { assert.ok(["Spacer", "Text"].includes(node.expression.getText(source))); displayOwners++; }
+		if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(source), /getEntries|getBranch|\.bind|\.then|\.catch|\.finally/);
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) assert.ok(!ts.isPropertyAccessExpression(node.left), "observations are not retained on the UI owner");
+		ts.forEachChild(node, inspect);
+	}
+	function find(node: ts.Node): void {
+		if (ts.isMethodDeclaration(node) && node.name.getText(source) === "addCacheOverlapNotice") { found = true; inspect(node.body!); }
+		ts.forEachChild(node, find);
+	}
+	find(source); assert.equal(found, true); assert.equal(displayOwners, 2, "only the existing transcript Spacer and Text owners");
 });

@@ -7,6 +7,12 @@ ahead of incidental description keywords. Normal activity and permission filters
 still apply. Browser tools are selected by task and target profile, with a narrow
 pause after an incomplete Browser Harness approval.
 
+A leading category alias followed by whitespace or `:` scopes a longer query to
+that category: `memory action add` searches memory tools. If all matching tools
+are already active, the result is empty; generic verbs do not activate another
+category as a fallback. Browser-debugging phrases retain precedence over a
+shorter browser prefix, so `browser DOM inspection` selects DevTools.
+
 ## Classes
 
 - Core: `read`, `bash`, `edit`, `write`, `structured_readonly_command`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`.
@@ -25,9 +31,9 @@ tools and now identifies them as `TOOL_DIRECT_ONLY` when documentation is reques
 Do not replace this route with an external agent CLI merely because it is absent
 from CodeMode's `ALL_TOOLS`.
 
-The session-start reset occurs before the first provider request. Later activation is additive. Claude 4.5+ and OpenAI 5.4+ can use Pi's native deferred-tool protocol; other providers receive one deliberate tool-surface cache reset when a conditional tool is first activated.
+The session-start reset occurs before the first provider request. Later activation is additive. Provider-native deferred-tool support does not make CodeMode's wrapper definition invariant: activating a local tool can change its inline declarations. Inspect the actual provider input when investigating cache reuse across activation.
 
-Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. Therefore additive activation does not rebuild the system prompt. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
+Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. This avoids new provider-specific system-prompt guidelines, but activation can still change CodeMode's inline tool declarations and therefore the actual provider request prefix. A cache hit is not guaranteed across that change. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
 
 Generic browsing searches do not activate DevTools. An actual Browser Harness
 permission-required result (or a timeout after a reported approval prompt) pauses

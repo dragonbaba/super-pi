@@ -25,6 +25,8 @@ export interface CodemodeChildDisplay {
 	ref?: string;
 	executed?: boolean | "unknown";
 	resultComplete?: boolean | "unknown";
+	/** Native shell capture can drain completely while returning only a display tail. */
+	outputTruncated?: boolean;
 	displayLimited?: boolean;
 	failureHandled?: boolean;
 	recoveryError?: string;
