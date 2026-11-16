@@ -2536,18 +2536,31 @@ async function compactOpenAICodexRequestOwned(owner: CodexTransportOwner,
     if (!sessionId)
         throw new Error("Codex compaction stopped: a stable session id is required.");
     const commitment = owner.successfulDispatchCommitments.get(sessionId);
-    if (!commitment) {
-        throw new Error("Codex compaction stopped: no successful regular request commitment exists for this owner.");
-    }
     let providerDispatched = false;
-    const markProviderDispatched = () => {
-        providerDispatched = true;
-    };
     try {
         const accountId = extractAccountId(options.apiKey);
         const body = buildCompactionRequestBody(regularPayload);
+        if (!commitment && body.previous_response_id !== undefined) {
+            throw new Error("Codex full-history compaction cannot use previous_response_id without a live request commitment.");
+        }
+        const markProviderDispatched = () => {
+            if (!commitment) {
+                // A full-history SSE request installs a new durable boundary. An
+                // old WS boundary must not survive it; pre-send rejection keeps it.
+                const connections = owner.websocketSessionCache.get(sessionId);
+                if (connections) {
+                    for (const entry of connections.values()) {
+                        if (entry.busy) throw new Error("Codex compaction stopped: the session WebSocket is busy.");
+                    }
+                    for (const [connectionAccount, entry] of connections) {
+                        discardCompactionWebSocket(owner, sessionId, connectionAccount, entry, "full_history_compaction");
+                    }
+                }
+            }
+            providerDispatched = true;
+        };
         const routingHint = buildCodexRoutingHint(body.model, body.service_tier);
-        const useSse = commitment.transport === "sse";
+        const useSse = !commitment || commitment.transport === "sse";
         const headers = useSse
             ? buildSSEHeaders(model.headers, options.headers, accountId, options.apiKey, routingHint, sessionId, true)
             : buildWebSocketHeaders(model.headers, options.headers, accountId, options.apiKey, routingHint, sessionId, true);
@@ -2560,6 +2573,14 @@ async function compactOpenAICodexRequestOwned(owner: CodexTransportOwner,
             if (compressedBody)
                 headers.set("content-encoding", "zstd");
             sseBody = compressedBody ?? bodyJson;
+        }
+        if (!commitment) {
+            // Resumed sessions have authoritative history but no process-local
+            // regular dispatch to compare. Send it once; never prime with a turn
+            // or invent parity diagnostics against a request that did not happen.
+            const result = await performCodexSseCompaction(owner, model, sseBody!, headers, options, markProviderDispatched, sseJsonBytes);
+            options.signal?.throwIfAborted();
+            return result;
         }
         const diagnostics = compareCompactionToSuccessfulDispatch(commitment, body, headers, useSse ? "sse" : "websocket-delta");
         assertCompactionParity(diagnostics);
