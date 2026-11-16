@@ -77,7 +77,8 @@ continuation instruction persists, and further checkpoint writes are frozen whil
 the child returns its summary. Results explicitly warn about unsaved effects and
 require workspace inspection before retry. Unsupported/corrupt context, history
 ownership/storage failure and protocol failures retain their fatal behavior.
-Transport guards and runtime deadlines remain enforced; this change does not
+Transport guards and provider/IPC request timeouts remain enforced. The total
+subagent execution deadline was retired in the [lifetime update](../evidence/subagent-lifetime-2026-11-16.md); this change does not
 promise a successful model/provider response under those failures.
 
 ## Deterministic counters, sampled allocations and release

@@ -56,7 +56,7 @@ Each child starts with extensions, skills, templates, and session persistence di
 - all built-in file tools are limited to the assigned workspace and block `.env`, Pi auth storage, private keys, browser profiles, and common SSH/cloud credential directories (safe templates such as `.env.example` remain readable);
 - agents without a `tools` declaration receive only `read, grep, find, ls`; a parent `read-only` grant or explicit task `readOnly: true` strips `write`, `edit`, and `bash`, project agents can never receive Bash, and a user agent must explicitly list `bash`;
 - user-agent Bash is a **trusted capability** and is enabled only by an explicit `bash` entry in that user-owned agent's `tools`; it is conservatively checked for obvious credential reads, environment enumeration, workspace-changing commands, out-of-workspace writes, and detached/background or persistent process launch forms;
-- Windows termination synchronously waits for the absolute System32 `taskkill.exe /T /F`; Unix children run in a process group and the complete group receives TERM/KILL; each launched task has an independent runtime limit (default 30 minutes, hard maximum 2 hours via `timeoutMs`), so queue time does not consume another task's budget;
+- Windows termination synchronously waits for the absolute System32 `taskkill.exe /T /F`; Unix children run in a process group and the complete group receives TERM/KILL. Tasks have no total execution deadline; explicit cancellation, session revocation and process cleanup remain effective, as do independent provider/transport timeouts;
 - stderr, individual JSON lines, raw JSON transport bytes/events, retained completion events, messages/details, chain handoff text, and model-visible per-task output have independent hard bounds; high-frequency incremental events no longer consume the retained-event budget, and oversized assistant events retain bounded final-text head/tail while discarding large traces/details.
 - credential-path checks canonicalize Windows AppData roots before comparison, and recursive traversal is streamed through directory handles with hard directory, entry, and depth limits rather than allocating whole directory trees.
 - a partially successful parallel batch returns completed sibling outputs plus bounded failure summaries so successful work is reusable; an all-failed or externally aborted batch still fails.
@@ -121,12 +121,20 @@ implements the assigned change. Skip roles whose output already exists, keep
 dependent steps sequential and avoid overlapping investigations. Every child is
 instructed to return concise evidence/results on completion, or report a blocker
 instead of expanding scope. Token/turn statistics are informational; concurrency,
-task-count and runtime limits still apply.
+task-count and context-retention limits still apply. There is no total execution
+deadline, and the delegation tool no longer accepts `timeoutMs` at any task level.
+The management tool's `wait.timeoutMs` only bounds waiting and does not kill work.
+
+Continue independent work while background tasks run and prefer their completion
+notification to polling. Refine the same running checkpoint task with `tasks`
+`steer`; inspect completed results before follow-up, verify the deliverable and
+assign only unresolved work. Reuse successful work and never replay completed
+tools or modifications as failure recovery.
 
 Plan long assignments before launching: name a bounded phase and an early handoff
 point in `stopCondition`. The tool advertises checkpoint capacity (1 MiB / 128
-messages), the handoff threshold (768 KiB / 96 messages), and runtime limits.
-Each child receives its actual runtime limit; checkpoint-enabled children also see
+messages) and the handoff threshold (768 KiB / 96 messages).
+Checkpoint-enabled children see
 current/remaining stored bytes and message slots at startup and in request context.
 Resumed history consumes the same capacity.
 
@@ -319,7 +327,7 @@ Assignments use an exact provider/model pair already known to Pi's model registr
 - Parallel model-visible output is capped at 50 KB per task; retained details are independently bounded
 - Agents and model assignments are loaded fresh on each invocation (allows editing without another reload after the command is registered)
 - Limits are configurable within the documented hard ceilings; mutation-capable siblings cannot share one cwd. Use `readOnly: true` for same-cwd audit tasks or chain/sequential execution for writers
-- Both foreground and session-owned background tasks retain the default 30-minute and maximum 2-hour runtime; queued time is excluded
+- Foreground and session-owned background tasks run until completion, explicit cancellation or session revocation, subject to provider/transport errors and bounded context retention; applications must keep the owning session alive
 - Child guard rules are policy checks, not an operating-system security boundary
 
 ## Verification

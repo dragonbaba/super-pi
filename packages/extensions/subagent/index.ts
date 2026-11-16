@@ -71,8 +71,6 @@ const MAX_MESSAGES = 3;
 const MAX_MESSAGE_BYTES = 32 * 1024;
 const MAX_RETAINED_TEXT_BYTES = 24 * 1024;
 const MAX_PREVIOUS_CHARS = 50 * 1024;
-const DEFAULT_TASK_TIMEOUT_MS = 30 * 60 * 1000;
-const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_AGENT_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
 const BUILTIN_AGENT_TOOLS = new Set(["read", "write", "edit", "copy", "delete", "move", "file_batch", "file_result", "grep", "find", "ls", "bash", "powershell"]);
 const MUTATING_AGENT_TOOLS = new Set(["write", "edit", "copy", "delete", "move", "file_batch", "bash", "powershell"]);
@@ -892,21 +890,18 @@ export class SubagentProcessRun {
 	private readonly controlFailure = this.onControlFailure.bind(this);
 	private readonly control: SubagentControl | undefined;
 	private readonly signal: AbortSignal | undefined;
-	private readonly timeoutMs: number;
 	private readonly result: SingleResult;
 	private progress: SingleResult | undefined;
 	private buffer = "";
 	private jsonTransportBytes = 0;
 	private jsonTransportEventCount = 0;
 	private retainedJsonEventCount = 0;
-	private timeout: ReturnType<typeof setTimeout> | undefined;
 	private forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 	private abortListenerAttached = false;
 	private killRequested = false;
 	private childClosed = false;
 	private settled = false;
 	wasAborted = false;
-	timedOut = false;
 	cleanupError: string | undefined;
 
 	constructor(
@@ -915,7 +910,6 @@ export class SubagentProcessRun {
 		execution: ResolvedSubagentExecution | undefined,
 		allowBash: boolean,
 		signal: AbortSignal | undefined,
-		timeoutMs: number,
 		result: SingleResult,
 		control?: SubagentControl,
 		workspace?: SubagentExecutionServer,
@@ -923,7 +917,6 @@ export class SubagentProcessRun {
 	) {
 		this.control = control;
 		this.signal = signal;
-		this.timeoutMs = timeoutMs;
 		this.result = result;
 		this.progress = progress;
 		const invocation = getPiInvocation(args);
@@ -953,7 +946,6 @@ export class SubagentProcessRun {
 		this.proc.stderr.on("data", this.stderrListener);
 		this.proc.once("close", this.closeListener);
 		this.proc.once("error", this.errorListener);
-		this.timeout = setTimeout(SubagentProcessRun.handleTimeout, this.timeoutMs, this);
 		if (this.signal) {
 			if (this.signal.aborted) this.onAbort();
 			else {
@@ -962,12 +954,6 @@ export class SubagentProcessRun {
 			}
 		}
 		return this.completion.promise;
-	}
-
-	private static handleTimeout(run: SubagentProcessRun): void {
-		run.timedOut = true;
-		run.result.errorMessage = `Subagent timed out after ${run.timeoutMs}ms. Retry with a larger timeoutMs or split the task.`;
-		run.requestProcessTreeKill();
 	}
 
 	private onAbort(): void {
@@ -1074,7 +1060,7 @@ export class SubagentProcessRun {
 		this.result.stderr = this.stderrTail.take();
 		this.buffer += this.stdoutDecoder.end();
 		if (this.buffer.trim()) this.processLine(this.buffer);
-		this.settle(code ?? (this.timedOut || this.wasAborted ? 1 : 0));
+		this.settle(code ?? (this.wasAborted ? 1 : 0));
 	}
 
 	private onError(error: Error): void {
@@ -1095,10 +1081,9 @@ export class SubagentProcessRun {
 	private dispose(): void {
 		this.progress = undefined;
 		this.control?.dispose();
-		if (this.timeout) clearTimeout(this.timeout);
 		if (this.forceKillTimer) clearTimeout(this.forceKillTimer);
 		if (this.abortListenerAttached) this.signal?.removeEventListener("abort", this.abortListener);
-		this.timeout = undefined; this.forceKillTimer = undefined; this.abortListenerAttached = false;
+		this.forceKillTimer = undefined; this.abortListenerAttached = false;
 		this.proc.stdout.off("data", this.stdoutListener);
 		this.proc.stderr.off("data", this.stderrListener);
 		this.proc.off("close", this.closeListener);
@@ -1117,7 +1102,6 @@ async function runSingleAgent(
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	execution: ResolvedSubagentExecution | undefined,
-	timeoutMs: number,
 	control: SubagentControl,
 	progress?: SingleResult,
 ): Promise<SingleResult> {
@@ -1194,7 +1178,7 @@ async function runSingleAgent(
 		const childCwd = canonicalWorkspace(policy.canonicalCwd);
 		if (childCwd !== policy.canonicalCwd) throw new Error("Delegated child cwd changed after permission authorization.");
 		{
-			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}\nRuntime limit: ${timeoutMs}ms from launch. Plan a phase that finishes within it; if the full objective is longer, return completed work, evidence and the next bounded assignment before the deadline.`);
+			const tmp = await writePromptToTempFile(agent.name, `${agent.systemPrompt}\n\n${CHILD_RESPONSIBILITIES}`);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -1221,7 +1205,6 @@ async function runSingleAgent(
 			execution,
 			toolPolicy.allowBash,
 			signal,
-			timeoutMs,
 			currentResult,
 			control,
 			workspaceChannel,
@@ -1240,7 +1223,6 @@ async function runSingleAgent(
 			currentResult.errorMessage = executionOwner?.failureReason ?? "Subagent was aborted";
 			return currentResult;
 		}
-		if (processRun.timedOut) throw new Error(currentResult.errorMessage ?? `Subagent timed out after ${timeoutMs}ms.`);
 		return currentResult;
 	} catch (error) {
 		primaryError = error;
@@ -1273,7 +1255,6 @@ const TaskItem = Type.Object({
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Delegated task" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Task working directory" })),
 	readOnly: Type.Optional(Type.Boolean({ description: "Remove write, edit, and bash" })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_TASK_TIMEOUT_MS, description: "Task timeout after launch (ms)" })),
 }, { additionalProperties: false });
 
 const ChainItem = Type.Object({
@@ -1282,7 +1263,6 @@ const ChainItem = Type.Object({
 	task: Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task; may use {previous}" }),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Step working directory" })),
 	readOnly: Type.Optional(Type.Boolean({ description: "Remove write, edit, and bash" })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_TASK_TIMEOUT_MS, description: "Step timeout after launch (ms)" })),
 }, { additionalProperties: false });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -1307,7 +1287,6 @@ function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	),
 	cwd: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Single-task working directory" })),
 	readOnly: Type.Optional(Type.Boolean({ description: "Single-task read-only downgrade" })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_TASK_TIMEOUT_MS, description: "Default task timeout; 1800000ms" })),
 }, { additionalProperties: false }); }
 
 export function assertTaskCount(input: unknown, limits: SubagentLimits): void {
@@ -1328,15 +1307,14 @@ interface PreparedBatch {
 	params: import("typebox").Static<ReturnType<typeof subagentParameters>>;
 	agents: AgentConfig[];
 	executions: ReadonlyMap<string, ResolvedSubagentExecution | undefined>;
-	runManaged: (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number) => Promise<SingleResult>;
+	runManaged: (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails) => Promise<SingleResult>;
 	makeDetails: (mode: SubagentDetails["mode"]) => (results: SingleResult[]) => SubagentDetails;
 	publish: OnUpdateCallback | undefined;
 	executionSignal: AbortSignal;
-	defaultTimeoutMs: number;
 }
 
 async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResult<SubagentDetails>> {
-	const { params, agents, executions, runManaged, makeDetails, publish, executionSignal, defaultTimeoutMs } = batch;
+	const { params, agents, executions, runManaged, makeDetails, publish, executionSignal } = batch;
 	if (params.chain && params.chain.length > 0) {
 		const chainDetails = makeDetails("chain");
 		const results: SingleResult[] = [];
@@ -1375,7 +1353,7 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 					}
 				: undefined;
 
-			const result = await runManaged(i, taskWithContext, i + 1, chainUpdate, chainDetails, step.timeoutMs ?? defaultTimeoutMs);
+			const result = await runManaged(i, taskWithContext, i + 1, chainUpdate, chainDetails);
 			results.push(result);
 			chainResults[i] = result;
 
@@ -1434,7 +1412,6 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 					}
 				} : undefined,
 				parallelDetails,
-				t.timeoutMs ?? defaultTimeoutMs,
 			);
 			const previous = allResults[index];
 			allResults[index] = result;
@@ -1456,7 +1433,7 @@ async function executePreparedBatch(batch: PreparedBatch): Promise<AgentToolResu
 
 	if (params.agent && params.task) {
 		const singleDetails = makeDetails("single");
-		const result = await runManaged(0, params.task, undefined, publish, singleDetails, defaultTimeoutMs);
+		const result = await runManaged(0, params.task, undefined, publish, singleDetails);
 		const isError = isFailedResult(result);
 		if (isError) throw new Error(`Agent ${result.stopReason || "failed"}: ${capText(getResultOutput(result), PER_TASK_OUTPUT_CAP)}`);
 		return {
@@ -1684,14 +1661,14 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(parentExecutionTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token or turn quotas. Runtime: default 1800000ms, maximum 7200000ms after launch; split work and reserve time for handoff. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
+		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token, turn or total execution time quotas. Explicit cancellation, session ownership and provider/transport timeouts still apply. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);
 			assertAssignments(input);
 			return input as import("typebox").Static<ReturnType<typeof subagentParameters>>;
 		},
-		// Tasks run for up to two hours; a Codemode script (60s default, 300s maximum) cannot host them.
+		// Session-owned tasks can outlive a Codemode script's execution window.
 		modelOnly: true,
 
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -1711,7 +1688,6 @@ export default function (pi: ExtensionAPI) {
 			pending.add(preparing);
 			try {
 			const sessionAuthoritySignal = authority.signal;
-			const defaultTimeoutMs = params.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
 			const agentScope: AgentScope = params.agentScope ?? "user";
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
 			// Trust is checked before touching project-local agent files. Confirmation can never substitute for trust.
@@ -1827,7 +1803,7 @@ export default function (pi: ExtensionAPI) {
 				// Execution closures must not retain the original foreground observer after handoff.
 				onUpdate = undefined;
 				if (foregroundOwner) foreground.set(ownedTasks[0].id, { owner: foregroundOwner, policy: delegatedPolicies[0], workspace: trustedWorkspace, signal: executionSignal, agentScope, toolCallId, progress });
-				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails, timeoutMs: number): Promise<SingleResult> => {
+				const runManaged = async (index: number, task: string, step: number | undefined, update: OnUpdateCallback | undefined, details: (results: SingleResult[]) => SubagentDetails): Promise<SingleResult> => {
 					const record = ownedTasks[index];
 					const childSignal = AbortSignal.any([executionSignal, record.controller!.signal]);
 					try {
@@ -1846,7 +1822,7 @@ export default function (pi: ExtensionAPI) {
 							const control = new SubagentControl(tasks, checkpoint, continuation?.messages, continuation?.pending,
 								continuation ? { role: "user", content: `Task: ${task}`, timestamp: Date.now() } : undefined);
 							if (checkpoint) controls.set(record.id, control);
-							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), timeoutMs, control, progress?.details.results[index]); }
+							try { return await runSingleAgent(policy, agents, requestedAgentNames[index], task, step, childSignal, update, details, executions.get(requestedAgentNames[index]), control, progress?.details.results[index]); }
 							catch (error) {
 								if (error instanceof SubagentProcessCleanupError || error instanceof Error && error.cause instanceof SubagentProcessCleanupError) {
 									// Latch before the scheduler releases this slot to queued work.
@@ -1870,7 +1846,7 @@ export default function (pi: ExtensionAPI) {
 				};
 				const runTasks = async (): Promise<AgentToolResult<SubagentDetails>> => {
 					try {
-						return await executePreparedBatch({ params, agents, executions, runManaged, makeDetails, publish, executionSignal, defaultTimeoutMs });
+						return await executePreparedBatch({ params, agents, executions, runManaged, makeDetails, publish, executionSignal });
 					} finally {
 						for (const record of ownedTasks) {
 							if (record.completedAt === undefined) {
