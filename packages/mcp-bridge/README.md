@@ -40,6 +40,15 @@ Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-ch
 
 ## Startup and restoring activated tools
 
+Discovery results distinguish `activated`, `alreadyActive` and `rejected` exact
+registered names; `status` is `matched`, `rejected` or `no_matches` for a configured
+runtime. Mixed accepted/rejected results use `matched` and retain the rejected
+names. Read accepted tools' current full instructions and schema through
+`describeTools([name])`, then call `callTool(name, args)` in the same script.
+Do not derive names from server labels or JavaScript aliases. Discovery never
+executes the remote tool, and neither tool metadata nor remote content grants
+authorization. CodeMode's fixed provider entry does not embed these schemas.
+
 Session startup performs local configuration/cache setup, then connects uncached
 servers in the background. `/mcp-status` shows connections in progress. Tool
 search waits for outstanding discovery so it does not incorrectly report an
@@ -59,8 +68,8 @@ already in progress still waits instead of returning an empty result early.
 
 Tool descriptions keep their full sanitized instructions within the existing
 2 MiB complete-catalog and cache bounds. The host-only `fullDescription` follows
-the tool through registry wrappers into Codemode's paged `describeTools`; inline
-provider descriptions remain capped at 1,000 characters. Cache fingerprint
+the tool through registry wrappers into Codemode's paged `describeTools`; catalog
+summaries remain capped at 1,000 characters. Cache fingerprint
 domain separation invalidates earlier abbreviated entries so they are discovered
 again instead of pretending a truncated description is complete.
 Cache admission includes the entry metadata and JSON envelope. If one server's

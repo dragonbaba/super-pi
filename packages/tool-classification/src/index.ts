@@ -152,8 +152,11 @@ interface ToolSearchDetails {
   matches: ToolCandidate[];
   added: string[];
   rejected: string[];
+  alreadyActive?: string[];
   blocked?: "browser_approval";
 }
+
+const DISCOVERED_TOOL_GUIDANCE = "Read the current full instructions and schema with describeTools([name]); callTool(name, args) uses the exact returned name in this script. Direct top-level controls such as subagent use their exposed schema outside CodeMode. Discovery does not execute a tool or grant authorization.";
 
 function compareCandidates(left: ToolCandidate, right: ToolCandidate): number {
   if (left.score !== right.score) return right.score - left.score;
@@ -188,6 +191,8 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       const wordScoreLimit = (terms.length + 1) ** 2;
       const limit = params.limit ?? 6;
       const candidates: ToolCandidate[] = [];
+      const alreadyActive: string[] = [];
+      let exactActive: string | undefined;
       if (browserDebug && browserRouting.awaitingUser) return {
         content: [{ type: "text", text: BROWSER_APPROVAL_PAUSE.reason }], isError: true,
         details: { query: params.query, matches: [], added: [], rejected: [], blocked: "browser_approval" } as ToolSearchDetails,
@@ -199,7 +204,6 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         if (
           tool.name === "tool_search"
           || tool.available === false
-          || activeSet.has(tool.name)
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
         ) continue;
 
@@ -208,6 +212,11 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         if (toolCategory === "browser" && browserDebug) continue;
         if (category !== undefined && category !== toolCategory) continue;
         const name = tool.name.toLowerCase().normalize("NFC");
+        if (activeSet.has(tool.name)) {
+          if (name === query) exactActive = tool.name;
+          if (category === toolCategory && alreadyActive.length < limit) alreadyActive.push(tool.name);
+          continue;
+        }
         // Each covered term outweighs all possible name bonuses. Exact names and
         // category routing outweigh the entire word score, regardless of term count.
         let score = name === query ? 2 * wordScoreLimit : category === toolCategory ? wordScoreLimit : 0;
@@ -225,14 +234,19 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       candidates.sort(compareCandidates);
       if (candidates.length > limit) candidates.length = limit;
 
-      if (candidates.length === 0) {
+      if (exactActive !== undefined) {
+        alreadyActive.length = 0;
+        alreadyActive.push(exactActive);
+      }
+      if (exactActive !== undefined || candidates.length === 0) {
         return {
-          content: [{ type: "text", text: `No inactive tools matched: ${params.query}. This search omits already active tools. Direct top-level tools such as subagent must be called outside CodeMode using their exposed schema.` }],
+          content: [{ type: "text", text: `${alreadyActive.length > 0 ? `Matching tools already active: ${alreadyActive.join(", ")}.` : `No inactive tools matched: ${params.query}. Inspect ALL_TOOLS for active tools; no match does not establish absence or authorization.`} ${DISCOVERED_TOOL_GUIDANCE}` }],
           details: {
             query: params.query,
             matches: [] as ToolCandidate[],
             added: [] as string[],
             rejected: [] as string[],
+            alreadyActive,
           },
         };
       }
@@ -245,11 +259,11 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       return {
         content: [{
           type: "text",
-          text: added.length > 0
+          text: (added.length > 0
             ? `Activated conditional tools: ${added.join(", ")}${rejected.length > 0 ? `; rejected: ${rejected.join(", ")}` : ""}`
-            : `Conditional tool activation was rejected: ${rejected.join(", ")}`,
+            : `Conditional tool activation was rejected: ${rejected.join(", ")}`) + `\n${DISCOVERED_TOOL_GUIDANCE}`,
         }],
-        details: { query: params.query, matches: candidates, added, rejected },
+        details: { query: params.query, matches: candidates, added, rejected, alreadyActive },
       };
     },
   });

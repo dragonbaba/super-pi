@@ -11,6 +11,13 @@ The coding agent loads this package on first script execution. Only injected too
 and helpers are available; scripts have no host filesystem, network or Node globals.
 Host tool policy remains the caller's responsibility.
 
+`ALL_TOOLS` is a snapshot of the current script's injected tools. Each entry has
+`name` (the collision-free JavaScript property used by `tools[name]`), `toolName`
+(the exact registered name used by host helpers such as `callTool` and
+`describeTools`), and `description`. These names can differ; never reconstruct
+aliases or MCP server/tool names. The coding agent keeps its provider entry
+definition fixed and loads current schemas and full instructions on demand.
+
 Low-level `result.ok` reports VM completion. Tool `result.calls` retain real
 `error`/`cancelled` statuses; `failureHandled` identifies rejection handling proved
 by the VM. `unobservedGlobals` carries failed or still-pending helper calls that

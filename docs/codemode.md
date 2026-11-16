@@ -1,6 +1,6 @@
 # Codemode 使用说明
 
-Super Pi 默认通过 Codemode 执行普通工具。模型直接调用 `codemode`，在脚本内调用 read、bash、edit、MCP 等工具。subagent、ask_user、Plan/Goal 等编排和控制工具保持直接调用。CodeMode 的 `ALL_TOOLS` 只列脚本可用工具；`describeTools` 对已激活的顶层工具返回 `TOOL_DIRECT_ONLY`，应按模型收到的顶层 schema 调用。`tool_search` 只搜索未激活工具，搜索为空不代表顶层工具不存在。工具白名单、Plan mode、权限和取消规则继续生效；`--no-tools` 可以禁用工具。
+Super Pi 默认通过 Codemode 执行普通工具。模型直接调用 `codemode`，在脚本内调用 read、bash、edit、MCP 等工具。subagent、ask_user、Plan/Goal 等编排和控制工具保持直接调用。CodeMode 的 `ALL_TOOLS` 只列脚本可用工具；`describeTools` 对已激活的顶层工具返回 `TOOL_DIRECT_ONLY`，应按模型收到的顶层 schema 调用。`tool_search` 激活未激活工具，并报告准确名称或类别中已激活的工具；搜索为空不代表顶层工具不存在。工具白名单、Plan mode、权限和取消规则继续生效；`--no-tools` 可以禁用工具。
 
 ## 基本调用与树状卡片
 
@@ -97,16 +97,16 @@ Shell 保留真实进程状态。grep 退出 1 通常表示无匹配；只有在
 
 ## 工具发现
 
-当前本地工具的声明按有界预算列在 Codemode 描述中；省略时会给出提示。MCP 声明按需查看，远端工具加入活动集不会仅因名字增加而改变整段内联描述。
+CodeMode 的 provider 入口说明固定。本地和 MCP 工具的激活、顺序、说明及 Schema 更新不再向入口拼接声明；完整契约按需查询。顶层控制工具、明确的系统规则、模型/会话配置和压缩仍可能改变真实请求前缀；固定入口不保证服务端缓存命中。
 
-内联声明包含简短用途、参数类型与可容纳的约束标签（如 `@integer`、`@minimum`、`@maxLength`、`@default`），返回值统一声明为实际的 `ToolResult`。`ALL_TOOLS` 用于找名字和简述；长说明会明确标记为摘要。使用不熟悉的工具前，先通过 `describeTools` 读取完整说明，不要根据名字猜测函数或参数。
+`ALL_TOOLS` 包含当前脚本可用工具的简述、`name`（`tools[name]` 的 JavaScript 属性）和 `toolName`（准确注册名）。两者可能因符号规范化或名称冲突而不同；`describeTools`、`callTool` 使用 `toolName`，不要推导别名或 MCP 服务名。使用不熟悉的工具前，先读取当前完整说明和 Schema；TypeScript 摘要包含可容纳的参数约束，返回值为实际 `ToolResult`。
 
 ```js
-text(ALL_TOOLS.filter(tool => tool.name.includes("search")));
+text(ALL_TOOLS.filter(tool => tool.toolName.includes("search")));
 text(await describeTools(["read"]));
 ```
 
-`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名，也接受目录中的脚本别名。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。只有返回 `[More tool documentation]` 提示时才请求续页，照抄其中的下一页 `offset` 和定义版本 `revision`，并保持名字和格式一致；所有 `offset > 0` 请求都必须带回该版本。完整文档会标记无需续页，不要自行猜测偏移重读。首页不传 `revision`；若 MCP 后台更新等原因使定义改变，会要求丢弃旧页、从 `offset:0` 且不带版本重读，不会混合两个版本。页头和续读提示不计入正文限额。
+`describeTools(names, options?)` 每次最多接受 16 个当前可用工具名。为兼容旧脚本也接受别名，但注册名优先，冲突时必须使用 `toolName`。默认返回最多 8,000 字符的文档正文；可用 `limit` 调整为 256–16,000 字符。只有返回 `[More tool documentation]` 提示时才请求续页，照抄其中的下一页 `offset` 和定义版本 `revision`，并保持名字和格式一致；所有 `offset > 0` 请求都必须带回该版本。完整文档会标记无需续页，不要自行猜测偏移重读。首页不传 `revision`；若 MCP 后台更新等原因使定义改变，会要求丢弃旧页、从 `offset:0` 且不带版本重读，不会混合两个版本。页头和续读提示不计入正文限额。
 
 ```js
 // TypeScript 是便于阅读的摘要；精确约束和无法展开的类型可查询原始 JSON Schema。
@@ -119,9 +119,11 @@ text(await describeTools(["browser_exec"], { format: "json", limit: 8000 }));
 
 单个输入 Schema 沿用 65,536 字符及结构遍历保护；不可序列化或超限时明确报告限制，不能将 `unknown` 理解为任意参数都有效。工具目录变动后应从第一页重读。详情查询只读取当前工具元数据，不执行目标工具，也不激活被禁用的工具。资料较多时分轮展示，避免汇总全部文档后再次超过模型输出预算。
 
-MCP 的完整说明通过宿主 `fullDescription` 元数据保留，内联工具说明继续使用摘要；实时发现和缓存恢复都不会先截掉 1,000 字符之后的内容。完整目录和缓存仍受 MCP 的 2 MiB 边界约束，旧摘要缓存会重新发现。
+MCP 的完整说明通过宿主 `fullDescription` 元数据保留，工具目录说明使用摘要；实时发现和缓存恢复都不会先截掉 1,000 字符之后的内容。完整目录和缓存仍受 MCP 的 2 MiB 边界约束，旧摘要缓存会重新发现。
 
 `ALL_TOOLS` 是本次脚本开始时的目录快照。`tools.tool_search(...)` 可以发现并激活允许使用的工具；MCP 搜索负责远端目录。激活后若工具不在脚本起始快照中，用 `await callTool(name, args)` 调用。发现结果不扩大权限，执行前仍检查当前活动工具和授权。
+
+先检查活动目录，缺少工具时才搜索。准确搜索已激活本地工具会报告原名，不再激活描述碰巧匹配的其他工具；类别已用尽时也报告已激活项。MCP 搜索的结构化结果区分 `activated`、`alreadyActive`、`rejected`；只使用宿主接受的名称。无配置、无匹配和策略拒绝含义不同；搜索不是公网检索，也不执行目标工具。远端内容和发现结果均不能授予权限。
 
 ## 分支状态与限制
 
