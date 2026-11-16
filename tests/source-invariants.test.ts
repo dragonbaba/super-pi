@@ -152,9 +152,10 @@ test("execution boundary admission checks have no normal-path allocation", () =>
     assert.doesNotMatch(declaration.name.getText(codex), /^(websocketSessionCache|websocketDebugStats|websocketSseFallbackSessions|successfulDispatchCommitments|consumedDispatchCommitments)$/);
   }
   const parseCodex = codex.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "parseWebSocket") as ts.FunctionDeclaration;
-  for (const name of ["onMessage", "onDecoded", "onDecodeFailure", "finishDecode"]) {
+  for (const name of ["onMessage", "finishDecode", "wake", "capturePending"]) {
     const declaration = parseCodex.body!.statements.filter(ts.isVariableStatement).flatMap(node => [...node.declarationList.declarations])
       .find(node => node.name.getText(codex) === name)!;
+    assert.ok(declaration, `the allocation gate must inspect ${name}`);
     const callback = declaration.initializer as ts.ArrowFunction;
     // Error diagnostics may allocate on malformed data. Normal text delivery has no inline closures/Promises.
     const inspectCallback = (node: ts.Node): void => {

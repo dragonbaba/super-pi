@@ -71,6 +71,7 @@
 
 ## 开发和性能契约
 
+- [缓存、传输与渲染审计](evidence/system-cache-performance-audit-2026-11-16.md)：压缩后规则恢复、混合 WebSocket 帧顺序、终止等待者、大 Markdown 崩溃及同机分配/释放对照，包含全部 provider 的压缩后前缀验证。
 - [渲染热路径核实](evidence/render-hot-paths-2026-11-16.md)：选区/覆盖层、ASCII Markdown 与帧 UTF-8 计量的分配及 CPU 对照，视口和资源释放证据。
 
 - [测试与文档清理核实](evidence/test-doc-cleanup-2026-11-14.md)：失效验证入口与链接修正；R0 冻结断言及七项未通过验收目标保持完整。

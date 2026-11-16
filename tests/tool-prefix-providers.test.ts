@@ -15,6 +15,7 @@ import type { ExtensionAPI } from "../packages/coding-agent/src/core/extensions/
 import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 import { alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { historyContent, prefixCases, prefixTransport } from "./helpers/provider-prefix-transport.ts";
+import dynamicInstructions from "../packages/dynamic-instructions/src/index.ts";
 
 for (const { label, model } of prefixCases) test(`${label}: tool catalog transitions preserve actual wire prefix and prior history`, async t => {
   const transport = await prefixTransport(t, model);
@@ -108,4 +109,41 @@ for (const { label, model } of prefixCases) test(`${label}: tool catalog transit
     "real rule changes must reach every provider, including native inline history");
   t.diagnostic(JSON.stringify({ requests: transport.sent.length, fixedPrefixUtf8Bytes: Buffer.byteLength(first.prefix),
     firstRawBytes: first.rawBytes, firstWireBytes: first.wireBytes }));
+});
+
+for (const { label, model } of prefixCases) test(`${label}: compaction restores visible rules without changing the wire prefix`, async t => {
+  const transport = await prefixTransport(t, model), root = await mkdtemp(join(tmpdir(), "sp-compacted-prefix-"));
+  let owner: AgentSession | undefined;
+  t.after(async () => {
+    try { if (owner) { owner.dispose(); await (owner as any)._codemode.close(); await owner.waitForSessionLeaseRelease(); } }
+    finally { await rm(root, { recursive: true, force: true }); }
+  });
+  const manager = SessionManager.inMemory(root), settings = SettingsManager.inMemory({ compaction: { enabled: false, keepRecentTokens: 1 }, retry: { enabled: false } });
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+    extensionFactories: [dynamicInstructions, pi => pi.on("session_before_compact", event => ({ compaction: {
+      summary: "Offline compaction fixture", firstKeptEntryId: manager.getLeafId()!, tokensBefore: event.preparation.tokensBefore,
+    } }))],
+  });
+  await loader.reload();
+  t.mock.method(loader, "getAgentsFiles", () => ({ agentsFiles: [{ path: join(root, "AGENTS.md"), content: "WORKSPACE_RULE_RESTORE_629" }] }));
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, model, resourceLoader: loader, settingsManager: settings,
+    sessionManager: manager, modelRuntime: alphaModelRuntime(transport.stream), noTools: "all" });
+  owner = session;
+  await session.prompt("Before compaction");
+  assert.equal((session.messages.at(-1) as any).stopReason, "stop");
+  const before = transport.sent[0]!;
+  assert.match(JSON.stringify(before.history), /WORKSPACE_RULE_RESTORE_629/);
+  await session.compact();
+  assert.doesNotMatch(JSON.stringify(manager.buildSessionContext().messages), /WORKSPACE_RULE_RESTORE_629/);
+  await session.prompt("After compaction");
+  assert.equal((session.messages.at(-1) as any).stopReason, "stop");
+  assert.equal(transport.sent[1]!.prefix, before.prefix);
+  assert.match(JSON.stringify(transport.sent[1]!.history), /WORKSPACE_RULE_RESTORE_629/);
+  await session.prompt("Unchanged next turn");
+  assert.equal(transport.sent[2]!.prefix, before.prefix);
+  assert.equal(transport.sent.length, 3, "one dispatch per regular turn and no provider request for the compaction fixture");
+  let replacements = 0;
+  for (const entry of manager.getEntries()) if (entry.type === "custom_message" && entry.customType === "dynamic-instructions-v1") replacements++;
+  assert.equal(replacements, 2, "reinject once after compaction, never on the next unchanged turn");
 });

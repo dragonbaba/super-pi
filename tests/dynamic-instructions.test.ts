@@ -131,6 +131,78 @@ test("only absent metadata uses the conservative legacy formatting and unique-ma
 	assert.ok(old?.systemPrompt?.includes("Pi-specific tasks: read Pi's installed README"));
 });
 
+test("compaction restores dynamic instructions that no longer exist in model context", async () => {
+	const f = await fixture(), options = promptFixture("nested"), composition = buildSystemPromptComposition(options);
+	const emit = () => f.runner.emitBeforeAgentStart("turn", undefined, composition.text, options, composition);
+	f.persist(await emit());
+	const dynamicId = f.manager.getLeafId()!;
+	const keptId = f.manager.appendMessage({ role: "user", content: "keep this turn", timestamp: 1 });
+	f.manager.appendCompaction("summary", keptId, 1000);
+	assert.equal(f.manager.buildContextEntries().some(entry => entry.type === "custom_message" && entry.customType === "dynamic-instructions-v1"), false);
+	const restored = await emit();
+	assert.ok(restored?.messages?.[0], "summarized instructions must be injected again");
+	assert.match(String(restored.messages[0].content), /Workspace\/project instructions replacement/);
+	f.persist(restored);
+	assert.equal((await emit())?.messages, undefined);
+	// Keeping the actual custom entry does not require another replacement.
+	f.manager.branch(keptId);
+	f.manager.appendCompaction("kept summary", dynamicId, 1000);
+	assert.equal((await emit())?.messages, undefined);
+});
+
+test("retained compaction tails determine current dynamic state rather than summarized tree entries", async () => {
+	const f = await fixture(), options = promptFixture();
+	let composition = buildSystemPromptComposition(options);
+	const emit = () => f.runner.emitBeforeAgentStart("turn", undefined, composition.text, options, composition);
+	f.persist(await emit());
+	const original = f.manager.buildSessionContext().messages[0]!;
+	options.contextFiles![0].content = "updated workspace policy";
+	composition = buildSystemPromptComposition(options);
+	f.persist(await emit());
+	const keptId = f.manager.getLeafId()!;
+	f.manager.appendCompaction("retained old context", keptId, 1000, undefined, false, undefined, [original]);
+	assert.ok((await emit())?.messages?.[0], "visible old hashes must not be replaced by summarized newer hashes");
+	f.manager.appendCompaction("no retained context", keptId, 1000, undefined, false, undefined, []);
+	assert.ok((await emit())?.messages?.[0]);
+});
+
+test("legacy projection migrates discoverable CodeMode skills without rewriting its prefix", async () => {
+	const f = await fixture(), options = promptFixture("nested");
+	let composition = buildSystemPromptComposition(options);
+	const initial = await f.runner.emitBeforeAgentStart("legacy", undefined, composition.text, options);
+	assert.equal(initial?.systemPrompt?.includes("<available_skills>"), false);
+	assert.ok(String(initial?.messages?.[0].content).includes("Available skill catalog replacement"));
+	f.persist(initial);
+	options.skills![0].description = "updated skill instructions";
+	composition = buildSystemPromptComposition(options);
+	const updated = await f.runner.emitBeforeAgentStart("legacy", undefined, composition.text, options);
+	assert.equal(updated?.systemPrompt, initial?.systemPrompt);
+	assert.match(String(updated?.messages?.[0].content), /updated skill instructions/);
+});
+
+test("dynamic restoration uses indexed current ancestry and validates kept boundaries", async () => {
+	const f = await fixture(), options = promptFixture(), composition = buildSystemPromptComposition(options);
+	const emit = () => f.runner.emitBeforeAgentStart("turn", undefined, composition.text, options, composition);
+	for (let index = 0; index < 1000; index++) f.manager.appendMessage({ role: "user", content: "earlier", timestamp: index });
+	f.persist(await emit());
+	f.manager.getBranch = () => { throw new Error("dynamic restoration must not copy the full branch"); };
+	f.manager.appendMessage({ role: "user", content: "next", timestamp: 1001 });
+	assert.equal((await emit())?.messages, undefined);
+	f.manager.appendCompaction("invalid boundary", "not-on-this-branch", 1000);
+	assert.ok((await emit())?.messages?.[0]);
+});
+
+test("legacy ancestry fallback also respects compaction visibility", async () => {
+	const f = await fixture(), options = promptFixture(), composition = buildSystemPromptComposition(options);
+	const emit = () => f.runner.emitBeforeAgentStart("turn", undefined, composition.text, options, composition);
+	f.persist(await emit());
+	const kept = f.manager.appendMessage({ role: "user", content: "keep", timestamp: 1 });
+	f.manager.appendCompaction("summary", kept, 1000);
+	f.manager.getLeafEntry = undefined as never;
+	f.manager.getEntry = undefined as never;
+	assert.ok((await emit())?.messages?.[0]);
+});
+
 test("native projection has no full-prompt search, resource formatting, serialization or callback allocation", () => {
 	const file = new URL("../packages/dynamic-instructions/src/index.ts", import.meta.url);
 	const source = ts.createSourceFile(file.pathname, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);

@@ -11,7 +11,7 @@ test("stream timing confines envelope allocation to guarded completion boundarie
 		assert.equal(ts.isPropertyDeclaration(member), false, "new instance state must not narrow SDK structural compatibility");
 	}
 	const generic = source.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "EventStream") as ts.ClassDeclaration;
-	for (const name of ["push", "end"]) {
+	for (const name of ["push", "end", "finishWaitingConsumers"]) {
 		const method = generic.members.find(node => ts.isMethodDeclaration(node) && node.name.getText(source) === name) as ts.MethodDeclaration;
 		let objects = 0;
 		const violations: string[] = [];
@@ -28,7 +28,7 @@ test("stream timing confines envelope allocation to guarded completion boundarie
 		}
 		visit(method.body!);
 		assert.deepEqual(violations, []);
-		assert.equal(objects, 1, "only the existing waiting-iterator result envelope is allowed");
+		assert.equal(objects, name === "push" ? 1 : 0, "only delivery creates an iterator envelope; terminal waiters share the immutable result");
 	}
 	for (const [name, envelopes] of [["finalizeAssistantTiming", 1], ["replaceAssistantTerminal", 2]] as const) {
 		const helper = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name) as ts.FunctionDeclaration;

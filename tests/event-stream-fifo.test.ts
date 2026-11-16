@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventStream } from "../packages/ai/src/utils/event-stream.ts";
+import { FifoQueue } from "../packages/ai/src/utils/fifo-queue.ts";
 
 type FixtureEvent = { kind: "value" | "final" | "error"; value: number };
 
@@ -84,4 +85,35 @@ test("high backlog drains in order without retaining queue slots", async () => {
 	assert.equal(next, count + 1);
 	assert.equal(queueState(events).queue.length, 0);
 	assert.equal(queueState(events).waiting.length, 0);
+});
+
+test("terminal pushes release every waiting iterator without duplicating the terminal event", async () => {
+	for (const kind of ["final", "error"] as const) {
+		const events = stream();
+		const a = events[Symbol.asyncIterator](), b = events[Symbol.asyncIterator]();
+		const first = a.next(), second = b.next();
+		events.push({ kind, value: 7 });
+		assert.equal(queueState(events).waiting.length, 0, "terminal delivery must release every pending consumer");
+		assert.deepEqual(await first, { value: { kind, value: 7 }, done: false });
+		assert.deepEqual(await second, { value: undefined, done: true });
+		assert.deepEqual(await a.next(), { value: undefined, done: true });
+		assert.equal(await events.result(), 7);
+	}
+});
+
+test("FIFO clear releases both backing stores and preserves interleaved admission order", () => {
+	const queue = new FifoQueue<object>();
+	const a = {}, b = {}, c = {};
+	queue.enqueue(a); queue.enqueue(b);
+	assert.equal(queue.dequeue(), a);
+	queue.enqueue(c);
+	assert.equal(queue.dequeue(), b);
+	assert.equal(queue.dequeue(), c);
+	queue.enqueue(a); queue.enqueue(b); queue.dequeue(); queue.enqueue(c);
+	const internal = queue as unknown as { incoming: object[]; outgoing: object[] };
+	const incoming = internal.incoming, outgoing = internal.outgoing;
+	queue.clear();
+	assert.notEqual(internal.incoming, incoming); assert.notEqual(internal.outgoing, outgoing);
+	assert.equal(queue.length, 0);
+	queue.enqueue(c); assert.equal(queue.dequeue(), c); assert.equal(queue.dequeue(), undefined);
 });
