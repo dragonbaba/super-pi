@@ -124,22 +124,7 @@ const EMPTY_METRICS: TuiRenderMetrics = {
 	altLayoutRowCacheRejectedBySize: 0,
 };
 
-export function utf8ByteLength(value: string): number {
-	let bytes = 0;
-	for (let index = 0; index < value.length; index++) {
-		const codeUnit = value.charCodeAt(index);
-		if (codeUnit <= 0x7f) bytes++;
-		else if (codeUnit <= 0x7ff) bytes += 2;
-		else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < value.length) {
-			const next = value.charCodeAt(index + 1);
-			if (next >= 0xdc00 && next <= 0xdfff) {
-				bytes += 4;
-				index++;
-			} else bytes += 3;
-		} else bytes += 3;
-	}
-	return bytes;
-}
+export { utf8ByteLength } from "./utf8-byte-length.ts";
 
 /** Per-TUI counters used by transcript and terminal-frame benchmarks. */
 export class TuiRenderInstrumentation {

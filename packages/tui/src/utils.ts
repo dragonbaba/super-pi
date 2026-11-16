@@ -56,7 +56,7 @@ const widthCache = new Map<string, number>();
 
 export const cjkBreakRegex = CJK_BREAK_PATTERN;
 
-function isPrintableAscii(str: string): boolean {
+export function isPrintableAscii(str: string): boolean {
 	for (let i = 0; i < str.length; i++) {
 		const code = str.charCodeAt(i);
 		if (code < 0x20 || code > 0x7e) {
@@ -251,6 +251,22 @@ function isSimpleTerminalAsciiRun(text: string, start: number, end: number): boo
 		if (codeUnit !== 0x09 && (codeUnit < 0x20 || codeUnit > 0x7e)) return false;
 	}
 	return true;
+}
+
+/** Own the fragment: even a short input may be a slice of a much larger backing string. */
+function terminalAsciiFragment(source: string, start: number, end: number): string {
+	let result = "";
+	let index = start;
+	// Fixed argument blocks avoid per-column cons strings without arrays, buffers or source slices.
+	const blockLength = 8;
+	for (; index + blockLength <= end; index += blockLength) {
+		result += String.fromCharCode(
+			source.charCodeAt(index), source.charCodeAt(index + 1), source.charCodeAt(index + 2), source.charCodeAt(index + 3),
+			source.charCodeAt(index + 4), source.charCodeAt(index + 5), source.charCodeAt(index + 6), source.charCodeAt(index + 7),
+		);
+	}
+	for (; index < end; index++) result += String.fromCharCode(source.charCodeAt(index));
+	return result;
 }
 
 /**
@@ -1539,28 +1555,31 @@ export function extractSegmentsInto(
 		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
 
 		if (isSimpleTerminalAsciiRun(line, i, textEnd)) {
+			let beforeStart = -1, beforeStop = 0, afterStartIndex = -1, afterStop = 0;
 			for (let textIndex = i; textIndex < textEnd; textIndex++) {
 				const width = line.charCodeAt(textIndex) === 0x09 ? 3 : 1;
 				if (currentCol < beforeEnd && currentCol + width <= beforeEnd) {
-					if (pendingAnsiBefore) {
-						before += pendingAnsiBefore;
-						pendingAnsiBefore = "";
-					}
-					before += line[textIndex];
+					if (beforeStart < 0) beforeStart = textIndex;
+					beforeStop = textIndex + 1;
 					beforeWidth += width;
 				} else if (currentCol >= afterStart && currentCol < afterEnd) {
 					const fits = !strictAfter || currentCol + width <= afterEnd;
 					if (fits) {
-						if (!afterStarted) {
-							after += pooledStyleTracker.getActiveCodes();
-							afterStarted = true;
-						}
-						after += line[textIndex];
+						if (afterStartIndex < 0) afterStartIndex = textIndex;
+						afterStop = textIndex + 1;
 						afterWidth += width;
 					}
 				}
 				currentCol += width;
 				if (afterLen <= 0 ? currentCol >= beforeEnd : currentCol >= afterEnd) break;
+			}
+			if (beforeStart >= 0) {
+				if (pendingAnsiBefore) { before += pendingAnsiBefore; pendingAnsiBefore = ""; }
+				before += terminalAsciiFragment(line, beforeStart, beforeStop);
+			}
+			if (afterStartIndex >= 0) {
+				if (!afterStarted) { after += pooledStyleTracker.getActiveCodes(); afterStarted = true; }
+				after += terminalAsciiFragment(line, afterStartIndex, afterStop);
 			}
 		} else {
 			for (const part of graphemeSegmenter.segment(line.substring(i, textEnd))) {
@@ -1641,24 +1660,31 @@ export function highlightTerminalColumns(line: string, startColumn: number, endC
 		let textEnd = index;
 		while (textEnd < line.length && findTerminalSequenceEnd(line, textEnd) === 0) textEnd++;
 		if (isSimpleTerminalAsciiRun(line, index, textEnd)) {
+			let beforeStart = -1, beforeStop = 0, selectedStart = -1, selectedStop = 0, afterStart = -1, afterStop = 0;
 			for (let textIndex = index; textIndex < textEnd; textIndex++) {
 				const width = line.charCodeAt(textIndex) === 0x09 ? 3 : 1;
-				if (currentColumn < startColumn && currentColumn + width <= startColumn) before += line[textIndex];
+				if (currentColumn < startColumn && currentColumn + width <= startColumn) {
+					if (beforeStart < 0) beforeStart = textIndex;
+					beforeStop = textIndex + 1;
+				}
 				else if (currentColumn >= startColumn && currentColumn < endColumn && currentColumn + width <= endColumn) {
-					if (pendingSelected.length !== 0) {
-						selected += pendingSelected;
-						pendingSelected = "";
-					}
-					selected += line[textIndex];
+					if (selectedStart < 0) selectedStart = textIndex;
+					selectedStop = textIndex + 1;
 				} else if (currentColumn >= endColumn && currentColumn < lineWidth && currentColumn + width <= lineWidth) {
-					if (pendingAfter.length !== 0) {
-						after += pendingAfter;
-						pendingAfter = "";
-					}
-					after += line[textIndex];
+					if (afterStart < 0) afterStart = textIndex;
+					afterStop = textIndex + 1;
 				}
 				currentColumn += width;
 				if (currentColumn >= lineWidth) break;
+			}
+			if (beforeStart >= 0) before += terminalAsciiFragment(line, beforeStart, beforeStop);
+			if (selectedStart >= 0) {
+				if (pendingSelected) { selected += pendingSelected; pendingSelected = ""; }
+				selected += terminalAsciiFragment(line, selectedStart, selectedStop);
+			}
+			if (afterStart >= 0) {
+				if (pendingAfter) { after += pendingAfter; pendingAfter = ""; }
+				after += terminalAsciiFragment(line, afterStart, afterStop);
 			}
 		} else {
 			for (const part of graphemeSegmenter.segment(line.substring(index, textEnd))) {

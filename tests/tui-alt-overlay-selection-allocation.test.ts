@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import ts from "typescript";
 import { RetainedContainer } from "../packages/tui/src/components/retained-item.ts";
@@ -97,6 +98,7 @@ test("Alt overlay and selection frame leaves avoid wrapper and collection alloca
 		{ node: findFunction(utils, "sliceWithWidthInto"), source: utils },
 		{ node: findFunction(utils, "findTerminalSequenceEnd"), source: utils },
 		{ node: findFunction(utils, "isSimpleTerminalAsciiRun"), source: utils },
+		{ node: findFunction(utils, "terminalAsciiFragment"), source: utils },
 	];
 	const violations: string[] = [];
 	for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
@@ -151,6 +153,9 @@ test("single-pass selection composition matches legacy slicing across every cell
 		"emoji-👨‍👩‍👧‍👦-😀",
 		"combining-e\u0301-o\u0308",
 		"\x1b]8;;https://example.com\x07linked-中😀\x1b]8;;\x07-tail",
+		"\tA\tplain tail",
+		"\x1b[31mplain\ttext\x1b[0m padded tail",
+		"\u0600 a\u0301\t中 padded tail",
 	] as const;
 	for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
 		const line = lines[lineIndex]!;
@@ -165,6 +170,71 @@ test("single-pass selection composition matches legacy slicing across every cell
 			}
 		}
 	}
+});
+
+test("ASCII overlay and selection loops collect ranges before materializing bounded fragments", () => {
+	const source = ts.createSourceFile("utils.ts", readFileSync("packages/tui/src/utils.ts", "utf8"), ts.ScriptTarget.Latest, true);
+	const violations: string[] = [];
+	for (const name of ["extractSegmentsInto", "highlightTerminalColumns"]) {
+		const target = findFunction(source, name);
+		function inspect(node: ts.Node): void {
+			if (ts.isForStatement(node) && node.initializer?.getText(source).includes("textIndex")) {
+				function inspectLoop(child: ts.Node): void {
+					if (ts.isBinaryExpression(child) && child.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken
+						&& ["before", "selected", "after"].includes(child.left.getText(source))) violations.push(`${name}:${child.getText(source)}`);
+					ts.forEachChild(child, inspectLoop);
+				}
+				inspectLoop(node.statement);
+			} else ts.forEachChild(node, inspect);
+		}
+		inspect(target);
+	}
+	assert.deepEqual(violations, []);
+});
+
+test("ASCII overlay fragments release direct and pre-sliced oversized sources across the next call", () => {
+	const script = `
+		import { extractSegments } from './packages/tui/src/utils.ts';
+		import { setImmediate as tick } from 'node:timers/promises';
+		async function collect() { for (let index = 0; index < 4; index++) { await tick(); globalThis.gc(); } }
+		function result(sliced) {
+			const source = 'a'.repeat(16 * 1024 * 1024 - 1) + 'z';
+			return sliced ? extractSegments(source.substring(0, 120), 80, 100, 20, true) : extractSegments(source, 4, 8, 64, true);
+		}
+		for (const sliced of [false, true]) {
+			await collect(); const before = process.memoryUsage().heapUsed;
+			const selected = result(sliced); await collect();
+			console.log(JSON.stringify({ sliced, next: false, delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+			extractSegments('next frame', 4, 6, 4, true); await collect();
+			console.log(JSON.stringify({ sliced, next: true, delta: process.memoryUsage().heapUsed - before, before: selected.before, after: selected.after }));
+		}
+	`;
+	const run = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "--input-type=module", "--eval", script], { cwd: process.cwd(), windowsHide: true, encoding: "utf8", env: process.env });
+	assert.equal(run.status, 0, run.stderr);
+	const reports = run.stdout.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+	assert.equal(reports.length, 4);
+	for (const report of reports) {
+		assert.equal(report.before, "a".repeat(report.sliced ? 80 : 4));
+		assert.equal(report.after, "a".repeat(report.sliced ? 20 : 64));
+		assert.ok(report.delta < 4 * 1024 * 1024, `sliced=${report.sliced} next=${report.next} retained source backing: ${report.delta} bytes`);
+	}
+});
+
+test("timing-only frame benchmark reports unavailable allocation data without omitting frames", () => {
+	const run = spawnSync(process.execPath, ["--expose-gc", "--experimental-strip-types", "scripts/bench/tui-frame-allocations.ts", "--items", "10", "--frames", "4", "--warmup", "1", "--timing-only"], {
+		cwd: process.cwd(), windowsHide: true, encoding: "utf8", env: process.env,
+	});
+	assert.equal(run.status, 0, run.stderr);
+	const report = JSON.parse(run.stdout);
+	assert.equal(report.allocationSamplingEnabled, false);
+	assert.equal(report.metrics.sampledAllocationBytes, null);
+	assert.equal(report.metrics.sampledAllocationBytesPerFrame, null);
+	assert.equal(report.topAllocationSites, null);
+	assert.equal(report.metrics.frameStringsGenerated, 4);
+	assert.equal(report.metrics.fullSizeFrameCopies, 0);
+	assert.ok(report.metrics.processPeakRssBytes > 0);
+	assert.ok(report.metrics.cpuUserMicroseconds >= 0);
+	assert.ok(report.metrics.cpuSystemMicroseconds >= 0);
 });
 
 class OverlayCompositionHarness extends TuiAltScreen {
