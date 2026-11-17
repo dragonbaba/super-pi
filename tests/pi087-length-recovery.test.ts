@@ -30,11 +30,11 @@ function reply(text: string, finish = "stop", output = 10): Response {
 		headers: { "Content-Type": "text/event-stream" },
 	});
 }
-function toolReply(): Response {
+function toolReply(inputTokens = 100): Response {
 	const chunk = { id: "offline-tool", object: "chat.completion.chunk", created: 1, model: model.id,
 		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "recovery-inspect", type: "function",
 			function: { name: "inspect_effect", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
-		usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } };
+		usage: { prompt_tokens: inputTokens, completion_tokens: 10, total_tokens: inputTokens + 10 } };
 	return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
 		headers: { "Content-Type": "text/event-stream" },
 	});
@@ -159,7 +159,8 @@ async function fixture(scenario: Scenario) {
 					if (wires.length === 2) {
 						if (autoRetryScenario) return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-tool") return toolReply();
-						if (thresholdScenario) return toolReply();
+						// Current-epoch provider usage now drives threshold accounting.
+						if (thresholdScenario) return toolReply(model.contextWindow - settings.getCompactionReserveTokens() + 1);
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-length") return reply("RETRY_LENGTH_FRAGMENT", "length");
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }

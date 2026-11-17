@@ -33,6 +33,7 @@
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。
 - [恢复会话后的当前工具契约](evidence/current-tool-contracts-2026-11-17.md)：历史名称精确查找、停止重复发现、隔离临时快照索引，并保留固定请求前缀与已完成结果。
+- [压缩后的用量校准与请求余量](evidence/compaction-usage-epoch-2026-11-17.md)：校验当前压缩代次的供应商用量，修复连续工具调用和新请求的阈值检查，避免历史参数反复序列化。
 - [CodeMode 存储容量恢复](evidence/codemode-store-recovery-2026-11-17.md)：查看键名和占用、独立清理、失败写入不提交以及成功工具不重放。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
 - [人工交互持续等待](evidence/human-approval-wait-2026-11-14.md)：TUI/RPC 忽略旧对话超时，原生审批、沙箱联网及项目信任持续等待；取消后的迟到答复不授予联网权限，旧测试及工具提示同步修正。

@@ -91,6 +91,7 @@ import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import { readShellExecution, shellProcessResultFromError } from "./tools/shell-execution.ts";
 import {
 	type CompactionResult,
+	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	estimateContextTokens,
@@ -708,6 +709,14 @@ interface CompactionAwareEstimate {
 	paidBoundaryPending: boolean;
 }
 
+function isPostCompactionMessage(entries: SessionEntry[], checkpointIndex: number, message: AgentMessage): boolean {
+	for (let index = entries.length - 1; index > checkpointIndex; index--) {
+		const entry = entries[index];
+		if (entry.type === "message" && entry.message === message) return true;
+	}
+	return false;
+}
+
 function estimateCompactionAwareContextTokens(
 	entries: SessionEntry[], messages: AgentMessage[], model: Model<any> | undefined,
 ): CompactionAwareEstimate {
@@ -725,9 +734,26 @@ function estimateCompactionAwareContextTokens(
 			materializedBaselineTokens: null, paidBoundaryPending,
 		};
 	}
-	const estimated = estimateMessagesTokens(messages);
+	let trailingTokens = 0;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role === "assistant" && model && message.api === model.api &&
+			message.provider === model.provider && message.model === model.id &&
+			message.stopReason !== "error" && message.stopReason !== "aborted" && message.usage) {
+			const usageTokens = calculateContextTokens(message.usage);
+			if (Number.isFinite(usageTokens) && usageTokens > 0) {
+				// Retained tails carry usage from the old epoch. Trust only a response
+				// actually present in this context and committed after the checkpoint.
+				if (isPostCompactionMessage(entries, latestCompactionIndex, message)) return {
+					tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: index,
+					source: "provider", epochVerified: true, materializedBaselineTokens: null, paidBoundaryPending,
+				};
+			}
+		}
+		trailingTokens += estimateTokens(message);
+	}
 	return {
-		tokens: estimated, usageTokens: 0, trailingTokens: estimated, lastUsageIndex: null,
+		tokens: trailingTokens, usageTokens: 0, trailingTokens, lastUsageIndex: null,
 		source: "materialized", epochVerified: false,
 		materializedBaselineTokens: getPersistedMaterializedBaseline(entries[latestCompactionIndex] as CompactionEntry),
 		paidBoundaryPending,
@@ -4222,9 +4248,10 @@ export class AgentSession {
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
-		// A local preparation block is not provider overflow and never authorizes
-		// paid automatic compaction or replay of a completed tool.
-		if (isRequestBudgetBlock(assistantMessage.errorMessage)) return false;
+		// A local block never triggers paid overflow recovery in the failed run.
+		// A new explicit prompt still performs its ordinary enabled threshold check.
+		const requestBudgetBlocked = isRequestBudgetBlock(assistantMessage.errorMessage);
+		if (requestBudgetBlocked && skipAbortedCheck) return false;
 		if (isRequestBodyTooLarge(assistantMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings();
 		if (!settings.enabled) return false;
@@ -4244,9 +4271,10 @@ export class AgentSession {
 		// Skip compaction checks if this assistant message is older than the latest
 		// compaction boundary. This prevents a stale pre-compaction usage/error
 		// from retriggering compaction on the first prompt after compaction.
-		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
+		const compactionBranch = this.sessionManager.getBranch();
+		const compactionEntry = getLatestCompactionEntry(compactionBranch);
 		const assistantIsFromBeforeCompaction =
-			compactionEntry !== null && assistantMessage.timestamp <= Date.parse(compactionEntry.timestamp);
+			compactionEntry !== null && !isPostCompactionMessage(compactionBranch, compactionBranch.indexOf(compactionEntry), assistantMessage);
 		if (assistantIsFromBeforeCompaction) {
 			return false;
 		}
@@ -4257,7 +4285,7 @@ export class AgentSession {
 		// A successful response over the configured window should compact but must not retry: the
 		// assistant answer already completed and agent.continue() cannot continue from an assistant.
 		const recoverableLength = sameModel && isRecoverableLength(assistantMessage, this.model?.maxTokens ?? 0);
-		if (sameModel && (isContextOverflow(assistantMessage, contextWindow) || recoverableLength)) {
+		if (!requestBudgetBlocked && sameModel && (isContextOverflow(assistantMessage, contextWindow) || recoverableLength)) {
 			const willRetry = assistantMessage.stopReason !== "stop";
 
 			if (!willRetry) {
