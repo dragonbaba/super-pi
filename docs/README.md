@@ -13,6 +13,7 @@
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
 - [分支摘要配置](branch-summaries.md)：输出额度、历史输入预留、推理预算和空结果处理。
+- [自动压缩百分比](auto-compaction.md)：默认 85%，按供应商和模型保存文本百分比，统一触发、记账和状态栏阈值。
 
 源码交付的最短路径是：在仓库根目录运行 `npm.cmd ci` 安装依赖、`npm.cmd run build:offline` 构建本地运行时，再通过 `npm.cmd run superpi` 启动。更新源码后的重建和 `--offline --version` / `--offline --help` 检查见[中文首页](../README.zh-CN.md#更新已有源码后重新构建)。`.task-tmp` 是开发临时目录，与 `packages/*/dist/` 构建产物分开。包内 README 如果保留面向独立 npm 包或上游 Pi 的安装片段，应视为包级参考；源码 checkout 的正式入口以根 README 和 `scripts/superpi.mjs` 为准。
 
@@ -30,6 +31,7 @@
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、原始输出与结构化数据读取、读取与修改、失败处理、工具发现和分支存储。
 - [CodeMode 源码运行边界](evidence/codemode-runtime-source-boundary-2026-11-17.md)：取消独立源码字符拦截，保留 VM、时间、协议和取消边界，验证完整长脚本与失败后的下一次执行。
+- [自动压缩百分比验证](evidence/auto-compaction-percentage-2026-11-17.md)：供应商/模型隔离保存、触发边界、缓存前缀及查询/footer 分配和释放证据。
 - [CodeMode 输出数据契约](evidence/codemode-output-contract-2026-11-17.md)：执行事实与展示/解析错误分离，原始捕获和 MCP 数据分页，完成项不重放及引用生命周期。
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。

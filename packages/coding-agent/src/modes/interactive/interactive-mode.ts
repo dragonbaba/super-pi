@@ -109,6 +109,7 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { formatToolResultBudgetStatus, parseToolResultBudgetCommand } from "../../core/tool-result-budget-status.ts";
+import { formatAutoCompactionStatus, parseAutoCompactionPercentage } from "../../core/auto-compaction-status.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
@@ -3983,6 +3984,11 @@ export class InteractiveMode {
 				await this.showPermissionsSelector();
 				return;
 			}
+			if (text === "/autocompact" || text.startsWith("/autocompact ")) {
+				this.editor.setText("");
+				await this.handleAutoCompactionCommand(text.slice(12));
+				return;
+			}
 			if (text === "/tool-budget" || text.startsWith("/tool-budget ")) {
 				this.editor.setText("");
 				this.handleToolResultBudgetCommand(text.slice(12));
@@ -6363,6 +6369,7 @@ export class InteractiveMode {
 			selector = new SettingsSelectorComponent(
 				{
 					autoCompact: this.session.autoCompactionEnabled,
+					autoCompactPercentage: this.session.model ? this.settingsManager.getAutoCompactionPercentage(this.session.model.provider, this.session.model.id) : undefined,
 					toolResultBudget: this.session.toolResultPresentationEnabled ? String(this.session.getToolResultBudgetStatus().budgetTokens ?? "unconfigured") : "off",
 					defaultModel,
 					currentModel: this.session.model,
@@ -6400,6 +6407,7 @@ export class InteractiveMode {
 				},
 				{
 					onToolResultBudgetChange: this.onToolResultBudgetSettingChange,
+					onAutoCompactionPercentageChange: this.onAutoCompactionPercentageSettingChange,
 					onAutoCompactChange: (enabled) => {
 						this.session.setAutoCompactionEnabled(enabled);
 						this.footer.setAutoCompactEnabled(enabled);
@@ -8188,6 +8196,22 @@ export class InteractiveMode {
 		const status = this.session.getToolResultBudgetStatus();
 		return status.state === "disabled" ? "off" : String(status.budgetTokens ?? "unconfigured");
 	};
+
+	private readonly onAutoCompactionPercentageSettingChange = (value: string): void => {
+		void this.handleAutoCompactionCommand(value);
+	};
+
+	private async handleAutoCompactionCommand(value: string): Promise<void> {
+		try {
+			const percentage = parseAutoCompactionPercentage(value);
+			const model = this.session.model;
+			if (!model) throw new Error("Select a model before configuring auto-compaction.");
+			if (percentage !== "status") await this.session.setAutoCompactionPercentage(percentage);
+			this.showStatus(formatAutoCompactionStatus(model.provider, model.id, model.contextWindow,
+				this.settingsManager.getAutoCompactionPercentage(model.provider, model.id), this.session.autoCompactionEnabled));
+			this.ui.requestRender();
+		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }
+	}
 
 	private handleToolResultBudgetCommand(value: string): void {
 		try {

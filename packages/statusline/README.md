@@ -81,7 +81,7 @@ ANSI-safely truncated.
 ### Usage and context
 
 - `context` renders one-decimal current usage and the model window, such as `2.4%/272k`. Once usage
-  crosses Pi's native automatic-compaction threshold, it temporarily renders
+  reaches the automatic-compaction threshold reported by the host, it temporarily renders
   `98.7% · pending compact` until compaction completes or the agent settles. After compaction it can
   temporarily render `?/272k` until the next valid assistant response.
 - `tokens`, `cache`, and `cost` total every usage-bearing session entry, matching Pi's native footer:
@@ -94,9 +94,9 @@ ANSI-safely truncated.
 - `speed` shows the latest completed assistant stream's output-token throughput, measured from Pi's
   first stream event through completion. It excludes request wait and tool execution time; unreliable
   non-stream timing is omitted rather than estimated.
-- Pi's public extension API does not expose the current auto-compaction toggle or customized reserve,
-  so the pending marker mirrors Pi's exported default reserve threshold and clears at `agent_settled`
-  if no compaction runs; it does not claim that auto-compaction is enabled persistently.
+- The pending marker consumes the host's resolved threshold and enabled/paid-boundary state,
+  then clears at `agent_settled` if no compaction runs. Older hosts without policy metadata
+  omit this speculative marker rather than guessing a reserve-based threshold.
 
 ## ⚙️ Settings
 

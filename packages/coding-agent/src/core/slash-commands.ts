@@ -22,6 +22,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "remove-dir", description: "移除当前会话的附加工作目录", argumentHint: "<directory>" },
 	{ name: "dirs", description: "查看当前会话的工作目录" },
 	{ name: "settings", description: "Open settings menu" },
+	{ name: "autocompact", description: "View or save this provider/model's automatic compaction percentage", argumentHint: "status | <percentage, e.g. 85%>" },
 	{ name: "tool-budget", description: "View or explicitly change this session's tool-result text budget", argumentHint: "status | off | <positive tokens>" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
 	{ name: "thinking", description: "Set thinking level", argumentHint: "<level>" },

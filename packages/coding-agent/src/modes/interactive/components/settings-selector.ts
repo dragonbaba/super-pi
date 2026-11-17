@@ -1,9 +1,10 @@
-import type { ThinkingLevel } from "@super-pi/agent-core";
+import { DEFAULT_AUTO_COMPACTION_PERCENTAGE, type ThinkingLevel } from "@super-pi/agent-core";
 import { getSupportedThinkingLevels, type Model, type Transport } from "@super-pi/ai";
 import {
 	type Component,
 	Container,
 	getCapabilities,
+	Input,
 	type ScrollViewScrollbar,
 	type SelectItem,
 	type SettingItem,
@@ -12,6 +13,7 @@ import {
 	Text,
 } from "@super-pi/tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { parseAutoCompactionPercentage } from "../../../core/auto-compaction-status.ts";
 import type {
 	DefaultProjectTrust,
 	MermaidRenderingMode,
@@ -72,6 +74,7 @@ function modelsHaveSameIdentity(left: Model<any> | undefined, right: Model<any> 
 
 export interface SettingsConfig {
 	autoCompact: boolean;
+	autoCompactPercentage?: number;
 	toolResultBudget?: string;
 	defaultModel: string;
 	currentModel?: Model<any>;
@@ -110,6 +113,7 @@ export interface SettingsConfig {
 
 export interface SettingsCallbacks {
 	onAutoCompactChange: (enabled: boolean) => void;
+	onAutoCompactionPercentageChange?: (value: string) => void;
 	onToolResultBudgetChange?: (value: string) => string;
 	onShowImagesChange: (enabled: boolean) => void;
 	onImageWidthCellsChange: (width: number) => void;
@@ -221,6 +225,35 @@ function defaultAutomaticThemes(
 	const currentFixedTheme = currentThemeSetting.includes("/") ? undefined : currentThemeSetting;
 	const themeName = preferredTheme(availableThemes, currentFixedTheme, "dark");
 	return { lightTheme: themeName, darkTheme: themeName };
+}
+
+/** Explicit dialog lifetime; parsing does not run on progress/render events. */
+export class AutoCompactionPercentageSubmenu extends Container {
+	private readonly input = new Input();
+	private readonly errorText = new Text("", 0, 0);
+	private readonly done: (value?: string) => void;
+
+	constructor(value: string, done: (value?: string) => void) {
+		super();
+		this.done = done;
+		this.addChild(new Text("Auto-compact percentage for the current provider/model (1–100). Enter e.g. 85% or 70. Esc cancels.", 0, 0));
+		this.input.handleInput(value);
+		this.input.focused = true;
+		this.input.onSubmit = this.submit;
+		this.input.onEscape = this.cancel;
+		this.addChild(this.input);
+		this.addChild(this.errorText);
+	}
+
+	private readonly submit = (value: string): void => {
+		try {
+			const percentage = parseAutoCompactionPercentage(value);
+			if (percentage === "status") throw new Error("Enter a percentage between 1 and 100.");
+			this.done(`${percentage}%`);
+		} catch (error) { this.errorText.setText(error instanceof Error ? error.message : String(error)); }
+	};
+	private readonly cancel = (): void => { this.done(); };
+	handleInput(data: string): void { this.input.handleInput(data); }
 }
 
 class ThemeSubmenu extends Container {
@@ -460,6 +493,13 @@ export class SettingsSelectorComponent extends Container {
 				description: "Automatically compact context when it gets too large",
 				currentValue: config.autoCompact ? "true" : "false",
 				values: ["true", "false"],
+			},
+			{
+				id: "autocompact-percentage",
+				label: "Auto-compact percentage",
+				description: "Saved separately for the current provider/model. Type 85%, 70 or another percentage; automatic enable/disable is separate.",
+				currentValue: `${config.autoCompactPercentage ?? DEFAULT_AUTO_COMPACTION_PERCENTAGE}%`,
+				submenu: (value, done) => new AutoCompactionPercentageSubmenu(value, done),
 			},
 			{
 				id: "steering-mode",
@@ -806,6 +846,9 @@ export class SettingsSelectorComponent extends Container {
 			getSettingsListTheme(),
 			(id, newValue) => {
 				switch (id) {
+					case "autocompact-percentage":
+						callbacks.onAutoCompactionPercentageChange?.(newValue);
+						break;
 					case "tool-result-budget":
 						this.settingsList.updateValue(id, callbacks.onToolResultBudgetChange?.(newValue) ?? config.toolResultBudget ?? "off");
 						break;

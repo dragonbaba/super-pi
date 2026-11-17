@@ -13,6 +13,7 @@ import {
 	uuidv7,
 } from "@super-pi/ai";
 import type { AgentMessage, ThinkingLevel } from "../../types.ts";
+import { DEFAULT_AUTO_COMPACTION_PERCENTAGE, getAutoCompactionThreshold } from "../../compaction-policy.ts";
 import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage } from "../messages.ts";
 import { buildSessionContext } from "../session/context.ts";
 import type { CompactionEntry, Entry } from "../session/types.ts";
@@ -146,6 +147,8 @@ function combineUsage(first: Usage, second: Usage): Usage {
 
 /** Compaction thresholds and retention settings. */
 export interface CompactionSettings {
+	/** Occupancy percentage; independent of summary/output reserves. Default: 85. */
+	autoCompactPercentage?: number;
 	/** Enable automatic compaction decisions. */
 	enabled: boolean;
 	/** Tokens reserved for summary prompt and output. */
@@ -156,6 +159,7 @@ export interface CompactionSettings {
 
 /** Default compaction settings used by the harness. */
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
+	autoCompactPercentage: DEFAULT_AUTO_COMPACTION_PERCENTAGE,
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
@@ -246,7 +250,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 /** Return whether context usage exceeds the configured compaction threshold. */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextWindow > 0 && contextTokens >= getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage);
 }
 
 const ESTIMATED_IMAGE_CHARS = 4800;

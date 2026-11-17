@@ -37,6 +37,11 @@
 			"description": "Per-model reasoning defaults keyed by provider/modelId.",
 			"additionalProperties": { "$ref": "#/definitions/thinkingLevel" }
 		},
+		"modelAutoCompactionPercentages": {
+			"type": "object",
+			"description": "Global per-provider/model occupancy percentages. Keys are encodeURIComponent(provider) + '/' + encodeURIComponent(modelId); unset pairs use 85. /autocompact accepts free text and saves the current pair.",
+			"additionalProperties": { "type": "number", "minimum": 1, "maximum": 100 }
+		},
 		"transport": { "enum": ["auto", "sse", "websocket", "websocket-cached"], "default": "auto", "description": "Preferred provider transport where supported." },
 		"steeringMode": { "enum": ["all", "one-at-a-time"], "default": "one-at-a-time", "description": "How queued steering messages are delivered." },
 		"followUpMode": { "enum": ["all", "one-at-a-time"], "default": "one-at-a-time", "description": "How queued follow-up messages are delivered." },
@@ -47,7 +52,7 @@
 			"additionalProperties": false,
 			"properties": {
 				"enabled": { "type": "boolean", "default": true, "description": "Enable automatic context compaction." },
-				"reserveTokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Tokens reserved for the next response." },
+				"reserveTokens": { "type": "integer", "minimum": 0, "default": 16384, "description": "Tokens reserved for summary/request preparation; not the automatic occupancy threshold." },
 				"keepRecentTokens": { "type": "integer", "minimum": 0, "default": 20000, "description": "Recent tokens to retain after compaction." }
 			}
 		},

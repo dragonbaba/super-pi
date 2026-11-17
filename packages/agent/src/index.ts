@@ -146,4 +146,5 @@ export * from "./proxy.ts";
 export { setDefaultStreamFn } from "./stream-fn.ts";
 // Types
 export * from "./types.ts";
+export { DEFAULT_AUTO_COMPACTION_PERCENTAGE, isAutoCompactionPercentage, getAutoCompactionThreshold, autoCompactionSettingKey } from "./compaction-policy.ts";
 export { ToolResultError, toolResultFromError } from "./tool-result-error.ts";
