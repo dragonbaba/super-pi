@@ -98,7 +98,7 @@ export class FileResultWriter {
     return this.append({ ...metadata, phase: "commit", index: this.activeIndex, itemId: `${this.binding.toolCallId}:${this.activeIndex}`, preparedId: this.activePreparation, intentId: this.activeIntent, readyId: this.readyId, readyHash: this.readyHash });
   }
   result(index: number, receipt: Omit<FileResultPayload, "phase">): string {
-    if (index !== this.activeIndex || !validMutationOutcome(receipt.status, receipt.stateChanged) || receipt.status === "not_started"
+    if (index !== this.activeIndex || !validMutationOutcome(receipt.status, receipt.stateChanged, receipt) || receipt.status === "not_started"
       || (receipt.status === "partial" || receipt.status === "state_unknown") && receipt.requiresVerification !== true) throw new Error("[FILE_RESULT_ORDER] Invalid item outcome.");
     const id = this.append({ ...receipt, phase: "result", index, itemId: `${this.binding.toolCallId}:${index}`, preparedId: this.activePreparation, intentId: this.activeIntent, readyId: this.readyId, readyHash: this.readyHash });
     switch (receipt.status) {
@@ -276,7 +276,7 @@ function assertRecord(session: FileResultSession, data: FileResultEnvelope, reco
   if (intention.phase !== "intent" || intention.index !== record.index || intention.preparedId !== record.preparedId) throw new Error(fail);
   assertIntentMembership(intention, prepared, readyId, readyHash, ready);
   if (record.operation !== preparation.operation || record.target !== preparation.target || record.destination !== preparation.destination
-    || !validMutationOutcome(record.status, record.stateChanged) || record.status === "not_started") throw new Error(fail);
+    || !validMutationOutcome(record.status, record.stateChanged, record) || record.status === "not_started") throw new Error(fail);
   for (const key of CONTENT_HASH_FIELDS) if (record[key] !== undefined && (typeof record[key] !== "string" || !SHA256_PATTERN.test(record[key] as string))) throw new Error(fail);
   if (record.snapshot !== undefined && (record.status !== "succeeded" || record.requiresVerification === true || record.snapshot !== record.sha256)
     || record.revision !== undefined && (record.status !== "succeeded" || record.requiresVerification === true || record.revisionContinuation !== "available")) throw new Error(fail);
@@ -287,11 +287,11 @@ function assertRecord(session: FileResultSession, data: FileResultEnvelope, reco
   if ((previousRecord.phase !== "intent" && previousRecord.phase !== "commit") || previousRecord.index !== record.index
     || (previousRecord.phase === "intent" ? data.previousId !== record.intentId
       : previousRecord.intentId !== record.intentId || previous.previousId !== record.intentId || previous.previousHash !== intent.hash || previous.sequence !== intent.sequence + 1)
-    || !validMutationOutcome(record.status, record.stateChanged) || record.status === "not_started"
+    || !validMutationOutcome(record.status, record.stateChanged, record) || record.status === "not_started"
     || record.operation !== preparation.operation || record.target !== preparation.target || record.destination !== preparation.destination
     || (record.status === "partial" || record.status === "state_unknown") && record.requiresVerification !== true) throw new Error(fail);
   if (record.status === "succeeded" && previousRecord.phase === "commit"
-    && (previousRecord.status !== "succeeded" || previousRecord.stateChanged !== true || record.sha256 !== previousRecord.sha256)) throw new Error(fail);
+    && (previousRecord.status !== "succeeded" || previousRecord.stateChanged !== record.stateChanged || record.sha256 !== previousRecord.sha256)) throw new Error(fail);
   if (record.status === "succeeded" && (record.operation === "write" || record.operation === "edit")
     && (previousRecord.phase !== "commit" || typeof record.sha256 !== "string")) throw new Error(fail);
 }

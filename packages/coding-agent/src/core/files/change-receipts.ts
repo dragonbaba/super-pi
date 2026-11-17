@@ -61,9 +61,17 @@ export function safeReceiptPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !UNSAFE_RECEIPT_PATH_PATTERN.test(value);
 }
 
-export function validMutationOutcome(status: unknown, stateChanged: unknown): boolean {
+export function validMutationOutcome(status: unknown, stateChanged: unknown, retention?: {
+  operation?: unknown; skippedProtected?: unknown; sourceRetained?: unknown; retainedDirectories?: unknown;
+  files?: unknown; directories?: unknown; bytes?: unknown; coverageComplete?: unknown;
+}): boolean {
   return status === "state_unknown" ? stateChanged === "unknown"
-    : status === "succeeded" || status === "partial" ? stateChanged === true
+    : status === "succeeded" ? stateChanged === true || stateChanged === false && retention?.operation === "delete"
+      && typeof retention.skippedProtected === "number" && Number.isSafeInteger(retention.skippedProtected) && retention.skippedProtected > 0
+      && retention.sourceRetained === true && typeof retention.retainedDirectories === "number"
+      && Number.isSafeInteger(retention.retainedDirectories) && retention.retainedDirectories > 0
+      && retention.files === 0 && retention.directories === 0 && retention.bytes === 0 && retention.coverageComplete === false
+    : status === "partial" ? stateChanged === true
     : (status === "failed_no_change" || status === "cancelled" || status === "not_started") && stateChanged === false;
 }
 

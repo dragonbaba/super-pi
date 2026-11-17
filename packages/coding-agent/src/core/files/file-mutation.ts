@@ -6,11 +6,11 @@ import { fileSourceArguments } from "./file-source-arguments.ts";
 import { assertIndependent } from "./file-path-conflicts.ts";
 import { PreviewBudget, displayMetadata } from "./change-preview.ts";
 import { directoryKey, summarizeCreatedDirectories, type CreatedDirectory } from "./file-creation.ts";
-import { boundedReason } from "./file-tree-core.mjs";
+import { boundedReason, summarizeTreeProtection, protectedDirectoryIndexes } from "./file-tree-core.mjs";
 import type { FileMutationService, PreparedFileItem, FileOperation, FileOperationInput, FileExecutionHooks, ExecutePreparedFile, FileReceipt } from "./file-service.ts";
 import { FileResultWriter, type AppendFileResultEntry, type FileResultSession } from "./file-result-store.ts";
 import { FILE_MUTATION_CALL_ENTRY, type FileResultOperation, type FileResultPayload } from "./file-result-protocol.ts";
-import { FILE_RESULT_FAILURE_SAMPLES, FILE_RESULT_PREVIEW_SAMPLES, FILE_RESULT_INLINE_BYTES, FILE_RESULT_INLINE_ITEMS } from "./file-operation-limits.mjs";
+import { FILE_RESULT_FAILURE_SAMPLES, FILE_RESULT_PREVIEW_SAMPLES, FILE_RESULT_INLINE_BYTES, FILE_RESULT_INLINE_ITEMS, FILE_RESULT_REASON_BYTES } from "./file-operation-limits.mjs";
 import type { PathIdentity } from "./native-file-core.ts";
 import { resolve } from "node:path";
 import { assertFileBatchItemFailure } from "./file-batch-outcome.ts";
@@ -20,7 +20,7 @@ function unavailableExecution(): never { throw new Error("No prepared file can e
 const INPUT_FIELDS = ["content", "destination", "snapshot", "edits", "recursive", "overwrite", "purpose"] as const;
 const RECEIPT_FIELDS = ["operation", "target", "destination", "status", "stateChanged", "requiresVerification", "sha256", "previousSha256",
   "sourceIdentity", "created", "bytes", "files", "directories", "skippedLinks", "coverageComplete", "revision", "revisionContinuation", "snapshot",
-  "changedBytes", "replacements", "deduplicatedEdits", "category", "stopInvocation"] as const;
+  "changedBytes", "replacements", "deduplicatedEdits", "category", "stopInvocation", "skippedProtected", "skippedProtectedPaths", "skippedProtectedPathsOmitted", "retainedDirectories", "sourceRetained"] as const;
 
 /** Locate the exact persisted source on this branch. No synthetic call or guessed leaf. */
 export function findFileMutationCall(session: FileResultSession, id: string, operation: FileResultOperation, hash: string): string {
@@ -133,6 +133,7 @@ export class FileMutation {
       if (tree?.destination) text += ` → ${displayMetadata(tree.destination)}`;
       if (tree) text += `; ${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.bytes} bytes, ${tree.tree.skippedLinks} skipped links`
         + (item.input.recursive ? "; recursive" : "") + (item.input.overwrite ? `; overwrite existing regular file (${tree.destinationIdentity?.size ?? "0"} bytes)` : "; exclusive destination");
+      if (tree?.tree.protectedEntries?.length) text += `; ${tree.tree.protectedEntries.length} protected metadata paths will be retained; containing source directories remain when necessary`;
       if (item.creation) text += `; ${tree ? "destination" : "new file"}, ${item.creation.directories.length} missing parent directories`;
       const metadata = item.snapshot?.metadata ?? tree?.overwriteCommit?.metadata;
       if (metadata) text += `; ${metadata.strategy}${metadata.reason ? ": " + displayMetadata(boundedReason(metadata.reason)) : ""}`;
@@ -192,6 +193,10 @@ class FileMutationExecution {
   private files = 0;
   private directories = 0;
   private skippedLinks = 0;
+  private skippedProtected = 0;
+  private retainedDirectories = 0;
+  private skippedProtectedPaths: string[] | undefined;
+  private protectedPathBytes = 0;
   private readonly previewSamples: Record<string, unknown>[] = [];
   private previewSampleBytes = 0;
   private previewDirectories: Set<string> | undefined;
@@ -250,7 +255,20 @@ class FileMutationExecution {
       compatibilityReason: tree?.overwriteCommit?.metadata.reason ?? item.snapshot?.metadata?.reason,
       plannedDirectoryCount: item.creation?.directories.length, creationAncestor: item.creation?.ancestor,
       manifest: item.remote?.manifest,
-      files: tree?.tree.files, directories: tree?.tree.directories, bytes: tree?.tree.bytes, skippedLinks: tree?.tree.skippedLinks };
+      files: tree?.tree.files, directories: tree?.tree.directories, bytes: tree?.tree.bytes, skippedLinks: tree?.tree.skippedLinks,
+      ...(tree ? summarizeTreeProtection(tree.tree) : undefined) };
+  }
+  private rememberProtection(value: { skippedProtected?: unknown; retainedDirectories?: unknown; skippedProtectedPaths?: unknown }): void {
+    if (typeof value.skippedProtected !== "number" || value.skippedProtected <= 0) return;
+    this.skippedProtected += value.skippedProtected;
+    if (typeof value.retainedDirectories === "number") this.retainedDirectories += value.retainedDirectories;
+    if (!Array.isArray(value.skippedProtectedPaths)) return;
+    for (const path of value.skippedProtectedPaths) {
+      if (typeof path !== "string") continue;
+      const bytes = Buffer.byteLength(path);
+      if (this.protectedPathBytes + bytes > FILE_RESULT_REASON_BYTES) break;
+      (this.skippedProtectedPaths ??= []).push(path); this.protectedPathBytes += bytes;
+    }
   }
   readonly run = async (execute: ExecutePreparedFile): Promise<void> => {
     const { mutation } = this;
@@ -273,16 +291,24 @@ class FileMutationExecution {
             status: "failed_no_change", stateChanged: false, reason: item.preparationFailure }); continue;
         }
         const files = item.tree?.tree.files ?? 1, skippedLinks = item.tree?.tree.skippedLinks ?? 0;
-        let directories = item.tree?.tree.directories ?? 0;
+        const protection = item.tree && summarizeTreeProtection(item.tree.tree);
+        let retainedDirectoryCount = 0;
+        if (protection && item.operation !== "copy") {
+          const retained = protectedDirectoryIndexes(item.tree!.tree);
+          retainedDirectoryCount = retained?.size ?? 0; retained?.clear();
+          protection.retainedDirectories = retainedDirectoryCount; protection.sourceRetained = retainedDirectoryCount > 0;
+        }
+        if (protection) this.rememberProtection(protection);
+        let directories = (item.tree?.tree.directories ?? 0) - (item.operation === "delete" ? retainedDirectoryCount : 0);
         if (item.creation) for (const path of item.creation.directories) {
           const key = directoryKey(path);
           if (!this.previewDirectories!.has(key)) { this.previewDirectories!.add(key); directories++; }
         }
         const bytes = item.tree?.tree.bytes ?? item.remote?.prepared.header.text?.bytes ?? item.preview?.bytes ?? 0;
-        this.files += files; this.directories += directories; this.skippedLinks += skippedLinks; this.bytes += bytes; this.coverageComplete &&= skippedLinks === 0;
+        this.files += files; this.directories += directories; this.skippedLinks += skippedLinks; this.bytes += bytes; this.coverageComplete &&= skippedLinks === 0 && !protection;
         if (this.items || this.previewSamples.length < FILE_RESULT_PREVIEW_SAMPLES) {
           const row = { index, itemId: item.itemId, operation: item.operation, target: item.target, destination: item.tree?.destination,
-            status: "preview", stateChanged: false, files, directories, bytes, skippedLinks };
+            status: "preview", stateChanged: false, files, directories, bytes, skippedLinks, ...protection };
           if (this.items) this.remember(row);
           if (this.previewSamples.length < FILE_RESULT_PREVIEW_SAMPLES) {
             const size = Buffer.byteLength(JSON.stringify(row));
@@ -336,6 +362,7 @@ class FileMutationExecution {
         this.directories += creation.createdDirectoryCount ?? creation.createdDirectories?.length ?? 0;
       }
       if (typeof receipt.skippedLinks === "number") this.skippedLinks += receipt.skippedLinks;
+      this.rememberProtection(receipt);
       this.requiresVerification ||= receipt.requiresVerification === true;
       this.coverageComplete &&= metadata.coverageComplete !== false && receipt.status !== "partial" && receipt.status !== "state_unknown";
       this.remember({ index: this.current, itemId: item.itemId, ...metadata });
@@ -397,6 +424,13 @@ class FileMutationExecution {
       if (this.failureCount > this.failures.length) summary += `\n${this.failureCount - this.failures.length} more failures are available in file_result.`;
       if (failed || notStarted) summary += "\nDo not repeat successful items. Reconcile only the failed or unstarted items; no automatic retry was performed.";
     }
+    if (this.skippedProtected) {
+      summary += `\nRetained protected metadata: ${this.skippedProtected}; protected contents were not traversed or changed.`;
+      if (this.retainedDirectories) summary += ` ${this.retainedDirectories} source directories remain to contain it.`;
+      for (const path of this.skippedProtectedPaths ?? []) summary += `\nRetained: ${displayMetadata(path)}`;
+      const omitted = this.skippedProtected - (this.skippedProtectedPaths?.length ?? 0);
+      if (omitted) summary += `\n${omitted} additional protected paths were retained; path excerpts are bounded.`;
+    }
     if (this.resultRef) summary += `\nResult records: ${this.resultRef}`;
     const single = mutation.operation !== "file_batch" && mutation.items.length === 1 && this.items?.length === 1 ? this.items[0] : undefined;
     const display = single && this.singlePreviewDiff ? summary + "\n" + this.singlePreviewDiff : summary;
@@ -404,6 +438,8 @@ class FileMutationExecution {
       ...single, mutationReceiptVersion: 3, operation: mutation.operation, preview: mutation.dryRun,
       itemCount: mutation.items.length, succeeded: this.succeeded, failed: this.failed, partial: this.partial, unknown: this.unknown, cancelled: this.cancelled,
       notStarted: mutation.dryRun ? 0 : notStarted, bytes: this.bytes, files: this.files, directories: this.directories, skippedLinks: this.skippedLinks, requiresVerification: this.requiresVerification,
+      ...(this.skippedProtected ? { skippedProtected: this.skippedProtected, skippedProtectedPaths: this.skippedProtectedPaths ?? [],
+        skippedProtectedPathsOmitted: this.skippedProtected - (this.skippedProtectedPaths?.length ?? 0), retainedDirectories: this.retainedDirectories } : undefined),
       previewSamples: mutation.dryRun ? this.previewSamples : undefined,
       previewSamplesOmitted: mutation.dryRun ? mutation.items.length - this.previewSamples.length : undefined,
       coverageComplete: this.coverageComplete, complete: !this.reason, resultRef: this.resultRef,
@@ -413,5 +449,6 @@ class FileMutationExecution {
     }, isError: !!this.reason || failed > 0 || !mutation.dryRun && notStarted > 0 };
   }
   dispose(): void { this.writer?.dispose(); this.writer = undefined; this.sharedDirectories.clear(); this.singlePreviewDiff = undefined;
+    this.skippedProtectedPaths = undefined;
     this.previewDirectories?.clear(); this.previewDirectories = undefined; }
 }

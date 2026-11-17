@@ -19,6 +19,7 @@ import { completedFileBatchFailure } from "./files/file-batch-outcome.ts";
 import { readShellExecution } from "./tools/shell-execution.ts";
 import { truncateTail } from "./tools/truncate.ts";
 import { codemodeFailureReason, codemodeFailureWindow, codemodeInputSummary, codemodeOutputDigests, codemodeTextDigest, CODEMODE_DISPLAY_PREVIEW_CHARS, type CodemodeChildDisplay } from "./codemode-display.ts";
+import { codemodeChildDiagnostic, codemodeIsChildFailure, codemodeTruncatedSuccessSuffix } from "./codemode-failure.ts";
 
 /** Result quota excludes input. Only native-read path/range primitives survive dispatch. */
 interface ChildRecord { result: ToolResultMessage; input: Record<string, unknown> | undefined; chars: number; contentChars: number; imageChars: number;
@@ -74,8 +75,9 @@ const REVIEW_ALLOW_FAILURE = Object.freeze({ review: true, allowFailure: true })
 
 /** Exception context only; successful tool effects and script failure stay distinct. */
 function scriptFailureMessage(error: string, facts: readonly ChildFact[]): string {
+	for (const fact of facts) if (fact.isError && codemodeIsChildFailure(error, fact.ref, fact.preview, fact.outputPath)) return error;
 	for (const fact of facts) {
-		if (!fact.isError && fact.outputTruncated) return `${error}; successful ${fact.toolName.slice(0, 80)} output is truncated. Its content is display text, not a complete document. Inspect the existing Output path when available. Do not repeat completed commands.`;
+		if (!fact.isError && fact.outputTruncated) return error + codemodeTruncatedSuccessSuffix(fact.toolName);
 	}
 	return error;
 }
@@ -86,7 +88,6 @@ function nestedAllowed(tool: AgentTool<any>): boolean {
 	return !tool.orchestration && !tool.modelOnly && !tool.interactionBoundary;
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : "Codemode execution failed"; }
-const FAILURE_TAIL_OPTIONS = Object.freeze({ maxLines: 4, maxBytes: 1024 });
 const SUMMARY_TAIL_OPTIONS = Object.freeze({ maxLines: 3, maxBytes: 256 });
 function preview(result: ToolResultMessage): string {
 	for (const block of result.content) if (block.type === "text") return result.isError
@@ -450,7 +451,8 @@ export class CodemodeController {
 			fact.evicted = true;
 			await this.recoverRecord(record);
 		}
-		if (batchPartial) {
+		const retainedProtection = !raw.isError && CODEMODE_MUTATION_NAMES.has(name) && typeof raw.details?.skippedProtected === "number" && raw.details.skippedProtected > 0;
+		if (batchPartial || retainedProtection) {
 			// Completed item outcomes remain visible even when the script omits show().
 			await this.show(ref); record.automaticallyShown = true;
 		}
@@ -475,8 +477,7 @@ export class CodemodeController {
 			}
 			// Complete short diagnostics preserve native wrapper identity used by the UI
 			// to recognize a child exception. Long output needs cause plus bounded tail.
-			const diagnostic = fact.preview.length <= 512 ? fact.preview
-				: codemodeFailureReason(fact.preview, "model") + "\n" + truncateTail(fact.preview.slice(-1024), FAILURE_TAIL_OPTIONS).content;
+			const diagnostic = codemodeChildDiagnostic(fact.preview);
 			throw new ChildToolFailure(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;

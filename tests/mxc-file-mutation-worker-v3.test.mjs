@@ -9,7 +9,7 @@ import fsSync from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { runFileMutationRequest } from '../packages/coding-agent/src/core/sandbox/mxc-file-mutation-worker.mjs';
 import { capturePathIdentity } from '../packages/coding-agent/src/core/files/file-tree-core.mjs';
-import { readFileWorkerManifest, readFileParentManifest, writeFileParentManifest } from '../packages/coding-agent/src/core/files/file-worker-plan.mjs';
+import { FileWorkerManifest, readFileWorkerManifest, readFileParentManifest, writeFileParentManifest } from '../packages/coding-agent/src/core/files/file-worker-plan.mjs';
 import { createOwnedManifestFile } from '../packages/coding-agent/src/core/files/file-manifest-artifact.mjs';
 import { mutationRequestHash } from '../packages/coding-agent/src/core/files/file-invocation.ts';
 import { FILE_MUTATION_TEXT_BYTES, FILE_RPC_REQUEST_BYTES, FILE_RPC_REPLY_BYTES } from '../packages/coding-agent/src/core/files/file-operation-limits.mjs';
@@ -43,6 +43,25 @@ async function fixture(t, operations, operation = 'file_batch') {
   }
   return { root, workspace, exchange, request, items, prepare, validate, execute, rpc };
 }
+
+for (const invalid of ['name', 'parent', 'duplicate', 'missing', 'count']) test(`worker protected manifest rejects ${invalid} exclusions and releases reader state`, async t => {
+  const f = await fixture(t, [{ operation: 'delete', path: 'source', recursive: true }]);
+  await mkdir(join(f.workspace, 'source/.git'), { recursive: true });
+  const prepared = await f.prepare();
+  const rows = (await readFile(join(f.exchange, prepared[0].manifest.name), 'utf8')).trim().split('\n').map(JSON.parse);
+  const excluded = rows.find(row => row.kind === 'protected'); assert(excluded);
+  if (invalid === 'name') excluded.name = '../ordinary';
+  else if (invalid === 'parent') excluded.parent = rows[0].tree.entries;
+  else if (invalid === 'duplicate') { rows.push({ ...excluded }); rows[0].tree.protectedEntries++; }
+  else if (invalid === 'missing') rows.splice(rows.indexOf(excluded), 1);
+  else rows[0].tree.protectedEntries++;
+  const reader = new FileWorkerManifest(f.request, f.items[0], 0);
+  try { assert.throws(() => { for (let index = 0; index < rows.length; index++) reader.onManifestRecord(rows[index], index); reader.finish(); }, /FILE_WORKER_PLAN/); }
+  finally { reader.dispose(); }
+  assert.equal(reader.entries.length, 0); assert.equal(reader.protectedEntries, undefined); assert.equal(reader.protectedParents, undefined);
+  const next = await readFileWorkerManifest(f.request, f.items[0], 0, prepared[0].manifest);
+  assert.equal(next.tree.protectedEntries.length, 1);
+});
 
 for (const phase of ['validate', 'execute']) test(`worker parent retargeting is invocation-fatal during ${phase}`, async t => {
   const f = await fixture(t, [{ operation: 'copy', path: 'original/source', destination: 'copied' }]);
@@ -239,6 +258,22 @@ for (const operation of ['move', 'delete']) test(`worker-only recursive ${operat
   assert.equal(receipt.status, 'succeeded', JSON.stringify(receipt)); assert.equal(receipt.files, 1); assert.equal(receipt.directories, 2);
   await assert.rejects(lstat(join(f.workspace, 'source')), { code: 'ENOENT' });
   if (operation === 'move') assert.equal(await readFile(join(f.workspace, 'target/nested/file'), 'utf8'), 'original');
+});
+
+for (const operation of ['copy', 'move', 'delete']) test(`worker-only ${operation} retains metadata and source ancestors while completing ordinary descendants`, async t => {
+  const f = await fixture(t, [{ operation, path: 'source', ...(operation === 'delete' ? { recursive: true } : { destination: 'target' }) }], operation);
+  await mkdir(join(f.workspace, 'source/.git'), { recursive: true });
+  await mkdir(join(f.workspace, 'source/nested/.sp'), { recursive: true });
+  await writeFile(join(f.workspace, 'source/.git/config'), 'git-kept');
+  await writeFile(join(f.workspace, 'source/nested/.sp/settings'), 'agent-kept');
+  await writeFile(join(f.workspace, 'source/nested/file'), 'ordinary');
+  const prepared = await f.prepare(), validated = await f.validate(prepared), receipt = await f.execute(0, prepared, validated);
+  assert.equal(receipt.status, 'succeeded', JSON.stringify(receipt));
+  assert.equal(receipt.skippedProtected, 2); assert.equal(receipt.coverageComplete, false);
+  assert.equal(await readFile(join(f.workspace, 'source/.git/config'), 'utf8'), 'git-kept');
+  assert.equal(await readFile(join(f.workspace, 'source/nested/.sp/settings'), 'utf8'), 'agent-kept');
+  if (operation !== 'copy') { assert.equal(receipt.sourceRetained, true); await assert.rejects(lstat(join(f.workspace, 'source/nested/file')), { code: 'ENOENT' }); }
+  if (operation !== 'delete') { assert.equal(await readFile(join(f.workspace, 'target/nested/file'), 'utf8'), 'ordinary'); await assert.rejects(lstat(join(f.workspace, 'target/.git')), { code: 'ENOENT' }); }
 });
 
 test('worker-only stale identities, changed content and foreign manifests fail before destination effects', async t => {

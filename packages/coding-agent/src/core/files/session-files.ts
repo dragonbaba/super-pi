@@ -28,6 +28,7 @@ const PREPARATION = Symbol.for("pi.mutation-guard.file-batch.preparation.v1");
 const EXECUTION = Symbol("native-file-execution");
 const LIFECYCLE_EVENTS = new Set(["session_start", "session_before_switch", "session_before_tree", "session_tree", "session_before_shutdown", "session_shutdown"]);
 const MUTATIONS = new Set(["edit", "write", "copy", "delete", "move", "file_batch"]);
+const TREE_PROTECTION_GUIDANCE = " Directory operations process ordinary descendants while retaining nested .git/.sp metadata without traversing it. Results report retained paths and incomplete coverage; move/delete also retain required source directories. Do not replay completed items to remove these exclusions.";
 const STALE = "[STALE_STATE] File invocation belongs to a released or changed session.";
 type FileToolName = FileOperation | "file_batch";
 export type SandboxFileServiceFactory = (event: ToolCallEvent, ctx: ExtensionContext, canonicalPaths: readonly string[]) => FileMutationService;
@@ -387,6 +388,7 @@ export class SessionFiles implements ObservationPermissions {
           return owner.track(invocation.execute(signal));
         },
       };
+      if (name !== "edit" && name !== "write") definition.description += TREE_PROTECTION_GUIDANCE;
       this.definitions.add(definition); base[name] = definition;
     }
   }

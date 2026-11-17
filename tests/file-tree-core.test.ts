@@ -8,7 +8,8 @@ import { writeFileSync, lstatSync, renameSync, symlinkSync, utimesSync } from "n
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { removeOwnedFixture } from "./helpers/owned-fixture-cleanup.ts";
-import { capturePathIdentity, prepareTree, executeTree, writeIdentityTo, hashIdentity, boundedReason } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
+import { FILE_RESULT_REASON_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
+import { capturePathIdentity, prepareTree, executeTree, writeIdentityTo, hashIdentity, boundedReason, summarizeTreeProtection } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
 import { commitPreparedFile, FileCommitError, type FileCommitStream } from "../packages/coding-agent/src/core/files/file-commit.ts";
 import { selectCommitMetadata } from "../packages/coding-agent/src/core/files/file-commit-metadata.ts";
 import { disposeNativeFileWorker } from "../packages/coding-agent/src/core/files/native-file-client.ts";
@@ -20,6 +21,35 @@ async function fixture(t: any) {
   return { root, source, destination };
 }
 const current = () => {};
+
+test("protected gitdir files and metadata junctions are excluded without traversal", async t => {
+  const f = await fixture(t);
+  await mkdir(f.source); const outside = join(f.root, "outside"); await mkdir(outside);
+  await writeFile(join(outside, "sentinel"), "unchanged");
+  await writeFile(join(f.source, ".git"), "gitdir: ../outside");
+  await symlink(outside, join(f.source, ".sp"), process.platform === "win32" ? "junction" : "dir");
+  const tree = await prepareTree(await capturePathIdentity(f.source), "delete", true);
+  assert.equal(tree.entries.length, 1); assert.equal(tree.protectedEntries?.length, 2);
+  const result = await executeTree(tree, "delete", await capturePathIdentity(f.root), undefined, undefined, current);
+  assert.equal(result.status, "succeeded"); assert.equal(result.stateChanged, false);
+  assert.equal(result.directories, 0); assert.equal(result.retainedDirectories, 1); assert.equal(result.sourceRetained, true);
+  assert.equal(await readFile(join(f.source, ".git"), "utf8"), "gitdir: ../outside");
+  assert.equal((await lstat(join(f.source, ".sp"))).isSymbolicLink(), true);
+  assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "unchanged");
+});
+
+test("protected path excerpts remain whole and bounded with exact omission counts", async t => {
+  const f = await fixture(t); await mkdir(f.source);
+  for (let index = 0; index < 40; index++) {
+    const path = join(f.source, "ordinary-" + index); await mkdir(path); await writeFile(join(path, ".git"), "retained");
+  }
+  const tree = await prepareTree(await capturePathIdentity(f.source), "copy");
+  const summary = summarizeTreeProtection(tree)!;
+  assert.equal(summary.skippedProtected, 40); assert(summary.skippedProtectedPathsOmitted > 0);
+  let bytes = 0;
+  for (const path of summary.skippedProtectedPaths) { bytes += Buffer.byteLength(path); assert.equal(await readFile(path, "utf8"), "retained"); }
+  assert(bytes <= FILE_RESULT_REASON_BYTES); assert.equal(summary.skippedProtectedPaths.length + summary.skippedProtectedPathsOmitted, 40);
+});
 
 test("interrupted directory population keeps private candidates and a later move restores access", async t => {
   const f = await fixture(t), ancestor = join(f.root, "private"), source = join(ancestor, "tree"), nested = join(source, "nested"), target = join(f.destination, "nested", "file");
@@ -283,9 +313,13 @@ test("recursive delete unlinks a junction without following its target; copy ski
   assert.equal(removed.status, "succeeded"); assert.equal(await readFile(join(outside, "sentinel"), "utf8"), "external");
 });
 
-for (const name of [".git", ".sp"]) test(`whole tree preflight refuses nested ${name} before any effects`, async t => {
+for (const name of [".git", ".sp"]) test(`whole tree preparation excludes nested ${name} before any effects`, async t => {
   const f = await fixture(t); await mkdir(join(f.source, "nested", name), { recursive: true }); await writeFile(join(f.source, "file"), "original");
-  for (const operation of ["copy", "move", "delete"] as const) await assert.rejects(prepareTree(await capturePathIdentity(f.source), operation, true), /protected/);
+  for (const operation of ["copy", "move", "delete"] as const) {
+    const tree = await prepareTree(await capturePathIdentity(f.source), operation, true);
+    assert.equal(tree.protectedEntries?.length, 1); assert.equal(tree.protectedEntries![0].name, name);
+    for (const entry of tree.entries) assert.notEqual(entry.identity.path, join(f.source, "nested", name));
+  }
   assert.equal(await readFile(join(f.source, "file"), "utf8"), "original"); await assert.rejects(lstat(f.destination), { code: "ENOENT" });
 });
 

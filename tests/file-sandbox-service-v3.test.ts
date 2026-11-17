@@ -45,6 +45,69 @@ async function fixture(t: test.TestContext, changeReply?: (request: any, reply: 
   return { ...f, cwd, definitions, owner, sends, owned, call: (name: string, input: any) => f.invoke(definitions, name, input) };
 }
 
+for (const operation of ["copy", "move", "delete"]) test(`sandbox host validates ${operation} protected exclusions and next invocation`, async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.cwd, "source/nested/.sp"), { recursive: true });
+  await writeFile(join(f.cwd, "source/.git"), "gitdir: retained");
+  await writeFile(join(f.cwd, "source/nested/.sp/settings"), "retained");
+  await writeFile(join(f.cwd, "source/nested/file"), "ordinary");
+  const operations = [{ operation, path: "source", ...(operation === "delete" ? { recursive: true } : { destination: "destination" }) },
+    { operation: "copy", path: "missing", destination: "missing-copy" },
+    { operation: "write", path: "independent", mode: "create", content: "once" }];
+  const preview = await f.call("file_batch", { operations, dryRun: true });
+  assert.equal(preview.details.skippedProtected, 2); assert.equal(preview.details.coverageComplete, false);
+  assert.equal(preview.details.retainedDirectories, operation === "copy" ? 0 : 2);
+  assert.equal(f.sends.some(row => row.phase === "execute"), false);
+  const result = await f.call("file_batch", { operations });
+  assert.equal(completedFileBatchFailure(result.details), true, JSON.stringify(result));
+  assert.equal(result.details.succeeded, 2); assert.equal(result.details.failed, 1);
+  assert.equal(result.details.skippedProtected, 2); assert.equal(result.details.coverageComplete, false);
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 2);
+  assert.equal(await readFile(join(f.cwd, "source/.git"), "utf8"), "gitdir: retained");
+  assert.equal(await readFile(join(f.cwd, "source/nested/.sp/settings"), "utf8"), "retained");
+  if (operation !== "delete") {
+    assert.equal(await readFile(join(f.cwd, "destination/nested/file"), "utf8"), "ordinary");
+    await assert.rejects(lstat(join(f.cwd, "destination/.git")), { code: "ENOENT" });
+  }
+  if (operation !== "copy") await assert.rejects(lstat(join(f.cwd, "source/nested/file")), { code: "ENOENT" });
+  assert.equal((await f.call("write", { path: "next", content: "next" })).isError, false);
+  assert.equal(f.owned.size, 0);
+});
+
+test("sandbox protected-only delete publishes readable no-change success and releases its manifest", async t => {
+  const f = await fixture(t); await mkdir(join(f.cwd, "source/.git"), { recursive: true });
+  const result = await f.call("delete", { path: "source", recursive: true });
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.stateChanged, false);
+  assert.equal(result.details.skippedProtected, 1); assert.equal(result.details.retainedDirectories, 1);
+  const reader = new FileResultReader(f.manager); t.after(() => reader.dispose());
+  const receipt = reader.read(result.details.resultRef).records.find(row => row.record.phase === "result")!.record;
+  assert.equal(receipt.status, "succeeded"); assert.equal(receipt.stateChanged, false);
+  assert.equal(f.owned.size, 0);
+});
+
+for (const forged of ["count", "path", "coverage", "retained"]) test(`sandbox rejects forged protected ${forged} receipt without replay`, async t => {
+  let changed = 0;
+  const f = await fixture(t, (request, reply) => {
+    if (request.phase !== "execute" || request.start !== 0 || changed) return;
+    const receipt = reply.items[0].receipt;
+    if (forged === "count") receipt.skippedProtected++;
+    else if (forged === "path") receipt.skippedProtectedPaths[0] = join(f.cwd, "foreign/.git");
+    else if (forged === "coverage") receipt.coverageComplete = true;
+    else receipt.retainedDirectories = 0;
+    changed++;
+  });
+  await mkdir(join(f.cwd, "source/.git"), { recursive: true });
+  await writeFile(join(f.cwd, "source/file"), "ordinary");
+  const result = await f.call("file_batch", { operations: [{ operation: "delete", path: "source", recursive: true },
+    { operation: "write", mode: "create", path: "must-not-start", content: "unsafe" }] });
+  assert.equal(changed, 1); assert.equal(result.details.requiresVerification, true, JSON.stringify(result));
+  assert.equal(f.sends.filter(row => row.phase === "execute").length, 1);
+  await assert.rejects(lstat(join(f.cwd, "must-not-start")), { code: "ENOENT" });
+  assert.equal((await lstat(join(f.cwd, "source/.git"))).isDirectory(), true);
+  assert.equal((await f.call("write", { path: "next", content: "next" })).isError, false);
+  assert.equal(f.owned.size, 0);
+});
+
 for (const failedIndex of [0, 1, 2]) test(`sandbox batch retains item ${failedIndex} preflight failure and executes independent items once`, async t => {
   const f = await fixture(t);
   const operations: any[] = [];

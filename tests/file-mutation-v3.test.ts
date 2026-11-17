@@ -15,6 +15,7 @@ import { FileResultReader } from "../packages/coding-agent/src/core/files/file-r
 import { FILE_RESULT_ENTRY } from "../packages/coding-agent/src/core/files/file-result-protocol.ts";
 import { FILE_RESULT_PAGE_BYTES } from "../packages/coding-agent/src/core/files/file-operation-limits.mjs";
 import { FileChangesV3 } from "../packages/coding-agent/src/core/files/file-changes-v3.ts";
+import { validMutationOutcome } from "../packages/coding-agent/src/core/files/change-receipts.ts";
 import { nativeFileSession } from "./helpers/sandbox-file-session.ts";
 import { prepareFileCreation, verifyCreationAncestor, executeFileCreation, FileCreationFailure } from "../packages/coding-agent/src/core/files/file-creation.ts";
 import { revalidateTree, executeTree, capturePathIdentity, assertFilePathAfterFailure, assertFilePathAfterFailureSync } from "../packages/coding-agent/src/core/files/file-tree-core.mjs";
@@ -490,12 +491,68 @@ test("large all-failed batch bounds failure excerpts while retaining every termi
   assert.equal(failures, 40);
 });
 
-test("whole-call preflight rejects a protected later item before any effect", async t => {
-  const f = await fixture(t); await writeFile(join(f.cwd, "a"), "a"); await mkdir(join(f.cwd, "bad")); await mkdir(join(f.cwd, "bad", ".git"));
-  const mutation = f.mutation("delete", { paths: ["a", "bad"], recursive: true });
-  await assert.rejects(mutation.prepare(), /protected/);
+test("whole-call preflight still rejects a directly protected workspace target before any effect", async t => {
+  const f = await fixture(t); await writeFile(join(f.cwd, "a"), "a"); await mkdir(join(f.cwd, ".git"));
+  const mutation = f.mutation("delete", { paths: ["a", ".git"], recursive: true });
+  await assert.rejects(mutation.prepare(), /POLICY_BLOCKED/);
   assert.equal(await readFile(join(f.cwd, "a"), "utf8"), "a");
   assert.equal(f.session.getEntries().filter(entry => entry.type === "custom" && entry.customType === FILE_RESULT_ENTRY).length, 0);
+});
+
+test("protected-only delete is a truthful no-change success in the journal and changes view", async t => {
+  const f = await fixture(t); await mkdir(join(f.cwd, "source/.git"), { recursive: true });
+  const mutation = f.mutation("delete", { path: "source", recursive: true }); await mutation.prepare();
+  const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { record: unexpectedLegacy, assertCurrent: current });
+  assert.equal(result.isError, false, JSON.stringify(result)); assert.equal(result.details.succeeded, 1);
+  assert.equal(result.details.items![0].stateChanged, false); assert.equal(result.details.skippedProtected, 1);
+  const reader = new FileResultReader(f.session); t.after(() => reader.dispose());
+  const receipt = reader.read(result.details.resultRef!).records.find(row => row.record.phase === "result")!.record;
+  assert.equal(receipt.status, "succeeded"); assert.equal(receipt.stateChanged, false); assert.equal(receipt.sourceRetained, true);
+  assert.equal(validMutationOutcome("succeeded", false), false);
+  assert.equal(validMutationOutcome("succeeded", false, receipt), true);
+  for (const changed of [{ files: 1 }, { directories: 1 }, { bytes: 1 }, { operation: "write" }, { skippedProtected: 0 }, { retainedDirectories: 0 }, { sourceRetained: false }, { coverageComplete: true }]) {
+    assert.equal(validMutationOutcome("succeeded", false, { ...receipt, ...changed }), false);
+  }
+  const changes = new FileChangesV3(f.session); t.after(() => changes.dispose()); changes.open(result.details.resultRef!);
+  assert.equal(changes.nextItems().records[0].receipt?.sourceRetained, true);
+});
+
+for (const operation of ["copy", "delete", "move"] as const) test(`batch ${operation} handles ordinary descendants and retains protected metadata with ancestors`, async t => {
+  const f = await fixture(t);
+  await mkdir(join(f.cwd, "source/.git"), { recursive: true });
+  await mkdir(join(f.cwd, "source/nested/.sp"), { recursive: true });
+  await mkdir(join(f.cwd, "source/removable"));
+  await writeFile(join(f.cwd, "source/.git/config"), "git-owned");
+  await writeFile(join(f.cwd, "source/nested/.sp/settings"), "agent-owned");
+  await writeFile(join(f.cwd, "source/ordinary"), "ordinary");
+  await writeFile(join(f.cwd, "source/nested/ordinary"), "nested");
+  await writeFile(join(f.cwd, "source/removable/ordinary"), "removable");
+  const mutation = f.mutation("file_batch", { operations: [
+    { operation: "write", mode: "create", path: "first", content: "first" },
+    { operation, path: "source", ...(operation === "delete" ? { recursive: true } : { destination: "destination" }) },
+    { operation: "write", mode: "create", path: "last", content: "last" },
+  ] });
+  await mutation.prepare();
+  const result = await mutation.execute(f.session, (kind, data) => f.session.appendCustomEntry(kind, data), { record: unexpectedLegacy, assertCurrent: current });
+  assert.equal(result.isError, false, JSON.stringify(result));
+  assert.equal(result.details.succeeded, 3); assert.equal(result.details.notStarted, 0);
+  assert.equal(result.details.skippedProtected, 2); assert.equal(result.details.coverageComplete, false);
+  assert.match(result.content[0].type === "text" ? result.content[0].text : "", /protected|保留/i);
+  assert.equal(await readFile(join(f.cwd, "first"), "utf8"), "first"); assert.equal(await readFile(join(f.cwd, "last"), "utf8"), "last");
+  assert.equal(await readFile(join(f.cwd, "source/.git/config"), "utf8"), "git-owned");
+  assert.equal(await readFile(join(f.cwd, "source/nested/.sp/settings"), "utf8"), "agent-owned");
+  const row = result.details.items![1]; assert.equal(row.status, "succeeded"); assert.equal(row.skippedProtected, 2);
+  if (operation !== "copy") {
+    assert.equal(row.sourceRetained, true);
+    await assert.rejects(lstat(join(f.cwd, "source/ordinary")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(f.cwd, "source/removable")), { code: "ENOENT" });
+  }
+  if (operation !== "delete") {
+    assert.equal(await readFile(join(f.cwd, "destination/ordinary"), "utf8"), "ordinary");
+    assert.equal(await readFile(join(f.cwd, "destination/nested/ordinary"), "utf8"), "nested");
+    await assert.rejects(lstat(join(f.cwd, "destination/.git")), { code: "ENOENT" });
+    await assert.rejects(lstat(join(f.cwd, "destination/nested/.sp")), { code: "ENOENT" });
+  }
 });
 
 for (const failure of ["missing-later-edit", "ambiguous-edit"] as const) test(`native batch ${failure} preflights first, continues independent items and retries only the corrected item`, async t => {
