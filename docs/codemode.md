@@ -4,6 +4,8 @@ Super Pi 默认通过 Codemode 执行普通工具。模型直接调用 `codemode
 
 ## 基本调用与树状卡片
 
+文件内容检索优先使用已注册的 `grep`，文件名和目录枚举使用 `find` / `ls`；复杂命令使用所请求的 Bash 或 PowerShell，让程序返回真实结果。`structured_readonly_command` 已退役，不再单独解析 rg/Git 参数、预检命令中的路径或探测可执行文件。不要重复执行 `rg --version`、帮助查询或可用性检查；环境事实核实一次后复用，只有安装、PATH 或执行环境确实变化时才重新核实。修改文件前仍须确认实际文件和匹配，遵循原有工作区授权与版本保护。
+
 ```js
 const result = await tools.read({ path: "package.json" });
 await show(result.ref);

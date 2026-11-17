@@ -33,7 +33,7 @@ test("complete repository default configuration supports Codemode verification a
 		const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
 		await resources.reload();
 		assert.deepEqual(resources.getExtensions().errors, []);
-		assert.equal(resources.getExtensions().extensions.length, 22);
+		assert.equal(resources.getExtensions().extensions.length, 21);
 		writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
 		({ session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: SessionManager.inMemory(cwd),
 			model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 },

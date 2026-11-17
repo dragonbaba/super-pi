@@ -23,7 +23,6 @@ import {
   inspectBatchCall,
   inspectBeforeCall,
   observeRepeatedCall,
-  prepareDeterministicCall,
   recordResult,
   repairReadOffsetFromError,
   resetBatchState,
@@ -215,12 +214,11 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
     }
     const pending = calls.remember(event.toolCallId, "", event.parentToolCallId);
     try {
-    const preparation = await prepareDeterministicCall(event.toolName, event.input);
     if (ctx.signal?.aborted || calls.pending.get(event.toolCallId) !== pending) {
       calls.finish(event.toolCallId);
       return { block: true, reason: "Operation aborted before tool admission" };
     }
-    // Hash after preparation: a synchronous admission decision uses exactly this input.
+    // Admission uses the submitted input; command text is not preflighted or rewritten.
     const key = callKey(event.toolName, event.input);
     pending.key = key;
     const nestedKey = event.parentToolCallId ? `${event.parentToolCallId}\0${key}` : undefined;
@@ -233,8 +231,6 @@ export default function toolLoopGuardrails(pi: ExtensionAPI): void {
       return { block: true, reason: duplicate };
     }
     pending.nestedKey = nestedKey;
-    if (preparation.repairNote) calls.rememberRepair(event.toolCallId, preparation.repairNote);
-    if (preparation.blockReason) return { block: true, reason: preparation.blockReason };
     const reason = inspectBeforeCall(state, event.toolName, event.input, key);
     if (reason) {
       if (event.input && typeof event.input === "object") attachRepairKind(event.input as Record<PropertyKey, unknown>, "transient_retry_blocked");

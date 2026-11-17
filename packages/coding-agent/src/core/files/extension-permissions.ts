@@ -5,7 +5,6 @@ export const SESSION_PERMISSION_STATE_TYPE = "session-permission-state-v1";
 export const SESSION_PERMISSION_AUDIT_TYPE = "session-permission-audit-v1";
 export const SESSION_PERMISSION_EVENT = "session-permission:state-v1";
 const SUBAGENT_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.subagent-workspace-delegation.v1");
-const STRUCTURED_READONLY_WORKSPACE_DELEGATION = Symbol.for("pi.session-permission.structured-readonly-workspace-delegation.v1");
 const BROWSER_EXEC_AUTHORIZATION = Symbol.for("pi.session-permission.browser-exec-authorization.v1");
 const CONSUMED_ATTACHMENT_DESCRIPTOR: PropertyDescriptor = Object.freeze({
   configurable: true,
@@ -61,26 +60,6 @@ export interface SubagentWorkspaceDelegation extends CurrentInvocationAuthority 
   };
 }
 
-export interface StructuredReadonlyPathGrant {
-  canonicalRoot: string;
-  rootDevice: number;
-  rootInode: number;
-  source: "primary" | "additional" | "full-access-exact";
-}
-
-export interface StructuredReadonlyWorkspaceDelegation extends StructuredReadonlyPathGrant, CurrentInvocationAuthority {
-  schemaVersion: 1;
-  sequence: number;
-  toolCallId: string;
-  requestHash: string;
-  canonicalCwd: string;
-  /** Native issuer base for a relative cwd; legacy grants use canonicalRoot. */
-  invocationCwd?: string;
-  cwdDevice: number;
-  cwdInode: number;
-  additionalRoots: readonly StructuredReadonlyPathGrant[];
-}
-
 export interface BrowserExecAuthorization extends CurrentInvocationAuthority {
   schemaVersion: 1;
   sequence: number;
@@ -100,7 +79,6 @@ export interface PermissionStateSnapshot {
 
 interface PermissionCarryingInput {
   [SUBAGENT_WORKSPACE_DELEGATION]?: SubagentWorkspaceDelegation;
-  [STRUCTURED_READONLY_WORKSPACE_DELEGATION]?: StructuredReadonlyWorkspaceDelegation;
   [BROWSER_EXEC_AUTHORIZATION]?: BrowserExecAuthorization;
 }
 
@@ -132,20 +110,6 @@ function updateStructuredHashField(hash: Hash, value: unknown): void {
   }
   hash.update(`${Buffer.byteLength(value, "utf8")}:`);
   hash.update(value);
-}
-
-export function structuredReadonlyRequestHash(input: unknown): string {
-  const value = input && typeof input === "object" ? input as { cwd?: unknown; command?: unknown; args?: unknown } : {};
-  const hash = createHash("sha256");
-  updateStructuredHashField(hash, value.cwd);
-  updateStructuredHashField(hash, value.command);
-  if (!Array.isArray(value.args)) {
-    hash.update("args:-1;");
-  } else {
-    hash.update(`args:${value.args.length};`);
-    for (const argument of value.args) updateStructuredHashField(hash, argument);
-  }
-  return hash.digest("hex");
 }
 
 export function browserExecRequestHash(input: unknown): string {
@@ -187,33 +151,4 @@ export function assertBrowserExecAuthorization(authorization: BrowserExecAuthori
   }
   assertInvocationAuthority(authorization);
   return authorization;
-}
-
-export function attachStructuredReadonlyWorkspaceDelegation(
-  input: unknown,
-  delegation: StructuredReadonlyWorkspaceDelegation,
-): void {
-  if (!input || typeof input !== "object") throw new Error("Structured read-only delegation input must be an object.");
-  const frozenRoots: Readonly<StructuredReadonlyPathGrant>[] = [];
-  for (const grant of delegation.additionalRoots) frozenRoots.push(Object.freeze({ ...grant }));
-  const additionalRoots = Object.freeze(frozenRoots);
-  Object.defineProperty(input, STRUCTURED_READONLY_WORKSPACE_DELEGATION, {
-    configurable: true,
-    enumerable: false,
-    writable: false,
-    value: Object.freeze({ ...delegation, additionalRoots }),
-  });
-}
-
-export function consumeStructuredReadonlyWorkspaceDelegation(
-  input: unknown,
-): StructuredReadonlyWorkspaceDelegation | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const carrying = input as PermissionCarryingInput;
-  const delegation = carrying[STRUCTURED_READONLY_WORKSPACE_DELEGATION];
-  if (delegation) {
-    Object.defineProperty(carrying, STRUCTURED_READONLY_WORKSPACE_DELEGATION, CONSUMED_ATTACHMENT_DESCRIPTOR);
-    assertInvocationAuthority(delegation);
-  }
-  return delegation;
 }

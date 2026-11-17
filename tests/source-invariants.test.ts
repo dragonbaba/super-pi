@@ -280,7 +280,7 @@ test("execution boundary admission checks have no normal-path allocation", () =>
 
 test("delegation consumption reuses the invocation authority without allocating callback state", () => {
   for (const [path, names] of [
-    ["packages/coding-agent/src/core/files/extension-permissions.ts", ["assertInvocationAuthority", "consumeSubagentWorkspaceDelegation", "consumeStructuredReadonlyWorkspaceDelegation", "consumeBrowserExecAuthorization", "assertBrowserExecAuthorization"]],
+    ["packages/coding-agent/src/core/files/extension-permissions.ts", ["assertInvocationAuthority", "consumeSubagentWorkspaceDelegation", "consumeBrowserExecAuthorization", "assertBrowserExecAuthorization"]],
     ["packages/coding-agent/src/core/files/tool-path-authorization.ts", ["consumeToolPath"]],
     ["packages/lsp/src/fix-authorization.ts", ["consumeFixAuthorization", "assertFixAuthorization"]],
   ] as const) {

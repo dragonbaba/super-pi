@@ -12,7 +12,6 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { SessionPermissionController } from "../../packages/extensions/resource-lifecycle-guard/permission-controller.ts";
 import { assertBrowserExecAuthorization, consumeBrowserExecAuthorization } from "../../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
-import { consumeStructuredReadonlyWorkspacePolicy } from "../../packages/extensions/structured-readonly-command/delegation.ts";
 import { consumeDelegatedTaskPolicies } from "../../packages/extensions/subagent/delegation.ts";
 import { consumeFixAuthorization, assertFixAuthorization } from "../../packages/lsp/src/fix-authorization.ts";
 import { resolve } from "node:path";
@@ -126,7 +125,6 @@ if (process.argv.includes("--delegation")) {
    assertBrowserExecAuthorization(grant, value, "delegation"); assertBrowserExecAuthorization(grant, value, "delegation");
    return grant;
   } },
-  { name: "structured_readonly_command", input: { command: "git", args: ["status"], cwd: process.cwd() }, consume: (value: object) => consumeStructuredReadonlyWorkspacePolicy(value, "delegation") },
   { name: "subagent", input: { agent: "controlled", task: "not executed", cwd: process.cwd() }, consume: (value: object) => consumeDelegatedTaskPolicies(value, [process.cwd()], process.cwd(), "delegation")[0] },
   { name: "lsp_fix", input: { path: "scripts/bench/permission-interaction.ts", write: true }, consume: (value: object) => {
    const grant = consumeFixAuthorization(value, "delegation");

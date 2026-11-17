@@ -1,15 +1,13 @@
 import { RetryBudget, isTransientFailure, type RetryOperation } from "./transient-retry.ts";
 import { callKey } from "./call-identity.ts";
 export { callKey } from "./call-identity.ts";
-import { access, opendir } from "node:fs/promises";
+import { opendir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { UNCERTAIN_LIFECYCLE } from "../resource-lifecycle-guard/core.ts";
 import { classifyToolFailure } from "./failure-classification.ts";
 import { readShellExecution } from "@super-pi/coding-agent";
-import { classifyStructuredReadonlyArguments } from "../resource-lifecycle-guard/structured-argv.ts";
 import {
   BACKSLASH_PAIR_RE,
-  BRACE_PATH_RE,
   GUARD_BLOCK_CATEGORY_RE,
   MSYS_REGEX_PARSE_FAILURE_RE,
   NODE_ESM_WINDOWS_PATH_RE,
@@ -32,7 +30,6 @@ const MAX_ERROR_TEXT_CHARS = 8_192;
 const MAX_NEARBY_ENTRIES = 256;
 const MAX_DISTANCE_CHARS = 96;
 const TOOL_INPUT_REPAIRS = Symbol.for("pi.toolInputRepairs");
-const EMPTY_PATH_ARGUMENTS: readonly string[] = Object.freeze([]);
 const BATCH_DUPLICATE_CAUSE = "An identical sibling call already exists in the current assistant tool batch.";
 const BATCH_DUPLICATE_ACTION = "Reuse the first sibling result; do not issue another identical call.";
 const NESTED_DUPLICATE_CAUSE = "An identical call from the same Codemode script is still running.";
@@ -88,25 +85,6 @@ function setBounded<T>(map: Map<string, T>, key: string, value: T): void {
   map.set(key, value);
 }
 
-export interface DeterministicCallPreparation {
-  blockReason?: string;
-  repairNote?: string;
-}
-
-const EMPTY_DETERMINISTIC_PREPARATION: DeterministicCallPreparation = Object.freeze({});
-
-function structuredPreflightFailure(category: string, operation: string, cause: string, nextAction: string): string {
-  return JSON.stringify({
-    ok: false,
-    category,
-    operation,
-    retryable: true,
-    stateChanged: false,
-    cause,
-    nextAction,
-  });
-}
-
 export function attachRepairKind(input: Record<PropertyKey, unknown>, kind: string): void {
   const current = input[TOOL_INPUT_REPAIRS];
   const kinds = Array.isArray(current) ? [...current, kind] : [kind];
@@ -138,36 +116,6 @@ export function repairReadOffsetFromError(
     || requestedOffset <= totalLines) return undefined;
   input.offset = totalLines;
   return `[Input repair] read offset ${requestedOffset} exceeded the file length and was clamped to line ${totalLines} (total lines: ${totalLines}).`;
-}
-
-function structuredRgPathOperands(input: Record<PropertyKey, unknown>): readonly string[] {
-  if (input.command !== "rg" || !Array.isArray(input.args)) return EMPTY_PATH_ARGUMENTS;
-  for (const argument of input.args) if (typeof argument !== "string") return EMPTY_PATH_ARGUMENTS;
-  return classifyStructuredReadonlyArguments("rg", input.args as string[]).rgSearchPaths;
-}
-
-function structuredRgBraceFailure(input: Record<PropertyKey, unknown>): string | undefined {
-  for (const path of structuredRgPathOperands(input)) {
-    if (!BRACE_PATH_RE.test(path)) continue;
-    return structuredPreflightFailure(
-      "PLATFORM_PATH_ERROR",
-      "structured_readonly_command",
-      "Brace expansion is a shell feature; structured rg path arguments are passed literally.",
-      "Expand the brace expression into explicit path arguments or run separate structured rg calls.",
-    );
-  }
-  return undefined;
-}
-
-export async function prepareDeterministicCall(
-  toolName: string,
-  input: unknown,
-): Promise<DeterministicCallPreparation> {
-  if (!input || typeof input !== "object") return EMPTY_DETERMINISTIC_PREPARATION;
-  const object = input as Record<PropertyKey, unknown>;
-  // Shell directory and package lookup semantics belong to the runtime; explicit tool cwd is validated separately.
-  const blockReason = toolName === "structured_readonly_command" ? structuredRgBraceFailure(object) : undefined;
-  return blockReason ? { blockReason } : EMPTY_DETERMINISTIC_PREPARATION;
 }
 
 function boundedEditDistance(left: string, right: string): number {
@@ -222,16 +170,6 @@ async function nearestExistingPath(value: string, cwd: string): Promise<string |
 
 async function nearestFailurePath(input: Record<PropertyKey, unknown>, cwd: string): Promise<string | undefined> {
   if (typeof input.path === "string" && input.path.trim()) return nearestExistingPath(input.path, cwd);
-  const structuredCwd = input.command === "rg" && typeof input.cwd === "string" && input.cwd.trim()
-    ? toolPath(cwd, input.cwd)
-    : cwd;
-  for (const path of structuredRgPathOperands(input)) {
-    try {
-      await access(toolPath(structuredCwd, path));
-    } catch {
-      return nearestExistingPath(path, structuredCwd);
-    }
-  }
   return undefined;
 }
 
@@ -274,7 +212,7 @@ export async function failureRecoveryHint(
     return "[Permission recovery] Resolve the permission or policy failure for this exact operation before retrying. Do not evade it by changing language, launcher, or tool; use only a registered capability allowed for the target.";
   }
   if (toolName === "bash" && isMsysRegexArgvFailure(input, failureText)) {
-    return "[MSYS argv recovery] Windows MSYS command-line parsing likely collapsed paired backslashes before Bash parsed quotes. Use structured_readonly_command with rg argv inside the workspace, or remove the Bash argv backslash dependency before retrying.";
+    return "[MSYS argv recovery] Windows MSYS command-line parsing likely collapsed paired backslashes before Bash parsed quotes. Use native grep with a pattern and path for searches, or correct quoting for the requested shell. Inspect execution facts and retry only the failed command.";
   }
   const command = toolName === "bash" && input && typeof input === "object"
     ? (input as { command?: unknown }).command

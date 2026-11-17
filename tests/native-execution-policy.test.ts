@@ -3,7 +3,6 @@ import test, { type TestContext } from "node:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { getEventListeners } from "node:events";
 import { SessionExecutionPolicy } from "../packages/coding-agent/src/core/execution-policy.ts";
 import { createExtensionRuntime } from "../packages/coding-agent/src/core/extensions/loader.ts";
@@ -16,8 +15,6 @@ import { createLsToolDefinition } from "../packages/coding-agent/src/core/tools/
 import { consumeToolPath } from "../packages/coding-agent/src/core/files/tool-path-authorization.ts";
 import { consumeBrowserExecAuthorization } from "../packages/coding-agent/src/core/files/extension-permissions.ts";
 import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/delegation.ts";
-import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
-import structuredReadonlyCommand from "../packages/extensions/structured-readonly-command/index.ts";
 import { parentExecutionTool } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
 import { windowsLexerCounters } from "../packages/coding-agent/src/core/shell-policy/syntax/windows.ts";
 
@@ -181,11 +178,6 @@ test("native delegated tools receive exact one-call scopes and revoke with their
         assert.throws(() => consumeDelegatedTaskPolicies(input, requests.map(item => item.cwd), f.root, "test-call"), /delegation is missing/);
         invocation.release();
     }
-    const structured = { command: "git", args: ["status", "--short"], cwd: "src" };
-    const invocation = await f.owner.authorize(f.event("structured_readonly_command", structured), f.ctx);
-    const policy = consumeStructuredReadonlyWorkspacePolicy(structured, "test-call");
-    assert.equal(policy.canonicalRoot, await fs.realpath(f.root)); assert.equal(policy.canonicalCwd, await fs.realpath(path.join(f.root, "src")));
-    assert.equal(policy.revocationSignal, f.runtime.executionBoundary.signal); invocation.release();
     const browser = { code: "return 1" }, browserInvocation = await f.owner.authorize(f.event("browser_exec", browser), f.ctx);
     const browserGrant = consumeBrowserExecAuthorization(browser, "test-call"); browserInvocation.release();
     f.runtime.executionBoundary.register("plan-fixture", { revoke() {}, async drain() {}, toolSelectionMode: () => "plan" });
@@ -193,10 +185,10 @@ test("native delegated tools receive exact one-call scopes and revoke with their
     assert.equal(consumeDelegatedTaskPolicies(task, [task.cwd], f.root, "test-call")[0].writable, false); plan.release();
     await assert.rejects(f.owner.authorize(f.event("browser_exec", browser), f.ctx), /Plan mode/);
     await f.runtime.executionBoundary.transition(() => undefined);
-    assert.throws(() => policy.assertCurrent(), /expired/); assert.throws(() => browserGrant.assertCurrent(), /expired/);
-    assert.equal(policy.revocationSignal.aborted, true);
+    assert.throws(() => browserGrant.assertCurrent(), /expired/);
+    assert.equal(browserGrant.revocationSignal.aborted, true);
     const sandbox = await fixture(t, {}, "sandbox", "sandbox-write");
-    for (const name of ["subagent", "structured_readonly_command", "browser_exec"])
+    for (const name of ["subagent", "browser_exec"])
         await assert.rejects(sandbox.owner.authorize(sandbox.event(name, {}), sandbox.ctx, sandbox.definition(name)), /SANDBOX_UNSUPPORTED/);
 });
 
@@ -205,32 +197,11 @@ test("native delegation enforces scoped rules, exact identities and changed inpu
     f.runtime.openSubagentExecution = () => { throw new Error("This authorization-only fixture must not execute a task"); };
     await fs.mkdir(path.join(f.root, "private")); await fs.mkdir(path.join(f.root, "public"));
     await assert.rejects(f.owner.authorize(f.event("subagent", { agent: "worker", task: "inspect" }), f.ctx), /Explicitly denied/);
-    await assert.rejects(f.owner.authorize(f.event("structured_readonly_command", { command: "rg", args: ["x", "private"] }), f.ctx), /Explicitly denied/);
     const task = { agent: "worker", task: "inspect", cwd: "public", readOnly: false }, invocation = await f.owner.authorize(f.event("subagent", task), f.ctx);
     task.readOnly = true;
     assert.throws(() => invocation.consume(task, "test-call", "subagent"), /changed after authorization/); invocation.release();
     await fs.rename(path.join(f.root, "public"), path.join(f.root, "original-public")); await fs.mkdir(path.join(f.root, "public"));
     assert.throws(() => consumeDelegatedTaskPolicies(task, ["public"], f.root, "test-call"), /identity changed/);
-});
-
-test("native structured command executes in its granted cwd and includes exact external argument roots", async t => {
-    const f = await fixture(t, {}, "trusted-host", "host-write"), outside = await fixture(t, {}, "trusted-host", "host-write");
-    execFileSync("git", ["init", "--quiet", f.root], { windowsHide: true });
-    await fs.writeFile(path.join(f.root, "example.txt"), "untracked");
-    let definition: any; structuredReadonlyCommand({ registerTool(tool: any) { definition = tool; } } as any);
-    const input = { command: "git", args: ["status", "--short"] };
-    const invocation = await f.owner.authorize(f.event("structured_readonly_command", input), f.ctx);
-    invocation.consume(input, "test-call", "structured_readonly_command");
-    const result = await definition.execute("test-call", input, undefined, undefined, f.ctx);
-    assert.match(result.content[0].text, /example.txt/); invocation.release();
-    await fs.writeFile(path.join(outside.root, "input.txt"), "needle");
-    const external = { command: "rg", args: ["-e", "needle", path.join(outside.root, "input.txt")] };
-    const externalInvocation = await f.owner.authorize(f.event("structured_readonly_command", external), f.ctx);
-    const scope = consumeStructuredReadonlyWorkspacePolicy(external, "test-call");
-    assert.deepEqual(scope.authorizedRoots, [await fs.realpath(f.root), await fs.realpath(outside.root)]); externalInvocation.release();
-    const relative = { command: "git", args: ["status"], cwd: path.relative(f.root, outside.root) };
-    const relativeInvocation = await f.owner.authorize(f.event("structured_readonly_command", relative), f.ctx);
-    assert.equal(consumeStructuredReadonlyWorkspacePolicy(relative, "test-call").canonicalCwd, await fs.realpath(outside.root)); relativeInvocation.release();
 });
 test("ask never silently grants, and changed arguments cannot consume an approval", async t => {
     const f = await fixture(t, { approval: "never", rules: [{ tool: "powershell", decision: "ask" }] });

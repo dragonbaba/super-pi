@@ -12,7 +12,7 @@ import { VERSION } from "../packages/coding-agent/src/config.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const extensionRoot = join(root, "packages", "extensions");
-const removed = ["session-tool-errors", "tool-input-repair-telemetry"];
+const removed = ["session-tool-errors", "tool-input-repair-telemetry", "structured-readonly-command"];
 const retainedEntries = [
   "./auxiliary-vision/index.ts",
   "./browser-use/index.ts",
@@ -20,7 +20,6 @@ const retainedEntries = [
   "./mutation-guard-write/index.ts",
   "./resource-lifecycle-guard/index.ts",
   "./session-memory-manager/index.ts",
-  "./structured-readonly-command/index.ts",
   "./subagent/index.ts",
   "./tool-loop-guardrails/index.ts",
 ];

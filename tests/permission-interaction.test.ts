@@ -1,6 +1,5 @@
 import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "../packages/extensions/resource-lifecycle-guard/permission-rule.ts";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, realpathSync, mkdirSync, symlinkSync, writeFileSync, promises as fsPromises } from "node:fs";
 import { EventEmitter, getEventListeners } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -17,8 +16,6 @@ import { createExtensionRuntime, ExtensionRunner, loadExtensionFromFactory } fro
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SessionPermissionController } from "../packages/extensions/resource-lifecycle-guard/permission-controller.ts";
 import { consumeBrowserExecAuthorization } from "../packages/extensions/resource-lifecycle-guard/permission-contract.ts";
-import { consumeStructuredReadonlyWorkspacePolicy } from "../packages/extensions/structured-readonly-command/delegation.ts";
-import structuredReadonlyCommandExtension from "../packages/extensions/structured-readonly-command/index.ts";
 import browserUseExtension from "../packages/extensions/browser-use/index.ts";
 import { BrowserHarnessVersionGate } from "../packages/extensions/browser-use/core.ts";
 import { consumeFixAuthorization, assertFixAuthorization } from "../packages/lsp/src/fix-authorization.ts";
@@ -920,7 +917,6 @@ test("delegated approvals are single-use and reject changed or restored authorit
  const f = await permissionFixture(t);
  const cases = [
   { name: "browser_exec", input: { code: "print('no execution')" }, consume: (input: object) => consumeBrowserExecAuthorization(input, "approval-1") },
-  { name: "structured_readonly_command", input: { command: "git", args: ["status"], cwd: f.cwd }, consume: (input: object) => consumeStructuredReadonlyWorkspacePolicy(input, "approval-1") },
   { name: "subagent", input: { agent: "controlled", task: "no execution", cwd: f.cwd }, consume: (input: object) => consumeDelegatedTaskPolicies(input, [f.cwd], f.cwd, "approval-1") },
  ];
  for (const item of cases) for (const invalidation of ["none", "narrow", "restore", "transition"] as const) {
@@ -937,24 +933,6 @@ test("delegated approvals are single-use and reject changed or restored authorit
  }
  f.runner.invalidate();
  assert.equal(f.scheduler.highWaterMark.current, 0);
-});
-
-test("structured command rechecks authorization after asynchronous preparation before starting Git", async (t) => {
- const f = await permissionFixture(t);
- execFileSync("git", ["init", "--quiet", f.cwd], { timeout: 5000, windowsHide: true });
- let tool: any;
- structuredReadonlyCommandExtension({ registerTool(value: unknown) { tool = value; } } as never);
- for (const narrow of [false, true]) {
-  f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
-  const input = { command: "git", args: ["status", "--short"], cwd: f.cwd };
-  assert.equal(await f.call("structured_readonly_command", input), undefined);
-  const running = tool.execute("approval-1", input, undefined, undefined, f.runner.createContext());
-  if (narrow) {
-   f.permission.state.setMode("read-only");
-   await assert.rejects(running, /Permission authority changed/);
-  } else assert.equal((await running).details.ok, true);
- }
- f.runner.invalidate();
 });
 
 
@@ -1018,9 +996,8 @@ test("browser execution rechecks authority and exact input after preparation and
  }
 });
 
-test("permission changes revoke running browser and structured commands without leaving abort listeners", { timeout: 10000 }, async (t) => {
+test("permission changes revoke running browser commands without leaving abort listeners", { timeout: 10000 }, async (t) => {
  const f = await permissionFixture(t);
- execFileSync("git", ["init", "--quiet", f.cwd], { timeout: 5000, windowsHide: true });
  const executable = join(f.root, process.platform === "win32" ? "browser-harness.exe" : "browser-harness");
  writeFileSync(executable, "offline browser fixture", { mode: 0o700 });
  const originalCli = process.env.SP_BROWSER_HARNESS_CLI, originalAgent = process.env.SP_CODING_AGENT_DIR;
@@ -1048,20 +1025,19 @@ test("permission changes revoke running browser and structured commands without 
  };
  syncBuiltinESMExports();
  try {
-  for (const kind of ["browser_exec", "structured_readonly_command"]) for (change of ["policy", "restore"]) {
+  for (change of ["policy", "restore"]) {
+   const kind = "browser_exec";
    f.permission.state.setMode("full-access"); f.permission.state.setApprovalPolicy("never-ask");
    let tool: any, shutdown: any;
    const api = { registerTool(value: unknown) { tool = value; }, registerCommand() {},
     on(name: string, handler: unknown) { if (name === "session_shutdown") shutdown = handler; } };
-   if (kind === "browser_exec") browserUseExtension(api as never); else structuredReadonlyCommandExtension(api as never);
-   const input = kind === "browser_exec" ? { code: "print('offline')", session: "fixture" } : { command: "git", args: ["status", "--short"], cwd: f.cwd };
+   browserUseExtension(api as never);
+   const input = { code: "print('offline')", session: "fixture" };
    await f.call(kind, input);
    const grant = (input as any)[Object.getOwnPropertySymbols(input).find(key => (input as any)[key]?.revocationSignal)!];
    const running = tool.execute("approval-1", input, undefined, undefined, f.runner.createContext());
-   if (kind === "browser_exec") {
-    const result = await running;
-    assert.equal(result.isError, true, `${kind}: ${change}`); assert.equal(result.details.aborted, true);
-   } else await assert.rejects(running, /timeout_or_aborted/);
+   const result = await running;
+   assert.equal(result.isError, true, `${kind}: ${change}`); assert.equal(result.details.aborted, true);
    await changeDone;
    assert.equal(grant.revocationSignal.aborted, true);
    assert.equal(getEventListeners(grant.revocationSignal, "abort").length, 0);

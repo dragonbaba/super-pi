@@ -1,7 +1,6 @@
 export const NODE_ESM_WINDOWS_PATH_RE = /(?:only URLs with a scheme|received protocol ['"]?[a-z]:)/iu;
 export const UNIX_TMP_PATH_RE = /(?:^|[\s"'])\/tmp(?:\/|[\s"']|$)/u;
 export const READ_OFFSET_ERROR_RE = /^Offset (\d+) is beyond end of file \((\d+) lines total\)$/u;
-export const BRACE_PATH_RE = /\{[^{}]*,[^{}]*\}/u;
 export const GUARD_BLOCK_CATEGORY_RE = /"category"\s*:\s*"(?:DUPLICATE_CALL|REPEATED_CALL_BLOCKED)"/u;
 export const SNAPSHOT_FAILURE_RE = /^\[SNAPSHOT_EDIT_[A-Z_]+\]/u;
 export const MSYS_REGEX_PARSE_FAILURE_RE = /regex parse error|unclosed character class/iu;

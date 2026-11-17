@@ -81,7 +81,7 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 		noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: factories });
 	await resources.reload();
 	assert.deepEqual(resources.getExtensions().errors, []);
-	if (bundle) assert.equal(resources.getExtensions().extensions.length, 9 + factories.length);
+	if (bundle) assert.equal(resources.getExtensions().extensions.length, 8 + factories.length);
 	const manager = persist ? SessionManager.create(cwd, join(root, "sessions")) : SessionManager.inMemory(cwd);
 	const { session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: manager,
 		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),
@@ -168,6 +168,16 @@ test("an independent missing read cannot cancel a real successful command in bat
 	assert.ok(summary?.type === "text");
 	const counts = JSON.parse(summary.text); assert.equal(counts.completed, 1); assert.equal(counts.failed, 1);
 	assert.equal(readFileSync(join(f.cwd, "batch-calls.txt"), "utf8"), "1");
+});
+
+test("bundled discovery exposes native searches and retires the duplicate command frontend", async t => {
+	const f = await fixture(t, {}, [toolClassification], true);
+	assert.equal(f.session.getAllTools().some(tool => tool.name === "structured_readonly_command"), false);
+	for (const name of ["grep", "find", "ls"]) assert.ok(f.session.getActiveToolNames().includes(name), name);
+	const outcome = await f.run(['const b=await batch([{tool:"find",args:{pattern:"*.txt",path:"."}},{tool:"grep",args:{pattern:"hello",path:"file.txt",literal:true}}]);text(b.summary);for(const r of b.results)await show(r.result.ref);']);
+	const result = outcome.results.at(-1)!;
+	assert.equal(result.isError, false, JSON.stringify(result));
+	assert.match(JSON.stringify(result.content), /file.txt/); assert.match(JSON.stringify(result.content), /hello/);
 });
 
 test("Codemode forwards explicit risk review separately from tool arguments and failure handling", async t => {

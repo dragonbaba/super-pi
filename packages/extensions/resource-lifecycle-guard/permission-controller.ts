@@ -12,17 +12,14 @@ import {
   attachBrowserExecAuthorization,
   browserExecRequestHash,
   attachPermissionPathApproval,
-  attachStructuredReadonlyWorkspaceDelegation,
   attachSubagentWorkspaceDelegation,
   mutationRequestHash,
-  structuredReadonlyRequestHash,
   SESSION_PERMISSION_AUDIT_TYPE,
   SESSION_PERMISSION_EVENT,
   SESSION_PERMISSION_STATE_TYPE,
   type SessionAllowRuleKind,
   type SessionApprovalPolicy,
   type SessionPermissionMode,
-  type StructuredReadonlyPathGrant,
   type SubagentWorkspaceGrant,
 } from "./permission-contract.ts";
 import { createSessionAllowRule, sessionAllowRuleMatches, simpleCommandPrefix } from "./permission-rule.ts";
@@ -38,7 +35,6 @@ import { assessProtectedMutationPath } from "../mutation-guard-write/protected-p
 import { prepareNativeOperation, type NativePlan } from "../mutation-guard-write/native-file-core.ts";
 import { prepareFileCreation, type FileCreationPlan } from "../mutation-guard-write/file-creation.ts";
 import { getBatchPreparation } from "../mutation-guard-write/file-batch.ts";
-import { classifyStructuredReadonlyArguments, type StructuredReadonlyCommandName } from "./structured-argv.ts";
 import { sanitizePolicyFeedback, type PolicyDiagnosticMetadata } from "./policy-diagnostics.ts";
 import { InputReadPolicyLease } from "@super-pi/coding-agent/internal/files/session-input-read-permission";
 import { InputWorkspaceGrantLease, freezeInputReadPaths, inputWorkspaceData, type InputWorkspaceGrant,
@@ -215,18 +211,9 @@ function structuredPermissionBlock(
   const primitives = options.primitives ?? [];
   const workspaceEscape = primitives.includes("workspace_escape")
     && (policyReason === "scope_denied" || policyReason === "confirmation_required");
-  const legalNextStep = operation === "structured_readonly_command"
-    ? "Ask the user to add the exact read root with /add_workspace <path>, or change access through /permissions. Do not retry through Bash or another tool."
-    : operation === "browser_exec"
+  const legalNextStep = operation === "browser_exec"
       ? "Change /permissions or approve this exact browser script."
       : "Ask the user to add the exact target directory with /add_workspace <path>, or to change access through /permissions. Do not retry the mutation through Bash or an ad-hoc script.";
-  if (operation === "structured_readonly_command") {
-    let reason = `POLICY_BLOCKED: ${operation}: ${policyReason}`;
-    if (primitives.length > 0) reason += ` (${primitives.join(", ")})`;
-    reason += ".";
-    if (workspaceEscape) reason += ` Retry: ${legalNextStep}`;
-    return reason;
-  }
   return JSON.stringify({
     ok: false,
     category: "POLICY_BLOCKED",
@@ -244,9 +231,6 @@ function structuredPermissionBlock(
 }
 
 function structuredInputValidationBlock(operation: string, message: string): string {
-  if (operation === "structured_readonly_command") {
-    return `INPUT_VALIDATION: ${operation}: ${message}`;
-  }
   return JSON.stringify({
     ok: false,
     category: "INPUT_VALIDATION",
@@ -480,7 +464,7 @@ export class SessionPermissionController {
   async authorizeToolCall(event: ToolCallEventShape, ctx: ExtensionContext, analysisOwner?: ShellAnalysisOwner, opaqueScript = false): Promise<ToolCallBlock | undefined> {
     if (event.toolName !== "write" && event.toolName !== "edit" && event.toolName !== "lsp_fix" && event.toolName !== "copy" && event.toolName !== "delete" && event.toolName !== "move" && event.toolName !== "file_batch"
       && event.toolName !== "bash" && event.toolName !== "powershell" && event.toolName !== "browser_exec"
-      && event.toolName !== "subagent" && event.toolName !== "structured_readonly_command") return undefined;
+      && event.toolName !== "subagent") return undefined;
     if (!this.#restored) return { block: true, reason: "[SHELL_CWD_CHANGED] Permissions are unavailable until the Session workspace identity is restored; the tool was not executed." };
     let signal = ctx.signal;
     const generation = this.#authorityGeneration;
@@ -493,7 +477,6 @@ export class SessionPermissionController {
       }
     };
     assertCurrent();
-    if (event.toolName === "structured_readonly_command") return this.#authorizeStructuredReadonlyDelegation(event, ctx, assertCurrent);
     if (event.toolName === "subagent") return this.#authorizeSubagentDelegation(event, ctx, assertCurrent);
     const request = await this.#buildRequest(event, ctx, analysisOwner);
     assertCurrent();
@@ -660,156 +643,6 @@ export class SessionPermissionController {
       if (this.#pendingApproval === approval) this.#pendingApproval = undefined;
       approval.abort(permissionCancellation("Permission interaction ended"));
     }
-  }
-
-  async #authorizeStructuredReadonlyDelegation(
-    event: ToolCallEventShape,
-    ctx: ExtensionContext,
-    assertCurrent: () => void,
-  ): Promise<ToolCallBlock | undefined> {
-    if (!event.input || typeof event.input !== "object") {
-      return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "Input must be an object.") };
-    }
-    const structuredInput = event.input as { cwd?: unknown; command?: unknown; args?: unknown };
-    const rawCwd = structuredInput.cwd;
-    if (rawCwd !== undefined && typeof rawCwd !== "string") {
-      return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "cwd must be a string.") };
-    }
-    if (structuredInput.command !== "rg" && structuredInput.command !== "git") {
-      return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "command must be rg or git.") };
-    }
-    if (!Array.isArray(structuredInput.args)) {
-      return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "args must be an array of strings.") };
-    }
-    for (const argument of structuredInput.args) {
-      if (typeof argument !== "string") {
-        return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "args must be an array of strings.") };
-      }
-    }
-    const assessment = await this.#state.assessTarget(rawCwd ?? ctx.cwd, ctx.cwd);
-    if (assessment.unverifiableReason || !assessment.canonicalTarget) {
-      return {
-        block: true,
-        reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "unverifiable_target", {
-          retryable: false,
-          primitives: ["workspace_escape"],
-        }),
-      };
-    }
-    if (!assessment.workspace && this.#state.mode !== "full-access") {
-      return {
-        block: true,
-        reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "scope_denied", {
-          primitives: ["workspace_escape"],
-        }),
-      };
-    }
-    const canonicalRoot = assessment.workspace?.canonicalPath ?? assessment.canonicalTarget;
-    let rootInfo;
-    let cwdInfo;
-    try {
-      [rootInfo, cwdInfo] = await Promise.all([lstat(canonicalRoot), lstat(assessment.canonicalTarget)]);
-    } catch {
-      rootInfo = undefined;
-      cwdInfo = undefined;
-    }
-    if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink() || !cwdInfo?.isDirectory() || cwdInfo.isSymbolicLink()) {
-      return {
-        block: true,
-        reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "unverifiable_target", {
-          retryable: false,
-          primitives: ["workspace_escape"],
-        }),
-      };
-    }
-    const source: StructuredReadonlyPathGrant["source"] = assessment.workspace
-      ? assessment.workspace.canonicalPath === this.#state.primary.canonicalPath ? "primary" : "additional"
-      : "full-access-exact";
-    const additionalRoots: StructuredReadonlyPathGrant[] = [];
-    const pathArguments = classifyStructuredReadonlyArguments(
-      structuredInput.command as StructuredReadonlyCommandName,
-      structuredInput.args,
-    ).pathArguments;
-    for (const argument of pathArguments) {
-      const pathValue = argument.startsWith("@") ? argument.slice(1) : argument;
-      if (!isAbsolute(pathValue)) continue;
-      const pathAssessment = await this.#state.assessTarget(pathValue, ctx.cwd);
-      if (pathAssessment.unverifiableReason || !pathAssessment.canonicalTarget) {
-        return {
-          block: true,
-          reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "unverifiable_target", {
-            retryable: false,
-            primitives: ["workspace_escape"],
-          }),
-        };
-      }
-      if (!pathAssessment.workspace && this.#state.mode !== "full-access") {
-        return {
-          block: true,
-          reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "scope_denied", {
-            primitives: ["workspace_escape"],
-          }),
-        };
-      }
-      let targetInfo;
-      try {
-        targetInfo = await lstat(pathAssessment.canonicalTarget);
-      } catch {
-        targetInfo = undefined;
-      }
-      if (!targetInfo || targetInfo.isSymbolicLink()) {
-        return {
-          block: true,
-          reason: structuredPermissionBlock("structured_readonly_command", this.#state.mode, "unverifiable_target", {
-            retryable: false,
-            primitives: ["workspace_escape"],
-          }),
-        };
-      }
-      const argumentRoot = pathAssessment.workspace?.canonicalPath
-        ?? (targetInfo.isDirectory() ? pathAssessment.canonicalTarget : dirname(pathAssessment.canonicalTarget));
-      let alreadyAuthorized = argumentRoot === canonicalRoot;
-      if (!alreadyAuthorized) {
-        for (const grant of additionalRoots) {
-          if (grant.canonicalRoot !== argumentRoot) continue;
-          alreadyAuthorized = true;
-          break;
-        }
-      }
-      if (alreadyAuthorized) continue;
-      if (additionalRoots.length >= 16) {
-        return { block: true, reason: structuredInputValidationBlock("structured_readonly_command", "At most 16 distinct external argument roots are allowed.") };
-      }
-      const argumentRootInfo = argumentRoot === pathAssessment.canonicalTarget
-        ? targetInfo
-        : await lstat(argumentRoot);
-      additionalRoots.push({
-        canonicalRoot: argumentRoot,
-        rootDevice: argumentRootInfo.dev,
-        rootInode: argumentRootInfo.ino,
-        source: pathAssessment.workspace
-          ? pathAssessment.workspace.canonicalPath === this.#state.primary.canonicalPath ? "primary" : "additional"
-          : "full-access-exact",
-      });
-    }
-    assertCurrent();
-    attachStructuredReadonlyWorkspaceDelegation(event.input, {
-      schemaVersion: 1,
-      assertCurrent: this.#captureInvocationAuthority(),
-      revocationSignal: this.#invocationCancellation.signal,
-      sequence: this.#state.sequence,
-      toolCallId: event.toolCallId,
-      requestHash: structuredReadonlyRequestHash(event.input),
-      canonicalRoot,
-      rootDevice: rootInfo.dev,
-      rootInode: rootInfo.ino,
-      canonicalCwd: assessment.canonicalTarget,
-      cwdDevice: cwdInfo.dev,
-      cwdInode: cwdInfo.ino,
-      source,
-      additionalRoots,
-    });
-    return undefined;
   }
 
   async #authorizeSubagentDelegation(event: ToolCallEventShape, ctx: ExtensionContext, assertCurrent: () => void): Promise<ToolCallBlock | undefined> {

@@ -1,5 +1,7 @@
 # Codemode 外部审查复核
 
+2026-11-17 更新：这是历史探针记录。`structured_readonly_command` 及其专用预检/授权链路已退役，历史取舍和探针输出不代表当前可用接口。当前入口见 [Codemode 使用说明](codemode.md)。
+
 历史复核记录：下方结论和提交状态仅适用 2026-10 基线。前轮可见读取的旧要求已退役；当前文件修订、失败处理与交付状态见 [Codemode 使用说明](codemode.md)和 [A/B/C 实施记录](codemode-batch-revision-image-budget-plan.md)。
 
 日期：2026-10-03。初次复核对象是 `codex/default-codemode` 未提交工作区，基线 `0949fc33f`；官方比较基线仍为本地 Pi `v1.0.0` / `a13d35a74`。下文逐项判定保留初次只读复核的证据，便于比较修复前后。用户随后授权“开始修复”；实际修复、组合验收和剩余边界见 [执行记录](codemode-default-execution-log.md)。没有提交、推送、创建 PR 或合并。

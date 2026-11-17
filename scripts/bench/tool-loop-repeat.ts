@@ -57,7 +57,7 @@ async function lifecycle(mode: string): Promise<void> {
   const event = { toolName: "fixture_operation", toolCallId: "child", parentToolCallId: "parent", input };
   owners.push(new WeakRef(event));
   const admission = hooks.get("tool_call")!(event, ctx);
-  if (mode === "cancel-during-preparation") {
+  if (mode === "admission-cancel") {
     hooks.get("tool_execution_end")!({ toolCallId: "parent" });
     await admission;
   } else {
@@ -103,11 +103,16 @@ try {
     const heapBefore = process.memoryUsage().heapUsed;
     const profiler = new Session(); profiler.connect();
     const times: number[] = [];
-    let sampledBytes = 0;
+    let sampledBytes = 0, cpuUs = 0, peakHeap = heapBefore;
     const sites: { site: string; bytes: number }[] = [];
     try {
       await profiler.post("HeapProfiler.startSampling", { samplingInterval: 4096, includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true });
-      for (let i = 0; i < iterations; i++) { const started = performance.now(); await invoke(hooks, input, i, failed); times.push(performance.now() - started); }
+      const cpu = process.cpuUsage();
+      for (let i = 0; i < iterations; i++) {
+        const started = performance.now(); await invoke(hooks, input, i, failed); times.push(performance.now() - started);
+        if ((i & 15) === 0) peakHeap = Math.max(peakHeap, process.memoryUsage().heapUsed);
+      }
+      const used = process.cpuUsage(cpu); cpuUs = used.user + used.system;
       const { profile } = await profiler.post("HeapProfiler.stopSampling");
       const stack = [profile.head];
       while (stack.length) {
@@ -123,9 +128,9 @@ try {
     console.log(JSON.stringify({ target, scenario, length, iterations, warmup, sampledBytesPerCall: sampledBytes / iterations,
       p50Ms: times[Math.floor(times.length / 2)], p95Ms: times[Math.floor(times.length * 0.95)],
       counters: { admissionScannedBytes: scannedBytes, hashUpdates: updates, admissionDigests: digests, resultScannedBytes: resultBytes, resultDigests, advisories },
-      heapBefore, heapBeforeClear, heapAfterClearGc: process.memoryUsage().heapUsed, sites: sites.slice(0, 8) }));
+      cpuUs, peakHeap, heapBefore, heapBeforeClear, heapAfterClearGc: process.memoryUsage().heapUsed, sites: sites.slice(0, 8) }));
   }
-  for (const mode of ["normal", "failure", "parent-cancel", "cancel-during-preparation"]) for (let i = 0; i < 16; i++) await lifecycle(mode);
+  for (const mode of ["normal", "failure", "parent-cancel", "admission-cancel"]) for (let i = 0; i < 16; i++) await lifecycle(mode);
   // New retry-owner lifecycle is reported separately from the comparable old/new hook fixtures.
   if (process.argv[2] === undefined) for (const mode of ["normal", "signal", "parent", "end"]) for (let i = 0; i < 8; i++) await retryLifecycle(mode);
   await setImmediate(); for (let i = 0; i < 4; i++) { gc(); await setImmediate(); }
