@@ -1,16 +1,19 @@
 import { MAX_ERROR_CHARS } from "../limits.ts";
 import type { CodemodeError } from "../types.ts";
 
-export const SCRIPT_PREFIX = "(async (tools, console) => {";
-const SCRIPT_FRAME = /^[ \t]*at codemode\.js:(\d+)(?::(\d+))?\r?$/m;
+const SCRIPT_FRAME = /^[ \t]*at <input>:(\d+)(?::(\d+))?\r?$/m;
+// QuickJS's AsyncFunction constructor puts its signature and opening brace
+// on two lines before the supplied body, without a prefix on the body line.
+const FUNCTION_HEADER_LINES = 2;
 const EXCERPT_BEFORE = 60;
 const EXCERPT_AFTER = 100;
 
 function sourceLocation(code: string, stack: string | undefined): CodemodeError["sourceLocation"] {
 	const frame = stack && SCRIPT_FRAME.exec(stack);
 	if (!frame) return;
-	const reportedLine = Number(frame[1]);
-	let byteColumn = frame[2] === undefined ? undefined : Number(frame[2]) - (reportedLine === 1 ? SCRIPT_PREFIX.length : 0);
+	const reportedLine = Number(frame[1]) - FUNCTION_HEADER_LINES;
+	if (reportedLine < 1) return;
+	let byteColumn = frame[2] === undefined ? undefined : Number(frame[2]);
 	if (byteColumn !== undefined && byteColumn < 1) byteColumn = undefined;
 	let line = 1;
 	let start = 0;

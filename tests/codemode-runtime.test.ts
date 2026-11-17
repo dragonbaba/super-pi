@@ -434,6 +434,7 @@ test("function creation errors report original UTF-8 positions without starting 
 		[unicode, 1, 19, unicode],
 		[options, 2, 19, unicode],
 		["\nconst a = {", 2, 12, "const a = {"],
+		['}\ntext("unreachable");', 2, 1, 'text("unreachable");'],
 	] as const) {
 		const result = await sandbox.execute(code);
 		assert.equal(result.ok, false);
@@ -450,6 +451,8 @@ test("function creation errors report original UTF-8 positions without starting 
 	assert.equal(runtime.error.beforeExecution, undefined);
 	assert.equal(runtime.error.sourceLocation, undefined);
 	assert.equal(executed, 1);
+	const strict = await sandbox.execute('"use strict"; return this === globalThis && tools === globalThis.tools && console === globalThis.console;');
+	assert.equal(strict.ok && strict.value, true);
 });
 
 test("Codemode store preserves prototype keys, returns copies, and discards writes on error", async () => {
