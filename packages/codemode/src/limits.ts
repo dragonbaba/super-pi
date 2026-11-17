@@ -1,5 +1,4 @@
 /** Limits count UTF-16 code units unless explicitly named bytes. Immutable policy, no session state. */
-export const MAX_CODE_CHARS = 128 * 1024;
 export const MAX_ARGUMENT_CHARS = 256 * 1024;
 export const MAX_VALUE_CHARS = 1024 * 1024;
 export const MAX_OUTPUT_CHARS = 1024 * 1024;

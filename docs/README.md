@@ -29,6 +29,7 @@
 ## 工具、权限和项目上下文
 
 - [Codemode 使用说明](codemode.md)：脚本调用、树状卡片、原始输出与结构化数据读取、读取与修改、失败处理、工具发现和分支存储。
+- [CodeMode 源码运行边界](evidence/codemode-runtime-source-boundary-2026-11-17.md)：取消独立源码字符拦截，保留 VM、时间、协议和取消边界，验证完整长脚本与失败后的下一次执行。
 - [CodeMode 输出数据契约](evidence/codemode-output-contract-2026-11-17.md)：执行事实与展示/解析错误分离，原始捕获和 MCP 数据分页，完成项不重放及引用生命周期。
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。
