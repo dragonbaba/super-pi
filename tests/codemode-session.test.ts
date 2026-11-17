@@ -26,6 +26,7 @@ import { CodemodeController } from "../packages/coding-agent/src/core/codemode.t
 import { browserResultText, formatFailure } from "../packages/extensions/browser-use/index.ts";
 import { privateOutputFileSystem } from "../packages/coding-agent/src/utils/private-output-file.ts";
 import { getShellCwdBinding } from "../packages/coding-agent/src/core/tools/shell-cwd.ts";
+import { createMcpTypedSource } from "../packages/coding-agent/src/core/tool-result-source.ts";
 import { CODEMODE_RESULT_ENTRY } from "../packages/coding-agent/src/core/codemode-constants.ts";
 import { convertResponsesTools } from "../packages/ai/src/api/openai-responses-shared.ts";
 import { streamSimple as streamAnthropic } from "../packages/ai/src/api/anthropic-messages.ts";
@@ -122,6 +123,37 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	}
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
+
+test("native captured JSON survives postprocessing failure and is read in the next script without replay", async t => {
+	const f = await fixture(t, { tools: ["bash", "read"] });
+	writeFileSync(join(f.cwd, "producer.cjs"), `const fs=require("node:fs");fs.appendFileSync("calls.txt","1");console.log(JSON.stringify({status:"completed",results:Array.from({length:344},(_,id)=>({id,status:id<4?"Failed":"Passed",text:"x".repeat(240)}))}));`);
+	const first = await f.run(['const r=await tools.bash({command:"node producer.cjs"}); const page=await readOutput(r.outputs[0].ref,{format:"json",path:["results"],limit:4}); text(page.data.length); throw new Error("postprocessing fixture");']);
+	const failed = first.results.at(-1)!;
+	assert.equal(failed.isError, true);
+	const facts = (failed.details as any).codemode.calls;
+	assert.equal(facts.length, 1); assert.equal(facts[0].isError, false); assert.equal(facts[0].exitCode, 0); assert.equal(facts[0].resultComplete, true);
+	const ref = facts[0].outputRefs[0].ref;
+	assert.match(JSON.stringify(failed.content), /postprocessing fixture/);
+	const recovered = await f.run([`const page=await readOutput(${JSON.stringify(ref)},{format:"json",path:["results"],offset:340,limit:4});text({ids:page.data.map(x=>x.id),next:page.nextOffset});`]);
+	assert.equal(recovered.results.at(-1)?.isError, false, JSON.stringify(recovered.results.at(-1)));
+	assert.match(JSON.stringify(recovered.results.at(-1)?.content), /340,341,342,343/);
+	assert.equal(readFileSync(join(f.cwd, "calls.txt"), "utf8"), "1");
+	(f.session as any)._codemode.restoreStore();
+	const expired = await f.run([`await readOutput(${JSON.stringify(ref)},{format:"json"});`]);
+	assert.equal(expired.results.at(-1)?.isError, true); assert.match(JSON.stringify(expired.results.at(-1)?.content), /OUTPUT_EXPIRED/);
+	assert.equal(readFileSync(join(f.cwd, "calls.txt"), "utf8"), "1");
+});
+
+test("the production worker receives typed MCP data separately from mixed presentation", async t => {
+	let calls = 0;
+	const f = await fixture(t, {}, [pi => pi.registerTool({ name: "typed_fixture", label: "typed fixture", description: "typed output", parameters: Type.Object({}),
+		execute: async () => { calls++; return { content: [{ type: "text", text: "diagnostic before data" },
+			{ type: "text", text: "preview", mcpSource: createMcpTypedSource("structured", { status: "complete", results: [1, 2, 3] }) }], details: {} }; } })]);
+	f.session.setActiveToolsByName(["typed_fixture"]);
+	const outcome = await f.run(['const r=await tools.typed_fixture({});const v=await readOutput(r.outputs[0].ref,{path:["results"]});text(v);']);
+	assert.equal(outcome.results.at(-1)?.isError, false, JSON.stringify(outcome.results.at(-1)));
+	assert.match(JSON.stringify(outcome.results.at(-1)?.content), /1,2,3/); assert.equal(calls, 1);
+});
 
 test("Codemode forwards explicit risk review separately from tool arguments and failure handling", async t => {
   const observed: Array<{ review: boolean | undefined; input: unknown }> = [];

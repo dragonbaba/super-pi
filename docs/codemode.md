@@ -9,7 +9,23 @@ const result = await tools.read({ path: "package.json" });
 await show(result.ref);
 ```
 
-工具返回 `{ content, details, isError, ref }`。`ref` 是宿主为本次脚本签发的引用；`show(ref)` 展示未被脚本改写的原生结果。`text(value)`、`console.log(value)` 和 `return` 用于报告计算结果，`image(...)` 用于图片，`exit()` 成功结束脚本。
+工具返回 `{ content, details, isError, ref, outputs }`。`ref` 是宿主为本次脚本签发的展示引用；`show(ref)` 展示未被脚本改写的原生结果。`text(value)`、`console.log(value)` 和 `return` 用于报告计算结果，`image(...)` 用于图片，`exit()` 成功结束脚本。
+
+### 原始输出与结构化数据
+
+`content` 用于展示，可能包含尾部截断、诊断和分页提示，不能当作数据文档。原生前台 Bash/PowerShell 的原始组合输出和 MCP `structuredContent` 单独返回 `outputs: [{ ref, format, complete }]`。读取数据用 `readOutput`，无需重新执行生产命令：
+
+```js
+const result = await tools.bash({ command: "node report.cjs" });
+const page = await readOutput(result.outputs[0].ref, {
+  format: "json", path: ["results"], offset: 0, limit: 20,
+});
+text(page); // { data, complete, nextOffset }
+```
+
+`path` 是精确字段名或数组下标；`offset/limit` 对选中的数组或字符串分页。不传选择参数返回完整的小值，超出既有桥接预算时选择更小的字段或页。MCP 数据默认 JSON；shell 默认 text，只有输出确为一个 JSON 文档时才选择 JSON，因为 stdout/stderr 合并捕获。JSON 要求 `complete: true`，被截断的保存文件、不确定的捕获和无效 JSON 会明确报数据错误，原始执行状态保持不变。后台 shell 的日志随任务结束清理，不签发这种引用。
+
+数据引用与 `show` 的脚本内展示引用分开：数据引用可在当前活跃分支的后续脚本使用，也不会随脚本失败或 store 未提交而消失。脚本摘要和 `details.codemode.calls[].outputRefs` 保留引用。会话分支持有最多 256 项和 1 Mi UTF-16 内联数据，大数据使用私有捕获文件；淘汰、分支恢复、reload 和关闭使引用失效。保存文件沿用原生命令的 5 MiB 上限或 MCP 既有的 10 MiB 传输边界及临时文件寿命。文件身份、长度或摘要变化会拒绝解析。模型不能向此接口提交任意文件路径；历史结果不授予修改文件所需的当前读取证据。扩展改写/脱敏原生展示后，旧的原始数据通道失效；无数据引用的工具通过其已有结果接口读取。
 
 Bash / PowerShell 正常结束时返回原始输出和 `details.shellExecution.exitCode`，非零退出码本身不会抛工具异常，也不需要 `allowFailure`。例如搜索无匹配和编译失败都可能返回非零，含义由调用方根据结果判断；`isError: false`、`CODEMODE_OK` 或后台 `completed` 仅表示工具调用完成，不能作为编译或测试通过的证明。启动失败、超时、取消、输入/输出不完整等工具故障仍按错误返回。依赖命令成功的脚本须检查实际退出码，原有编译/测试验证检查仍要求退出 0。
 
@@ -37,7 +53,7 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 需要短暂等待时可用 `await new Promise(resolve => setTimeout(resolve, 1000))`。
 
-工具的 `content` 是展示文本，不保证是完整 JSON。Bash/PowerShell 合并 stdout/stderr，并可能返回截断尾部和显示说明；解析前先检查 `details.truncation?.truncated`。若已截断，使用普通工具读取已有 `details.fullOutputPath` 并提取需要的数据，不要解析尾部、删除显示标记来猜补缺失内容，或重新运行已成功的命令。`details.spillFileCapped` 表示日志也不完整。流已排空与返回文本完整是两件事；CodeMode 的 `resultComplete` 表示捕获完成，`outputTruncated` 单独表示原生 shell 返回文本截断。脚本后处理失败仍会显示错误并撤销本次 store 写入，成功的命令及副作用不会回滚。
+工具的 `content` 是展示文本。通过[原始输出与结构化数据](#原始输出与结构化数据)的 `readOutput` 读取受信来源；无数据引用时再使用工具已有的结果接口或保存路径。不要解析截断尾部、删除显示标记猜补缺失内容，或重新运行已成功的命令。`details.spillFileCapped` 表示日志也不完整。流已排空与返回文本完整是两件事；CodeMode 的 `resultComplete` 表示捕获完成，`outputTruncated` 单独表示原生 shell 返回文本截断。脚本后处理失败仍会显示错误并撤销本次 store 写入，成功的命令及副作用不会回滚。
 `setTimeout(callback, ms, ...args)` 返回数值 ID，`clearTimeout(id)` 可取消它。每次脚本最多创建 256 个定时器，延时必须是 0～300000 ms 的有限数值；回调必须是函数。等待计入脚本 `timeout_ms`，即使同时存在待完成的工具调用。脚本返回、`exit()`、失败或取消时释放剩余定时器，未等待的回调不会延长已完成脚本的生命周期。没有 `setInterval`。对 `SANDBOX_CLOSED` 等终态错误，等待后重复工具调用不能恢复工作区。
 
 `image(...)` 和 `show(ref)` 展示的图片会在脚本结束后尝试保存为私有临时文件，结果中的 `Image files: read .../images.json` 指向清单。下一回合用普通 `read` 读取清单，按其中的绝对路径读取、复制或移动图片；文件操作仍受原有工具权限控制。清单中的 `image` 是本次结果里从 1 开始的图片序号，重复图片共用文件。

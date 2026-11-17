@@ -1,6 +1,12 @@
 import { isStringObject } from "node:util/types";
 
 const isRawJSON = (JSON as typeof JSON & { isRawJSON?: (value: unknown) => boolean }).isRawJSON;
+const ENCODED_JSON = Symbol.for("super-pi.codemode.encoded-json.v1");
+
+/** Host-only envelope; the worker receives its JSON payload, never this marker. */
+export function encodedJsonPayload(value: unknown): string | undefined {
+	return value && typeof value === "object" ? (value as Record<symbol, string>)[ENCODED_JSON] : undefined;
+}
 
 /** Per-owner synchronous serializer. Bounds traversal and leaves before native encoding. */
 export class BoundedJson {
@@ -14,6 +20,9 @@ export class BoundedJson {
 		// One callback per serializer lifetime. JSON supplies the actual containing
 		// object as `this`, so array indexes are never mistaken for encoded keys.
 		this.count = function (key, value) { return owner.countValue(this, key, value); };
+	}
+	encode(value: unknown, limit: number): object {
+		return Object.freeze({ [ENCODED_JSON]: this.stringify(value, limit) ?? "null" });
 	}
 	private countValue(holder: unknown, key: string, value: unknown): unknown {
 		if (--this.visits < 0) throw new RangeError("Codemode JSON traversal exceeds its limit");
