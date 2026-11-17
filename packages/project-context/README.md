@@ -4,21 +4,35 @@ A small Pi extension that keeps project rules, generated repository facts, and d
 
 ## Commands
 
-- `/project-status` — read-only check of project identity, lightweight-index freshness, and Hermes scope.
-- `/project-init` — explicitly creates `.sp/project-context.json`, creates `AGENTS.md` only when absent, creates/preserves the scoped Hermes `MEMORY.md`, then builds the lightweight index.
+- `/project-status` — read-only check of project identity, published artifact presence, the last build from the current extension session, and Hermes scope. It does not scan the workspace for freshness.
+- `/project-init` — creates or reuses `.sp/project-context.json`, adds navigation to `AGENTS.md` once, prepares the scoped Hermes `MEMORY.md`, then reports the index build separately from initialization.
 - `/project-refresh` — deterministically refreshes `.sp/project-context.md` and `.sp/project-index.jsonl`.
 
 ## Retired integration
 
-The CodeGraph tool and `/codegraph-*` commands are retired. Existing `.codegraph/` directories, local installations, and user skills are left untouched. A profile generated before retirement becomes stale until an explicit `/project-refresh`; status and startup do not rewrite it automatically.
+The CodeGraph tool and `/codegraph-*` commands are retired. Existing `.codegraph/` directories, local installations, and user skills are left untouched. Use `/project-refresh` to replace a profile generated before retirement.
+
+## Index exclusions
+
+Use `.spignore` at the project root to limit the generated summary and JSONL index. Its patterns follow Git ignore syntax, including directory suffixes, root anchors, comments and negation. Excluding a parent directory prunes its subtree. Existing built-in exclusions apply before these rules.
+
+```gitignore
+Library/
+Temp/
+Logs/
+*.tmp
+*.bak
+```
+
+Only the root `.spignore` is read. Rule loading from `AGENTS.md` and permissions for explicit file tools are independent of the scanner. The lightweight index currently has a 50,000 file limit. Index failure is reported separately, so the stable identity and navigation are available for the next refresh.
 
 ## Safety
 
-- Existing `AGENTS.md` files are preserved byte-for-byte.
+- Navigation is appended to existing `AGENTS.md` files while keeping their original bytes. Subsequent initialization and refresh do not rewrite the file.
 - Newly generated `AGENTS.md` files permit Hermes/session lookup only when the user explicitly asks to search, recall, remember, or revisit prior information.
 - Corrupt or unsupported identity manifests are never silently replaced.
 - Writes validate every existing parent component under the selected project root and reject linked/non-regular generated targets.
-- Identity/rules use exclusive creation. Refreshes are serialized with an owner-token lock; profile and index use a durable transaction marker. In-process failures roll both files back, and—after any confirmed-stale lock is removed—the next refresh/init deterministically restores both prior files after a crash before starting new work. A lock left by a crashed process is never auto-stolen—verify no operation is active before manually removing the reported lock path.
+- Identity and new rules use exclusive creation. Refreshes are serialized with an owner-token lock, and profile and index use a durable transaction marker. In-process publication failures roll both files back. Once a confirmed-stale lock is removed, the next publication recovers the prior pair. Verify that no operation is active before removing a lock left by a crashed process.
 - Dependency, build, VCS, generated, virtual-environment, cache, `.codegraph`, and common credential paths are excluded. The index contains only remaining file paths, sizes, categories, and recognized languages—not file contents; it is not a general secret scanner and does not interpret `.gitignore`.
 - The generated Markdown profile is bounded independently of repository size: it keeps the highest-level 20 manifests and 20 likely entrypoints, caps language/area summaries, and reports omitted counts while the JSONL index remains complete.
 - Lightweight scanning excludes task scratch directories (`.task-tmp`), never follows symlinks, executes project code, or installs dependencies. Old test snapshots and compilation caches therefore cannot reappear as current project source. `/project-init` only creates an empty project-scoped Hermes `MEMORY.md` when absent and preserves existing memory byte-for-byte.

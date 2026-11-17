@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import ignore from "ignore";
 import { CONFIG_DIR_NAME } from "./pi-compat.js";
 import {
   ANSI_CSI_PATTERN,
@@ -28,6 +29,10 @@ export const CONTEXT_DIR = CONFIG_DIR_NAME;
 export const MANIFEST_NAME = "project-context.json";
 export const PROFILE_NAME = "project-context.md";
 export const INDEX_NAME = "project-index.jsonl";
+const IGNORE_NAME = ".spignore";
+const IGNORE_CACHE_CHECKS = 1024;
+const NAVIGATION_MARKER = "<!-- super-pi:project-context-navigation -->";
+const NAVIGATION = `## Project Context\n\n- [Project summary](./${CONTEXT_DIR}/${PROFILE_NAME})\n- [File index](./${CONTEXT_DIR}/${INDEX_NAME})\n- [Index exclusions](./${IGNORE_NAME})`;
 
 const EXCLUDED_DIRS = new Set([
   ".git", ".hg", ".svn", ".codegraph", CONFIG_DIR_NAME.toLowerCase(), ".task-tmp", ".idea", ".vscode", ".cache", ".next", ".nuxt", ".turbo",
@@ -171,6 +176,23 @@ function assertSafeTarget(root, target) {
   }
 }
 
+function openProjectFile(target, stat, flags) {
+  if (!stat.isFile()) throw new Error(`Expected a regular project file: ${target}`);
+  const fd = fs.openSync(target, flags | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = fs.fstatSync(fd);
+    const current = fs.lstatSync(target);
+    if (!opened.isFile() || !current.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino ||
+        current.dev !== opened.dev || current.ino !== opened.ino) {
+      throw new Error(`Project file changed while opening: ${target}`);
+    }
+    return fd;
+  } catch (error) {
+    fs.closeSync(fd);
+    throw error;
+  }
+}
+
 function durableWriteExclusive(target, content) {
   const descriptor = fs.openSync(target, "wx");
   try {
@@ -266,7 +288,30 @@ function classify(relativePath, extension, baseName) {
   return "other";
 }
 
+function loadIgnore(root) {
+  const target = path.join(root, IGNORE_NAME);
+  const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) return;
+  const fd = openProjectFile(target, stat, fs.constants.O_RDONLY);
+  let rules;
+  try { rules = ignore({ ignorecase: process.platform === "win32" }).add(fs.readFileSync(fd, "utf8")); }
+  finally { fs.closeSync(fd); }
+
+  // Add the parsed rules to a new matcher periodically to release path caches.
+  let matcher = ignore().add(rules);
+  let checks = 0;
+  return function isIgnored(relative, directory) {
+    if (checks === IGNORE_CACHE_CHECKS) {
+      matcher = ignore().add(rules);
+      checks = 0;
+    }
+    checks++;
+    return matcher.ignores(directory ? `${relative}/` : relative);
+  };
+}
+
 export function scanProject(root) {
+  const isIgnored = loadIgnore(root);
   const records = [];
   const stack = [root];
   while (stack.length) {
@@ -275,20 +320,20 @@ export function scanProject(root) {
     entries = entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
     const childDirs = [];
     for (const entry of entries) {
-      if (shouldExcludeName(entry.name, entry.isDirectory())) continue;
+      const directoryEntry = entry.isDirectory();
+      if (shouldExcludeName(entry.name, directoryEntry) || (!directoryEntry && !entry.isFile())) continue;
       const absolute = path.join(directory, entry.name);
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
+      const relative = directoryEntry && !isIgnored ? "" : toPosix(path.relative(root, absolute));
+      if (isIgnored?.(relative, directoryEntry)) continue;
+      if (directoryEntry) {
         childDirs.push(absolute);
         continue;
       }
-      if (!entry.isFile()) continue;
-      const relative = toPosix(path.relative(root, absolute));
       const stat = fs.statSync(absolute);
       const extension = path.extname(entry.name).toLowerCase();
       const language = SOURCE_LANGUAGES.get(extension) ?? null;
       records.push({ path: relative, size: stat.size, category: classify(relative, extension, entry.name), ...(language ? { language } : {}) });
-      if (records.length > MAX_FILES) throw new Error(`Project exceeds the lightweight index safety limit (${MAX_FILES} files). Add exclusions or use a dedicated indexer.`);
+      if (records.length > MAX_FILES) throw new Error(`Project exceeds the lightweight index safety limit (${MAX_FILES} files). Add exclusions to ${IGNORE_NAME} or use a dedicated indexer.`);
     }
     for (let index = childDirs.length - 1; index >= 0; index--) stack.push(childDirs[index]);
   }
@@ -359,17 +404,24 @@ function recordBaseName(recordPath) {
   return slash < 0 ? recordPath : recordPath.slice(slash + 1);
 }
 
-function detectVerificationTarget(detected, lowerPath, lowerBaseName) {
-  if (lowerPath === "cargo.toml") detected.cargo = true;
+function detectVerificationTarget(detected, rootPath, lowerBaseName) {
+  const lowerPath = rootPath ? lowerBaseName : "";
+  if (rootPath === "package.json" || (process.platform === "win32" && lowerPath === "package.json")) {
+    if (!detected.npm || rootPath === "package.json") detected.npm = rootPath;
+  } else if (lowerPath === "cargo.toml") detected.cargo = true;
   else if (lowerPath === "go.mod") detected.go = true;
   else if (lowerPath === "pyproject.toml" || lowerPath === "pytest.ini") detected.python = true;
   else if (lowerBaseName.endsWith(".sln") || lowerBaseName.endsWith(".csproj")) detected.dotnet = true;
 }
 
-function packageScripts(root) {
-  const packagePath = path.join(root, "package.json");
+function packageScripts(root, relativePath) {
+  const packagePath = path.join(root, relativePath);
   try {
-    const value = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    const stat = fs.lstatSync(packagePath);
+    const fd = openProjectFile(packagePath, stat, fs.constants.O_RDONLY);
+    let value;
+    try { value = JSON.parse(fs.readFileSync(fd, "utf8")); }
+    finally { fs.closeSync(fd); }
     const preferred = ["test", "lint", "typecheck", "check", "build"];
     const commands = [];
     for (const name of preferred) if (typeof value?.scripts?.[name] === "string") commands.push(`npm run ${name}`);
@@ -380,7 +432,7 @@ function packageScripts(root) {
 }
 
 function verificationCommands(root, detected) {
-  const commands = packageScripts(root);
+  const commands = detected.npm ? packageScripts(root, detected.npm) : [];
   if (detected.cargo) commands.push("cargo test");
   if (detected.go) commands.push("go test ./...");
   if (detected.python) commands.push("pytest");
@@ -394,7 +446,7 @@ function collectArtifactStats(records) {
   const moduleCounts = new Map();
   const manifests = [];
   const entrypoints = [];
-  const detected = { cargo: false, go: false, python: false, dotnet: false };
+  const detected = { npm: "", cargo: false, go: false, python: false, dotnet: false };
   const indexLines = new Array(records.length);
   const indexHash = createHash("sha256");
   let manifestCount = 0;
@@ -423,7 +475,7 @@ function collectArtifactStats(records) {
       entrypointCount += 1;
       insertBoundedProfilePath(entrypoints, record.path, MAX_PROFILE_ENTRYPOINTS);
     }
-    detectVerificationTarget(detected, slash < 0 ? lowerBaseName : "", lowerBaseName);
+    detectVerificationTarget(detected, slash < 0 ? baseName : "", lowerBaseName);
 
     const json = JSON.stringify(record);
     indexLines[index] = json;
@@ -510,7 +562,33 @@ export function buildArtifacts(root, manifest, records) {
 }
 
 export function projectAgentsTemplate() {
-  return `# Project Instructions\n\n## Context\n\n- Read \`${CONFIG_DIR_NAME}/project-context.md\` for the generated repository profile.\n- Query \`${CONFIG_DIR_NAME}/project-index.jsonl\` for fast path/category lookup before broad scans.\n- Search Hermes memory or prior sessions only when the user explicitly asks to search, recall, remember, or revisit earlier information.\n- Refresh generated context with \`/project-refresh\` after structural changes.\n\n## Local Rules\n\n- Add project-specific architecture, coding, verification, and release rules here.\n- Preserve the global rule: do not commit, push, or open a PR without explicit user approval for the current task.\n`;
+  return `# Project Instructions\n\n## Local Rules\n\n- Add project-specific architecture, coding, verification, and release rules here.\n- Preserve the global rule: do not commit, push, or open a PR without explicit user approval for the current task.\n- Search Hermes memory or prior sessions only when the user explicitly asks.\n\n${NAVIGATION}\n${NAVIGATION_MARKER}\n`;
+}
+
+function ensureProjectNavigation(root) {
+  const target = path.join(root, "AGENTS.md");
+  let stat = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (!stat) {
+    if (createExclusiveFile(root, target, projectAgentsTemplate())) return "created";
+    stat = fs.lstatSync(target);
+  }
+  const fd = openProjectFile(target, stat, fs.constants.O_RDONLY);
+  let original;
+  try { original = fs.readFileSync(fd); }
+  finally { fs.closeSync(fd); }
+  if (original.includes(NAVIGATION_MARKER)) return "preserved";
+  const firstNewline = original.indexOf(10);
+  const newline = original[firstNewline - 1] === 13 ? "\r\n" : "\n";
+  const separator = original.length === 0 ? "" : original[original.length - 1] === 10 ? newline : newline + newline;
+  const append = openProjectFile(target, stat, fs.constants.O_WRONLY | fs.constants.O_APPEND);
+  try {
+    const current = fs.fstatSync(append);
+    if (current.size !== original.length || current.mtimeMs !== stat.mtimeMs) {
+      throw new Error(`Project rules changed before navigation could be added: ${target}`);
+    }
+    fs.writeFileSync(append, separator + `${NAVIGATION}\n${NAVIGATION_MARKER}\n`.replaceAll("\n", newline));
+    return "navigation added";
+  } finally { fs.closeSync(append); }
 }
 
 const TRANSACTION_MARKER = ".project-context-transaction.json";
@@ -641,17 +719,14 @@ export function initializeProject(cwd, now = new Date()) {
       createExclusiveFile(root, marker, `${JSON.stringify(proposed, null, 2)}\n`);
     }
     const manifest = readManifest(marker);
-    const agentsPath = path.join(root, "AGENTS.md");
-    const agentsCreated = fs.existsSync(agentsPath) ? false : createExclusiveFile(root, agentsPath, projectAgentsTemplate());
-    const resolved = { root, marker, manifest, initialized: true, gitRoot: initial.gitRoot };
-    return { ...refreshResolved(resolved), agentsCreated, alreadyInitialized: wasInitialized };
+    const agents = ensureProjectNavigation(root);
+    return { root, marker, manifest, initialized: true, gitRoot: initial.gitRoot, agents, alreadyInitialized: wasInitialized };
   });
 }
 
-export function refreshProject(cwd) {
-  const resolved = resolveProject(cwd);
+export function refreshProject(cwd, resolved = resolveProject(cwd)) {
   if (!resolved.initialized) throw new Error("Project context is not initialized. Run /project-init first.");
-  return withProjectLock(resolved.root, () => refreshResolved(resolveProject(cwd)));
+  return withProjectLock(resolved.root, () => refreshResolved({ ...resolved, manifest: readManifest(resolved.marker) }));
 }
 
 function findSharedGitRoot(cwd) {
@@ -712,21 +787,18 @@ export function ensureHermesProjectMemory(root, cwd = root, agentDir = process.e
   return { ...hermes, exists: true, memoryFile, created };
 }
 
+export function getIndexState(root) {
+  const contextDir = path.join(root, CONTEXT_DIR);
+  const pending = fs.lstatSync(transactionMarkerPath(root), { throwIfNoEntry: false });
+  if (pending) return "incomplete (publication recovery pending)";
+  const profile = fs.lstatSync(path.join(contextDir, PROFILE_NAME), { throwIfNoEntry: false });
+  const index = fs.lstatSync(path.join(contextDir, INDEX_NAME), { throwIfNoEntry: false });
+  if (profile?.isFile() && index?.isFile()) return "published";
+  return profile || index ? "incomplete" : "missing";
+}
+
 export function getStatus(cwd, agentDir) {
   const resolved = resolveProject(cwd);
   const hermes = detectHermes(resolved.root, cwd, agentDir);
-  let indexedFiles = null;
-  let indexFresh = false;
-  if (resolved.initialized) {
-    const profile = path.join(resolved.root, CONTEXT_DIR, PROFILE_NAME);
-    const index = path.join(resolved.root, CONTEXT_DIR, INDEX_NAME);
-    if (fs.existsSync(profile) && fs.existsSync(index)) {
-      const savedProfile = fs.readFileSync(profile, "utf8");
-      const savedIndex = fs.readFileSync(index, "utf8");
-      indexedFiles = savedIndex.split("\n").filter(Boolean).length;
-      const currentArtifacts = buildArtifacts(resolved.root, resolved.manifest, scanProject(resolved.root));
-      indexFresh = savedIndex === currentArtifacts.index && savedProfile === currentArtifacts.profile;
-    }
-  }
-  return { ...resolved, hermes, indexedFiles, indexFresh };
+  return { ...resolved, hermes, indexState: resolved.initialized ? getIndexState(resolved.root) : "missing" };
 }
