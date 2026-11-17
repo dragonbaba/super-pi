@@ -292,7 +292,7 @@ for (const mode of ["manual", "automatic"] as const) {
 				let compacted = false;
 				f.session.subscribe(event => { if (event.type === "compaction_end") compacted = !event.aborted && event.result !== undefined; });
 				if (mode === "manual") await f.session.compact();
-				else assert.equal(await (f.session as unknown as { _runAutoCompaction(reason: string, retry: boolean): Promise<boolean> })._runAutoCompaction("threshold", false), false);
+				else assert.deepEqual(await (f.session as unknown as { _runAutoCompaction(reason: string, retry: boolean): Promise<{ committed: boolean; continue: boolean }> })._runAutoCompaction("threshold", false), { committed: true, continue: false });
 				assert.equal(compacted, true);
 				const rebuilt = f.session.agent.state.messages;
 				assert.equal(rebuilt.some(m => m.role === "toolResult" && m.toolCallId === "original-source"), false);
