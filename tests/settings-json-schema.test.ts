@@ -16,6 +16,12 @@ ajv.addSchema(projectSchema, projectUrl.href);
 const validateGlobal = ajv.getSchema(globalUrl.href)!;
 const validateProject = ajv.getSchema(projectUrl.href)!;
 
+test("per-provider/model automatic compaction percentages are global and bounded", () => {
+	assert.equal(validateGlobal({ modelAutoCompactionPercentages: { "example/family%2Fmodel": 85.5 } }), true);
+	for (const value of [0, 101, "85%", null]) assert.equal(validateGlobal({ modelAutoCompactionPercentages: { "p/m": value } }), false);
+	assert.equal(validateProject({ modelAutoCompactionPercentages: { "p/m": 70 } }), false);
+});
+
 test("removed screen-mode settings stay valid in old files but are marked deprecated", () => {
 	for (const key of ["tuiMode", "fullscreenExitOutput"]) {
 		assert.equal(globalSchema.properties[key].deprecated, true);

@@ -154,6 +154,14 @@ input admission may instead retain only an error, without the remote output or a
 continuation, even if the remote tool already executed. A new or reopened
 session uses its startup configuration; the temporary override is not persisted.
 
+## Automatic compaction percentage
+
+Use `/autocompact status` or `/autocompact 85%` to inspect or save the current
+provider/model's occupancy percentage (default 85%). `/settings` also accepts
+free text. Each pair persists independently in global settings; model/capacity
+changes do not rewrite saved values. The enable switch and summary/output
+reserves remain separate. See the [automatic compaction guide](../../docs/auto-compaction.md).
+
 ## Prefix manifest diagnostics
 
 Each main provider request keeps pre-dispatch intent separate from the effective request. `session.prefixIntentManifest` exposes configured intent, while `session.prefixManifest` contains metadata-only hashes reported after payload transforms and effective transport selection. `session.prefixDriftDiagnostic` compares the current request against the preceding successfully completed main request; repeated observations within one request retain that baseline. Auxiliary summarization does not replace these diagnostics. OpenAI Codex reuses its bounded successful-dispatch commitment for these hashes, including automatic WebSocket-to-SSE fallback, without retaining or reserializing the complete request. Other built-in SSE providers observe their transformed payload immediately before dispatch.

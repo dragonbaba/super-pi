@@ -5,7 +5,7 @@
  * and after compaction the session is reloaded.
  */
 
-import type { AgentMessage, StreamFn, ThinkingLevel } from "@super-pi/agent-core";
+import { DEFAULT_AUTO_COMPACTION_PERCENTAGE, getAutoCompactionThreshold, type AgentMessage, type StreamFn, type ThinkingLevel } from "@super-pi/agent-core";
 import { contentText, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@super-pi/ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import { completeSimple } from "@super-pi/ai/compat";
@@ -127,12 +127,14 @@ function combineUsage(first: Usage, second: Usage): Usage {
 // ============================================================================
 
 export interface CompactionSettings {
+	autoCompactPercentage?: number;
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
+	autoCompactPercentage: DEFAULT_AUTO_COMPACTION_PERCENTAGE,
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
@@ -249,7 +251,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	return contextWindow > 0 && contextTokens >= getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage);
 }
 
 // ============================================================================
@@ -430,7 +432,7 @@ export function prepareToolResultPruneCheckpoint(
 		prunedResults++;
 	}
 	const savedTokens = Math.floor(omittedChars / 4);
-	const threshold = contextWindow - settings.reserveTokens;
+	const threshold = getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage);
 	const estimatedTokensAfter = contextTokens - savedTokens;
 	if (
 		!retainedTail ||

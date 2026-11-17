@@ -309,6 +309,10 @@ export interface ContextUsage {
 	contextWindow: number;
 	/** Context usage as percentage of context window, or null if tokens is unknown. */
 	percent: number | null;
+	/** Resolved occupancy policy for this provider/model, independent of summary reserves. */
+	autoCompactionPercentage?: number;
+	autoCompactionThreshold?: number;
+	autoCompactionEnabled?: boolean;
 	/** Whether the estimate comes from provider usage or materialized session messages. */
 	source?: "provider" | "materialized";
 	/** False when no transport-verifiable post-compaction usage epoch is available. */

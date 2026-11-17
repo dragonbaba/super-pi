@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@super-pi/agent-core";
+import { autoCompactionSettingKey, DEFAULT_AUTO_COMPACTION_PERCENTAGE, isAutoCompactionPercentage, type ThinkingLevel } from "@super-pi/agent-core";
 import type { Transport } from "@super-pi/ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@super-pi/tui";
 import { randomUUID } from "crypto";
@@ -134,6 +134,8 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelThinkingLevels?: Record<string, ThinkingLevel>; // Per-model defaults keyed by provider/modelId
+	/** Global-only occupancy percentages keyed by escaped provider/model identity. */
+	modelAutoCompactionPercentages?: Record<string, number>;
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -367,6 +369,10 @@ export class SettingsManager {
 	getImagePolicyRevision(): number { return this.imagePolicyRevision; }
 	private storage: SettingsStorage;
 	private globalSettings: Settings;
+	// One small identity key per settings owner; no per-render encoding or retained catalog.
+	private autoCompactionProvider: string | undefined;
+	private autoCompactionModel: string | undefined;
+	private autoCompactionKey = "";
 	private projectSettings: Settings;
 	private effectiveSettings!: Settings;
 	private get settings(): Settings { return this.effectiveSettings; }
@@ -717,14 +723,14 @@ export class SettingsManager {
 		this.modifiedProjectNestedFields.clear();
 	}
 
-	private enqueueWrite(scope: SettingsScope, task: () => void): Promise<SettingsError | undefined> {
+	private enqueueWrite(scope: SettingsScope, task: () => void, clearModifiedFields = true): Promise<SettingsError | undefined> {
 		const completion = this.writeQueue.then(() => {
 			try {
 				if (scope === "project") {
 					this.assertProjectTrustedForWrite();
 				}
 				task();
-				this.clearModifiedScope(scope);
+				if (clearModifiedFields) this.clearModifiedScope(scope);
 				return undefined;
 			} catch (error) {
 				return this.recordError(scope, error);
@@ -1004,8 +1010,40 @@ export class SettingsManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
+	private getAutoCompactionKey(provider: string, modelId: string): string {
+		if (this.autoCompactionProvider !== provider || this.autoCompactionModel !== modelId) {
+			this.autoCompactionKey = autoCompactionSettingKey(provider, modelId);
+			this.autoCompactionProvider = provider;
+			this.autoCompactionModel = modelId;
+		}
+		return this.autoCompactionKey;
+	}
+
+	getAutoCompactionPercentage(provider: string, modelId: string): number {
+		const value = this.globalSettings.modelAutoCompactionPercentages?.[this.getAutoCompactionKey(provider, modelId)];
+		return isAutoCompactionPercentage(value) ? value : DEFAULT_AUTO_COMPACTION_PERCENTAGE;
+	}
+
+	setAutoCompactionPercentage(provider: string, modelId: string, percentage: number): Promise<SettingsError | undefined> {
+		if (!isAutoCompactionPercentage(percentage)) throw new Error("Auto-compaction percentage must be between 1 and 100.");
+		if (this.globalSettingsLoadError) return Promise.resolve(toSettingsError("global", this.globalSettingsLoadError, this.settingsPaths.global));
+		const key = this.getAutoCompactionKey(provider, modelId);
+		// This explicit edit owns a one-key transaction, not a generic dirty snapshot.
+		// Publish only after persistence; FIFO order preserves newer edits after failure.
+		const snapshot: Settings = { modelAutoCompactionPercentages: { [key]: percentage } };
+		const fields = new Set<keyof Settings>(["modelAutoCompactionPercentages"]);
+		const nested = new Map<keyof Settings, Set<string>>([["modelAutoCompactionPercentages", new Set([key])]]);
+		return this.enqueueWrite("global", () => {
+			this.persistScopedSettings("global", snapshot, fields, nested);
+			this.globalSettings.modelAutoCompactionPercentages ??= {};
+			setOwnProperty(this.globalSettings.modelAutoCompactionPercentages, key, percentage);
+			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
+		}, false); // A successful one-key write must not clear unrelated dirty fields.
+	}
+
+	getCompactionSettings(model?: { provider: string; id: string }): { enabled: boolean; reserveTokens: number; keepRecentTokens: number; autoCompactPercentage: number } {
 		return {
+			autoCompactPercentage: model ? this.getAutoCompactionPercentage(model.provider, model.id) : DEFAULT_AUTO_COMPACTION_PERCENTAGE,
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(),

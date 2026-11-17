@@ -1,18 +1,20 @@
-const SP_084_DEFAULT_COMPACTION_RESERVE_TOKENS = 16_384;
-
 export type ContextUsageLike = {
 	tokens: number | null;
 	contextWindow: number;
 	percent: number | null;
+	autoCompactionThreshold?: number;
+	autoCompactionEnabled?: boolean;
+	automaticCompactionBlocked?: "paid-boundary-uncommitted";
 };
 
 export function exceedsAutoCompactionThreshold(
 	usage: ContextUsageLike | undefined,
-	reserveTokens = SP_084_DEFAULT_COMPACTION_RESERVE_TOKENS,
 ): boolean {
 	if (!usage || usage.tokens === null || usage.tokens <= 0 || usage.contextWindow <= 0) return false;
-	if (!Number.isFinite(reserveTokens) || reserveTokens < 0) return false;
-	return usage.tokens > usage.contextWindow - reserveTokens;
+	if (usage.autoCompactionEnabled === false || usage.automaticCompactionBlocked) return false;
+	const threshold = usage.autoCompactionThreshold;
+	// Older hosts do not expose their policy; do not guess a second threshold.
+	return threshold !== undefined && Number.isFinite(threshold) && threshold >= 0 && usage.tokens >= threshold;
 }
 
 export function formatContextDisplay(

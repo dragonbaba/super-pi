@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
 import { RequestImageBudget, supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { isRequestBodyTooLarge } from "@super-pi/ai";
+import { getAutoCompactionThreshold } from "@super-pi/agent-core";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
@@ -767,8 +768,8 @@ function shouldAutoThresholdCompact(
 ): boolean {
 	if (estimate.paidBoundaryPending || !shouldCompact(estimate.tokens, contextWindow, settings)) return false;
 	if (estimate.source === "provider") return true;
-	const threshold = contextWindow - settings.reserveTokens;
-	return Number.isFinite(estimate.materializedBaselineTokens) && estimate.materializedBaselineTokens! <= threshold;
+	const threshold = getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage);
+	return Number.isFinite(estimate.materializedBaselineTokens) && estimate.materializedBaselineTokens! < threshold;
 }
 
 function withContextAccounting(
@@ -797,7 +798,8 @@ function withContextAccounting(
 			estimateSource: "materialized",
 			materializedTokensAfter,
 			contextWindow,
-			thresholdTokens: contextWindow - settings.reserveTokens,
+			thresholdTokens: getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage),
+			autoCompactPercentage: settings.autoCompactPercentage,
 			reason,
 		},
 	};
@@ -1398,7 +1400,7 @@ export class AgentSession {
 			}
 			this._pendingCustomContextMessages.length = 0;
 			if (turn.toolResults.length > 0 && !signal?.aborted && !this.isCompacting) {
-				const settings = this.settingsManager.getCompactionSettings();
+				const settings = this.settingsManager.getCompactionSettings(this.model);
 				const contextWindow = this.model?.contextWindow ?? 0;
 				if (settings.enabled && contextWindow > 0) {
 					const estimate = estimateCompactionAwareContextTokens(
@@ -3107,7 +3109,7 @@ export class AgentSession {
 			const details = model
 				? withContextAccounting(
 					checkpoint.details, model, "overflow", checkpoint.summary, checkpoint.tokensBefore,
-					retainedTail, model.contextWindow, this.settingsManager.getCompactionSettings(),
+					retainedTail, model.contextWindow, this.settingsManager.getCompactionSettings(model),
 				)
 				: checkpoint.details;
 			this.sessionManager.appendCompaction(
@@ -4060,7 +4062,7 @@ export class AgentSession {
 			});
 
 			const pathEntries = this.sessionManager.getBranch();
-			const settings = this.settingsManager.getCompactionSettings();
+			const settings = this.settingsManager.getCompactionSettings(requestModel);
 
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
@@ -4253,7 +4255,7 @@ export class AgentSession {
 		const requestBudgetBlocked = isRequestBudgetBlock(assistantMessage.errorMessage);
 		if (requestBudgetBlocked && skipAbortedCheck) return false;
 		if (isRequestBodyTooLarge(assistantMessage)) return false;
-		const settings = this.settingsManager.getCompactionSettings();
+		const settings = this.settingsManager.getCompactionSettings(this.model);
 		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
@@ -4352,7 +4354,7 @@ export class AgentSession {
 		contextTokens?: number,
 		abandonedMessage?: AssistantMessage,
 	): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings();
+		const settings = this.settingsManager.getCompactionSettings(this.model);
 		let started = false;
 		let stage: "authentication" | "compaction" = "authentication";
 		let fromExtension = false;
@@ -4649,6 +4651,14 @@ export class AgentSession {
 	/** Whether auto-compaction is enabled */
 	get autoCompactionEnabled(): boolean {
 		return this.settingsManager.getCompactionEnabled();
+	}
+
+	/** Explicit user setting; changing it never runs/replays tools or compacts immediately. */
+	async setAutoCompactionPercentage(percentage: number): Promise<void> {
+		const model = this.model;
+		if (!model) throw new Error("Select a model before setting auto-compaction percentage.");
+		const error = await this.settingsManager.setAutoCompactionPercentage(model.provider, model.id, percentage);
+		if (error) throw error.error;
 	}
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
@@ -6093,11 +6103,15 @@ export class AgentSession {
 		const branchEntries = this.sessionManager.getBranch();
 		const estimate = estimateCompactionAwareContextTokens(branchEntries, this.messages, model);
 		const percent = (estimate.tokens / contextWindow) * 100;
+		const autoCompactionPercentage = this.settingsManager.getAutoCompactionPercentage(model.provider, model.id);
 
 		return {
 			tokens: estimate.tokens,
 			contextWindow,
 			percent,
+			autoCompactionPercentage,
+			autoCompactionThreshold: getAutoCompactionThreshold(contextWindow, autoCompactionPercentage),
+			autoCompactionEnabled: this.autoCompactionEnabled,
 			source: estimate.source,
 			epochVerified: estimate.epochVerified,
 			automaticCompactionBlocked: estimate.paidBoundaryPending ? "paid-boundary-uncommitted" : undefined,

@@ -160,7 +160,7 @@ async function fixture(scenario: Scenario) {
 						if (autoRetryScenario) return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-tool") return toolReply();
 						// Current-epoch provider usage now drives threshold accounting.
-						if (thresholdScenario) return toolReply(model.contextWindow - settings.getCompactionReserveTokens() + 1);
+						if (thresholdScenario) return toolReply(Math.floor(model.contextWindow * settings.getAutoCompactionPercentage(model.provider, model.id) / 100));
 						if (scenario === "retry-error") return reply("RETRY_FAILED_FRAGMENT", "network_error");
 						if (scenario === "retry-length") return reply("RETRY_LENGTH_FRAGMENT", "length");
 						if (scenario === "retry-abort") { void session!.abort(); return reply("RETRY_ABORTED_FRAGMENT"); }

@@ -34,4 +34,7 @@ test("verified epoch lookup releases its session and never serializes historical
   assert.equal(evidence.serializations, 0);
   assert.equal(evidence.serializedChars, 0);
   assert.equal(evidence.retainedSessionOwners, 0);
+  assert.equal(evidence.retainedSettingsOwners, 0);
+  assert.equal(evidence.retainedFooterOwners, 0);
+  assert.equal(evidence.identityEncodings, 0);
 });

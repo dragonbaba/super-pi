@@ -221,9 +221,10 @@ export class FooterComponent implements Component {
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;
-		const autoIndicator = contextUsage?.automaticCompactionBlocked === "paid-boundary-uncommitted"
+		const autoCompactEnabled = contextUsage?.autoCompactionEnabled ?? this.autoCompactEnabled;
+		const autoIndicator = !autoCompactEnabled ? "" : contextUsage?.automaticCompactionBlocked === "paid-boundary-uncommitted"
 			? " (auto: paid pending)"
-			: this.autoCompactEnabled ? " (auto)" : "";
+			: ` (auto ${contextUsage?.autoCompactionPercentage ?? "?"}%)`;
 		const contextPercentDisplay =
 			contextPercent === "?"
 				? `?/${formatTokens(contextWindow)}${autoIndicator}`
