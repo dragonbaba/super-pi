@@ -6,12 +6,14 @@ import test from "node:test";
 import ts from "typescript";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
+const MATERIALIZING_CALL = /\.map$|\.filter$|\.reduce$|\.sort$|JSON\.stringify$/;
+
 test("compaction epoch lookup adds no callbacks, promises, controllers or history materialization", () => {
   const source = ts.createSourceFile("agent-session.ts", readFileSync(new URL("../packages/coding-agent/src/core/agent-session.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
   function visit(node: ts.Node): void {
     assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isNewExpression(node));
     assert.ok(!ts.isArrayLiteralExpression(node));
-    if (ts.isCallExpression(node)) assert.ok(!/\.map$|\.filter$|\.reduce$|\.sort$|JSON\.stringify$/.test(node.expression.getText(source)));
+    if (ts.isCallExpression(node)) assert.ok(!MATERIALIZING_CALL.test(node.expression.getText(source)));
     ts.forEachChild(node, visit);
   }
   for (const name of ["estimateCompactionAwareContextTokens", "isPostCompactionMessage"]) {

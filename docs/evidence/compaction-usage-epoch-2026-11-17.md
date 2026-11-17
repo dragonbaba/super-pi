@@ -31,7 +31,7 @@ Baseline allocation sites were historical JSON serialization and full-history es
 
 ## Verification
 
-Type checking, offline build **12/12**, and **429 related regressions / 0 failures** pass, including live SDK tool-turn compaction with one completed effect, next-prompt recovery after a local block, disabled compaction, owner mismatches, reload/branch restoration, paid-boundary state and the 10-API/14-configuration/140-request offline prefix matrix. Existing threshold-recovery fixtures now report provider usage above their configured threshold instead of a canned 110 tokens, retaining their original hook-failure and omission assertions. The built accounting function also reads the reported session as 512,568 tokens/source=provider/epochVerified=true without modifying it. Offline fixtures and read-only session reconstruction do not claim a live provider compaction.
+Type checking, offline build **12/12**, **429 related regressions / 0 failures**, and the complete local suite **6,434 passed / 117 skipped / 0 failed across 473 units** pass, including live SDK tool-turn compaction with one completed effect, next-prompt recovery after a local block, disabled compaction, owner mismatches, reload/branch restoration, paid-boundary state and the 10-API/14-configuration/140-request offline prefix matrix. Existing threshold-recovery fixtures now report provider usage above their configured threshold instead of a canned 110 tokens, retaining their original hook-failure and omission assertions. The built accounting function also reads the reported session as 512,568 tokens/source=provider/epochVerified=true without modifying it. Offline fixtures and read-only session reconstruction do not claim a live provider compaction.
 
 ```powershell
 npm run check
