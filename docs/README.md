@@ -57,7 +57,7 @@
 - [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 在 #296、A 在 #297 已审核、通过原有 CI 并合并，见[B 的证据](evidence/codegraph-retirement-2026-11-12.md)和[A 的证据](evidence/file-operations-v3-2026-11-13.md)。C 的批量清理实现及本机验证见[C 的证据](evidence/memory-bulk-cleanup-2026-11-13.md)，最终交付状态见[PR #298](https://github.com/dragonbaba/super-pi/pull/298)。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。
 - [默认 Codemode 方案](codemode-default-execution-plan.md)：默认工具入口、官方 1.0.0 借鉴、PR 划分和性能契约；[执行记录](codemode-default-execution-log.md) 给出实际验证及限制。
-- [Project Context](../packages/project-context/README.md)：项目身份、规则与轻量索引；CodeGraph 集成已退役，旧索引和用户技能保留。
+- [Project Context](../packages/project-context/README.md)：项目身份、`AGENTS.md` 导航、根目录 `.spignore` 和轻量索引状态。
 - [LSP](../packages/lsp/README.md)：诊断、source fix 和符号导航的配置与边界；[冷启动导航就绪验证](evidence/post-review-lsp-readiness-2026-11-14.md)说明加载信号、超时标注与源码定义。
 - [LSP 提示与测试稳定性](evidence/lsp-hints-cli-budgets-2026-11-14.md)：完整参数传递链清理、保留 MXC 清理等待、有界启动/关闭预算及动态 read 提示预算断言。
 - [Tool classification](../packages/tool-classification/README.md)：初始工具面、延迟工具搜索和按需激活。
@@ -86,6 +86,7 @@
 - [缓存、传输与渲染审计](evidence/system-cache-performance-audit-2026-11-16.md)：压缩后规则恢复、混合 WebSocket 帧顺序、终止等待者、大 Markdown 崩溃及同机分配/释放对照，包含全部 provider 的压缩后前缀验证。
 - [渲染热路径核实](evidence/render-hot-paths-2026-11-16.md)：选区/覆盖层、ASCII Markdown 与帧 UTF-8 计量的分配及 CPU 对照，视口和资源释放证据。
 - [CodeMode 语法错误诊断](evidence/codemode-syntax-diagnostics.md)：原源码位置、折叠投影和引用释放的回归证据。
+- [项目初始化和索引排除](evidence/project-context-init-and-ignore.md)：初始化失败边界、排除范围和只读状态查询的核实。
 
 - [测试与文档清理核实](evidence/test-doc-cleanup-2026-11-14.md)：失效验证入口与链接修正；R0 冻结断言及七项未通过验收目标保持完整。
 - [Responses 审计的当前复跑入口](evidence/responses-claude-audit-2026-11-12.md#当前离线复跑入口)：reasoning、图片预算和实际传输的正式回归，不依赖旧任务目录；历史真实中转探针单列。
