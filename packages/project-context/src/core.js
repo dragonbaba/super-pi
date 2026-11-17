@@ -404,18 +404,24 @@ function recordBaseName(recordPath) {
   return slash < 0 ? recordPath : recordPath.slice(slash + 1);
 }
 
-function detectVerificationTarget(detected, lowerPath, lowerBaseName) {
-  if (lowerPath === "package.json") detected.npm = true;
-  else if (lowerPath === "cargo.toml") detected.cargo = true;
+function detectVerificationTarget(detected, rootPath, lowerBaseName) {
+  const lowerPath = rootPath ? lowerBaseName : "";
+  if (rootPath === "package.json" || (process.platform === "win32" && lowerPath === "package.json")) {
+    if (!detected.npm || rootPath === "package.json") detected.npm = rootPath;
+  } else if (lowerPath === "cargo.toml") detected.cargo = true;
   else if (lowerPath === "go.mod") detected.go = true;
   else if (lowerPath === "pyproject.toml" || lowerPath === "pytest.ini") detected.python = true;
   else if (lowerBaseName.endsWith(".sln") || lowerBaseName.endsWith(".csproj")) detected.dotnet = true;
 }
 
-function packageScripts(root) {
-  const packagePath = path.join(root, "package.json");
+function packageScripts(root, relativePath) {
+  const packagePath = path.join(root, relativePath);
   try {
-    const value = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    const stat = fs.lstatSync(packagePath);
+    const fd = openProjectFile(packagePath, stat, fs.constants.O_RDONLY);
+    let value;
+    try { value = JSON.parse(fs.readFileSync(fd, "utf8")); }
+    finally { fs.closeSync(fd); }
     const preferred = ["test", "lint", "typecheck", "check", "build"];
     const commands = [];
     for (const name of preferred) if (typeof value?.scripts?.[name] === "string") commands.push(`npm run ${name}`);
@@ -426,7 +432,7 @@ function packageScripts(root) {
 }
 
 function verificationCommands(root, detected) {
-  const commands = detected.npm ? packageScripts(root) : [];
+  const commands = detected.npm ? packageScripts(root, detected.npm) : [];
   if (detected.cargo) commands.push("cargo test");
   if (detected.go) commands.push("go test ./...");
   if (detected.python) commands.push("pytest");
@@ -440,7 +446,7 @@ function collectArtifactStats(records) {
   const moduleCounts = new Map();
   const manifests = [];
   const entrypoints = [];
-  const detected = { npm: false, cargo: false, go: false, python: false, dotnet: false };
+  const detected = { npm: "", cargo: false, go: false, python: false, dotnet: false };
   const indexLines = new Array(records.length);
   const indexHash = createHash("sha256");
   let manifestCount = 0;
@@ -469,7 +475,7 @@ function collectArtifactStats(records) {
       entrypointCount += 1;
       insertBoundedProfilePath(entrypoints, record.path, MAX_PROFILE_ENTRYPOINTS);
     }
-    detectVerificationTarget(detected, slash < 0 ? lowerBaseName : "", lowerBaseName);
+    detectVerificationTarget(detected, slash < 0 ? baseName : "", lowerBaseName);
 
     const json = JSON.stringify(record);
     indexLines[index] = json;

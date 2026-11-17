@@ -204,6 +204,18 @@ test("root ignore prunes directories and files before touching their contents or
   assert.doesNotMatch(readFileSync(join(f.cwd, ".sp", "project-context.md"), "utf8"), /npm run test/);
 });
 
+test("an indexed uppercase alias cannot provide hints from an excluded package.json", { skip: process.platform !== "linux" }, async t => {
+  const f = fixture(t);
+  writeFileSync(join(f.cwd, "package.json"), '{"scripts":{"test":"excluded"}}');
+  writeFileSync(join(f.cwd, "PACKAGE.JSON"), '{}');
+  writeFileSync(join(f.cwd, ".spignore"), "/package.json\n");
+  await f.run("project-init");
+  const index = readFileSync(join(f.cwd, ".sp", "project-index.jsonl"), "utf8");
+  assert.match(index, /"path":"PACKAGE\.JSON"/);
+  assert.doesNotMatch(index, /"path":"package\.json"/);
+  assert.doesNotMatch(readFileSync(join(f.cwd, ".sp", "project-context.md"), "utf8"), /npm run test/);
+});
+
 test("status reads neither the workspace listing nor published artifact bodies", async t => {
   const f = fixture(t);
   await f.run("project-init");
