@@ -88,6 +88,7 @@
 - [CodeMode 语法错误诊断](evidence/codemode-syntax-diagnostics.md)：原源码位置、折叠投影和引用释放的回归证据。
 - [项目初始化和索引排除](evidence/project-context-init-and-ignore.md)：初始化失败边界、排除范围和只读状态查询的核实。
 - [大项目索引构建](evidence/project-context-streaming-index.md)：定量内存边界、交互线程响应和发布恢复的核实。
+- [视口空清理优化](evidence/tui-empty-viewport-cleanup.md)：稳定视口与工具卡的分配对照和释放证据。
 
 - [测试与文档清理核实](evidence/test-doc-cleanup-2026-11-14.md)：失效验证入口与链接修正；R0 冻结断言及七项未通过验收目标保持完整。
 - [Responses 审计的当前复跑入口](evidence/responses-claude-audit-2026-11-12.md#当前离线复跑入口)：reasoning、图片预算和实际传输的正式回归，不依赖旧任务目录；历史真实中转探针单列。

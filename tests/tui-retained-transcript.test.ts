@@ -45,6 +45,22 @@ function passthrough(value: string): string {
 	return value;
 }
 
+test("stable viewport skips traversal of empty prepared records", t => {
+	const transcript = new RetainedContainer();
+	transcript.addRetainedChild(new MutableLine("stable"), { id: "stable", version: 1, completed: true });
+	const expected = transcript.renderViewportTail(80, 1).lines;
+	const { preparedViewportRecords } = transcript as unknown as { preparedViewportRecords: Set<unknown> };
+	assert.equal(preparedViewportRecords.size, 0);
+	const iterate = t.mock.method(preparedViewportRecords, Symbol.iterator);
+	const clear = t.mock.method(preparedViewportRecords, "clear");
+	for (let frame = 0; frame < 10; frame++) {
+		assert.deepEqual(transcript.renderViewportTail(80, 1).lines, expected);
+	}
+	assert.equal(iterate.mock.callCount(), 0);
+	assert.equal(clear.mock.callCount(), 0);
+	assert.equal(transcript.getRetainedLifecycleReferenceCounts().preparedLineReferences, 0);
+});
+
 test("active updates do not rerender 5,000 completed transcript items", () => {
 	const instrumentation = new TuiRenderInstrumentation();
 	const transcript = new RetainedContainer({ instrumentation });

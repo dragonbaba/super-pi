@@ -882,6 +882,7 @@ export class RetainedContainer extends Container implements LineViewportComponen
 	}
 
 	private clearPreparedViewportLines(): void {
+		if (this.preparedViewportRecords.size === 0) return;
 		for (const record of this.preparedViewportRecords) {
 			record.preparedLines = undefined;
 			record.preparedWidth = undefined;
