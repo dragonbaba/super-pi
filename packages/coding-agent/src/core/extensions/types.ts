@@ -1320,6 +1320,8 @@ export interface SessionBeforeForkResult {
 
 export interface SessionBeforeCompactResult {
 	cancel?: boolean;
+	/** A strategy failure returned as cancellation; retained for request admission diagnostics. */
+	errorMessage?: string;
 	compaction?: CompactionResult;
 }
 

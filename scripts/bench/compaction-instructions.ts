@@ -22,7 +22,7 @@ if (phase === "counts") {
     if (!urls.some(source => source.href === url)) return loaded;
     const source = String(loaded.source), file = ts.createSourceFile(url, source, ts.ScriptTarget.Latest, true);
     const selected = new Set(["compact", "generateSummaryWithUsage", "generateTurnPrefixSummary", "completeSummarization",
-      "createSummarizationOptions", "combineUsage", "convertToLlm", "serializeConversation", "computeFileLists", "formatFileOperations"]);
+      "createSummarizationOptions", "combineUsage", "convertToLlm", "convertToLlmWithUsageEpoch", "serializeConversation", "computeFileLists", "formatFileOperations"]);
     const edits: Array<{ at: number; text: string }> = [];
     function increment(name: keyof typeof counters) { return `globalThis.__compactionCounters.${name}++`; }
     function wrap(node: import("typescript").Node, name: keyof typeof counters) {
@@ -40,7 +40,7 @@ if (phase === "counts") {
         else if (ts.isTemplateExpression(node)) wrap(node, "templates");
         else if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
           wrap(node, "closures");
-          if (owner === "convertToLlm") {
+          if (owner === "convertToLlmWithUsageEpoch") {
             if (ts.isBlock(node.body)) edits.push({ at: node.body.getStart(file) + 1, text: increment("convertVisits") + ";" });
             else wrap(node.body, "filterVisits");
           }

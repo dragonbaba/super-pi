@@ -39,7 +39,7 @@ export * from "./session-resources.ts";
 export * from "./types.ts";
 export * from "./utils/diagnostics.ts";
 export * from "./utils/event-stream.ts";
-export { estimateContextTokens, estimateContextTokensFromParts, estimateMessageTokens } from "./utils/estimate.ts";
+export { estimateContextTokens, estimateContextTokensFromParts, estimateMessageTokens, withHistoricalContextUsage, withCurrentContextUsage } from "./utils/estimate.ts";
 export { mergeProviderHeaders } from "./utils/headers.ts";
 export { IncrementalToolArguments } from "./utils/incremental-tool-arguments.ts";
 export {

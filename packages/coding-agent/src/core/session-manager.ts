@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@super-pi/agent-core";
-import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@super-pi/ai";
+import { type ImageContent, type Message, type TextContent, type Usage, uuidv7, withHistoricalContextUsage } from "@super-pi/ai";
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -429,12 +429,15 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
 	}
 	if (entry.type === "compaction") {
-		return [
-			createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp),
-			...(entry.retainedTail ?? []),
-		];
+		return materializeCompactionMessages(entry);
 	}
 	return [];
+}
+
+function materializeCompactionMessages(entry: CompactionEntry): AgentMessage[] {
+	const messages: AgentMessage[] = [createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp)];
+	for (const message of entry.retainedTail ?? []) messages.push(message.role === "assistant" ? withHistoricalContextUsage(message) : message);
+	return messages;
 }
 
 /**
@@ -493,7 +496,18 @@ export function buildSessionContext(
 ): SessionContext {
 	const path = buildSessionPath(entries, leafId, byId);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
-	const messages = buildContextEntries(entries, leafId, byId).flatMap(sessionEntryToContextMessages);
+	const contextEntries = buildContextEntries(entries, leafId, byId);
+	const first = contextEntries[0];
+	const legacyRetainedCount = first?.type === "compaction" && !first.retainedTail
+		? contextEntries.length - (path.length - path.indexOf(first)) : 0;
+	const messages: AgentMessage[] = [];
+	for (let index = 0; index < contextEntries.length; index++) {
+		const entry = contextEntries[index];
+		const contextMessages = sessionEntryToContextMessages(entry);
+		for (const message of contextMessages) {
+			messages.push(index > 0 && index <= legacyRetainedCount && message.role === "assistant" ? withHistoricalContextUsage(message) : message);
+		}
+	}
 	return { messages, thinkingLevel, model };
 }
 

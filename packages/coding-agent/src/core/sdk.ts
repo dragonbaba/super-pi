@@ -18,6 +18,7 @@ import { supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { reuseUnchangedToolImages } from "../utils/processed-image.ts";
 import { AgentSession } from "./agent-session.ts";
+import { normalizeUnconsumedCompaction } from "./compaction/normalize-checkpoint.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
@@ -27,7 +28,7 @@ import type {
 	SessionStartEvent,
 	ToolDefinition,
 } from "./extensions/index.ts";
-import { convertToLlm } from "./messages.ts";
+import { convertToLlm, convertToLlmWithUsageEpoch } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime, type ProviderRequestContext } from "./model-runtime.ts";
 import { initializePowerShellPersistence } from "./powershell-persistence.ts";
@@ -278,6 +279,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+	normalizeUnconsumedCompaction(sessionManager, settingsManager.getCompactionKeepRecentTokens());
 
 	if (!resourceLoader) {
 		resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
@@ -391,11 +393,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		conversionModel?: Model<any>,
 		requestedMaxTokens?: number,
 	): Message[] => {
+		session.assertAutomaticCompactionReady();
 		const requestPlanning = usesAdaptiveRequestBudget(conversionModel?.api);
 		const toolCalling = requestPlanning && conversionModel ? getModelCapabilities(conversionModel).toolCalling : true;
 		const output = requestPlanning && conversionModel ? resolveRequestOutputTokens(conversionModel, requestedMaxTokens ?? conversionModel.maxTokens) : conversionModel?.maxTokens;
 		const outputFloor = requestPlanning && conversionModel ? resolveRequestOutputFloor(conversionModel, output!, requestThinkingTokens(conversionModel, agent.state.thinkingLevel, agent.thinkingBudgets)) : undefined;
-		const converted = convertToLlm(messages);
+		const converted = convertToLlmWithUsageEpoch(messages, session.getRequestUsageEpoch(messages));
 		// Check setting dynamically so mid-session changes take effect
 		const blockImages = settingsManager.getBlockImages();
 		const imageBudget = !blockImages && conversionModel && supportsRequestImageBudgetApi(conversionModel.api) && conversionModel.input.includes("image");

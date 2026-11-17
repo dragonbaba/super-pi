@@ -390,19 +390,19 @@ test("length recovery keeps omission through an intervening threshold compaction
 	} finally { f.close(); }
 });
 
-test("length recovery advances its boundary before a threshold hook timeout", async t => {
+test("length recovery stops before another request after a threshold hook timeout", async t => {
 	const f = await fixture("retry-tool-threshold-hook");
 	try {
 		await f.session.prompt("Recover after a threshold hook timeout.");
 		t.diagnostic(`hook-timeout wires=${f.wires.length}, summaries=${f.summaries.length}, events=${f.sessionEvents.join("|")}`);
 		assert.ok(f.sessionEvents.some(event => event.startsWith("threshold:")));
-		assert.equal(f.wires.length, 3);
+		assert.equal(f.wires.length, 2, "post-save hook failure must stop the current request chain");
 		assert.equal(f.summaries.length, 2);
-		f.assertWire(f.wires[2], true);
+		assert.match(JSON.stringify(f.session.messages.at(-1)), /AUTO_COMPACTION_INCOMPLETE/);
 		f.assertDurable();
 		await f.reopen();
 		await f.session.prompt("Complete recovery after the hook timeout.");
-		f.assertWire(f.wires.at(-1), true);
+		f.assertWire(f.wires.at(-1), false);
 		f.assertUsage();
 		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
 		t.diagnostic("threshold hook failed after append; later continuation settled the newest checkpoint without replay");
@@ -469,13 +469,13 @@ for (const scenario of ["initial-hook-timeout", "threshold-hook-retry-error", "t
 		try {
 			await f.session.prompt("Recover with a post-save hook timeout.");
 			const initial = scenario === "initial-hook-timeout";
-			assert.equal(f.wires.length, initial ? 1 : 3);
+			assert.equal(f.wires.length, initial ? 1 : 2);
 			assert.equal(f.summaries.length, initial ? 1 : 2);
 			assert.ok(f.sessionEvents.some(event => event.includes('hook "session_compact"') && event.includes("timed out")));
 			assert.equal((f.session as any)._pendingLengthRecovery, undefined);
 			assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, initial ? 1 : 2,
 				"failed recovery must not append a successful omission checkpoint");
-			if (!initial) f.assertWire(f.wires[2], true);
+			if (!initial) assert.match(JSON.stringify(f.session.messages.at(-1)), /AUTO_COMPACTION_INCOMPLETE/);
 			f.assertDurable(); f.assertUsage();
 			assert.equal(f.inspections, initial ? 0 : 1);
 			await f.reopen();

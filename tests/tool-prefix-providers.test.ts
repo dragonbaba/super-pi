@@ -16,6 +16,24 @@ import { McpBridgeRuntime } from "../packages/mcp-bridge/src/bridge.js";
 import { alphaModelRuntime } from "./helpers/alpha-session.ts";
 import { historyContent, prefixCases, prefixTransport } from "./helpers/provider-prefix-transport.ts";
 import dynamicInstructions from "../packages/dynamic-instructions/src/index.ts";
+import { withCurrentContextUsage, withHistoricalContextUsage } from "../packages/ai/src/utils/estimate.ts";
+import { epochAssistant } from "./helpers/compaction-epoch-fixture.ts";
+
+for (const { label, model } of prefixCases) test(`${label}: usage epoch metadata leaves the serialized prefix and history identical`, async t => {
+  const transport = await prefixTransport(t, model);
+  const old = { ...epochAssistant(512307, 1), api: model.api, provider: model.provider, model: model.id };
+  const current = { ...old, timestamp: 2, usage: epochAssistant(1024).usage };
+  const messages = [{ role: "user" as const, content: "unchanged original task", timestamp: 0 }, old, current];
+  const raw = JSON.stringify(messages);
+  const first = await transport.stream(model, { systemPrompt: "Fixed instructions", messages }, {}).result();
+  assert.equal(first.stopReason, "stop", first.errorMessage);
+  const second = await transport.stream(model, { systemPrompt: "Fixed instructions", messages: [messages[0], withHistoricalContextUsage(old), withCurrentContextUsage(current)] }, {}).result();
+  assert.equal(second.stopReason, "stop", second.errorMessage);
+  assert.equal(transport.sent.length, 2);
+  assert.equal(transport.sent[1]!.prefix, transport.sent[0]!.prefix);
+  assert.deepEqual(transport.sent[1]!.history, transport.sent[0]!.history);
+  assert.equal(JSON.stringify(messages), raw);
+});
 
 for (const { label, model } of prefixCases) test(`${label}: tool catalog transitions preserve actual wire prefix and prior history`, async t => {
   const transport = await prefixTransport(t, model);
