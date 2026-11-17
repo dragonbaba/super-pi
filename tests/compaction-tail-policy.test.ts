@@ -14,6 +14,7 @@ import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
+import { serializeConversation } from "../packages/coding-agent/src/core/compaction/utils.ts";
 
 function pair(): [AssistantMessage, ToolResultMessage] {
 	const call = epochAssistant(512307, 1);
@@ -24,22 +25,49 @@ function pair(): [AssistantMessage, ToolResultMessage] {
 
 test("completed failed oversized source folds at compaction without losing outcomes or changing raw records", () => {
 	const messages = pair(), original = JSON.stringify(messages), reduced = condenseFailedCodemodeAttempts(messages, 20000);
-	assert.equal(reduced.length, 1); assert.equal(reduced[0].role, "custom");
+	assert.equal(reduced.length, 2); assert.equal(reduced[0].role, "assistant");
 	assert.match(JSON.stringify(convertToLlm(reduced)), /write completed once/);
 	assert.doesNotMatch(JSON.stringify(reduced), /x{1000}/);
-	assert.equal((reduced[0] as any).details.outcome, (messages[1] as any).details);
+	assert.equal(reduced[1], messages[1]);
 	assert.equal(JSON.stringify(messages), original);
 	assert.equal(condenseFailedCodemodeAttempts(reduced, 20000), reduced);
-	assert.equal(condenseFailedCodemodeAttempts(messages, 0).length, 1, "zero retention still removes completed failed source at the boundary");
+	const zero = condenseFailedCodemodeAttempts(messages, 0);
+	assert.doesNotMatch(JSON.stringify(zero), /x{1000}/, "zero retention still removes oversized failed source at the boundary");
+	assert.equal(condenseFailedCodemodeAttempts(zero, 0), zero, "even zero-retention notices must be idempotent");
+});
+
+test("failed source condensation preserves adjacent assistant explanation and signed thinking", () => {
+	const messages = pair(), assistant = messages[0] as AssistantMessage;
+	const explanation = { type: "text" as const, text: "Keep this independent decision and its rationale." };
+	const thinking = { type: "thinking" as const, thinking: "Preserve this reasoning.", thinkingSignature: "opaque-thinking-signature" };
+	assistant.content.unshift(explanation, thinking);
+	const raw = JSON.stringify(messages), reduced = condenseFailedCodemodeAttempts(messages, 20000);
+	assert.equal(reduced[0].role, "assistant");
+	assert.equal((reduced[0] as AssistantMessage).content[0], explanation);
+	assert.equal((reduced[0] as AssistantMessage).content[1], thinking);
+	assert.doesNotMatch(JSON.stringify(reduced), /x{1000}/);
+	assert.equal(JSON.stringify(messages), raw);
+});
+
+test("condensed failed outcomes keep the existing summary bound and complete checkpoint result", () => {
+	const messages = pair();
+	(messages[0] as AssistantMessage).content = [{ type: "toolCall", id: "failed-script", name: "codemode", arguments: { code: "x".repeat(513) } }];
+	(messages[1] as ToolResultMessage).content = [{ type: "text", text: "z".repeat(30000) }];
+	const before = serializeConversation(convertToLlm(messages)), reduced = condenseFailedCodemodeAttempts(messages, 128);
+	const after = serializeConversation(convertToLlm(reduced));
+	assert.ok(after.length <= before.length, `summary grew: ${before.length} -> ${after.length}`);
+	assert.ok(after.length < 3000);
+	assert.equal(reduced[1], messages[1], "full original outcomes remain in the checkpoint");
 });
 
 test("pending, successful, mismatched and mixed tool batches keep their complete source and pairing", () => {
-	for (const mode of ["pending", "success", "mismatch", "mixed", "within-budget"] as const) {
+	for (const mode of ["pending", "success", "mismatch", "mixed", "within-budget", "signed-call"] as const) {
 		const messages = pair();
 		if (mode === "pending") messages.pop();
 		if (mode === "success") (messages[1] as any).isError = false;
 		if (mode === "mismatch") (messages[1] as any).toolCallId = "other";
 		if (mode === "mixed") (messages[0] as any).content.push({ type: "toolCall", id: "other", name: "ask_user", arguments: {} });
+		if (mode === "signed-call") (messages[0] as any).content[0].thoughtSignature = "opaque-call-signature";
 		assert.equal(condenseFailedCodemodeAttempts(messages, mode === "within-budget" ? 100000 : 20000), messages);
 	}
 });

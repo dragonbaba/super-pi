@@ -6171,7 +6171,12 @@ export class AgentSession {
 			entry = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined;
 		}
 		if (!checkpoint) return undefined;
-		return current && messages.includes(current) ? current : null;
+		if (!current) return null;
+		const currentIndex = messages.indexOf(current);
+		const canonical = this.agent.state.messages;
+		if (currentIndex < 0 || canonical.indexOf(current) !== currentIndex) return null;
+		for (let index = 0; index < currentIndex; index++) if (messages[index] !== canonical[index]) return null;
+		return current;
 	}
 
 	/**

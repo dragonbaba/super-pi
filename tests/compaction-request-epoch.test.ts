@@ -52,3 +52,16 @@ test("later copied or foreign usage cannot override the exact committed response
 	assert.ok(estimate.tokens < 2000);
 	assert.equal(JSON.stringify(projected), JSON.stringify(convertToLlm(raw)));
 });
+
+test("verified current usage survives historical future clocks but not a replaced canonical prefix", async t => {
+	const f = await compactionEpochFixture(); t.after(() => f.release());
+	const old = epochAssistant(512307, Date.now() + 3600000), kept = f.sessionManager.appendMessage(old);
+	f.sessionManager.appendCompaction("clock-skew checkpoint", kept, 512307, {}, true, undefined, [old]);
+	const current = epochAssistant(400000, 1000); f.sessionManager.appendMessage(current);
+	f.session.agent.state.messages = f.sessionManager.buildSessionContext().messages;
+	const raw = f.session.messages, projected = convertToLlmWithUsageEpoch(raw, f.session.getRequestUsageEpoch(raw));
+	assert.equal(estimateContextTokens({ messages: projected }).usageTokens, 400000);
+	const replaced = [{ role: "user" as const, content: "A fresh inserted instruction.", timestamp: Date.now() + 7200000 }, ...raw];
+	assert.equal(f.session.getRequestUsageEpoch(replaced), null);
+	assert.equal(estimateContextTokens({ messages: convertToLlmWithUsageEpoch(replaced, f.session.getRequestUsageEpoch(replaced)) }).lastUsageIndex, null);
+});

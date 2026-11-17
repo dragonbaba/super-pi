@@ -107,7 +107,9 @@ function getLastAssistantUsageIndex(messages: readonly Message[], toolCalling = 
 			}
 			// A newer prefix message was inserted after this response (for example, a
 			// compaction summary), so its usage cannot describe the current prefix.
-			const usageAppliesToPrefix = assistant.timestamp >= latestPrefixTimestamp;
+			// An explicit epoch owner already verified the canonical prefix by identity;
+			// historical clock skew cannot invalidate that committed response.
+			const usageAppliesToPrefix = currentEpoch || assistant.timestamp >= latestPrefixTimestamp;
 			if (
 				usageAppliesToPrefix &&
 				!(assistant as EpochMessage)[HISTORICAL_CONTEXT_USAGE] &&
