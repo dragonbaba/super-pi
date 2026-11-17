@@ -1,6 +1,7 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
+import { withLocalCompactionMaintenance } from "./compaction/normalize-checkpoint.ts";
 import { RequestImageBudget, supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { isRequestBodyTooLarge } from "@super-pi/ai";
 import { COMPACTION_CHARS_PER_TOKEN, getAutoCompactionThreshold } from "@super-pi/agent-core";
@@ -3128,7 +3129,7 @@ export class AgentSession {
 				: checkpoint.details;
 			this.sessionManager.appendCompaction(
 				checkpoint.summary, checkpoint.firstKeptEntryId, checkpoint.tokensBefore,
-				details, checkpoint.fromHook, undefined, retainedTail,
+				withLocalCompactionMaintenance(details, "length-recovery-settlement", checkpoint.id), checkpoint.fromHook, undefined, retainedTail,
 			);
 		}
 		// Failure restores the original attempt too, keeping live and disk contexts equal.

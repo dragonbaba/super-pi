@@ -5,6 +5,7 @@ import { SessionManager } from "../packages/coding-agent/src/core/session-manage
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 import { alphaSession } from "./helpers/alpha-session.ts";
 import { epochAssistant } from "./helpers/compaction-epoch-fixture.ts";
+import { isLocalCompactionMaintenance } from "../packages/coding-agent/src/core/compaction/normalize-checkpoint.ts";
 
 for (const explicitTail of [false, true]) test(`resume restores archived branch and summaries without duplicate tail, explicit=${explicitTail}`, async t => {
 	const owned = createOwnedTaskFixture("resume-compacted-history-");
@@ -67,4 +68,30 @@ test("SDK maintenance on terminal resume keeps the original transcript visible a
 	assert.match(text, /Session compacted 1 time/);
 	assert.equal(JSON.stringify(f.session.messages), before);
 	assert.equal(JSON.stringify(restored.getEntries()), journal);
+});
+
+test("successful length-recovery settlement reuses the visible summary after disk restore", async t => {
+	const owned = createOwnedTaskFixture("resume-length-settlement-");
+	const manager = SessionManager.create(owned.root, join(owned.root, "sessions"));
+	manager.appendMessage({ role: "user", content: "LENGTH_RECOVERY_ORIGINAL_VISIBLE", timestamp: 1 });
+	const truncated = epochAssistant(100, 2); truncated.stopReason = "length";
+	const abandoned = manager.appendMessage(truncated);
+	const checkpointId = manager.appendCompaction("LENGTH_SUMMARY_VISIBLE", abandoned, 100, {}, true, undefined, [truncated]);
+	const f = await alphaSession({ fixtureRoot: owned.root, sessionManager: SessionManager.open(manager.getSessionFile()!), g2: false,
+		settings: { compaction: { enabled: false }, showCacheMissNotices: false } });
+	t.after(async () => { try { await f.release(); } finally { owned.cleanup(); } });
+	const summary = f.session.messages[0]; assert.equal(summary.role, "compactionSummary");
+	const response = epochAssistant(200, Date.now()); response.content = [{ type: "text", text: "LENGTH_RECOVERY_COMPLETED_VISIBLE" }];
+	f.sessionManager.appendMessage(response); f.session.agent.state.messages = [summary, response];
+	const internal = f.session as any;
+	internal._pendingLengthRecovery = { sessionId: f.session.sessionId, compactionId: checkpointId, abandonedEntryId: abandoned };
+	internal._settleLengthRecovery(true);
+	const reopened = SessionManager.open(manager.getSessionFile()!);
+	assert.equal(reopened.getEntries().filter(isLocalCompactionMaintenance).length, 1);
+	f.internal.toolOutputExpanded = true; f.mode.renderInitialMessages();
+	const text = f.internal.chatContainer.render(100).join("\n");
+	assert.equal(text.split("LENGTH_SUMMARY_VISIBLE").length - 1, 1);
+	assert.match(text, /LENGTH_RECOVERY_ORIGINAL_VISIBLE/);
+	assert.match(text, /LENGTH_RECOVERY_COMPLETED_VISIBLE/);
+	assert.match(text, /Session compacted 1 time/);
 });

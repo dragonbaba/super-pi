@@ -12,6 +12,7 @@ import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resourc
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
 import { SettingsManager } from "../packages/coding-agent/src/core/settings-manager.ts";
 import { getUsageCostBreakdown } from "../packages/coding-agent/src/core/usage-totals.ts";
+import { isLocalCompactionMaintenance } from "../packages/coding-agent/src/core/compaction/normalize-checkpoint.ts";
 
 const SENTINEL = "ABANDONED_LENGTH_SENTINEL";
 function stopAfterLength(turn: { message: AssistantMessage }): boolean { return turn.message.stopReason === "length"; }
@@ -277,6 +278,7 @@ test("length → compaction → retry keeps omission across next wire, disk reop
 		assert.equal(f.wires.length, 2); assert.equal(f.summaries.length, 1);
 		f.assertUsage();
 		assert.equal(f.manager.getEntries().filter(e => e.type === "compaction").length, 2);
+		assert.equal(f.manager.getEntries().filter(isLocalCompactionMaintenance).length, 1, "settling recovery reuses the existing summary");
 		assert.equal((f.session as any)._pendingLengthRecovery, undefined);
 		await t.test("A: immediate recovery wire", () => f.assertWire(f.wires[1], true));
 		const recoveredBranch = f.manager.getLeafId()!;
@@ -284,6 +286,7 @@ test("length → compaction → retry keeps omission across next wire, disk reop
 		await f.session.prompt("Next ordinary turn.");
 		await t.test("B: next ordinary wire", () => f.assertWire(f.wires[2], true));
 		await f.reopen();
+		assert.equal(f.manager.getEntries().filter(isLocalCompactionMaintenance).length, 1, "maintenance identity survives real disk reopen");
 		await f.session.prompt("Disk resumed turn.");
 		await t.test("C: fresh JSONL manager wire", () => f.assertWire(f.wires[3], true));
 		await f.reopen(recoveredBranch);
