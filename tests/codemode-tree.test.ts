@@ -303,6 +303,22 @@ test("collapsed preflight failure shows one concise error and no partial-effects
 	assert.equal(JSON.stringify(final), canonical);
 });
 
+test("historical child refusal is not duplicated by unrelated successful-output truncation advice", () => {
+	const tree = new CodemodeTreeComponent();
+	const error = "long-native-call-id:nested:2:0: [POLICY_BLOCKED] Protected metadata was retained.\nPreflight failed; no item executed.";
+	const suffix = "; successful bash output is truncated. Its content is display text, not a complete document. Inspect the existing Output path when available. Do not repeat completed commands.";
+	const final = parent([{ ...fact("p:1", "bash", "successful tail"), outputTruncated: true, executionStatus: "exited", exitCode: 0 },
+		fact("p:2", "file_batch", error, true)], ["[CODEMODE_SCRIPT] [ref:2] " + error + suffix], true);
+	const original = JSON.stringify(final);
+	for (const expanded of [false, true]) {
+		tree.updateParent("historical script", final, false, true, expanded);
+		const rendered = plain(tree);
+		assert.equal(rendered.split("Protected metadata was retained").length - 1, 1);
+		assert.doesNotMatch(rendered, /Script ×|successful bash output is truncated/);
+	}
+	assert.equal(JSON.stringify(final), original);
+});
+
 test("independent script failures stay visible while partial-effects guidance requires expansion", () => {
 	const tree = new CodemodeTreeComponent();
 	const final = parent([{ ...fact("p:1", "bash", "done"), executionStatus: "exited", exitCode: 0 }],

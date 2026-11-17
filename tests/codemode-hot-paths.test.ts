@@ -4,6 +4,19 @@ import test from "node:test";
 import ts from "typescript";
 import { PRELUDE_SOURCE } from "../packages/codemode/src/runtime/prelude-source.ts";
 
+test("shared child diagnostics create no callbacks, regexes, promises or full JSON copies", () => {
+  const source = readFileSync("packages/coding-agent/src/core/codemode-failure.ts", "utf8");
+  const ast = ts.createSourceFile("codemode-failure.ts", source, ts.ScriptTarget.Latest, true);
+  function audit(node: ts.Node): void {
+    assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isAwaitExpression(node));
+    assert.notEqual(node.kind, ts.SyntaxKind.RegularExpressionLiteral);
+    if (ts.isNewExpression(node)) assert.doesNotMatch(node.expression.getText(ast), /^(Promise|AbortController|Map|Set)$/);
+    if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(ast), /\.(?:then|catch|finally|map|filter|reduce|stringify)$/);
+    ts.forEachChild(node, audit);
+  }
+  audit(ast);
+});
+
 test("raw capture hashes existing write buffers without adding per-chunk callback or Promise factories", () => {
 	const source = readFileSync("packages/coding-agent/src/core/tools/output-accumulator.ts", "utf8");
 	const ast = ts.createSourceFile("output-accumulator.ts", source, ts.ScriptTarget.Latest, true);

@@ -14,7 +14,7 @@ import {
 import { resolveToolPath, sha256 } from "./file-path.ts";
 import { mutationRequestHash } from "./file-invocation.ts";
 import { FileAuthorityError, fileInvocationMustStop } from "./file-batch-outcome.ts";
-import { captureTreeIdentity, assertFilePathAfterFailure } from "./file-tree-core.mjs";
+import { captureTreeIdentity, assertFilePathAfterFailure, type TreeProtectionSummary } from "./file-tree-core.mjs";
 import { assessProtectedMutationPath } from "./protected-path-policy.ts";
 import {
   prepareFileCreation, executeFileCreation, canonicalCreationDirectories, directoryKey, verifyCreationAncestor,
@@ -57,7 +57,7 @@ export interface PreparedFileItem {
   preview?: ChangePreview;
   artifact?: { bytes: Uint8Array; sha256: string; commit?: FileCommitPlan };
 }
-export interface FileReceipt {
+export interface FileReceipt extends Partial<TreeProtectionSummary> {
   mutationReceiptVersion: 2 | 3;
   operation: FileOperation;
   target: string;
@@ -237,6 +237,9 @@ class FileExecution {
     // Persist bounded recovery facts once; preview/diff bodies belong to the tool result.
     try { this.record("result", { mutationReceiptVersion: 2, status: receipt.status, stateChanged: receipt.stateChanged,
       requiresVerification: receipt.requiresVerification, commit: receipt.commit, sha256: receipt.sha256,
+      files: receipt.files, directories: receipt.directories, bytes: receipt.bytes, coverageComplete: receipt.coverageComplete,
+      skippedProtected: receipt.skippedProtected, skippedProtectedPaths: receipt.skippedProtectedPaths,
+      skippedProtectedPathsOmitted: receipt.skippedProtectedPathsOmitted, retainedDirectories: receipt.retainedDirectories, sourceRetained: receipt.sourceRetained,
       sourceIdentity: receipt.sourceIdentity, createdDirectories: receipt.createdDirectories
         ?? (receipt.creation as { createdDirectories?: unknown } | undefined)?.createdDirectories,
       reason: typeof receipt.cause === "string" ? receipt.cause.slice(0, 800) : undefined }); }
@@ -299,7 +302,7 @@ export class FileService {
       approval: tree.protectedPaths[0], identity: tree.source, tree, creation: tree.creation,
       preview: { kind: operation === "delete" ? "Deleted" : operation === "move" ? "Moved" : "Copied", bytes: tree.tree.bytes,
         plannedDirectories: tree.creation?.directories,
-        risk: `${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.skippedLinks} links skipped; source trees and destinations are revalidated before effects.` } };
+        risk: `${tree.tree.files} files, ${tree.tree.directories} directories, ${tree.tree.skippedLinks} links skipped; ${tree.tree.protectedEntries?.length ?? 0} protected metadata paths retained, including required source directories for move/delete; source trees and destinations are revalidated before effects.` } };
     signal?.throwIfAborted(); this.prepared.add(item); this.assertPrepared(item); return item;
   }
   /** Internal byte publication. The caller transfers one private bounded buffer; text tool schemas remain unchanged. */

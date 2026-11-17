@@ -99,6 +99,7 @@ function current(authority, signal) { signal?.throwIfAborted(); authority?.(); }
 /** Iterative immutable preparation; parent indexes let callers serialize an inventory without repeated path strings. */
 export async function prepareTree(source, operation, recursive = false, authority, signal) {
   const entries = [Object.freeze({ identity: source, parent: -1 })];
+  let protectedEntries;
   let files = source.directory ? 0 : 1, directories = source.directory ? 1 : 0, skippedLinks = 0, bytes = source.directory || source.symbolicLink ? 0 : Number(source.size);
   for (let index = 0; index < entries.length; index++) {
     current(authority, signal);
@@ -110,7 +111,12 @@ export async function prepareTree(source, operation, recursive = false, authorit
         current(authority, signal);
         const child = await directory.read();
         if (!child) break;
-        if (protectedTreeName(child.name)) throw new Error('[POLICY_BLOCKED] Source tree contains protected .git/.sp metadata. No item executed.');
+        if (protectedTreeName(child.name)) {
+          // Record the excluded name against its approved ordinary parent. Never
+          // resolve, open or traverse the protected subtree (including gitdir files).
+          (protectedEntries ??= []).push(Object.freeze({ parent: index, name: child.name }));
+          continue;
+        }
         if (operation === 'delete' && !recursive) throw new Error('[directory_not_empty] Recursive deletion requires recursive: true.');
         const path = resolve(entry.identity.path, child.name), observed = await captureTreeIdentity(path);
         if (observed.symbolicLink) {
@@ -124,7 +130,33 @@ export async function prepareTree(source, operation, recursive = false, authorit
     } finally { await directory.close(); }
     if (!sameIdentity(entry.identity, await capturePathIdentity(entry.identity.path))) throw new Error('[STALE_STATE] Directory changed during preparation.');
   }
-  return Object.freeze({ entries: Object.freeze(entries), files, directories, skippedLinks, bytes });
+  return Object.freeze({ entries: Object.freeze(entries), files, directories, skippedLinks, bytes,
+    ...(protectedEntries ? { protectedEntries: Object.freeze(protectedEntries) } : undefined) });
+}
+
+/** Bounded receipt metadata only; no protected contents or complete inventory copy. */
+export function summarizeTreeProtection(tree) {
+  if (!tree.protectedEntries?.length) return undefined;
+  const paths = []; let remaining = FILE_RESULT_REASON_BYTES;
+  for (const entry of tree.protectedEntries) {
+    if (remaining <= 0) break;
+    const path = resolve(tree.entries[entry.parent].identity.path, entry.name), bytes = Buffer.byteLength(path);
+    if (bytes > remaining) break;
+    paths.push(path); remaining -= bytes;
+  }
+  return { skippedProtected: tree.protectedEntries.length, skippedProtectedPaths: paths,
+    skippedProtectedPathsOmitted: tree.protectedEntries.length - paths.length };
+}
+
+/** One execution/validation owner; callers clear and release the returned set. */
+export function protectedDirectoryIndexes(tree) {
+  if (!tree.protectedEntries?.length) return undefined;
+  const retained = new Set();
+  for (const entry of tree.protectedEntries) {
+    let index = entry.parent;
+    while (index >= 0 && !retained.has(index)) { retained.add(index); index = tree.entries[index].parent; }
+  }
+  return retained;
 }
 
 function sameOpened(info, expected) {
@@ -252,6 +284,7 @@ class TreeExecution {
     this.created = new Map(); this.groups = new Map(); this.changed = false; this.attempted = false; this.effectPending = false;
     this.files = 0; this.bytes = 0; this.directories = 0; this.sha256 = undefined;
     this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
+    this.retainedDirectories = operation === 'copy' ? undefined : protectedDirectoryIndexes(tree);
     if (operation !== 'copy') {
       const reverse = operation === 'delete';
       for (let index = reverse ? tree.entries.length - 1 : 0; reverse ? index >= 0 : index < tree.entries.length; index += reverse ? -1 : 1) {
@@ -391,7 +424,9 @@ class TreeExecution {
         // Bottom-up nonrecursive removal: runtime additions and links are never followed.
         for (let index = this.tree.entries.length - 1; index >= 0; index--) {
           const entry = this.tree.entries[index];
-          await this.checkSource(entry, !entry.identity.directory); this.current(); this.attempted = true;
+          await this.checkSource(entry, !entry.identity.directory); this.current();
+          if (this.retainedDirectories?.has(index)) continue;
+          this.attempted = true;
           this.effectPending = true;
           if (entry.identity.directory) { await rmdir(entry.identity.path); this.directories++; }
           else { await unlink(entry.identity.path); this.files++; if (!entry.identity.symbolicLink) this.bytes += Number(entry.identity.size); }
@@ -427,7 +462,9 @@ class TreeExecution {
           for (let index = this.tree.entries.length - 1; index >= 0; index--) {
             const entry = this.tree.entries[index];
             if (!entry.identity.directory) continue;
-            await this.checkSource(entry, false); this.current(); this.attempted = true; this.effectPending = true; await rmdir(entry.identity.path); this.effectPending = false;
+            await this.checkSource(entry, false); this.current();
+            if (this.retainedDirectories?.has(index)) continue;
+            this.attempted = true; this.effectPending = true; await rmdir(entry.identity.path); this.effectPending = false;
           }
         }
         if (this.operation === 'copy') {
@@ -456,6 +493,7 @@ class TreeExecution {
       return receipt;
     } finally {
       this.created.clear(); this.groups.clear(); this.authority = undefined; this.signal = undefined; this.tree = undefined;
+      this.retainedDirectories?.clear(); this.retainedDirectories = undefined;
       this.sourceParent = undefined; this.destinationParent = undefined;
       this.checkedSourceParent = undefined; this.checkedParent = undefined;
       this.checkedSourceIndex = -1; this.checkedDestinationIndex = -1;
@@ -464,7 +502,9 @@ class TreeExecution {
   receipt(status, reason) {
     return { status, stateChanged: status === 'state_unknown' ? 'unknown' : this.changed, requiresVerification: status === 'partial' || status === 'state_unknown' || undefined,
       files: this.files, bytes: this.bytes, directories: this.directories, skippedLinks: this.tree.skippedLinks,
-      coverageComplete: this.tree.skippedLinks === 0 && status === 'succeeded', sha256: status === 'succeeded' && !this.tree.entries[0].identity.directory ? this.sha256 : undefined, reason };
+      ...summarizeTreeProtection(this.tree),
+      ...(this.retainedDirectories ? { retainedDirectories: this.retainedDirectories.size, sourceRetained: this.retainedDirectories.has(0) } : undefined),
+      coverageComplete: this.tree.skippedLinks === 0 && !this.tree.protectedEntries?.length && status === 'succeeded', sha256: status === 'succeeded' && !this.tree.entries[0].identity.directory ? this.sha256 : undefined, reason };
   }
 }
 export async function executeTree(tree, operation, sourceParent, destination, destinationParent, authority, signal, moveByCopy = false) {

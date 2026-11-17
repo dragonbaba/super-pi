@@ -2,7 +2,7 @@
 // manifest reader; source/destination filesystem observations run in the worker.
 import { lstat } from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
-import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason, assertFilePathAfterFailure } from './file-tree-core.mjs';
+import { capturePathIdentity, captureTreeIdentity, sameIdentity, prepareTree, revalidateTree, hashIdentity, boundedReason, assertFilePathAfterFailure, protectedTreeName } from './file-tree-core.mjs';
 import { FileAuthorityError, fileInvocationMustStop } from './file-mutation-failure.mjs';
 import { prepareFileCreation, directoryKey } from './file-creation-core.mjs';
 import { ManifestArtifactWriter, visitManifestArtifact, validateManifestArtifact } from './file-manifest-artifact.mjs';
@@ -11,11 +11,12 @@ import { workspaceFilePath, validFileIdentity } from './file-workspace-path.mjs'
 const SHA256 = /^[a-f0-9]{64}$/;
 const HEADER_FIELDS = new Set(['kind', 'ownerId', 'generation', 'callId', 'requestHash', 'index', 'itemCount', 'operation', 'inputHash', 'workspaceIndex', 'destinationWorkspaceIndex',
   'target', 'destination', 'source', 'sourceParent', 'destinationParent', 'destinationIdentity', 'recursive', 'overwrite', 'mode', 'moveStrategy', 'tree', 'text', 'creation']);
-const TREE_FIELDS = new Set(['entries', 'files', 'directories', 'skippedLinks', 'bytes']);
+const TREE_FIELDS = new Set(['entries', 'files', 'directories', 'skippedLinks', 'bytes', 'protectedEntries']);
 const TEXT_FIELDS = new Set(['exists', 'target', 'identity', 'nextSha256', 'bytes', 'previousSha256', 'parent']);
 const CREATION_FIELDS = new Set(['path', 'canonicalTarget', 'ancestor', 'directoryCount']);
 const TREE_ROW_FIELDS = new Set(['kind', 'index', 'parent', 'identity']);
 const DIRECTORY_ROW_FIELDS = new Set(['kind', 'index', 'path']);
+const PROTECTED_ROW_FIELDS = new Set(['kind', 'parent', 'name']);
 function need(value, message) { if (!value) throw new Error('[FILE_WORKER_PLAN] ' + message); }
 function creationWorkspaceIndex(item) { return item.operation === 'copy' || item.operation === 'move' ? item.destinationWorkspaceIndex : item.workspaceIndex; }
 function fields(value, allowed) {
@@ -41,12 +42,14 @@ export class FileWorkerManifest {
   constructor(request, item, index) {
     this.request = request; this.item = item; this.index = index; this.header = undefined;
     this.entries = []; this.directories = []; this.files = 0; this.directoryCount = 0; this.bytes = 0; this.linkFiles = 0;
+    this.protectedEntries = undefined; this.protectedParents = undefined;
   }
   onManifestRecord(record, row) {
     if (row === 0) { this.acceptHeader(record); return; }
     need(this.header, 'Manifest header is missing');
     if (record?.kind === 'tree') this.acceptTree(record);
     else if (record?.kind === 'directory') this.acceptDirectory(record);
+    else if (record?.kind === 'protected') this.acceptProtected(record);
     else throw new Error('[FILE_WORKER_PLAN] Unexpected inventory row');
   }
   acceptHeader(header) {
@@ -87,7 +90,7 @@ export class FileWorkerManifest {
     if (header.tree) {
       fields(header.tree, TREE_FIELDS);
       need(header.source && count(header.tree.entries) && header.tree.entries > 0 && count(header.tree.files) && count(header.tree.directories)
-        && count(header.tree.bytes) && count(header.tree.skippedLinks), 'Invalid tree counters');
+        && count(header.tree.bytes) && count(header.tree.skippedLinks) && count(header.tree.protectedEntries ?? 0), 'Invalid tree counters');
     }
     if (header.text) {
       fields(header.text, TEXT_FIELDS);
@@ -138,10 +141,21 @@ export class FileWorkerManifest {
     const previous = this.directories.length ? this.directories[this.directories.length - 1] : creation.ancestor.path;
     need(equalPath(dirname(record.path), previous), 'Missing-parent chain changed'); this.directories.push(record.path);
   }
+  acceptProtected(record) {
+    fields(record, PROTECTED_ROW_FIELDS);
+    need(this.header.tree && Number.isSafeInteger(record.parent) && record.parent >= 0 && record.parent < this.entries.length
+      && this.entries[record.parent].identity.directory && typeof record.name === 'string' && protectedTreeName(record.name), 'Invalid protected exclusion');
+    need((this.protectedEntries?.length ?? 0) < (this.header.tree.protectedEntries ?? 0), 'Unexpected protected exclusion');
+    const key = record.parent + ':' + record.name;
+    this.protectedParents ??= new Set();
+    need(!this.protectedParents.has(key), 'Duplicate protected exclusion'); this.protectedParents.add(key);
+    (this.protectedEntries ??= []).push(Object.freeze({ parent: record.parent, name: record.name }));
+  }
   finish() {
     const header = this.header;
     need(header && (header.tree ? this.entries.length === header.tree.entries && this.files === header.tree.files
-      && this.directoryCount === header.tree.directories && this.bytes === header.tree.bytes : this.entries.length === 0), 'Tree inventory is incomplete');
+      && this.directoryCount === header.tree.directories && this.bytes === header.tree.bytes
+      && (this.protectedEntries?.length ?? 0) === (header.tree.protectedEntries ?? 0) : this.entries.length === 0), 'Tree inventory is incomplete');
     if (header.creation) need(this.directories.length === header.creation.directoryCount
       && equalPath(dirname(header.creation.path), this.directories.length ? this.directories[this.directories.length - 1] : header.creation.ancestor.path), 'Creation inventory is incomplete');
     else need(this.directories.length === 0, 'Unexpected creation inventory');
@@ -154,11 +168,12 @@ export class FileWorkerManifest {
     if (header.creation) { Object.freeze(header.creation.ancestor); Object.freeze(header.creation); }
     Object.freeze(header);
     return { header, tree: header.tree ? Object.freeze({ entries: Object.freeze(this.entries), files: this.files, directories: this.directoryCount,
-      bytes: this.bytes, skippedLinks: header.tree.skippedLinks, unlinkFiles: this.files + this.linkFiles }) : undefined,
+      bytes: this.bytes, skippedLinks: header.tree.skippedLinks, unlinkFiles: this.files + this.linkFiles,
+      ...(this.protectedEntries ? { protectedEntries: Object.freeze(this.protectedEntries) } : undefined) }) : undefined,
       creation: header.creation ? Object.freeze({ path: header.creation.path, canonicalTarget: header.creation.canonicalTarget,
         ancestor: Object.freeze(header.creation.ancestor), directories: Object.freeze(this.directories) }) : undefined };
   }
-  dispose() { this.request = undefined; this.item = undefined; this.header = undefined; this.entries = []; this.directories = []; }
+  dispose() { this.request = undefined; this.item = undefined; this.header = undefined; this.entries = []; this.directories = []; this.protectedEntries = undefined; this.protectedParents?.clear(); this.protectedParents = undefined; }
 }
 
 export async function readFileWorkerManifest(request, item, index, descriptor) {
@@ -192,7 +207,8 @@ export async function prepareFileWorkerManifest(request, item, index, owned, tex
     header.target = header.source.canonical; header.sourceParent = await capturePathIdentity(dirname(target));
     workspaceFilePath(request.workspaces, rootIndex, header.source.canonical, item.operation === 'copy');
     tree = await prepareTree(header.source, item.operation, item.recursive);
-    header.tree = { entries: tree.entries.length, files: tree.files, directories: tree.directories, bytes: tree.bytes, skippedLinks: tree.skippedLinks };
+    header.tree = { entries: tree.entries.length, files: tree.files, directories: tree.directories, bytes: tree.bytes, skippedLinks: tree.skippedLinks,
+      ...(tree.protectedEntries ? { protectedEntries: tree.protectedEntries.length } : undefined) };
     if (item.operation !== 'delete') {
       const destination = workspaceFilePath(request.workspaces, item.destinationWorkspaceIndex, item.destination);
       try { header.destinationParent = await capturePathIdentity(dirname(destination)); }
@@ -218,6 +234,7 @@ export async function prepareFileWorkerManifest(request, item, index, owned, tex
     writer = await ManifestArtifactWriter.attach(request.exchange, owned);
     writer.append(header);
     if (tree) for (let entry = 0; entry < tree.entries.length; entry++) writer.append({ kind: 'tree', index: entry, parent: tree.entries[entry].parent, identity: tree.entries[entry].identity });
+    if (tree?.protectedEntries) for (const entry of tree.protectedEntries) writer.append({ kind: 'protected', parent: entry.parent, name: entry.name });
     if (creation) for (let entry = 0; entry < creation.directories.length; entry++) writer.append({ kind: 'directory', index: entry, path: creation.directories[entry] });
     const manifest = await writer.finish();
     return { index, manifest };

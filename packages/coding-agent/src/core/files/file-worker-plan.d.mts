@@ -18,7 +18,7 @@ export interface FileWorkerHeader {
   target: string; destination?: string; source?: TreeIdentity; sourceParent?: PathIdentity; destinationParent?: PathIdentity; destinationIdentity?: PathIdentity;
   recursive?: boolean; overwrite?: boolean; mode?: "create" | "overwrite";
   moveStrategy?: "copy_unlink_verified";
-  tree?: { entries: number; files: number; directories: number; skippedLinks: number; bytes: number };
+  tree?: { entries: number; files: number; directories: number; skippedLinks: number; bytes: number; protectedEntries?: number };
   text?: FileWorkerTextPreparation;
   creation?: { path: string; canonicalTarget: string; ancestor: PathIdentity; directoryCount: number };
 }

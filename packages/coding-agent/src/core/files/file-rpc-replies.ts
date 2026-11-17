@@ -8,13 +8,15 @@ import type { FileReceipt } from "./file-service.ts";
 import { FILE_RESULT_REASON_BYTES, FILE_RESULT_FAILURE_SAMPLES } from "./file-operation-limits.mjs";
 import { SHA256_PATTERN } from "./regex.ts";
 import { directoryKey } from "./file-creation-core.mjs";
+import { summarizeTreeProtection, protectedDirectoryIndexes } from "./file-tree-core.mjs";
 
 const REPLY_FIELDS = new Set(["version", "rpc", "id", "callId", "requestHash", "generation", "itemCount", "start", "phase", "wireHash", "ok", "items", "error", "noEffects"]);
 const PREPARED_FIELDS = new Set(["index", "manifest"]), VALIDATED_FIELDS = new Set(["index", "validated"]), CONTENT_FIELDS = new Set(["sourceSha256", "previousSha256"]);
 const ITEM_FAILURE_FIELDS = new Set(["index", "error", "noEffects"]);
 const EXECUTED_FIELDS = new Set(["index", "readyHash", "intentId", "receipt"]);
 const RECEIPT_FIELDS = new Set(["mutationReceiptVersion", "operation", "target", "destination", "status", "stateChanged", "ok", "requiresVerification", "reason", "stopInvocation",
-  "bytes", "files", "directories", "skippedLinks", "coverageComplete", "sha256", "previousSha256", "snapshot", "created", "category", "commit", "creation", "createdParents"]);
+  "bytes", "files", "directories", "skippedLinks", "coverageComplete", "sha256", "previousSha256", "snapshot", "created", "category", "commit", "creation", "createdParents",
+  "skippedProtected", "skippedProtectedPaths", "skippedProtectedPathsOmitted", "retainedDirectories", "sourceRetained"]);
 const COMMIT_FIELDS = new Set(["strategy", "outcome", "fileSynced", "directorySynced", "retainedTemporary", "cleanupReason", "compatibilityReason"]);
 const CREATION_FIELDS = new Set(["bytes", "addedLines", "createdDirectoryCount", "createdDirectories", "createdDirectoriesOmitted"]);
 const CANDIDATE_NAME = /^\.superpi-write-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.tmp$/;
@@ -71,7 +73,7 @@ export function fileRpcExecutedReceipt(row: unknown, envelope: FileWorkerRequest
   const header = prepared.header;
   need(row.index === header.index, "Effect acknowledgement belongs to another global item");
   need(receipt.mutationReceiptVersion === 3 && receipt.operation === input.operation && receipt.target === header.target && receipt.destination === header.destination
-    && validMutationOutcome(receipt.status, receipt.stateChanged) && receipt.status !== "not_started" && receipt.ok === (receipt.status === "succeeded")
+    && validMutationOutcome(receipt.status, receipt.stateChanged, receipt) && receipt.status !== "not_started" && receipt.ok === (receipt.status === "succeeded")
     && (receipt.status !== "partial" && receipt.status !== "state_unknown" || receipt.requiresVerification === true)
     && (receipt.requiresVerification === undefined || typeof receipt.requiresVerification === "boolean") && reason(receipt.reason), "Inconsistent operation, target or effect outcome");
   for (const key of ["bytes", "files", "directories", "skippedLinks"] as const) need(receipt[key] === undefined || count(receipt[key]), "Invalid effect counters");
@@ -79,6 +81,18 @@ export function fileRpcExecutedReceipt(row: unknown, envelope: FileWorkerRequest
   need(receipt.coverageComplete === undefined || typeof receipt.coverageComplete === "boolean", "Invalid coverage marker");
   need(receipt.stopInvocation === undefined || typeof receipt.stopInvocation === "boolean", "Invalid stop marker");
   need(receipt.created === undefined || typeof receipt.created === "boolean", "Invalid creation marker");
+  const protection = prepared.tree && summarizeTreeProtection(prepared.tree);
+  const retained = input.operation === "copy" || !prepared.tree ? undefined : protectedDirectoryIndexes(prepared.tree);
+  const retainedCount = retained?.size ?? 0; retained?.clear();
+  if (protection && (receipt.status === "succeeded" || receipt.skippedProtected !== undefined)) {
+    need(receipt.skippedProtected === protection.skippedProtected && receipt.skippedProtectedPathsOmitted === protection.skippedProtectedPathsOmitted
+      && Array.isArray(receipt.skippedProtectedPaths) && receipt.skippedProtectedPaths.length === protection.skippedProtectedPaths.length
+      && receipt.coverageComplete === false, "Protected coverage differs from the prepared exclusions");
+    for (let index = 0; index < protection.skippedProtectedPaths.length; index++) need(receipt.skippedProtectedPaths[index] === protection.skippedProtectedPaths[index], "Protected exclusion path changed");
+    need(input.operation === "copy" ? receipt.retainedDirectories === undefined && receipt.sourceRetained === undefined
+      : receipt.retainedDirectories === retainedCount && receipt.sourceRetained === true, "Retained source directories differ from preparation");
+  } else need(receipt.skippedProtected === undefined && receipt.skippedProtectedPaths === undefined && receipt.skippedProtectedPathsOmitted === undefined
+    && receipt.retainedDirectories === undefined && receipt.sourceRetained === undefined, "Unexpected protected exclusion facts");
   need(receipt.category === undefined || typeof receipt.category === "string" && Buffer.byteLength(receipt.category) <= FILE_RESULT_REASON_BYTES, "Invalid failure category");
   if (receipt.commit !== undefined) {
     fields(receipt.commit, COMMIT_FIELDS); const commit = receipt.commit;
@@ -109,7 +123,7 @@ export function fileRpcExecutedReceipt(row: unknown, envelope: FileWorkerRequest
       && receipt.commit?.outcome === "committed", "Copy overwrite differs from its globally validated content");
     else {
       const tree = prepared.tree!;
-      need(receipt.bytes === tree.bytes && receipt.directories === tree.directories && receipt.skippedLinks === tree.skippedLinks
+      need(receipt.bytes === tree.bytes && receipt.directories === tree.directories - (input.operation === "delete" ? retainedCount : 0) && receipt.skippedLinks === tree.skippedLinks
         && receipt.files === (input.operation === "delete" ? tree.unlinkFiles ?? tree.files : tree.files), "Successful tree coverage differs from its complete inventory");
       if (input.operation === "copy" && !header.source!.directory) need(typeof receipt.sha256 === "string", "Successful file copy lacks its verified destination digest");
     }

@@ -42,6 +42,10 @@
 
 ### 文件结果的完整性
 
+目录 copy/delete/move（包括 `file_batch` 内的目录项）处理普通后代，遇到嵌套 `.git/.sp` 时只记录并保留，不解析、打开或遍历元数据。move/delete 保留容纳元数据所需的源目录，其余可处理文件和空目录继续执行。直接选中工作区受保护根的授权边界不变。
+
+结果中的 `skippedProtected`、有界 `skippedProtectedPaths` 和 `skippedProtectedPathsOmitted` 报告保留数量与路径；move/delete 项还含 `sourceRetained`、`retainedDirectories`。预览显示相同范围。已完成的普通文件处理为 `succeeded`，同时 `coverageComplete: false` 明确整目录未完全覆盖，不是要求重放成功项。CodeMode 会将保留提示反馈给模型，即使脚本没有调用 `show()`。普通独立失败仍按项汇总；取消、权限变化、未知效果和回执失配继续停止剩余修改。
+
 `copy` / `move` 的目标父目录缺失时，会复用 `write` 的只读建目录清单，在同一次审批中展示数量，并在授权后逐级独占创建。目标范围和同一后端的 write 相同：Native 保留工作区外路径的原授权校验，MXC 拒绝越出已分配工作区；受保护路径、目录覆盖/合并、源链接和大小写折叠冲突仍按原规则拒绝。数组或 `file_batch` 中前项已创建的公共父目录通过身份清单供后项复用；`dryRun` 不创建目录。若失败或取消发生在建目录之后，回执列出保留目录并报告部分或未知效果；不会擅自删除无法证明所有权的目录，也不重放已完成项。
 
 `copy` / `move` 接受单值 `path` + `destination` 或非空 `items: [{path, destination}]`；`delete` 接受 `path` 或非空 `paths`，两种形式互斥。copy 默认不覆盖，`overwrite: true` 只替换已有普通文件；删除非空目录须用 `recursive: true`。copy 跳过目录内链接并计数，move 预检拒绝含链接或特殊文件的源树；recursive delete 只删除链接本身。包含 `.git` / `.sp` 的目录树在预检时整体拒绝。`dryRun` 完整预检，返回总数、总字节和有界路径样本，不写变更记录；正式执行重新预检并授权。

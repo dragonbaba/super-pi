@@ -4,6 +4,7 @@ import {
 	codemodeFailureReason, codemodeInputSummary, codemodeTextDigest, type CodemodeChildDisplay,
 } from "../../../core/codemode-display.ts";
 import { readShellExecution } from "../../../core/tools/shell-execution.ts";
+import { codemodeChildDiagnosticEnd, codemodeTruncatedSuccessSuffix } from "../../../core/codemode-failure.ts";
 import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
@@ -36,6 +37,7 @@ class CodemodeTreeRow extends Container {
 	input = "";
 	preview = "";
 	previewTruncated = false;
+	outputTruncated = false;
 	previewMaterializations = 0;
 	labelMaterializations = 0;
 	failureProjections = 0;
@@ -231,6 +233,7 @@ export class CodemodeTreeComponent extends Container {
 				row.previewTruncated = fact.previewTruncated === true;
 				row.outputPath = typeof fact.outputPath === "string" ? fact.outputPath.slice(0, 1024) : "";
 				row.failed = fact.isError === true;
+				row.outputTruncated = fact.outputTruncated === true;
 				if (fact.executionStatus !== "not_executed") this.mayHaveSideEffects = true;
 				row.status = typeof fact.executionStatus === "string" ? shellStatus(fact.executionStatus.slice(0, 80), fact.exitCode) : row.failed ? "failed" : "completed";
 				row.reported = "";
@@ -303,10 +306,15 @@ export class CodemodeTreeComponent extends Container {
 		if (!prefix) return false;
 		for (const row of this.rows.values()) {
 			if (!row.failed || !row.preview) continue;
-			const preview = row.preview.slice(0, 512);
-			if (!text.startsWith(preview, prefix[0].length)) continue;
-			const rest = text.slice(prefix[0].length + preview.length);
-			if (!rest || rest.startsWith("\n[Permission recovery] ")) return true;
+			const end = codemodeChildDiagnosticEnd(text, prefix[0].length, row.preview, row.outputPath);
+			if (end < 0) continue;
+			if (end === text.length || text.startsWith("\n[Permission recovery] ", end)) return true;
+			// Older parents appended this unrelated hint even when a child itself
+			// caused the failure. Only remove the exact known hint from a known row.
+			for (const completed of this.rows.values()) if (!completed.failed && completed.outputTruncated) {
+				const suffix = codemodeTruncatedSuccessSuffix(completed.name), tail = end + suffix.length;
+				if (text.startsWith(suffix, end) && (tail === text.length || text.startsWith("\n[Permission recovery] ", tail))) return true;
+			}
 		}
 		return false;
 	}

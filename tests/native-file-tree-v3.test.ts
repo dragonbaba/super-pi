@@ -88,12 +88,13 @@ test("native overwrite refuses a changed source or destination after preparation
   await writeFile(join(root, "target"), "external");
   result = await executeNativeTreePlan(plan, current); assert.equal(result.status, "failed_no_change"); assert.equal(await readFile(join(root, "target"), "utf8"), "external");
 });
-test("native preflight rejects source containment, protected descendants and directory overwrite", async t => {
+test("native preflight rejects containment and overwrite while excluding protected descendants", async t => {
   const root = await fixture(t); await mkdir(join(root, "source")); await writeFile(join(root, "source", "file"), "data"); await mkdir(join(root, "target"));
   await assert.rejects(prepareNativeTreeOperation(root, "copy", { path: "source", destination: "source/child" }), /CONFLICT/);
   await assert.rejects(prepareNativeTreeOperation(root, "copy", { path: "source", destination: "target", overwrite: true }), /destination_exists/);
   await mkdir(join(root, "source", ".git"));
-  await assert.rejects(prepareNativeTreeOperation(root, "delete", { path: "source", recursive: true }), /protected/);
+  const plan = await prepareNativeTreeOperation(root, "delete", { path: "source", recursive: true });
+  assert.equal(plan.tree.protectedEntries?.length, 1);
   assert.equal(await readFile(join(root, "source", "file"), "utf8"), "data");
 });
 test("native copy refuses symlink overwrite targets and revoked authority", async t => {
