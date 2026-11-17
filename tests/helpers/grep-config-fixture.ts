@@ -63,7 +63,7 @@ assert.equal(details.matchCount, scene === "ignore-case" ? 2 : 1);
 const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n");
 assert.ok(text.includes(scene === "literal" ? "sample.txt:2: alpha[0-9]+" : "sample.txt:1: alpha42"), text);
 assert.equal(text.includes("excluded.log"), false);
-assert.equal(authorityChecks, 1);
+assert.equal(authorityChecks, 2, "consumption and immediate pre-spawn authorization are separate boundaries");
 assert.equal(directoryChecks, custom ? 1 : 0); assert.equal(reads, custom ? 1 : 0);
 if (scene === "regex") assert.equal(manifest.args.filter(arg => arg === "--no-config").length, 1);
 assert.ok(manifest.args.includes("--hidden"));

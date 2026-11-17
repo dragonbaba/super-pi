@@ -12,7 +12,7 @@ import type { SessionPermissionMode } from "../packages/coding-agent/src/core/pe
 import { consumePermissionPathApproval } from "../packages/coding-agent/src/core/files/file-invocation.ts";
 import { createReadToolDefinition } from "../packages/coding-agent/src/core/tools/read.ts";
 import { createLsToolDefinition } from "../packages/coding-agent/src/core/tools/ls.ts";
-import { consumeToolPath } from "../packages/coding-agent/src/core/files/tool-path-authorization.ts";
+import { consumeToolPath, consumeToolPathBinding } from "../packages/coding-agent/src/core/files/tool-path-authorization.ts";
 import { consumeBrowserExecAuthorization } from "../packages/coding-agent/src/core/files/extension-permissions.ts";
 import { consumeDelegatedTaskPolicies } from "../packages/extensions/subagent/delegation.ts";
 import { parentExecutionTool } from "../packages/coding-agent/src/core/files/subagent-execution.ts";
@@ -30,6 +30,17 @@ async function fixture(t: TestContext, config = {}, environment: "sandbox" | "tr
     function definition(name: string) { const d: any = { name }; owner.registerDefinition(d); return d; }
     return { root, runtime, manager, get branch() { return manager.getEntries(); }, ctx, owner, event, definition };
 }
+
+test("native search authority carries primary and additional executable exclusions", async t => {
+    const extra = await fixture(t, {}, "trusted-host", "host-write");
+    const f = await fixture(t, {}, "trusted-host", "host-write", [extra.root]);
+    const input = { pattern: "needle", path: "." };
+    const invocation = await f.owner.authorize(f.event("grep", input), f.ctx);
+    const binding = consumeToolPathBinding(input, "grep", "test-call");
+    assert.equal(binding?.scope?.workspace, f.root); assert.deepEqual(binding?.scope?.directories, [extra.root]);
+    invocation.release(); await f.runtime.executionBoundary.transition(() => undefined);
+    assert.throws(() => binding!.assertCurrent(), /expired|changed/);
+});
 
 test("native sandbox denies unsupported aliases and respects exact deny before broad allow", async t => {
     const f = await fixture(t, { rules: [{ tool: "*", decision: "allow" }, { tool: "powershell", command: "blocked", decision: "deny" }] });

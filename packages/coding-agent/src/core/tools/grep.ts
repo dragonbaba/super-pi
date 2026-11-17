@@ -17,7 +17,7 @@ import {
 	GREP_TRAILING_LINE_FEED_PATTERN,
 } from "./grep-regex.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { consumeToolPath } from "../files/tool-path-authorization.ts";
+import { consumeToolPathBinding } from "../files/tool-path-authorization.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import {
@@ -313,6 +313,7 @@ export function createGrepToolDefinition(
 	options?: GrepToolOptions,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	const customOps = options?.operations;
+	const executableScope = Object.freeze({ workspace: cwd });
 	return {
 		name: "grep",
 		label: "grep",
@@ -335,7 +336,8 @@ export function createGrepToolDefinition(
 			_ctx?,
 		) {
 			const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
-			const authorizedPath = consumeToolPath(input, "grep", _toolCallId);
+			const authorization = consumeToolPathBinding(input, "grep", _toolCallId);
+			const authorizedPath = authorization?.canonical;
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
 					reject(new Error("Operation aborted"));
@@ -351,9 +353,9 @@ export function createGrepToolDefinition(
 
 				(async () => {
 					try {
-						const rgPath = await ensureTool("rg", true);
+						const rgPath = await ensureTool("rg", true, authorization?.scope ?? executableScope);
 						if (!rgPath) {
-							settle(() => reject(new Error("ripgrep (rg) is not available and could not be downloaded")));
+							settle(() => reject(new Error("ripgrep (rg) is not installed outside the authorized workspaces. Use a managed installation or trusted PATH; unchanged discovery need not be repeated.")));
 							return;
 						}
 
@@ -402,6 +404,7 @@ export function createGrepToolDefinition(
 						if (streamedContext) args.push("--context", String(contextValue));
 						args.push("--", pattern, searchPath);
 
+						authorization?.assertCurrent();
 						const child = spawn(rgPath, args, { stdio: ["ignore", "pipe", "pipe"] });
 						const rl = createInterface({ input: child.stdout });
 						let stderr = "";

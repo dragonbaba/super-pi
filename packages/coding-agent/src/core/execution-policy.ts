@@ -810,7 +810,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (event.toolName === "browser_exec") attachBrowserExecAuthorization(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, requestHash: browserExecRequestHash(input), assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
         if (this.environment === "trusted-host" && (event.toolName === "read" || SEARCHES.has(event.toolName)))
-            attachToolPath(input, event.toolName, event.toolCallId, paths[0]!, check);
+            attachToolPath(input, event.toolName, event.toolCallId, paths[0]!, check,
+                event.toolName === "grep" || event.toolName === "find" ? { workspace: ctx.cwd, directories: this.directories } : undefined);
         if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
             requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,

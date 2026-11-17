@@ -9,7 +9,7 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
-import { consumeToolPath } from "../files/tool-path-authorization.ts";
+import { consumeToolPathBinding } from "../files/tool-path-authorization.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
@@ -126,6 +126,7 @@ export function createFindToolDefinition(
 	options?: FindToolOptions,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	const customOps = options?.operations;
+	const executableScope = Object.freeze({ workspace: cwd });
 	return {
 		name: "find",
 		label: "find",
@@ -140,7 +141,8 @@ export function createFindToolDefinition(
 			_ctx?,
 		) {
 			const { pattern, path: searchDir, limit } = input;
-			const authorizedPath = consumeToolPath(input, "find", _toolCallId);
+			const authorization = consumeToolPathBinding(input, "find", _toolCallId);
+			const authorizedPath = authorization?.canonical;
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
 					reject(new Error("Operation aborted"));
@@ -225,13 +227,13 @@ export function createFindToolDefinition(
 						}
 
 						// Default implementation uses fd.
-						const fdPath = await ensureTool("fd", true);
+						const fdPath = await ensureTool("fd", true, authorization?.scope ?? executableScope);
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
 							return;
 						}
 						if (!fdPath) {
-							settle(() => reject(new Error("fd is not available and could not be downloaded")));
+							settle(() => reject(new Error("fd is not installed outside the authorized workspaces. Use a managed installation or trusted PATH; unchanged discovery need not be repeated.")));
 							return;
 						}
 
@@ -269,6 +271,7 @@ export function createFindToolDefinition(
 						}
 						args.push("--", effectivePattern, searchPath);
 
+						authorization?.assertCurrent();
 						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
 						const rl = createInterface({ input: child.stdout });
 						let stderr = "";

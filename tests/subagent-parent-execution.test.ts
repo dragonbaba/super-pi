@@ -189,7 +189,8 @@ test("real CLI children inherit explicit host mode across all global defaults an
   for (const environment of [undefined, "trusted-host", "sandbox"] as const) {
     await t.test(String(environment), async t => {
       const f = await fixture(t, environment);
-      const available = { grep: getToolPath("rg") !== null, find: getToolPath("fd") !== null };
+      const scope = { workspace: f.cwd };
+      const available = { grep: getToolPath("rg", scope) !== null, find: getToolPath("fd", scope) !== null };
       const result = await f.run('console.log(await tools.read({path:"sample.txt"})); console.log(await callTool("grep",{pattern:"marker",path:"sample.txt"},{allowFailure:true})); console.log(await callTool("find",{pattern:"sample.txt"},{allowFailure:true})); console.log(await tools.ls({}));');
       assert.equal((result as any)?.isError, false, JSON.stringify(result));
       const entries = await f.observations();
@@ -200,7 +201,7 @@ test("real CLI children inherit explicit host mode across all global defaults an
       for (const call of calls) {
         const missing = call.name === "grep" && !available.grep ? "ripgrep (rg)" : call.name === "find" && !available.find ? "fd" : undefined;
         assert.equal(call.isError, missing !== undefined, JSON.stringify(call));
-        if (missing) assert.ok(JSON.stringify(call.content).includes(missing + " is not available and could not be downloaded"), JSON.stringify(call));
+        if (missing) assert.ok(JSON.stringify(call.content).includes(missing + " is not installed outside the authorized workspaces"), JSON.stringify(call));
       }
       t.diagnostic(JSON.stringify({ searchDependencies: available, parentToolCalls: calls.length }));
       assert.equal(f.dialogs, 0); assert.equal(f.requests, 2);

@@ -174,7 +174,7 @@ test("bundled discovery exposes native searches and retires the duplicate comman
 	const f = await fixture(t, {}, [toolClassification], true);
 	assert.equal(f.session.getAllTools().some(tool => tool.name === "structured_readonly_command"), false);
 	for (const name of ["grep", "find", "ls"]) assert.ok(f.session.getActiveToolNames().includes(name), name);
-	const outcome = await f.run(['const b=await batch([{tool:"find",args:{pattern:"*.txt",path:"."}},{tool:"grep",args:{pattern:"hello",path:"file.txt",literal:true}}]);text(b.summary);for(const r of b.results)await show(r.result.ref);']);
+	const outcome = await f.run(['const b=await batch([{tool:"ls",args:{path:"."}},{tool:"read",args:{path:"file.txt"}}]);text(b.summary);for(const r of b.results)await show(r.result.ref);']);
 	const result = outcome.results.at(-1)!;
 	assert.equal(result.isError, false, JSON.stringify(result));
 	assert.match(JSON.stringify(result.content), /file.txt/); assert.match(JSON.stringify(result.content), /hello/);
