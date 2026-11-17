@@ -1,7 +1,17 @@
 import type { AgentMessage } from "@super-pi/agent-core";
-import type { SessionManager } from "../session-manager.ts";
+import type { SessionEntry, SessionManager } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
 import { condenseFailedCodemodeAttempts } from "./failed-attempts.ts";
+
+const CONTEXT_MAINTENANCE_VERSION = 1;
+const CONTEXT_MAINTENANCE_KIND = "completed-failed-codemode-source";
+
+/** Local maintenance reuses an existing summary; it is not another compaction event. */
+export function isLocalCompactionMaintenance(entry: SessionEntry): boolean {
+	if (entry.type !== "compaction") return false;
+	const details = entry.details as { contextMaintenance?: { version?: number; kind?: string } } | undefined;
+	return details?.contextMaintenance?.version === CONTEXT_MAINTENANCE_VERSION && details.contextMaintenance.kind === CONTEXT_MAINTENANCE_KIND;
+}
 
 /** Restore/setup only: durably reduce a checkpoint that no later request consumed.
  * Once any entry follows it, leave the established prefix until the next compaction.
@@ -23,7 +33,7 @@ export function normalizeUnconsumedCompaction(manager: SessionManager, keepRecen
 	const { usageLedger: _ledger, usageComponents: _components, ...details } = previous;
 	manager.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, before, {
 		...details,
-		contextMaintenance: { version: 1, kind: "completed-failed-codemode-source", previousCheckpointId: checkpoint.id },
+		contextMaintenance: { version: CONTEXT_MAINTENANCE_VERSION, kind: CONTEXT_MAINTENANCE_KIND, previousCheckpointId: checkpoint.id },
 		contextAccounting: { ...accounting, schemaVersion: 1, providerUsageState: "unverified", estimateSource: "materialized", materializedTokensAfter: after, keepRecentTokens },
 	}, checkpoint.fromHook, undefined, tail);
 	return true;

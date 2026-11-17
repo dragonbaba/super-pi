@@ -33,6 +33,7 @@
 - [CodeMode 源码运行边界](evidence/codemode-runtime-source-boundary-2026-11-17.md)：取消独立源码字符拦截，保留 VM、时间、协议和取消边界，验证完整长脚本与失败后的下一次执行。
 - [自动压缩百分比验证](evidence/auto-compaction-percentage-2026-11-17.md)：供应商/模型隔离保存、触发边界、缓存前缀及查询/footer 分配和释放证据。
 - [压缩边界与保留尾部](evidence/compaction-request-boundaries-2026-11-18.md)：失败长脚本的边界精简、自动压缩预览预算、请求用量代次、失败后的停止与恢复及跨供应商前缀验证。
+- [压缩后恢复历史](evidence/resume-compacted-history-2026-11-18.md)：恢复完整当前分支的界面历史，保留摘要、避免重复尾部，并验证归档和模型请求不变。
 - [CodeMode 输出数据契约](evidence/codemode-output-contract-2026-11-17.md)：执行事实与展示/解析错误分离，原始捕获和 MCP 数据分页，完成项不重放及引用生命周期。
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。
