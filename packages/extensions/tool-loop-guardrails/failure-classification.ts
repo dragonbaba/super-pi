@@ -136,21 +136,6 @@ function classifyStructuredPreflightError(payload: Record<string, unknown> | und
   return undefined;
 }
 
-function classifyStructuredReadonlyError(payload: Record<string, unknown> | undefined): { category: string; cause: string } | undefined {
-  if (!payload
-    || payload.ok !== false
-    || (payload.command !== "git" && payload.command !== "rg")
-    || typeof payload.category !== "string"
-    || payload.stateChanged !== false) return undefined;
-  const output = typeof payload.output === "string" ? payload.output : "";
-  if (WORKDIR_MISMATCH_RE.test(output)) return { category: "workdir_mismatch", cause: "只读命令在不包含所需仓库或配置的工作目录中执行。" };
-  if (PATH_NOT_FOUND_RE.test(output)) return { category: "path_not_found", cause: "只读命令引用的目标路径不存在。" };
-  if (payload.category === "timeout_or_aborted") return { category: "timeout_or_aborted", cause: "结构化只读命令超时或被中止。" };
-  if (payload.category === "input_validation") return { category: "input_validation", cause: "rg 参数或以连字符开头的搜索模式未通过输入校验。" };
-  if (payload.category === "command_failed") return { category: "command_failed", cause: "结构化只读命令以非零状态退出，且确认没有状态变更。" };
-  return undefined;
-}
-
 function verificationFamily(tool: string, argumentsValue: unknown): VerificationFamily | undefined {
   if (tool === "lsp_diagnostics") return "diagnostics";
   if ((tool !== "bash" && tool !== "powershell") || !argumentsValue || typeof argumentsValue !== "object") return undefined;
@@ -202,10 +187,6 @@ export function classifyError(tool: string, text: string, family?: VerificationF
   if (structuredMutation) return structuredMutation;
   const structuredPreflight = classifyStructuredPreflightError(structuredPayload);
   if (structuredPreflight) return structuredPreflight;
-  if (tool === "structured_readonly_command") {
-    const structuredReadonly = classifyStructuredReadonlyError(structuredPayload);
-    if (structuredReadonly) return structuredReadonly;
-  }
   if (tool === "edit") {
     if (text.startsWith("[SNAPSHOT_EDIT_SYNTAX] TypeScript parser is unavailable")) return { category: "runtime_error", cause: "宿主 TypeScript 解析器不可用；候选未检查，本次未写入。恢复宿主依赖后使用仍有效的快照重新提交。" };
     const match = SNAPSHOT_EDIT_ERROR_RE.exec(text);

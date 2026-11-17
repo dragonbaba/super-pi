@@ -1,14 +1,13 @@
 import chalk from "chalk";
 import { type SpawnSyncReturns, spawnSync } from "child_process";
-import { accessSync, chmodSync, constants, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "fs";
+import { accessSync, chmodSync, constants, createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "fs";
 import { arch, platform } from "os";
-import { delimiter, join, sep } from "path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 
-const TOOLS_DIR = getBinDir();
 const NETWORK_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
@@ -22,7 +21,7 @@ interface ToolConfig {
 	name: string;
 	repo: string; // GitHub repo (e.g., "sharkdp/fd")
 	binaryName: string; // Name of the binary inside the archive
-	systemBinaryNames?: string[]; // Alternative system command names to try before downloading
+	systemBinaryNames: readonly string[]; // Alternative system command names to try before downloading
 	tagPrefix: string; // Prefix for tags (e.g., "v" for v1.0.0, "" for 1.0.0)
 	getAssetName: (version: string, plat: string, architecture: string) => string | null;
 }
@@ -52,6 +51,7 @@ const TOOLS: Record<string, ToolConfig> = {
 		name: "ripgrep",
 		repo: "BurntSushi/ripgrep",
 		binaryName: "rg",
+		systemBinaryNames: ["rg"],
 		tagPrefix: "",
 		getAssetName: (version, plat, architecture) => {
 			if (plat === "darwin") {
@@ -81,19 +81,70 @@ function isToolExecutable(path: string): boolean {
 	}
 }
 
-function toolExistsInDirectory(directory: string, binaryName: string, windows: boolean): boolean {
-	// Do not normalize '..': a preceding symlink changes filesystem traversal.
-	const prefix = `${directory || "."}${sep}${binaryName}`;
-	if (windows && isToolExecutable(`${prefix}.com`)) return true;
-	return isToolExecutable(prefix + (windows ? ".exe" : ""));
+/** Native searches pin a program outside all authorized project roots. Shell lookup stays native. */
+export interface SearchToolScope { workspace: string; directories?: readonly string[]; }
+
+function canonicalToolDirectory(location: string): string | undefined {
+	try { return realpathSync.native(location); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined; }
+	let cursor = resolve(location), suffix = "";
+	for (;;) {
+		try { return join(realpathSync.native(cursor), suffix); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+			const parent = dirname(cursor);
+			if (parent === cursor) return undefined;
+			suffix = join(basename(cursor), suffix); cursor = parent;
+		}
+	}
 }
 
-/** Inspect metadata only; native spawn retains PATH fallback and launch semantics. */
-function systemToolExists(binaryName: string): boolean {
+/** Call-owned metadata only; no retained PATH cache or executable/version subprocess. */
+function searchScopeRoots(scope: SearchToolScope): string[] | null {
+	const primary = canonicalToolDirectory(scope.workspace);
+	if (!primary) return null;
+	const roots = [primary];
+	if (scope.directories) for (const directory of scope.directories) {
+		const root = canonicalToolDirectory(directory);
+		if (!root) return null;
+		if (!roots.includes(root)) roots.push(root);
+	}
+	return roots;
+}
+
+function outsideSearchRoots(location: string, roots: readonly string[]): boolean {
+	for (const root of roots) {
+		const suffix = relative(root, location);
+		if (suffix === "" || suffix !== ".." && !suffix.startsWith(".." + sep) && !isAbsolute(suffix)) return false;
+	}
+	return true;
+}
+
+function toolCandidate(location: string, roots?: readonly string[]): string | undefined {
+	if (!isToolExecutable(location)) return undefined;
+	if (!roots) return location;
+	try {
+		const canonical = realpathSync.native(location);
+		return outsideSearchRoots(canonical, roots) ? canonical : undefined;
+	} catch { return undefined; }
+}
+
+function toolInDirectory(directory: string, binaryName: string, windows: boolean, roots?: readonly string[]): string | undefined {
+	// Do not normalize '..': a preceding symlink changes filesystem traversal.
+	const prefix = `${directory || "."}${sep}${binaryName}`;
+	if (windows) {
+		const com = toolCandidate(`${prefix}.com`, roots);
+		if (com) return com;
+	}
+	return toolCandidate(prefix + (windows ? ".exe" : ""), roots);
+}
+
+/** Scoped native searches resolve a canonical path; unscoped callers retain OS launch semantics. */
+function systemToolPath(binaryName: string, roots?: readonly string[]): string | undefined {
 	const windows = platform() === "win32";
 	// Preserve libuv's portable-tool lookup and its opt-out environment boundary.
-	if (windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
-		if (toolExistsInDirectory(".", binaryName, true)) return true;
+	if (!roots && windows && process.env.NoDefaultCurrentDirectoryInExePath === undefined) {
+		if (toolInDirectory(".", binaryName, true)) return binaryName;
 	}
 	let pathValue = process.env.PATH;
 	if (windows) {
@@ -115,29 +166,34 @@ function systemToolExists(binaryName: string): boolean {
 		if (!windows || end > start) {
 			if (quoted) directory = directory.slice(1);
 			if (windows && (directory.endsWith('"') || directory.endsWith("'"))) directory = directory.slice(0, -1);
-			if (toolExistsInDirectory(directory, binaryName, windows)) return true;
+			const found = toolInDirectory(directory, binaryName, windows, roots);
+			if (found) return roots ? found : binaryName;
 		}
 		if (separator < 0) break;
 		start = separator + delimiter.length;
 	}
-	return false;
+	return undefined;
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-export function getToolPath(tool: "fd" | "rg"): string | null {
+export function getToolPath(tool: "fd" | "rg", scope?: SearchToolScope): string | null {
+	const roots = scope ? searchScopeRoots(scope) : undefined;
+	return roots === null ? null : findToolPath(tool, getBinDir(), roots);
+}
+
+function findToolPath(tool: "fd" | "rg", directory: string, roots?: readonly string[]): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
 	// Check our tools directory first
-	const localPath = join(TOOLS_DIR, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-	if (isToolExecutable(localPath)) {
-		return localPath;
-	}
+	const localPath = join(directory, config.binaryName + (platform() === "win32" ? ".exe" : ""));
+	const managed = toolCandidate(localPath, roots);
+	if (managed) return managed;
 
-	// Keep native lookup for actual launch; do not probe or cache it.
-	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
+	const systemBinaryNames = config.systemBinaryNames;
 	for (const systemBinaryName of systemBinaryNames) {
-		if (systemToolExists(systemBinaryName)) return systemBinaryName;
+		const found = systemToolPath(systemBinaryName, roots);
+		if (found) return found;
 	}
 
 	return null;
@@ -279,7 +335,7 @@ function extractZipArchive(archivePath: string, extractDir: string, assetName: s
 }
 
 // Download and install a tool
-async function downloadTool(tool: "fd" | "rg"): Promise<string> {
+async function downloadTool(tool: "fd" | "rg", directory: string): Promise<string> {
 	const config = TOOLS[tool];
 	if (!config) throw new Error(`Unknown tool: ${tool}`);
 
@@ -299,12 +355,12 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	}
 
 	// Create tools directory
-	mkdirSync(TOOLS_DIR, { recursive: true });
+	mkdirSync(directory, { recursive: true });
 
 	const downloadUrl = `https://github.com/${config.repo}/releases/download/${config.tagPrefix}${version}/${assetName}`;
-	const archivePath = join(TOOLS_DIR, assetName);
+	const archivePath = join(directory, assetName);
 	const binaryExt = plat === "win32" ? ".exe" : "";
-	const binaryPath = join(TOOLS_DIR, config.binaryName + binaryExt);
+	const binaryPath = join(directory, config.binaryName + binaryExt);
 
 	// Download
 	await downloadFile(downloadUrl, archivePath);
@@ -312,7 +368,7 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	// Extract into a unique temp directory. fd and rg downloads can run concurrently
 	// during startup, so sharing a fixed directory causes races.
 	const extractDir = join(
-		TOOLS_DIR,
+		directory,
 		`extract_tmp_${config.binaryName}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
 	);
 	mkdirSync(extractDir, { recursive: true });
@@ -364,14 +420,20 @@ const TERMUX_PACKAGES: Record<string, string> = {
 
 // Ensure a tool is available, downloading if necessary
 // Returns the path to the tool, or null if unavailable
-export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Promise<string | undefined> {
-	const existingPath = getToolPath(tool);
+export async function ensureTool(tool: "fd" | "rg", silent: boolean = false, scope?: SearchToolScope): Promise<string | undefined> {
+	const roots = scope ? searchScopeRoots(scope) : undefined;
+	if (roots === null) return undefined;
+	const directory = getBinDir();
+	const existingPath = findToolPath(tool, directory, roots);
 	if (existingPath) {
 		return existingPath;
 	}
 
 	const config = TOOLS[tool];
 	if (!config) return undefined;
+	// A model-authored search consumes an installed binary, never runs an installer
+	// or archive extractor under the project's cwd/PATH. Interactive setup owns downloads.
+	if (roots) return undefined;
 
 	if (isOfflineModeEnabled()) {
 		if (!silent) {
@@ -396,7 +458,9 @@ export async function ensureTool(tool: "fd" | "rg", silent: boolean = false): Pr
 	}
 
 	try {
-		const path = await downloadTool(tool);
+		const downloaded = await downloadTool(tool, directory);
+		const path = toolCandidate(downloaded, roots);
+		if (!path) return undefined;
 		if (!silent) {
 			console.log(chalk.dim(`${config.name} installed to ${path}`));
 		}

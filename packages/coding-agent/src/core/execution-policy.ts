@@ -23,7 +23,7 @@ import { attachToolPath } from "./files/tool-path-authorization.ts";
 import { resolveToolPath } from "./files/file-path.ts";
 import { prepareNativeDelegation } from "./files/native-delegation.ts";
 import { isParentExecutionTool } from "./files/subagent-execution.ts";
-import { attachSubagentWorkspaceDelegation, attachStructuredReadonlyWorkspaceDelegation, structuredReadonlyRequestHash,
+import { attachSubagentWorkspaceDelegation,
     attachBrowserExecAuthorization, browserExecRequestHash } from "./files/extension-permissions.ts";
 import { InputWorkspaceGrantLease, type InputWorkspaceGrant, type InputWorkspaceIssuance,
     type AssertInputWorkspace, type ObserveInputWorkspace } from "./files/input-workspace-grant-lease.ts";
@@ -60,7 +60,7 @@ export interface AutoReviewDenial {
 const MAX_AUTO_DENIALS = 10;
 const MUTATIONS = new Set(["edit", "write", "copy", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
-const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "structured_readonly_command", "copy", "move", "delete", "file_batch"]);
+const RECURSIVE_SCOPES = new Set([...SEARCHES, "subagent", "copy", "move", "delete", "file_batch"]);
 const SAFE = new Set(["codemode", "tool_search", "tasks", "file_result"]);
 const SANDBOX_TOOLS = new Set<string>([...SAFE, ...WORKSPACE_TOOL_NAMES]);
 const BLOCKED = "[POLICY_BLOCKED] ";
@@ -626,7 +626,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             targets[0] = event.toolName === "read" ? await resolveReadPathAsync(targets[0]!, ctx.cwd) : resolveToCwd(targets[0] || ".", ctx.cwd);
             check();
         }
-        const delegation = event.toolName === "subagent" || event.toolName === "structured_readonly_command"
+        const delegation = event.toolName === "subagent"
             ? await prepareNativeDelegation(event.toolName, input, ctx.cwd, this.mode === "read-only" || plan) : undefined;
         check();
         // A delegated workspace outside the session's is outside access too, so host-restricted checks it.
@@ -807,13 +807,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 parentExecution: this.mode && open ? { profile: { mode: this.mode, workspace: delegation.workspace,
                     directories: this.directories, generation: this.runtime.executionBoundary.generation }, open } : undefined });
         }
-        if (delegation?.structured) attachStructuredReadonlyWorkspaceDelegation(input, { ...delegation.structured, schemaVersion: 1,
-            sequence: this.runtime.executionBoundary.generation, toolCallId: event.toolCallId, requestHash: structuredReadonlyRequestHash(input),
-            assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
         if (event.toolName === "browser_exec") attachBrowserExecAuthorization(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, requestHash: browserExecRequestHash(input), assertCurrent: check, revocationSignal: ctx.signal ?? this.runtime.executionBoundary.signal });
         if (this.environment === "trusted-host" && (event.toolName === "read" || SEARCHES.has(event.toolName)))
-            attachToolPath(input, event.toolName, event.toolCallId, paths[0]!, check);
+            attachToolPath(input, event.toolName, event.toolCallId, paths[0]!, check,
+                event.toolName === "grep" || event.toolName === "find" ? { workspace: ctx.cwd, directories: this.directories } : undefined);
         if (mutation) attachPermissionPathApproval(input, { schemaVersion: 1, sequence: this.runtime.executionBoundary.generation,
             toolCallId: event.toolCallId, operation: event.toolName as PermissionPathApproval["operation"],
             requestHash: mutationRequestHash(event.toolName as PermissionPathApproval["operation"], input), canonicalTarget: paths[0]!,

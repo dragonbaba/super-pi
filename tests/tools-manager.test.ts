@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -42,6 +42,36 @@ test("external tool discovery preserves native lookup without version subprocess
     process.env.PATH = dirname(first); assert.equal(getToolPath("rg"), null);
     process.env.PATH = dirname(second); assert.equal(getToolPath("rg"), "rg");
     assert.equal(probes, 0);
+  });
+
+  await t.test("scoped search pins a canonical executable outside primary and additional workspaces", async () => {
+    const oldCwd = process.cwd(), oldOffline = process.env.SP_OFFLINE;
+    const project = join(owned.root, "untrusted project"), additional = join(owned.root, "additional workspace");
+    const rogue = executable(join(project, name("rg"))), second = executable(join(additional, name("rg")));
+    const trusted = executable(join(owned.root, "trusted install", name("rg")));
+    const scope = { workspace: project, directories: [additional] };
+    const alias = join(owned.root, "workspace binary alias");
+    let aliasCreated = false;
+    try {
+      process.chdir(project); process.env.PATH = [dirname(rogue), dirname(second), dirname(trusted)].join(delimiter);
+      assert.equal(getToolPath("rg", scope), trusted, "a native search must not hand spawn a bare project-local command");
+      assert.equal(await ensureTool("rg", true, scope), trusted);
+      symlinkSync(project, alias, process.platform === "win32" ? "junction" : "dir");
+      aliasCreated = true;
+      process.env.PATH = [alias, dirname(trusted)].join(delimiter);
+      assert.equal(getToolPath("rg", scope), trusted, "an external PATH entry pointing back into a workspace is not trusted");
+      executable(join(project, name("fd"))); executable(join(additional, name("fd")));
+      const trustedFd = executable(join(dirname(trusted), name("fdfind")));
+      process.env.PATH = [project, additional, dirname(trusted)].join(delimiter);
+      assert.equal(getToolPath("fd", scope), trustedFd, "the fd alias has the same pinned workspace exclusions");
+      process.env.PATH = [dirname(rogue), dirname(second)].join(delimiter); process.env.SP_OFFLINE = "1";
+      assert.equal(getToolPath("rg", scope), null); assert.equal(await ensureTool("rg", true, scope), undefined);
+      assert.equal(probes, 0);
+    } finally {
+      if (aliasCreated) { if (process.platform === "win32") rmdirSync(alias); else unlinkSync(alias); }
+      process.chdir(oldCwd);
+      if (oldOffline === undefined) delete process.env.SP_OFFLINE; else process.env.SP_OFFLINE = oldOffline;
+    }
   });
 
   await t.test("Windows portable tools in cwd precede PATH unless current-directory lookup is disabled", { skip: process.platform !== "win32" }, () => {
@@ -130,5 +160,33 @@ test("external tool discovery preserves native lookup without version subprocess
     process.env.PATH = dirname(alias); assert.equal(getToolPath("fd"), "fdfind");
     if (process.platform !== "win32") { chmodSync(alias, 0o644); assert.equal(getToolPath("fd"), null); }
     assert.equal(probes, 0);
+  });
+
+  await t.test("a scoped search never installs tools or accepts a managed binary inside a workspace", async st => {
+    let requests = 0;
+    st.mock.method(globalThis, "fetch", async () => { requests++; throw new Error("search must not download tools"); });
+    const oldOffline = process.env.SP_OFFLINE;
+    try {
+      process.env.SP_OFFLINE = "0"; process.env.PATH = "";
+      const managed = join(owned.root, "bin", name("rg"));
+      rmdirSync(managed); executable(managed);
+      assert.equal(getToolPath("rg"), managed, "the unsafe scoped candidate is an otherwise executable managed file");
+      const scope = { workspace: owned.root };
+      assert.equal(getToolPath("rg", scope), null);
+      assert.equal(await ensureTool("rg", true, scope), undefined);
+      assert.equal(requests, 0); assert.equal(probes, 0);
+    } finally { if (oldOffline === undefined) delete process.env.SP_OFFLINE; else process.env.SP_OFFLINE = oldOffline; }
+  });
+
+  await t.test("managed tool directories follow an explicit agent-root change without stale module state", async () => {
+    const agent = process.env.SP_CODING_AGENT_DIR;
+    const alternate = join(owned.root, "alternate agent");
+    const binary = executable(join(alternate, "bin", name("rg")));
+    try {
+      process.env.SP_CODING_AGENT_DIR = alternate; process.env.PATH = "";
+      assert.equal(getToolPath("rg"), binary);
+      assert.equal(await ensureTool("rg", true), binary);
+      assert.equal(probes, 0);
+    } finally { if (agent === undefined) delete process.env.SP_CODING_AGENT_DIR; else process.env.SP_CODING_AGENT_DIR = agent; }
   });
 });

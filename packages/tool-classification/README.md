@@ -15,7 +15,7 @@ shorter browser prefix, so `browser DOM inspection` selects DevTools.
 
 ## Classes
 
-- Core: `read`, `bash`, `edit`, `write`, `structured_readonly_command`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`.
+- Core: `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write`, `copy`, `delete`, `move`, `file_batch`, `file_result`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`, when registered and allowed by the caller's selection. PowerShell retains explicit activation and known-availability handling.
 - Browser: `browser` discovers `browser_exec` for public-web reading and interaction in the user's browser.
 - Browser debugging: `browser_debug`, `cdp`, local-preview queries, DOM/JavaScript inspection, UI validation and exact `chrome_devtools_*` names discover DevTools for those tasks. The model can activate these tools without a manual enable command. A missing endpoint may launch an isolated profile; choose the correct target and do not assume the user's login is present.
 - Delegation: `subagent`.

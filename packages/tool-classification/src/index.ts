@@ -8,6 +8,9 @@ function readToolCatalog(pi: ExtensionAPI): ToolCatalogSnapshot {
 const CORE_TOOL_NAMES = [
   "codemode",
   "read",
+  "grep",
+  "find",
+  "ls",
   "bash",
   "edit",
   "write",
@@ -16,7 +19,6 @@ const CORE_TOOL_NAMES = [
   "move",
   "file_batch",
   "file_result",
-  "structured_readonly_command",
   "lsp_diagnostics",
   "lsp_fix",
   "lsp_navigate",
@@ -305,7 +307,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
 
     const available = new Set<string>();
     for (let index = 0; index < allTools.length; index += 1) {
-      available.add(allTools[index].name);
+      if (allTools[index].available !== false) available.add(allTools[index].name);
     }
     const nextActive: string[] = [];
     for (let index = 0; index < CORE_TOOL_NAMES.length; index += 1) {
