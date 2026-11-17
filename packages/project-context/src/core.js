@@ -1,10 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { workerData } from "node:worker_threads";
 import ignore from "ignore";
-import { CONFIG_DIR_NAME } from "./pi-compat.js";
+import { comparePaths, DirectoryStack, INDEX_READ_BYTES, IndexRuns } from "./index-files.js";
+import { INDEX_CHECK_INTERVAL, INDEX_STAGE } from "./index-progress.js";
 import {
   ANSI_CSI_PATTERN,
   ANSI_ESCAPE_PATTERN,
@@ -24,6 +26,9 @@ import {
   TEST_PATH_PATTERN,
 } from "./regex.js";
 
+// The index Worker receives the directory already selected by the caller.
+// Standalone extension consumers use the existing runtime discovery.
+const CONFIG_DIR_NAME = workerData?.projectContextDir ?? (await import("./pi-compat.js")).CONFIG_DIR_NAME;
 export const SCHEMA_VERSION = 1;
 export const CONTEXT_DIR = CONFIG_DIR_NAME;
 export const MANIFEST_NAME = "project-context.json";
@@ -54,15 +59,10 @@ const MANIFEST_FILES = new Set([
   "requirements.txt", "pom.xml", "build.gradle", "build.gradle.kts", "global.json", "composer.json",
   "gemfile", "makefile", "cmakelists.txt", "dockerfile", "docker-compose.yml", "docker-compose.yaml",
 ]);
-const MAX_FILES = 50_000;
 const MAX_PROFILE_LANGUAGES = 12;
 const MAX_PROFILE_MAIN_AREAS = 12;
 const MAX_PROFILE_MANIFESTS = 20;
 const MAX_PROFILE_ENTRYPOINTS = 20;
-
-function toPosix(value) {
-  return value.split(path.sep).join("/");
-}
 
 function normalizePath(value) {
   let resolved = path.resolve(value);
@@ -193,11 +193,12 @@ function openProjectFile(target, stat, flags) {
   }
 }
 
-function durableWriteExclusive(target, content) {
+function durableWriteExclusive(target, content, requireSync = false) {
   const descriptor = fs.openSync(target, "wx");
   try {
     fs.writeFileSync(descriptor, content, "utf8");
-    try { fs.fsyncSync(descriptor); } catch {}
+    if (requireSync) fs.fsyncSync(descriptor);
+    else try { fs.fsyncSync(descriptor); } catch {}
   } finally {
     fs.closeSync(descriptor);
   }
@@ -212,37 +213,6 @@ function createExclusiveFile(root, target, content) {
     if (error?.code === "EEXIST") return false;
     throw error;
   }
-}
-
-export function atomicWriteIfChanged(root, target, content) {
-  assertSafeTarget(root, target);
-  const backup = path.join(path.dirname(target), `.${path.basename(target)}.project-context-backup`);
-  assertSafeTarget(root, backup);
-  if (fs.existsSync(backup)) {
-    if (fs.existsSync(target)) fs.unlinkSync(backup);
-    else fs.renameSync(backup, target);
-  }
-  try {
-    if (fs.readFileSync(target, "utf8") === content) return false;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    durableWriteExclusive(temporary, content);
-    if (process.platform === "win32" && fs.existsSync(target)) fs.renameSync(target, backup);
-    try {
-      fs.renameSync(temporary, target);
-    } catch (error) {
-      if (fs.existsSync(backup) && !fs.existsSync(target)) fs.renameSync(backup, target);
-      throw error;
-    }
-    if (fs.existsSync(backup)) fs.unlinkSync(backup);
-  } finally {
-    try { fs.unlinkSync(temporary); } catch {}
-    if (fs.existsSync(backup) && !fs.existsSync(target)) fs.renameSync(backup, target);
-  }
-  return true;
 }
 
 function withProjectLock(root, operation) {
@@ -263,7 +233,7 @@ function withProjectLock(root, operation) {
   }
   try {
     fs.writeFileSync(ownerPath, JSON.stringify({ token, pid: process.pid, startedAt: new Date().toISOString() }));
-    return operation();
+    return operation(lockDir);
   } finally {
     try {
       const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
@@ -310,35 +280,74 @@ function loadIgnore(root) {
   };
 }
 
-export function scanProject(root) {
-  const isIgnored = loadIgnore(root);
-  const records = [];
-  const stack = [root];
-  while (stack.length) {
-    const directory = stack.pop();
-    let entries = fs.readdirSync(directory, { withFileTypes: true });
-    entries = entries.sort((a, b) => a.name.localeCompare(b.name, "en"));
-    const childDirs = [];
-    for (const entry of entries) {
-      const directoryEntry = entry.isDirectory();
-      if (shouldExcludeName(entry.name, directoryEntry) || (!directoryEntry && !entry.isFile())) continue;
-      const absolute = path.join(directory, entry.name);
-      const relative = directoryEntry && !isIgnored ? "" : toPosix(path.relative(root, absolute));
-      if (isIgnored?.(relative, directoryEntry)) continue;
-      if (directoryEntry) {
-        childDirs.push(absolute);
-        continue;
-      }
-      const stat = fs.statSync(absolute);
-      const extension = path.extname(entry.name).toLowerCase();
-      const language = SOURCE_LANGUAGES.get(extension) ?? null;
-      records.push({ path: relative, size: stat.size, category: classify(relative, extension, entry.name), ...(language ? { language } : {}) });
-      if (records.length > MAX_FILES) throw new Error(`Project exceeds the lightweight index safety limit (${MAX_FILES} files). Add exclusions to ${IGNORE_NAME} or use a dedicated indexer.`);
-    }
-    for (let index = childDirs.length - 1; index >= 0; index--) stack.push(childDirs[index]);
+function scanEntry(scan, prefix, entry) {
+  if (scan.entries++ % INDEX_CHECK_INTERVAL === 0) {
+    scan.control?.check();
+    scan.control?.progress(INDEX_STAGE.scan, scan.stats.fileCount);
   }
-  records.sort((a, b) => a.path.localeCompare(b.path, "en"));
-  return records;
+  const name = entry.name;
+  const directory = entry.isDirectory();
+  if (shouldExcludeName(name, directory) || (!directory && !entry.isFile())) return;
+  const relative = prefix ? prefix + name : name;
+  if (scan.isIgnored?.(relative, directory)) return;
+  if (directory) return relative;
+  const stat = fs.lstatSync(path.join(scan.root, relative));
+  if (!stat.isFile()) return;
+
+  const extension = path.extname(name).toLowerCase();
+  const language = SOURCE_LANGUAGES.get(extension);
+  const record = { path: relative, size: stat.size, category: classify(relative, extension, name) };
+  if (language) record.language = language;
+  scan.runs.add(record);
+  countRecord(scan.stats, record, name, prefix === "");
+}
+
+function scanArea(scan, initial) {
+  scan.directories.push(initial);
+  for (let relative; (relative = scan.directories.pop()) !== undefined;) {
+    scan.control?.check();
+    const absolute = path.join(scan.root, relative);
+    if (!fs.lstatSync(absolute).isDirectory()) continue;
+    const prefix = relative + "/";
+    const directory = fs.opendirSync(absolute, { bufferSize: 128 });
+    try {
+      for (let entry; (entry = directory.readSync()) !== null;) {
+        const child = scanEntry(scan, prefix, entry);
+        if (child !== undefined) scan.directories.push(child);
+      }
+    } finally { directory.closeSync(); }
+  }
+}
+
+function stageIndex(root, scratch, target, control) {
+  const stats = createArtifactStats();
+  const runs = new IndexRuns(scratch, control);
+  const directories = new DirectoryStack(scratch);
+  const scan = { root, stats, control, runs, directories, isIgnored: loadIgnore(root), entries: 0 };
+  let rootFiles = 0;
+  const directory = fs.opendirSync(root, { bufferSize: 128 });
+  try {
+    for (let entry; (entry = directory.readSync()) !== null;) {
+      const before = stats.fileCount;
+      const child = scanEntry(scan, "", entry);
+      if (child === undefined) {
+        rootFiles += stats.fileCount - before;
+      } else {
+        scanArea(scan, child);
+        const count = stats.fileCount - before;
+        // The existing profile groups root files and a literal (root) folder.
+        if (child === "(root)") rootFiles += count;
+        else countArea(stats, child, count);
+      }
+    }
+  } finally { directory.closeSync(); }
+  countArea(stats, "(root)", rootFiles);
+  control?.check();
+  control?.progress(INDEX_STAGE.merge, stats.fileCount);
+  stats.indexHash = runs.finish(target);
+  stats.diagnostics = { peakRecords: runs.peak, peakReaders: runs.peakReaders, peakDirectories: directories.peak,
+    directorySpills: directories.spills, initialRuns: runs.runs };
+  return stats;
 }
 
 export function safeDisplayText(value, fallback = "") {
@@ -372,8 +381,12 @@ function incrementCount(counts, key) {
 
 function sortedCounts(counts) {
   const entries = [...counts.entries()];
-  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "en"));
+  entries.sort(compareCounts);
   return entries;
+}
+
+function compareCounts(left, right) {
+  return right[1] - left[1] || comparePaths(left[0], right[0]);
 }
 
 function pathDepth(value) {
@@ -383,7 +396,7 @@ function pathDepth(value) {
 }
 
 function compareProfilePaths(left, right) {
-  return pathDepth(left) - pathDepth(right) || left.localeCompare(right, "en");
+  return pathDepth(left) - pathDepth(right) || comparePaths(left, right);
 }
 
 function insertBoundedProfilePath(paths, value, limit) {
@@ -399,15 +412,11 @@ function insertBoundedProfilePath(paths, value, limit) {
   if (paths.length > limit) paths.pop();
 }
 
-function recordBaseName(recordPath) {
-  const slash = recordPath.lastIndexOf("/");
-  return slash < 0 ? recordPath : recordPath.slice(slash + 1);
-}
-
 function detectVerificationTarget(detected, rootPath, lowerBaseName) {
   const lowerPath = rootPath ? lowerBaseName : "";
   if (rootPath === "package.json" || (process.platform === "win32" && lowerPath === "package.json")) {
-    if (!detected.npm || rootPath === "package.json") detected.npm = rootPath;
+    if (!detected.npm || rootPath === "package.json" ||
+        (detected.npm !== "package.json" && comparePaths(rootPath, detected.npm) < 0)) detected.npm = rootPath;
   } else if (lowerPath === "cargo.toml") detected.cargo = true;
   else if (lowerPath === "go.mod") detected.go = true;
   else if (lowerPath === "pyproject.toml" || lowerPath === "pytest.ini") detected.python = true;
@@ -440,66 +449,49 @@ function verificationCommands(root, detected) {
   return commands;
 }
 
-function collectArtifactStats(records) {
-  const languageCounts = new Map();
-  const categoryCounts = new Map();
-  const moduleCounts = new Map();
-  const manifests = [];
-  const entrypoints = [];
-  const detected = { npm: "", cargo: false, go: false, python: false, dotnet: false };
-  const indexLines = new Array(records.length);
-  const indexHash = createHash("sha256");
-  let manifestCount = 0;
-  let entrypointCount = 0;
-  let sourceCount = 0;
-  let sourceBytes = 0;
-
-  for (let index = 0; index < records.length; index++) {
-    const record = records[index];
-    incrementCount(languageCounts, record.language);
-    incrementCount(categoryCounts, record.category);
-    const slash = record.path.indexOf("/");
-    incrementCount(moduleCounts, slash < 0 ? "(root)" : record.path.slice(0, slash));
-    if (record.category === "source" || record.category === "test") {
-      sourceCount += 1;
-      sourceBytes += record.size;
-    }
-
-    const baseName = recordBaseName(record.path);
-    const lowerBaseName = baseName.toLowerCase();
-    if (record.category === "manifest") {
-      manifestCount += 1;
-      insertBoundedProfilePath(manifests, record.path, MAX_PROFILE_MANIFESTS);
-    }
-    if (ENTRYPOINT_NAME_PATTERN.test(baseName)) {
-      entrypointCount += 1;
-      insertBoundedProfilePath(entrypoints, record.path, MAX_PROFILE_ENTRYPOINTS);
-    }
-    detectVerificationTarget(detected, slash < 0 ? baseName : "", lowerBaseName);
-
-    const json = JSON.stringify(record);
-    indexLines[index] = json;
-    if (index > 0) indexHash.update("\n");
-    indexHash.update(json);
-  }
-
+function createArtifactStats() {
   return {
-    languages: sortedCounts(languageCounts),
-    categories: sortedCounts(categoryCounts),
-    modules: sortedCounts(moduleCounts),
-    manifests,
-    manifestCount,
-    entrypoints,
-    entrypointCount,
-    detected,
-    indexHash: indexHash.digest("hex"),
-    index: indexLines.join("\n") + (records.length ? "\n" : ""),
-    sourceCount,
-    sourceBytes,
+    languages: new Map(), categories: new Map(), modules: [], moduleCount: 0,
+    manifests: [], manifestCount: 0, entrypoints: [], entrypointCount: 0,
+    fileCount: 0, sourceCount: 0, sourceBytes: 0, indexHash: "", diagnostics: undefined,
+    detected: { npm: "", cargo: false, go: false, python: false, dotnet: false },
   };
 }
 
-function appendCountLines(lines, entries, limit, emptyText, omittedLabel, codeNames = false) {
+function countRecord(stats, record, baseName, atRoot) {
+  stats.fileCount++;
+  incrementCount(stats.languages, record.language);
+  incrementCount(stats.categories, record.category);
+  if (record.category === "source" || record.category === "test") {
+    stats.sourceCount++;
+    stats.sourceBytes += record.size;
+  }
+  if (record.category === "manifest") {
+    stats.manifestCount++;
+    insertBoundedProfilePath(stats.manifests, record.path, MAX_PROFILE_MANIFESTS);
+  }
+  if (ENTRYPOINT_NAME_PATTERN.test(baseName)) {
+    stats.entrypointCount++;
+    insertBoundedProfilePath(stats.entrypoints, record.path, MAX_PROFILE_ENTRYPOINTS);
+  }
+  detectVerificationTarget(stats.detected, atRoot ? baseName : "", baseName.toLowerCase());
+}
+
+function countArea(stats, area, count) {
+  if (!count) return;
+  stats.moduleCount++;
+  const modules = stats.modules;
+  let index = 0;
+  for (; index < modules.length; index++) {
+    const [name, files] = modules[index];
+    if (count > files || (count === files && comparePaths(area, name) < 0)) break;
+  }
+  if (index === MAX_PROFILE_MAIN_AREAS) return;
+  modules.splice(index, 0, [area, count]);
+  if (modules.length > MAX_PROFILE_MAIN_AREAS) modules.pop();
+}
+
+function appendCountLines(lines, entries, limit, emptyText, omittedLabel, codeNames = false, total = entries.length) {
   if (entries.length === 0) {
     lines.push(emptyText, "");
     return;
@@ -509,7 +501,7 @@ function appendCountLines(lines, entries, limit, emptyText, omittedLabel, codeNa
     const name = codeNames ? markdownCode(entries[index][0]) : safeDisplayText(entries[index][0], "(unnamed)");
     lines.push(`- ${name}: ${entries[index][1]} files`);
   }
-  if (entries.length > visible) lines.push(`- ${entries.length - visible} additional ${omittedLabel} omitted`);
+  if (total > visible) lines.push(`- ${total - visible} additional ${omittedLabel} omitted`);
   lines.push("");
 }
 
@@ -523,21 +515,21 @@ function appendPathLines(lines, paths, total, emptyText, omittedHint) {
   lines.push("");
 }
 
-function buildProfile(manifest, records, stats, verification) {
+function buildProfile(manifest, stats, verification) {
   const lines = [
     "# Project Context", "",
     "> Generated by `/project-refresh`. Edit project rules in `AGENTS.md`; refresh this file instead of editing it manually.", "",
     "## Identity", "",
     `- Name: ${safeDisplayText(manifest.name, "(unnamed project)")}`,
     `- Stable ID: \`${manifest.id}\``,
-    `- Indexed files: ${records.length}`,
+    `- Indexed files: ${stats.fileCount}`,
     `- Source and test files: ${stats.sourceCount}`,
     `- Lightweight index SHA-256: \`${stats.indexHash}\``, "",
   ];
   lines.push("## Languages", "");
-  appendCountLines(lines, stats.languages, MAX_PROFILE_LANGUAGES, "- No recognized source languages", "languages");
+  appendCountLines(lines, sortedCounts(stats.languages), MAX_PROFILE_LANGUAGES, "- No recognized source languages", "languages");
   lines.push("## Main Areas", "");
-  appendCountLines(lines, stats.modules, MAX_PROFILE_MAIN_AREAS, "- None", "areas", true);
+  appendCountLines(lines, stats.modules, MAX_PROFILE_MAIN_AREAS, "- None", "areas", true, stats.moduleCount);
   lines.push("## Manifests", "");
   appendPathLines(lines, stats.manifests, stats.manifestCount, "- None detected", "query `.sp/project-index.jsonl` for category `manifest`.");
   lines.push("## Likely Entrypoints", "");
@@ -546,19 +538,8 @@ function buildProfile(manifest, records, stats, verification) {
   if (verification.length === 0) lines.push("- No standard verification command detected; confirm project-specific checks in `AGENTS.md`.");
   else for (const command of verification) lines.push(`- ${markdownCode(command)}`);
   lines.push("", "## Index Summary", "");
-  for (const [name, count] of stats.categories) lines.push(`- ${name}: ${count}`);
+  for (const [name, count] of sortedCounts(stats.categories)) lines.push(`- ${name}: ${count}`);
   return `${lines.join("\n")}\n`;
-}
-
-export function buildArtifacts(root, manifest, records) {
-  const stats = collectArtifactStats(records);
-  const verification = verificationCommands(root, stats.detected);
-  return {
-    profile: buildProfile(manifest, records, stats, verification),
-    index: stats.index,
-    sourceCount: stats.sourceCount,
-    sourceBytes: stats.sourceBytes,
-  };
 }
 
 export function projectAgentsTemplate() {
@@ -592,21 +573,33 @@ function ensureProjectNavigation(root) {
 }
 
 const TRANSACTION_MARKER = ".project-context-transaction.json";
+const COMMIT_MARKER = ".project-context-transaction-committed";
 
 function transactionMarkerPath(root) {
   return path.join(root, CONTEXT_DIR, TRANSACTION_MARKER);
 }
 
+function unlinkIfPresent(filename) {
+  try { fs.unlinkSync(filename); }
+  catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+
 export function recoverProjectTransaction(root) {
   const markerPath = transactionMarkerPath(root);
-  if (!fs.existsSync(markerPath)) return false;
+  const commitPath = path.join(root, CONTEXT_DIR, COMMIT_MARKER);
+  const commit = fs.lstatSync(commitPath, { throwIfNoEntry: false });
+  if (commit && (!commit.isFile() || commit.size !== 0)) throw new Error(`Unsafe project-context commit marker: ${commitPath}`);
+  if (!fs.lstatSync(markerPath, { throwIfNoEntry: false })) {
+    if (commit) unlinkIfPresent(commitPath);
+    return false;
+  }
   assertSafeTarget(root, markerPath);
   const stat = fs.lstatSync(markerPath);
   if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Unsafe project-context transaction marker: ${markerPath}`);
   let transaction;
   try { transaction = JSON.parse(fs.readFileSync(markerPath, "utf8")); } catch { throw new Error(`Invalid project-context transaction marker: ${markerPath}`); }
   const expectedTargets = [PROFILE_NAME, INDEX_NAME];
-  if (transaction?.version !== 1 || !Array.isArray(transaction.entries) || transaction.entries.length !== 2) {
+  if (!transaction || (transaction.version !== 1 && transaction.version !== 2) || !Array.isArray(transaction.entries) || transaction.entries.length !== 2) {
     throw new Error(`Unsupported project-context transaction marker: ${markerPath}`);
   }
   const entries = transaction.entries.map((entry, index) => {
@@ -626,55 +619,106 @@ export function recoverProjectTransaction(root) {
     for (const candidate of [value.target, value.staged, value.backup]) assertSafeTarget(root, candidate);
     return value;
   });
+  const committed = transaction.version === 2 && commit !== undefined;
+  if (committed) for (const entry of entries) {
+    if (!fs.lstatSync(entry.target, { throwIfNoEntry: false })?.isFile()) {
+      throw new Error(`Missing committed project artifact: ${entry.target}`);
+    }
+  }
   for (const entry of entries) {
-    if (fs.existsSync(entry.backup)) {
+    if (committed) {
+      unlinkIfPresent(entry.backup);
+    } else if (fs.existsSync(entry.backup)) {
       if (fs.existsSync(entry.target)) fs.unlinkSync(entry.target);
       fs.renameSync(entry.backup, entry.target);
     } else if (!entry.hadPrevious && fs.existsSync(entry.target)) {
       fs.unlinkSync(entry.target);
     }
-    try { fs.unlinkSync(entry.staged); } catch {}
+    unlinkIfPresent(entry.staged);
   }
   fs.unlinkSync(markerPath);
+  if (commit) unlinkIfPresent(commitPath);
   return true;
 }
 
-export function atomicWritePairIfChanged(root, entries, operations = fs) {
-  if (!Array.isArray(entries) || entries.length !== 2) throw new Error("A project context refresh must contain exactly two artifacts.");
-  recoverProjectTransaction(root);
-  const snapshots = entries.map(({ target, content }) => {
+function readChunk(fd, buffer, requested) {
+  let total = 0;
+  while (total < requested) {
+    const bytes = fs.readSync(fd, buffer, total, requested - total, null);
+    if (bytes === 0) break;
+    total += bytes;
+  }
+  return total;
+}
+
+function sameFileContents(left, leftStat, right, control) {
+  const rightStat = fs.lstatSync(right);
+  if (leftStat.size !== rightStat.size) return false;
+  const leftFd = openProjectFile(left, leftStat, fs.constants.O_RDONLY);
+  try {
+    const rightFd = openProjectFile(right, rightStat, fs.constants.O_RDONLY);
+    try {
+      const bytes = Math.min(INDEX_READ_BYTES, leftStat.size);
+      const leftBuffer = Buffer.allocUnsafe(bytes);
+      const rightBuffer = Buffer.allocUnsafe(bytes);
+      for (let remaining = leftStat.size; remaining > 0;) {
+        control?.check();
+        const length = Math.min(remaining, bytes);
+        if (readChunk(leftFd, leftBuffer, length) !== length || readChunk(rightFd, rightBuffer, length) !== length ||
+            leftBuffer.compare(rightBuffer, 0, length, 0, length) !== 0) return false;
+        remaining -= length;
+      }
+      return true;
+    } finally { fs.closeSync(rightFd); }
+  } finally { fs.closeSync(leftFd); }
+}
+
+function publishIndex(root, scratch, control, operations) {
+  const context = path.join(root, CONTEXT_DIR);
+  const snapshots = [];
+  for (const name of [PROFILE_NAME, INDEX_NAME]) {
+    const target = path.join(context, name);
+    const source = path.join(scratch, name);
     assertSafeTarget(root, target);
-    let previous = null;
-    try { previous = fs.readFileSync(target, "utf8"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-    return { target, content, previous, changed: previous !== content };
-  });
-  if (!snapshots.some((entry) => entry.changed)) return snapshots.map(() => false);
+    const previous = fs.lstatSync(target, { throwIfNoEntry: false });
+    snapshots.push({ target, source, hadPrevious: previous !== undefined, changed: !previous || !sameFileContents(target, previous, source, control) });
+  }
+  const [profile, index] = snapshots;
+  const result = { profileChanged: profile.changed, indexChanged: index.changed, cleanupPending: false };
+  control?.check();
+  if (!profile.changed && !index.changed) return result;
 
   const token = `${process.pid}.${randomUUID()}`;
   const staged = snapshots.map((entry) => `${entry.target}.${token}.tmp`);
   const backups = snapshots.map((entry) => `${entry.target}.${token}.backup`);
   for (const candidate of [...staged, ...backups]) assertSafeTarget(root, candidate);
   const markerPath = transactionMarkerPath(root);
+  const commitPath = path.join(context, COMMIT_MARKER);
   assertSafeTarget(root, markerPath);
+  assertSafeTarget(root, commitPath);
   const marker = {
-    version: 1,
+    version: 2,
     entries: snapshots.map((entry, index) => ({
       target: path.basename(entry.target),
       staged: path.basename(staged[index]),
       backup: path.basename(backups[index]),
-      hadPrevious: entry.previous !== null,
+      hadPrevious: entry.hadPrevious,
     })),
   };
-  durableWriteExclusive(markerPath, `${JSON.stringify(marker)}\n`);
-  let completed = false;
+  const stagedMarker = path.join(scratch, TRANSACTION_MARKER);
+  durableWriteExclusive(stagedMarker, `${JSON.stringify(marker)}\n`, true);
+  control?.check();
+  fs.renameSync(stagedMarker, markerPath);
+  let committed;
   try {
-    snapshots.forEach((entry, index) => durableWriteExclusive(staged[index], entry.content));
-    snapshots.forEach((entry, index) => {
-      if (entry.previous !== null) operations.renameSync(entry.target, backups[index]);
-    });
-    snapshots.forEach((entry, index) => operations.renameSync(staged[index], entry.target));
-    completed = true;
-    return snapshots.map((entry) => entry.changed);
+    for (let i = 0; i < snapshots.length; i++) operations.renameSync(snapshots[i].source, staged[i]);
+    for (let i = 0; i < snapshots.length; i++) {
+      if (snapshots[i].hadPrevious) operations.renameSync(snapshots[i].target, backups[i]);
+    }
+    for (let i = 0; i < snapshots.length; i++) operations.renameSync(staged[i], snapshots[i].target);
+    // This exclusive create is the commit boundary. Recovery can finish cleanup
+    // after it without mixing old and new artifacts when backups are removed.
+    committed = fs.openSync(commitPath, "wx", 0o600);
   } catch (error) {
     try {
       recoverProjectTransaction(root);
@@ -682,25 +726,27 @@ export function atomicWritePairIfChanged(root, entries, operations = fs) {
       throw new AggregateError([error, recoveryError], `Project context refresh failed; recovery marker remains at ${markerPath}.`);
     }
     throw error;
-  } finally {
-    if (completed) {
-      for (const candidate of [...staged, ...backups]) {
-        try { fs.unlinkSync(candidate); } catch {}
-      }
-      try { fs.unlinkSync(markerPath); } catch {}
-    }
   }
+  try {
+    fs.closeSync(committed);
+    recoverProjectTransaction(root);
+  }
+  catch { result.cleanupPending = true; }
+  return result;
 }
 
-function refreshResolved(resolved) {
-  const records = scanProject(resolved.root);
-  const artifacts = buildArtifacts(resolved.root, resolved.manifest, records);
-  const contextDir = path.join(resolved.root, CONTEXT_DIR);
-  const [profileChanged, indexChanged] = atomicWritePairIfChanged(resolved.root, [
-    { target: path.join(contextDir, PROFILE_NAME), content: artifacts.profile },
-    { target: path.join(contextDir, INDEX_NAME), content: artifacts.index },
-  ]);
-  return { ...resolved, ...artifacts, records, profileChanged, indexChanged };
+function refreshResolved(resolved, scratch, options) {
+  const { root, manifest } = resolved;
+  const { control, operations = fs } = options;
+  recoverProjectTransaction(root);
+  control?.check();
+  const stats = stageIndex(root, scratch, path.join(scratch, INDEX_NAME), control);
+  const profile = buildProfile(manifest, stats, verificationCommands(root, stats.detected));
+  durableWriteExclusive(path.join(scratch, PROFILE_NAME), profile, true);
+  control?.progress(INDEX_STAGE.publish, stats.fileCount);
+  const publication = publishIndex(root, scratch, control, operations);
+  return { root, ...publication, fileCount: stats.fileCount, sourceCount: stats.sourceCount,
+    sourceBytes: stats.sourceBytes, diagnostics: stats.diagnostics };
 }
 
 export function initializeProject(cwd, now = new Date()) {
@@ -724,9 +770,9 @@ export function initializeProject(cwd, now = new Date()) {
   });
 }
 
-export function refreshProject(cwd, resolved = resolveProject(cwd)) {
+export function refreshProject(cwd, resolved = resolveProject(cwd), options = {}) {
   if (!resolved.initialized) throw new Error("Project context is not initialized. Run /project-init first.");
-  return withProjectLock(resolved.root, () => refreshResolved({ ...resolved, manifest: readManifest(resolved.marker) }));
+  return withProjectLock(resolved.root, scratch => refreshResolved({ ...resolved, manifest: readManifest(resolved.marker) }, scratch, options));
 }
 
 function findSharedGitRoot(cwd) {
