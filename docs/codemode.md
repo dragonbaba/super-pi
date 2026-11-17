@@ -64,18 +64,17 @@ await tools.edit({ path: "notes.txt", snapshot: written.details.snapshot, edits:
 
 一张父卡片对应一次 Codemode 调用，树中每一行对应一次子工具调用。`Child calls: 2` 表示本脚本调用了两个子工具，并不表示同一命令执行了两遍。折叠时显示工具、路径或命令、状态和耗时；失败输出保留可见，展开后显示脚本和子结果。相同输出无法唯一归属某个调用时保留在脚本输出区。
 
-多个独立读取或搜索、且中途不需要模型判断时，适合一个脚本用 `Promise.allSettled` 发起并检查每项。单调用照常使用；有依赖的修改 → 运行 → 检查按顺序 await，失败先核对实际状态。同一文件的修改优先合成一次 `edits[]`。宿主只对可信读取允许最多 4 个并发，写入顺序执行；MXC 保持自己的串行 owner。扩展覆盖的工具不因自己声称“只读”就自动得到并发权限。
+多个独立调用、且中途不需要模型判断时，使用 `batch` 明确声明各项独立。普通项失败后其余项继续；摘要只返回完成计数及失败项的序号、工具、结果引用和原因，所有原始结果在 `results[index].result`。修正时只提交失败项，成功项不自动重试。单调用照常使用；有依赖的修改 → 运行 → 检查按顺序 await，失败先核对实际状态。同一文件的修改优先合成一次 `edits[]`。宿主只对可信读取允许最多 4 个并发，写入顺序执行；MXC 保持自己的串行 owner。扩展覆盖的工具不因自己声称“只读”就自动得到并发权限。
 
 ```js
-const results = await Promise.allSettled([
-  tools.read({ path: "package.json" }),
-  tools.read({ path: "README.md" }),
+const result = await batch([
+  { tool: "read", args: { path: "package.json" } },
+  { tool: "read", args: { path: "README.md" } },
 ]);
-for (const result of results) {
-  if (result.status === "fulfilled") await show(result.value.ref);
-  else text(String(result.reason));
-}
+text(result.summary); // { completed, failed, failures: [{ index, tool, ref, error }] }
 ```
+
+每项使用普通 `callTool` 桥接、权限、调度、取消和既有调用预算。描述符的 `review: true` 仅传递该项通常的风险审查请求。取消、权限失效、结果未知、要求验证和观察/日志错误仍会失败或停止，不能把这些状态当作普通失败继续。`completed` 表示工具调用完成；命令是否通过仍须检查其真实退出码或应用状态。`Promise.all`、`Promise.allSettled` 和合法 JavaScript 保持标准语义；`batch` 不解析命令，不推断依赖，不授予额外权限。独立 CodeMode 库宿主须提供 `callTool` 才能使用此助手。
 
 ## 读取与修改
 

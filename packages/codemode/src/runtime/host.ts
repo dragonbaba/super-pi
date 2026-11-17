@@ -53,6 +53,7 @@ const RESERVED_GLOBALS: ReadonlySet<string> = new Set([
 	"store",
 	"load",
 	"storeInfo",
+	"batch",
 	"setTimeout",
 	"clearTimeout",
 ]);

@@ -47,6 +47,15 @@ their store writes, including staged deletions, while completed tool effects
 remain real. Do not repeat completed tools. Optional caching can catch a store
 error and continue using the result already held in a local variable.
 
+`batch([{ tool, args, review? }, ...])` explicitly groups independent calls when
+the host supplies the ordinary `callTool(name,args,options)` global. It requests
+`allowFailure:true` per call, preserves normal bridge accounting and scheduling,
+and returns `{summary:{completed,failed,failures},results}`. Each result contains
+`{index,tool,result}`; failure diagnostics use the host's concise `failureReason`.
+Fatal rejections remain fail-fast, and the helper never retries a completed
+item or changes Promise semantics. It requires the host's handled-failure
+contract; use separate awaited steps for dependencies. The helper name is reserved.
+
 `setTimeout(callback, ms, ...args)` returns a numeric ID for `clearTimeout(id)`.
 Use `await new Promise(resolve => setTimeout(resolve, 1000))` to wait. Each script
 may create at most 256 timers; delays must be finite numbers from 0 to 300000 ms.

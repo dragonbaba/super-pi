@@ -480,7 +480,8 @@ export class CodemodeController {
 			throw new ChildToolFailure(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
-		return { content, details: result.details, isError: result.isError, ref, outputs, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
+		return { content, details: result.details, isError: result.isError, ref, outputs, executed: fact.executed, resultComplete: fact.resultComplete,
+			failureHandled, failureReason: result.isError ? codemodeFailureReason(fact.preview, "model") : undefined };
 	}
 	private show(ref: unknown): unknown {
 		const invocation = this.requireInvocation();
