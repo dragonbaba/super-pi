@@ -132,7 +132,8 @@ export function withRemoteCatalog(
 				{
 					headers: {
 						accept: "application/json",
-						"User-Agent": getPiUserAgent(VERSION),
+						// The catalog endpoint serves an older snapshot to pi/ clients.
+						"User-Agent": getPiUserAgent(VERSION, "superpi"),
 						...(validator ? { "if-none-match": validator } : {}),
 					},
 					signal: context.signal,

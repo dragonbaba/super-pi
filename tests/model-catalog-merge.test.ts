@@ -85,21 +85,29 @@ test("older catalogs retain missing model IDs without replacing newer built-in d
 	}
 });
 
-test("older HTTP catalogs preserve missing models through 200, 304 and offline reopen", async () => {
+test("catalog refresh replaces the legacy client snapshot and restores new IDs offline", async () => {
 	const rows = [model("shared", "remote"), model("remote-only")];
 	const requests: Array<string | undefined> = [];
 	const server = createServer((request, response) => {
 		requests.push(request.headers["if-none-match"]);
-		if (request.headers["if-none-match"]) {
+		const isCurrentClient = request.headers["user-agent"]?.startsWith("superpi/") === true;
+		const etag = isCurrentClient ? '"current-catalog"' : '"legacy-catalog"';
+		if (request.headers["if-none-match"] === etag) {
 			response.writeHead(304);
 			response.end();
 		} else {
-			response.writeHead(200, { "content-type": "application/json", etag: '"old-catalog"',
+			response.writeHead(200, { "content-type": "application/json", etag,
 				"last-modified": new Date(1000).toUTCString() });
-			response.end(JSON.stringify({ models: rows }));
+			response.end(JSON.stringify({ models: isCurrentClient ? rows : [rows[0]] }));
 		}
 	});
 	const store = new InMemoryModelsStore();
+	await store.write("fixture", {
+		models: [model("shared", "legacy")],
+		etag: '"legacy-catalog"',
+		lastModified: 500,
+		profileRevision: MODELS_STORE_PROFILE_REVISION,
+	});
 	const credentials = new InMemoryCredentialStore();
 	await credentials.modify("fixture", async () => ({ type: "api_key", key: "fixture-only" }));
 	const registry = createModels({ modelsStore: store, credentials });
@@ -114,7 +122,7 @@ test("older HTTP catalogs preserve missing models through 200, 304 and offline r
 			assert.ok(registry.getModel("fixture", "remote-only"));
 			assert.equal(registry.getModel("fixture", "shared")?.name, "built-in");
 		}
-		assert.deepEqual(requests, [undefined, '"old-catalog"']);
+		assert.deepEqual(requests, ['"legacy-catalog"', '"current-catalog"']);
 		assert.equal((await store.read("fixture"))?.lastModified, 1000);
 	} finally {
 		registry.clearProviders();

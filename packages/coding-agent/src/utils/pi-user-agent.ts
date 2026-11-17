@@ -1,4 +1,4 @@
-export function getPiUserAgent(version: string): string {
+export function getPiUserAgent(version: string, product = "pi"): string {
 	const runtime = process.versions.bun ? `bun/${process.versions.bun}` : `node/${process.version}`;
-	return `pi/${version} (${process.platform}; ${runtime}; ${process.arch})`;
+	return `${product}/${version} (${process.platform}; ${runtime}; ${process.arch})`;
 }
