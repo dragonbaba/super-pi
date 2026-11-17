@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { initTheme } from "@super-pi/coding-agent";
 import { searchFixture } from "./helpers/tool-search-fixture.ts";
 import { classifyError } from "../packages/extensions/tool-loop-guardrails/failure-classification.ts";
 
 const extension = await import(new URL("../packages/project-context/src/index.js", import.meta.url).href);
 const core = await import(new URL("../packages/project-context/src/core.js", import.meta.url).href);
+const { INDEX_STAGE } = await import(new URL("../packages/project-context/src/index-progress.js", import.meta.url).href);
+const { runIndexTask } = await import(new URL("../packages/project-context/src/index-task.js", import.meta.url).href);
 
 interface Command {
   description: string;
@@ -77,10 +81,8 @@ test("project refresh excludes task snapshots while retaining actual source and 
   const cached = join(scratch, "index.ts"), bytes = Buffer.from("export const retired = true;\n");
   writeFileSync(cached, bytes);
   await f.run("project-init");
-  const records = core.scanProject(f.cwd);
-  assert.ok(records.some((record: { path: string }) => record.path === "src/main.ts"));
-  assert.equal(records.some((record: { path: string }) => record.path.startsWith(".task-tmp/")), false);
   const index = readFileSync(join(f.cwd, ".sp", "project-index.jsonl"), "utf8");
+  assert.match(index, /src\/main\.ts/);
   assert.doesNotMatch(index, /old-task|legacy-extension|\.task-tmp/);
   assert.deepEqual(readFileSync(cached), bytes, "refresh never deletes scratch resources");
 });
@@ -183,18 +185,19 @@ test("root ignore prunes directories and files before touching their contents or
   writeFileSync(join(f.cwd, "package.json"), '{"scripts":{"test":"ignored"}}');
   writeFileSync(join(f.cwd, ".env"), "placeholder");
   writeFileSync(join(f.cwd, ".spignore"), "# comment\n/Library/\n!Library/generated.ts\n*.tmp\n!src/keep.tmp\n/package.json\n!.env\n");
-  const readdir = fs.readdirSync;
-  const stat = fs.statSync;
-  t.mock.method(fs, "readdirSync", function checkDirectory(...args: Parameters<typeof readdir>) {
+  core.initializeProject(f.cwd);
+  const opendir = fs.opendirSync;
+  const stat = fs.lstatSync;
+  t.mock.method(fs, "opendirSync", function checkDirectory(...args: Parameters<typeof opendir>) {
     assert.notEqual(args[0], ignored);
-    return Reflect.apply(readdir, fs, args);
+    return Reflect.apply(opendir, fs, args);
   });
-  t.mock.method(fs, "statSync", function checkFile(...args: Parameters<typeof stat>) {
+  t.mock.method(fs, "lstatSync", function checkFile(...args: Parameters<typeof stat>) {
     assert.notEqual(args[0], temporary);
     return Reflect.apply(stat, fs, args);
   });
   syncBuiltinESMExports();
-  try { await f.run("project-init"); }
+  try { core.refreshProject(f.cwd); }
   finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   assert.equal(readFileSync(temporary, "utf8"), "still readable");
   const index = readFileSync(join(f.cwd, ".sp", "project-index.jsonl"), "utf8");
@@ -221,6 +224,7 @@ test("status reads neither the workspace listing nor published artifact bodies",
   await f.run("project-init");
   const read = fs.readFileSync;
   t.mock.method(fs, "readdirSync", function unexpectedScan() { assert.fail("status enumerated a directory"); });
+  t.mock.method(fs, "opendirSync", function unexpectedWalk() { assert.fail("status opened a directory"); });
   t.mock.method(fs, "readFileSync", function checkArtifact(...args: Parameters<typeof read>) {
     assert.notEqual(args[0], join(f.cwd, ".sp", "project-index.jsonl"));
     assert.notEqual(args[0], join(f.cwd, ".sp", "project-context.md"));
@@ -229,6 +233,119 @@ test("status reads neither the workspace listing nor published artifact bodies",
   syncBuiltinESMExports();
   try { assert.match(await f.run("project-status"), /Index: published/); }
   finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+const largeIndexFiles = process.env.SP_TEST_PROJECT_INDEX_STRESS === "1" ? 50_001 : 2_051;
+
+test(`indexes ${largeIndexFiles} included files with bounded sorting and no retained scratch`, t => {
+  const f = fixture(t);
+  const project = core.initializeProject(f.cwd);
+  for (let i = 0; i < largeIndexFiles - 2; i++) writeFileSync(join(f.cwd, `item-${String(i).padStart(5, "0")}.ts`), "");
+  for (let i = 0; i < 260; i++) mkdirSync(join(f.cwd, "src", `empty-${i}`));
+  const first = core.refreshProject(f.cwd, project);
+  const directory = join(f.cwd, ".sp");
+  const index = join(directory, "project-index.jsonl");
+  const profile = join(directory, "project-context.md");
+  const indexBytes = readFileSync(index);
+  assert.equal(first.fileCount, largeIndexFiles);
+  assert.equal(first.diagnostics.peakRecords, 2048);
+  assert.equal(first.diagnostics.initialRuns, Math.ceil(largeIndexFiles / 2048));
+  assert.equal(first.diagnostics.peakReaders, Math.min(8, first.diagnostics.initialRuns));
+  assert.equal(first.diagnostics.peakDirectories, 256);
+  assert.ok(first.diagnostics.directorySpills > 0);
+  assert.equal(indexBytes.toString("utf8").split("\n").length, largeIndexFiles + 1);
+  const digest = createHash("sha256").update(indexBytes.subarray(0, -1)).digest("hex");
+  assert.ok(readFileSync(profile, "utf8").includes(digest));
+  const unchanged = core.refreshProject(f.cwd, project);
+  assert.equal(unchanged.profileChanged, false);
+  assert.equal(unchanged.indexChanged, false);
+  assert.deepEqual(readFileSync(index), indexBytes);
+  assert.deepEqual(fs.readdirSync(directory).sort(), ["project-context.json", "project-context.md", "project-index.jsonl"]);
+});
+
+test("cancel and a second-artifact publication fault preserve both previous files", t => {
+  const f = fixture(t);
+  const project = core.initializeProject(f.cwd);
+  core.refreshProject(f.cwd, project);
+  const directory = join(f.cwd, ".sp");
+  const index = join(directory, "project-index.jsonl");
+  const profile = join(directory, "project-context.md");
+  const oldIndex = readFileSync(index);
+  const oldProfile = readFileSync(profile);
+  writeFileSync(join(f.cwd, "new.ts"), "export {};\n");
+  let cancelled = false;
+  const control = {
+    check() { if (cancelled) throw new DOMException("Index build cancelled", "AbortError"); },
+    progress(stage: bigint) { if (stage === INDEX_STAGE.publish) cancelled = true; },
+  };
+  assert.throws(() => core.refreshProject(f.cwd, project, { control }), { name: "AbortError" });
+  assert.deepEqual(readFileSync(index), oldIndex);
+  assert.deepEqual(readFileSync(profile), oldProfile);
+  const operations = { renameSync(from: string, to: string) {
+    if (basename(to) === "project-index.jsonl" && from.endsWith(".tmp")) throw new Error("fixture publication failure");
+    fs.renameSync(from, to);
+  } };
+  assert.throws(() => core.refreshProject(f.cwd, project, { operations }), /fixture publication failure/);
+  assert.deepEqual(readFileSync(index), oldIndex);
+  assert.deepEqual(readFileSync(profile), oldProfile);
+  assert.equal(core.getIndexState(f.cwd), "published");
+  assert.deepEqual(fs.readdirSync(directory).sort(), ["project-context.json", "project-context.md", "project-index.jsonl"]);
+  assert.equal(core.refreshProject(f.cwd, project).indexChanged, true);
+});
+
+test("an aborted Worker settles after cleanup and leaves published files available", async t => {
+  const f = fixture(t);
+  const project = core.initializeProject(f.cwd);
+  core.refreshProject(f.cwd, project);
+  writeFileSync(join(f.cwd, "new.ts"), "export {};\n");
+  const directory = join(f.cwd, ".sp");
+  const index = join(directory, "project-index.jsonl");
+  const old = readFileSync(index);
+  const controller = new AbortController();
+  const result = runIndexTask(f.cwd, project, { hasUI: false, signal: controller.signal, ui: {} });
+  controller.abort();
+  assert.deepEqual(await result, { ok: false, cancelled: true, message: "Index build cancelled" });
+  assert.deepEqual(readFileSync(index), old);
+  assert.deepEqual(fs.readdirSync(directory).sort(), ["project-context.json", "project-context.md", "project-index.jsonl"]);
+  assert.equal(core.refreshProject(f.cwd, project).indexChanged, true);
+});
+
+test("dismissing the interactive loader waits for cancellation and cleanup", async t => {
+  initTheme("dark");
+  const f = fixture(t);
+  const project = core.initializeProject(f.cwd);
+  core.refreshProject(f.cwd, project);
+  writeFileSync(join(f.cwd, "new.ts"), "export {};\n");
+  const directory = join(f.cwd, ".sp");
+  const published = readFileSync(join(directory, "project-index.jsonl"));
+  const outcome = await runIndexTask(f.cwd, project, { hasUI: true, ui: {
+    async custom(factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => { dispose(): void }) {
+      const loader = factory({ requestRender() {} }, { fg(_color: string, text: string) { return text; } }, undefined, () => {});
+      loader.dispose();
+      return undefined;
+    },
+  } });
+  assert.equal(outcome.cancelled, true);
+  assert.deepEqual(readFileSync(join(directory, "project-index.jsonl")), published);
+  assert.deepEqual(fs.readdirSync(directory).sort(), ["project-context.json", "project-context.md", "project-index.jsonl"]);
+});
+
+test("committed recovery completes cleanup when one prior backup is already gone", t => {
+  const f = fixture(t);
+  const project = core.initializeProject(f.cwd);
+  core.refreshProject(f.cwd, project);
+  const directory = join(f.cwd, ".sp");
+  const entries = ["project-context.md", "project-index.jsonl"].map(target => ({
+    target, staged: `${target}.fixture.tmp`, backup: `${target}.fixture.backup`, hadPrevious: true,
+  }));
+  const published = entries.map(entry => readFileSync(join(directory, entry.target)));
+  writeFileSync(join(directory, entries[1]!.backup), "old index\n");
+  writeFileSync(join(directory, ".project-context-transaction.json"), JSON.stringify({ version: 2, entries }));
+  writeFileSync(join(directory, ".project-context-transaction-committed"), "");
+  assert.equal(core.recoverProjectTransaction(f.cwd), true);
+  for (let i = 0; i < entries.length; i++) assert.deepEqual(readFileSync(join(directory, entries[i]!.target)), published[i]);
+  assert.equal(core.getIndexState(f.cwd), "published");
+  assert.deepEqual(fs.readdirSync(directory).sort(), ["project-context.json", "project-context.md", "project-index.jsonl"]);
 });
 
 test("retired graph aliases no longer filter generic tool discovery", async () => {

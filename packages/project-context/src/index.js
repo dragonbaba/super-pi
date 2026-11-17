@@ -5,9 +5,9 @@ import {
   getIndexState,
   getStatus,
   initializeProject,
-  refreshProject,
   resolveProject,
 } from "./core.js";
+import { runIndexTask } from "./index-task.js";
 import { checkRuntimeCompatibility, SP_RUNTIME_VERSION } from "./pi-compat.js";
 import {
   ANSI_CSI_PATTERN,
@@ -68,17 +68,21 @@ function errorText(error) {
   return sanitizeUiText(error instanceof Error ? error.message : error);
 }
 
-function buildIndex(cwd, project) {
+async function buildIndex(ctx, project) {
   const { root } = project;
-  try {
-    const result = refreshProject(cwd, project);
+  if (!project.initialized) return { root, text: "not completed: run /project-init first", failed: true };
+  let outcome;
+  try { outcome = await runIndexTask(ctx.cwd, project, ctx); }
+  catch (error) { outcome = { ok: false, message: errorText(error) }; }
+  if (outcome.ok) {
+    const { result } = outcome;
     const changed = result.profileChanged || result.indexChanged;
-    return { root, text: `${changed ? "refreshed" : "already current"}: ${result.records.length} files`, failed: false };
-  } catch (error) {
-    let previous = "";
-    try { if (getIndexState(root) === "published") previous = " Previous index retained."; } catch {}
-    return { root, text: `not completed: ${errorText(error)}.${previous}`, failed: true };
+    const cleanup = result.cleanupPending ? " Publication cleanup pending." : "";
+    return { root, text: `${changed ? "refreshed" : "already current"}: ${result.fileCount} files${cleanup}`, failed: false };
   }
+  let previous = "";
+  try { if (getIndexState(root) === "published") previous = " Previous index retained."; } catch {}
+  return { root, text: `not completed: ${errorText(outcome.message)}.${previous}`, failed: true };
 }
 
 export default function projectContextExtension(pi) {
@@ -120,7 +124,7 @@ export function registerProjectCommands(pi) {
           memoryFailed = true;
           memory = `not prepared: ${errorText(error)}`;
         }
-        lastIndex = buildIndex(ctx.cwd, result);
+        lastIndex = await buildIndex(ctx, result);
         ctx.ui.notify(`Project ${action}: ${sanitizeUiText(result.root, 220)}\nAGENTS.md: ${result.agents}\nHermes project memory: ${memory}\nIndex: ${lastIndex.text}`,
           memoryFailed || lastIndex.failed ? "warning" : "info");
       } catch (error) {
@@ -134,7 +138,7 @@ export function registerProjectCommands(pi) {
     handler: async (_args, ctx) => {
       try {
         const project = resolveProject(ctx.cwd);
-        lastIndex = buildIndex(ctx.cwd, project);
+        lastIndex = await buildIndex(ctx, project);
         ctx.ui.notify(`Project context ${lastIndex.text}`, lastIndex.failed ? "error" : "info");
       } catch (error) {
         ctx.ui.notify(errorText(error), "error");

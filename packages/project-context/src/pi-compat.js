@@ -37,12 +37,14 @@ export function discoverPiRuntimeFromEntry(entryPath = process.argv[1]) {
 // walking from process.argv[1] to a package manifest with Pi's exact name.
 let configDirName = ".sp";
 let runtimeVersion;
+let borderedLoader;
 try {
   const pi = await import("@super-pi/coding-agent");
   if (typeof pi.CONFIG_DIR_NAME === "string" && pi.CONFIG_DIR_NAME.length > 0) {
     configDirName = pi.CONFIG_DIR_NAME;
   }
   runtimeVersion = pi.VERSION;
+  borderedLoader = pi.BorderedLoader;
 } catch (error) {
   if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
 }
@@ -54,6 +56,7 @@ if (typeof runtimeVersion !== "string" || runtimeVersion.trim() === "") {
 
 export const CONFIG_DIR_NAME = configDirName;
 export const SP_RUNTIME_VERSION = runtimeVersion;
+export const BorderedLoader = borderedLoader;
 export const SUPPORTED_SP_LINE = "1.x or 0.84.x";
 
 export function checkRuntimeCompatibility(version) {
