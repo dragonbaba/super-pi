@@ -125,11 +125,11 @@ task-count and context-retention limits still apply. There is no total execution
 deadline, and the delegation tool no longer accepts `timeoutMs` at any task level.
 The management tool's `wait.timeoutMs` only bounds waiting and does not kill work.
 
-Continue independent work while background tasks run and prefer their completion
-notification to polling. Refine the same running checkpoint task with `tasks`
-`steer`; inspect completed results before follow-up, verify the deliverable and
-assign only unresolved work. Reuse successful work and never replay completed
-tools or modifications as failure recovery.
+Continue independent work while background tasks run. End the current turn if
+the next step depends on a result. The completion report wakes the idle session.
+Use the existing task IDs for status and refine a running checkpoint task with
+`tasks steer`. Verify deliverables and assign only unresolved work. Reuse
+successful work and never replay completed tools or modifications as failure recovery.
 
 Plan long assignments before launching: name a bounded phase and an early handoff
 point in `stopCondition`. The tool advertises checkpoint capacity (1 MiB / 128
@@ -229,7 +229,9 @@ overlapping calls until the entire chain finishes.
 
 ## Background tasks
 
-In a live TUI or RPC session:
+Set `background: true` in a live TUI or RPC session with the built-in
+`tasks` or `subagent_tasks` tool active. Omit `background` or set it to
+`false` to wait for the result in the foreground.
 
 ```json
 {
@@ -241,8 +243,9 @@ In a live TUI or RPC session:
 }
 ```
 
-The call returns one task ID per child immediately. Continue independent work and
-wait for the single batch completion notification. `subagent_tasks` supports:
+The call returns one task ID per child immediately. Keep those IDs. Continue
+independent work or end the turn until the single batch completion report wakes
+the idle session. `subagent_tasks` supports:
 
 - `list`: current and retained completed tasks;
 - `status` with `id`: state and bounded final result;

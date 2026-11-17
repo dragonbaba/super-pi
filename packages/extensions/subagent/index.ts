@@ -38,7 +38,7 @@ import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { assertProjectAgentAccess, buildChildEnvironment, canonicalWorkspace } from "./child-security.ts";
 import { assertBackgroundWorkspace, consumeDelegatedTaskPolicies, type DelegatedTaskPolicy } from "./delegation.ts";
-import { DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
+import { BACKGROUND_SUBAGENT_GUIDANCE, DELEGATION_GUIDANCE, describeSubagentLimits, loadSubagentLimits, SUBAGENT_LIMITS_PATH, type SubagentLimits } from "./limits.ts";
 import { SubagentScheduler } from "./scheduler.ts";
 import { SubagentTasks, type ManagedSubagentTask } from "./tasks.ts";
 import { ForegroundTask } from "./foreground.ts";
@@ -1278,7 +1278,7 @@ function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	task: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task for single mode" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
 	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
-	background: Type.Optional(Type.Boolean({ description: "Return managed task IDs immediately; continue work and await completion notification. TUI/RPC only; tasks stop when this session closes." })),
+	background: Type.Optional(Type.Boolean({ description: "Omit for foreground execution and a final result. Set true to return task IDs immediately and receive a completion notification. Requires a live TUI/RPC session with the built-in tasks or subagent_tasks tool active. Tasks stop when the session closes." })),
 	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to completed context including prompts/tool arguments: 1 MiB / 128 messages, early handoff at 768 KiB / 96 messages. Plan bounded phases before delegation. Persistent session required; no images or hidden reasoning. Storage/corruption errors still stop the task." })),
 	resumeTaskId: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Single mode only: continue a terminal task's checkpoint as a NEW task with a fresh instruction. Requires the same role/workspace identity and current authorization. Does not replay unfinished tools; inspect current files first." })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -1513,18 +1513,21 @@ export default function (pi: ExtensionAPI) {
 		text: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: "Steer only: refine the running checkpoint task within its original assignment and permissions." })),
 		timeoutMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 60_000, description: "Wait only; default 10000 ms" })),
 	}, { additionalProperties: false });
-	const assertBackgroundContext = (ctx: ExtensionContext): void => {
-		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error("Background subagents require a live TUI or RPC session. Use foreground execution in print/JSON mode.");
+	const assertBackgroundContext = (ctx: ExtensionContext, operation: "launch" | "manage"): void => {
+		const retry = operation === "launch"
+			? " No subagent was started. Omit background or set background: false to run in the foreground."
+			: "";
+		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error(`Background subagents require a live TUI or RPC session.${retry}`);
 		if (taskRegistration.controlsAvailable(ctx)) return;
 		if (ctx.getActiveTools().includes("subagent_tasks")) {
 			for (const tool of pi.getAllTools()) if (tool.name === "subagent_tasks" && tool.parameters === controlParameters) return;
 		}
-		throw new Error("Background subagents require the built-in tasks or subagent_tasks management tool. Enable one or use foreground execution.");
+		throw new Error(`To use background subagents, activate the built-in tasks or subagent_tasks management tool in this session.${retry}`);
 	};
 	const steerTask = (task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
 		pi.assertExecutionCurrent?.();
 		if (closed || changingSession || boundaryChanging || cleanupFailure) throw new Error("Subagent session is unavailable for steering.");
-		assertBackgroundContext(ctx); tasks.assertHistoryAvailable();
+		assertBackgroundContext(ctx, "manage"); tasks.assertHistoryAvailable();
 		if (task.state !== "running" || task.completedAt !== undefined) throw new Error("Only a running checkpoint task can receive corrections; queued, cancelling, terminal and historical tasks cannot restart.");
 		task.controller?.signal.throwIfAborted();
 		const control = controls.get(task.id);
@@ -1539,14 +1542,14 @@ export default function (pi: ExtensionAPI) {
 		background(task, ctx) {
 			pi.assertExecutionCurrent?.();
 			if (closed || changingSession || boundaryChanging || cleanupFailure) throw new Error("Subagent session is unavailable for handoff.");
-			assertBackgroundContext(ctx);
+			assertBackgroundContext(ctx, "manage");
 			tasks.assertHistoryAvailable();
 			const entry = foreground.get(task.id);
 			if (!entry || entry.owner.background) throw new Error("Only a waiting foreground single subagent can transfer; finished/background tasks and batches/chains cannot.");
 			if (task.completedAt !== undefined || task.state === "cancelling") throw new Error("Completed or cancelling tasks cannot transfer to background.");
 			entry.signal.throwIfAborted(); task.controller?.signal.throwIfAborted();
 			assertBackgroundWorkspace(entry.policy, entry.workspace);
-			entry.owner.detach({ content: [{ type: "text", text: `Subagent transferred to background without restarting: ${task.id}. Continue independent work; completion will be notified. Use tasks or subagent_tasks to inspect or cancel it.` }],
+			entry.owner.detach({ content: [{ type: "text", text: `Subagent ${task.id} continues in the background. ${BACKGROUND_SUBAGENT_GUIDANCE}` }],
 				details: { mode: "single", agentScope: entry.agentScope, projectAgentsDir: null, results: [], backgroundCount: 1 } });
 			entry.progress?.close(); liveProgress.delete(entry.toolCallId);
 			foreground.delete(task.id);
@@ -1680,7 +1683,7 @@ export default function (pi: ExtensionAPI) {
 			assertTaskCount(params, limits);
 			assertAssignments(params);
 			signal?.throwIfAborted();
-			if (params.background) assertBackgroundContext(ctx);
+			if (params.background) assertBackgroundContext(ctx, "launch");
 			if (pending.size >= limits.maxTasks) throw new Error("Subagent preparation capacity exceeded; wait for an admitted call to finish.");
 			// One admission deferred, replaced by the existing batch operation before handoff.
 			let finishPreparation: (() => void) | undefined;
@@ -1885,7 +1888,7 @@ export default function (pi: ExtensionAPI) {
 						pi.sendMessage({ customType: "subagent-completion", content: summary, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 					};
 					void operation.then(complete, complete).catch(() => { /* Session teardown can race notification delivery. */ });
-					let text = "Background subagents accepted. Continue independent work; completion will be notified.\n";
+					let text = `Background subagents accepted. ${BACKGROUND_SUBAGENT_GUIDANCE}\n`;
 					for (const task of ownedTasks) text += `${taskStatus(task)}\n`;
 					return { content: [{ type: "text", text }], details: { mode: hasChain ? "chain" : hasTasks ? "parallel" : "single", agentScope, projectAgentsDir: null, results: [], backgroundCount: ownedTasks.length } };
 				}
