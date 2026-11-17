@@ -124,6 +124,18 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 	return { session, cwd, agentDir, resources, settings, manager, run };
 }
 
+test("structured and raw source tools accept whole long source without replay", async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	writeFileSync(join(f.cwd, "long-source.txt"), "tail reached");
+	for (const raw of [false, true]) {
+		const { results } = await f.run([`/*${" ".repeat(1024 * 1024)}*/await show((await tools.read({path:"long-source.txt"})).ref);`], undefined, raw);
+		const result = results.at(-1)!;
+		assert.equal(result.isError, false, JSON.stringify(result));
+		assert.match(JSON.stringify(result.content), /tail reached/);
+		assert.equal((result.details as any).codemode.calls.length, 1);
+	}
+});
+
 test("native captured JSON survives postprocessing failure and is read in the next script without replay", async t => {
 	const f = await fixture(t, { tools: ["bash", "read"] });
 	writeFileSync(join(f.cwd, "producer.cjs"), `const fs=require("node:fs");fs.appendFileSync("calls.txt","1");console.log(JSON.stringify({status:"completed",results:Array.from({length:344},(_,id)=>({id,status:id<4?"Failed":"Passed",text:"x".repeat(240)}))}));`);

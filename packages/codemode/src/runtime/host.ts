@@ -4,7 +4,7 @@ import { assignCodemodeIdentifiers } from "../identifier.ts";
 import { BoundedJson, encodedJsonPayload } from "../bounded-json.ts";
 import { IDENTIFIER_RE as IDENTIFIER } from "../regex.ts";
 import {
-	DEFAULT_MEMORY_BYTES, DEFAULT_TIMEOUT_MS, MAX_BRIDGE_CHARS, MAX_CATALOG_CHARS, MAX_CODE_CHARS,
+	DEFAULT_MEMORY_BYTES, DEFAULT_TIMEOUT_MS, MAX_BRIDGE_CHARS, MAX_CATALOG_CHARS,
 	MAX_ERROR_CHARS, MAX_STORE_KEY_CHARS, MAX_STORE_KEYS, MAX_STORE_TOTAL_CHARS, MAX_STORE_VALUE_CHARS,
 	MAX_TIMEOUT_MS, MAX_TOOLS, MAX_VALUE_CHARS,
 } from "../limits.ts";
@@ -497,7 +497,6 @@ export class CodemodeSandbox {
 	async execute(code: string, options: CodemodeExecuteOptions = {}): Promise<CodemodeResult> {
 		if (this.closed) return Promise.reject(new Error("Sandbox is closed"));
 		if (this.running.size !== 0) throw new Error("Codemode sandbox already has an active execution");
-		if (code.length > MAX_CODE_CHARS) throw new RangeError("Codemode source exceeds its limit");
 		const timeoutMs = options.timeoutMs ?? this.timeoutMs;
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) throw new RangeError("Codemode timeout must be 1..300000 ms");
 		if (!this.toolSnapshot) {

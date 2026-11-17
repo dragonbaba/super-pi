@@ -73,7 +73,7 @@ Configured globals and namespaces must not shadow a VM built-in or bridge helper
 (for example `JSON` or `Math.read`); the sandbox constructor rejects these names.
 
 Limits are defined in `src/limits.ts`: 60 s default / 300 s maximum, 256 MiB VM
-memory, 256 bridge calls, 128 Ki UTF-16 source characters, 1 Mi output characters,
+memory, 256 bridge calls, 1 Mi output characters,
 and 8 Mi cumulative bridge characters in each direction. The host controller adds
 four-way trusted-read concurrency and serial mutation execution. The coding
 agent reuses one Worker per sandbox, with a fresh QuickJS VM, bridge budget and
@@ -84,6 +84,13 @@ above 64 MiB retire the thread. A slot also expires after 30 idle seconds or
 64 executions; `close()` waits for termination. Idle threads do not keep Node alive.
 Overlapping executions still fail immediately; there is no pool queue or shared VM.
 This trades a bounded idle thread's memory for faster consecutive scripts.
+
+There is no independent source-character cap. The complete source is compiled
+and executed by the VM, without automatic truncation or splitting. Syntax errors,
+VM memory exhaustion, timeout and cancellation report their actual outcomes;
+completed host effects are never automatically replayed. The 256 MiB limit covers
+the QuickJS heap, not the entire Node process or source transport copies. Bridge
+argument/result/store quotas remain implementation quotas, not source limits.
 
 Low-level `timeoutMs` remains a wall-time deadline by default. The coding agent
 uses `timeoutMode: "active"`: the budget includes startup, bridge delivery and

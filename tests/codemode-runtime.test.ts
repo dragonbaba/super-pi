@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { CodemodeSandbox } from "../packages/codemode/src/runtime/host.ts";
 import { WorkerPool } from "../packages/codemode/src/runtime/worker-pool.ts";
 import { loadQuickJSWasm } from "../packages/codemode/src/wasm.ts";
-import { MAX_CALLS, MAX_TIMERS, MAX_CODE_CHARS, MAX_OUTPUT_ITEMS } from "../packages/codemode/src/limits.ts";
+import { MAX_CALLS, MAX_TIMERS, MAX_OUTPUT_ITEMS } from "../packages/codemode/src/limits.ts";
 import { parseCodemodeSource } from "../packages/codemode/src/source.ts";
 import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
 import { BridgeBudget, isWorkerToHostMessage } from "../packages/codemode/src/runtime/protocol.ts";
@@ -487,7 +487,6 @@ test("Codemode catalog snapshots invalidate on changes; rejects overlapping exec
 test("Codemode refuses invalid outer limits and bounds tool results before crossing back", async () => {
 	const sandbox = new CodemodeSandbox({ tools: [{ name: "big", execute: () => "x".repeat(10 * 1024 * 1024) }] });
 	try {
-		await assert.rejects(sandbox.execute("x".repeat(MAX_CODE_CHARS + 1)), /source/);
 		for (const timeoutMs of [Infinity, NaN, 0, -1, 300001]) await assert.rejects(sandbox.execute("return 1", { timeoutMs }), /timeout/);
 		const result = await sandbox.execute("await tools.big({})");
 		assert.equal(result.ok, false);

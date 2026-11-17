@@ -2,7 +2,7 @@
 
 ## Evidence and cause
 
-The reported session generated a 191,310-character CodeMode argument. The existing shared 131,072 UTF-16 limit rejected it before any child tool ran. The following provider response reported 512,307 tokens while the configured context window was 500,000. A 1,024-token tool-result budget was sufficient for the 56-token batch minimum, but no context headroom remained for the 31-token envelope. The local preparation block preserved prior outcomes.
+The reported session generated a 191,310-character CodeMode argument. The then-existing shared 131,072 UTF-16 limit rejected it before any child tool ran. This historical source-cap policy was subsequently retired; see [runtime source boundaries](codemode-runtime-source-boundary-2026-11-17.md). The following provider response reported 512,307 tokens while the configured context window was 500,000. A 1,024-token tool-result budget was sufficient for the 56-token batch minimum, but no context headroom remained for the 31-token envelope. The local preparation block preserved prior outcomes.
 
 Read-only reconstruction found a previous compaction checkpoint with a 19,708-token materialized baseline and 182 later successful responses. Automatic compaction already ran between tool turns; its accounting always ignored provider usage after any checkpoint. The reconstructed 432-message context therefore estimated 337,673 tokens while provider-aware accounting measured 512,568 including trailing messages. No uncommitted paid compaction boundary followed that checkpoint. Raw private history was neither changed nor committed.
 
