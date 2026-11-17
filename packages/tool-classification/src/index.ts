@@ -58,6 +58,7 @@ const CATEGORY_SEARCH_TEXT: Readonly<Record<string, string>> = Object.fromEntrie
   CATEGORY_ENTRIES.map(([category, aliases]) => [category, aliases.join(" ")]),
 );
 const TOKEN_SPLIT = /[^\p{L}\p{N}\p{M}]+/u;
+const EMPTY_TERMS: readonly string[] = Object.freeze([]);
 const CJK_TERM = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const WORD_SEGMENTER = new Intl.Segmenter("und", { granularity: "word" });
 const BROWSER_DEBUG_QUERY = /\b(?:browser_debug|cdp|devtools|localhost)\b|chrome_devtools_|\blocal (?:html|page|preview)\b|\b(?:browser|frontend|dom) debug(?:ging)?\b|\b(?:dom|javascript) inspection\b|\binspect (?:dom|javascript)\b|\bui validation\b|\bvalidate ui\b|本地(?:网页|页面|预览)|(?:浏览器|前端|网页|页面)调试|(?:dom|javascript)\s*检查|(?:ui|界面)\s*验证/iu;
@@ -177,19 +178,22 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
-    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use when the stable core tools cannot perform the task. Use browser/browser_exec for public-web reading and interaction in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
+    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use exact:true when checking a registered name, especially one from earlier history; this never activates category or description matches. Use when the stable core tools cannot perform the task. Use browser/browser_exec for public-web reading and interaction in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: browser for ordinary web work; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, skills, or mcp." }),
+      exact: Type.Optional(Type.Boolean({ description: "Match only the exact registered name, without category or description matches. Use true to check a name remembered from session history; a missing name cannot be activated." })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
-      const query = params.query.trim().toLowerCase().normalize("NFC");
-      const requested = requestedCategory(query);
+      const trimmedQuery = params.query.trim();
+      const exactName = params.exact === true ? trimmedQuery : undefined;
+      const query = trimmedQuery.toLowerCase().normalize("NFC");
+      const requested = exactName === undefined ? requestedCategory(query) : undefined;
       const browserDebug = requested === "browser_debug"
         || (requested === undefined || requested === "browser") && BROWSER_DEBUG_QUERY.test(query);
       const category = browserDebug ? "browser_debug" : requested;
-      const terms = normalizedTerms(query);
+      const terms = exactName === undefined ? normalizedTerms(query) : EMPTY_TERMS;
       const wordScoreLimit = (terms.length + 1) ** 2;
       const limit = params.limit ?? 6;
       const candidates: ToolCandidate[] = [];
@@ -207,6 +211,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
           tool.name === "tool_search"
           || tool.available === false
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
+          || exactName !== undefined && tool.name !== exactName
         ) continue;
 
         const toolCategory = categoryFor(tool.name);
@@ -242,7 +247,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       }
       if (exactActive !== undefined || candidates.length === 0) {
         return {
-          content: [{ type: "text", text: `${alreadyActive.length > 0 ? `Matching tools already active: ${alreadyActive.join(", ")}.` : `No inactive tools matched: ${params.query}. Inspect ALL_TOOLS for active tools; no match does not establish absence or authorization.`} ${DISCOVERED_TOOL_GUIDANCE}` }],
+          content: [{ type: "text", text: `${alreadyActive.length > 0 ? `Matching tools already active: ${alreadyActive.join(", ")}.` : `No inactive tools matched: ${params.query}. Inspect ALL_TOOLS for active tools and top-level schemas for direct controls. Do not repeat this lookup until the catalog changes; choose a current tool for the capability. History does not establish current availability or authorization.`} ${DISCOVERED_TOOL_GUIDANCE}` }],
           details: {
             query: params.query,
             matches: [] as ToolCandidate[],

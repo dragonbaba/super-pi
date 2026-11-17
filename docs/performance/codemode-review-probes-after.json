@@ -1,4 +1,6 @@
 {
+  "historical": true,
+  "currentGuide": "../codemode.md",
   "node": "v26.4.0",
   "root": "C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\sp-codemode-review-WhjtNd",
   "probes": {

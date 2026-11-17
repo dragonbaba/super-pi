@@ -20,7 +20,7 @@ export function searchFixture(initialTools: SearchTool[], extension = toolClassi
 	assert.ok(search);
 	return {
 		counters,
-		search(query: string, limit = 6) { return search.execute("fixture", { query, limit }) as Promise<any>; },
+		search(query: string, limit = 6, exact = false) { return search.execute("fixture", { query, limit, exact }) as Promise<any>; },
 		setActive(names: string[]) { active = names; },
 		setCatalog(next: SearchTool[]) { tools = next; },
 		setAllowed(next: (name: string) => boolean) { allowed = next; },

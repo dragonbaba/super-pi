@@ -14,7 +14,7 @@ export function withMsysStdinBridge(
   if (platform !== "win32" || !BACKSLASH_PAIR_RE.test(context.command)) return context;
   const commandBytes = Buffer.byteLength(context.command, "utf8");
   if (commandBytes > MAX_MSYS_STDIN_COMMAND_BYTES) {
-    throw new Error(`MSYS_STDIN_COMMAND_TOO_LARGE: paired-backslash Bash command is ${commandBytes} UTF-8 bytes; maximum bridge size is ${MAX_MSYS_STDIN_COMMAND_BYTES}. Use a bounded script file or structured argv instead.`);
+    throw new Error(`MSYS_STDIN_COMMAND_TOO_LARGE: paired-backslash Bash command is ${commandBytes} UTF-8 bytes; maximum bridge size is ${MAX_MSYS_STDIN_COMMAND_BYTES}. Use a bounded script file instead.`);
   }
   const env: NodeJS.ProcessEnv = {};
   const sourceEnv = context.env;
@@ -29,7 +29,7 @@ export function withMsysStdinBridge(
     if (value !== undefined) environmentCharacters += key.length + value.length + 2;
   }
   if (environmentCharacters > MAX_WINDOWS_ENVIRONMENT_CHARS) {
-    throw new Error(`MSYS_STDIN_ENV_TOO_LARGE: bridged Windows environment requires ${environmentCharacters} UTF-16 characters; CreateProcess allows at most ${MAX_WINDOWS_ENVIRONMENT_CHARS}. Use structured argv or a bounded script file.`);
+    throw new Error(`MSYS_STDIN_ENV_TOO_LARGE: bridged Windows environment requires ${environmentCharacters} UTF-16 characters; CreateProcess allows at most ${MAX_WINDOWS_ENVIRONMENT_CHARS}. Use a bounded script file.`);
   }
   return {
     command: MSYS_STDIN_WRAPPER,
