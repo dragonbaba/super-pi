@@ -69,6 +69,21 @@ test("project-context registers only its retained commands and no graph tool", t
   assert.equal(Object.hasOwn(core, "codeGraphAvailability"), false);
 });
 
+test("project refresh excludes task snapshots while retaining actual source and scratch bytes", async t => {
+  const f = fixture(t);
+  const scratch = join(f.cwd, ".task-tmp", "old-task", "legacy-extension");
+  mkdirSync(scratch, { recursive: true });
+  const cached = join(scratch, "index.ts"), bytes = Buffer.from("export const retired = true;\n");
+  writeFileSync(cached, bytes);
+  await f.run("project-init");
+  const records = core.scanProject(f.cwd);
+  assert.ok(records.some((record: { path: string }) => record.path === "src/main.ts"));
+  assert.equal(records.some((record: { path: string }) => record.path.startsWith(".task-tmp/")), false);
+  const index = readFileSync(join(f.cwd, ".sp", "project-index.jsonl"), "utf8");
+  assert.doesNotMatch(index, /old-task|legacy-extension|\.task-tmp/);
+  assert.deepEqual(readFileSync(cached), bytes, "refresh never deletes scratch resources");
+});
+
 test("project-status remains read-only before initialization without graph readiness", async t => {
   const f = fixture(t);
   const text = await f.run("project-status");

@@ -30,7 +30,7 @@ export const PROFILE_NAME = "project-context.md";
 export const INDEX_NAME = "project-index.jsonl";
 
 const EXCLUDED_DIRS = new Set([
-  ".git", ".hg", ".svn", ".codegraph", CONFIG_DIR_NAME.toLowerCase(), ".idea", ".vscode", ".cache", ".next", ".nuxt", ".turbo",
+  ".git", ".hg", ".svn", ".codegraph", CONFIG_DIR_NAME.toLowerCase(), ".task-tmp", ".idea", ".vscode", ".cache", ".next", ".nuxt", ".turbo",
   ".aws", ".azure", ".docker", ".kube", ".ssh", ".terraform", ".secrets", "secrets",
   "node_modules", "vendor", "target", "dist", "build", "coverage", "out", "bin", "obj",
   "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "venv",

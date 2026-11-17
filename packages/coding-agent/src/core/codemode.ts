@@ -67,7 +67,7 @@ const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "tex
 const MAX_DESCRIBE_PAGE_CHARS = 16_000;
 const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
 const MAX_DESCRIBE_TOOLS = 16;
-const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. If tools.tool_search is available, search the exact name, then read describeTools again. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
+const UNAVAILABLE_DOCUMENTATION = "[TOOL_UNAVAILABLE] One or more requested tools are not active in this script. Check ALL_TOOLS and direct top-level schemas. If tools.tool_search is available, search once with {query:name,exact:true}; only returned names can be activated. If no match is returned, choose a current tool instead of repeating a historical name. Newly activated tools use callTool(name,args) in the same script. Excluded tools stay unavailable.";
 const ALLOW_FAILURE = Object.freeze({ allowFailure: true });
 const REQUEST_REVIEW = Object.freeze({ review: true });
 const REVIEW_ALLOW_FAILURE = Object.freeze({ review: true, allowFailure: true });

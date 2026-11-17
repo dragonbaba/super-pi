@@ -238,7 +238,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		"tools",
 		allTools.map((tool) => tool.name),
 		"tool_search" in tools
-			? "Discover inactive tools with tools.tool_search({query: '<exact tool name>'}); read describeTools([name]), then use callTool(name,args) in this script."
+			? "Check ALL_TOOLS first. Look up an inactive name once with tools.tool_search({query: '<exact tool name>', exact: true}); read describeTools([name]), then use callTool(name,args) in this script. If no match is returned, choose a current tool instead of repeating a historical name."
 			: "Filter ALL_TOOLS for available names. If provided, use await describeTools([names]) for schemas.",
 	);
 
