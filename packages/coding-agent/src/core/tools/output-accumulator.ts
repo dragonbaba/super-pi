@@ -1,7 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, type Hash } from "node:crypto";
 import {
 	closeSync,
 	createWriteStream,
+	fstatSync,
 	lstatSync,
 	opendirSync,
 	readFileSync,
@@ -13,12 +14,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { privateOutputFileSystem } from "../../utils/private-output-file.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
+import type { CapturedOutput } from "./captured-output.ts";
 
 export interface OutputAccumulatorOptions {
 	maxLines?: number;
 	maxBytes?: number;
 	tempFilePrefix?: string;
 	onSpillError?: (error: Error) => void;
+	/** Existing transport envelope for structured data captures; shell defaults stay 5 MiB. */
+	maxSpillBytes?: number;
+	captureData?: boolean;
 }
 
 export interface OutputSnapshot {
@@ -40,6 +45,7 @@ function byteLength(text: string): number {
 const MAX_SPILL_BYTES = 5 * 1024 * 1024;
 const SPILL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const SPILL_MARKER = Buffer.from("\n[Super Pi spill file capped at 5 MiB; later output was not persisted.]\n");
+const STRUCTURED_SPILL_MARKER = Buffer.from("\n[Super Pi captured output capped; later output was not persisted.]\n");
 const MAX_SPILL_PAYLOAD_BYTES = MAX_SPILL_BYTES - SPILL_MARKER.length;
 const SPILL_OWNER_SUFFIX = ".sp-owned";
 const SPILL_OWNER_MARKER = "super-pi-output-spill-v2\n";
@@ -98,6 +104,9 @@ export class OutputAccumulator {
 	private readonly maxRollingBytes: number;
 	private readonly tempFilePrefix: string;
 	private readonly onSpillError?: (error: Error) => void;
+	private readonly maxSpillPayloadBytes: number;
+	private readonly spillMarker: Buffer;
+	private readonly captureData: boolean;
 	private readonly decoder = new TextDecoder();
 
 	private rawChunks: Buffer[] = [];
@@ -119,6 +128,10 @@ export class OutputAccumulator {
 	private tempFileError: Error | undefined;
 	private setupCloseError: string | undefined;
 	private ownerMarkerCreated = false;
+	private captureHash: Hash | undefined;
+	private captureDigest: string | undefined;
+	private captureDev = 0;
+	private captureIno = 0;
 	private readonly onTempFileError = (error: Error): void => {
 		this.tempFileError = error;
 		this.onSpillError?.(error);
@@ -130,6 +143,21 @@ export class OutputAccumulator {
 		this.maxRollingBytes = Math.max(this.maxBytes * 2, 1);
 		this.tempFilePrefix = options.tempFilePrefix ?? "sp-output";
 		this.onSpillError = options.onSpillError;
+		this.captureData = options.captureData === true;
+		this.spillMarker = options.maxSpillBytes === undefined ? SPILL_MARKER : STRUCTURED_SPILL_MARKER;
+		this.maxSpillPayloadBytes = options.maxSpillBytes === undefined ? MAX_SPILL_PAYLOAD_BYTES : options.maxSpillBytes - this.spillMarker.length;
+		if (!Number.isSafeInteger(this.maxSpillPayloadBytes) || this.maxSpillPayloadBytes < 1) throw new RangeError("Invalid output capture capacity");
+	}
+
+	/** Completion boundary only: no descriptor allocation in append/snapshot/progress. */
+	capture(): CapturedOutput {
+		if (!this.captureData) throw new Error("Raw output capture was not enabled for this producer");
+		if (!this.finished || this.tempFileStream || this.tempFileError || this.setupCloseError) throw new Error("Output capture has not finished successfully");
+		if (!this.tempFilePath) return Object.freeze({ kind: "text", text: this.snapshot().content });
+		this.captureDigest ??= this.captureHash!.digest("hex");
+		this.captureHash = undefined;
+		return Object.freeze({ kind: "file", path: this.tempFilePath, bytes: this.tempFileBytes,
+			dev: this.captureDev, ino: this.captureIno, sha256: this.captureDigest, capped: this.tempFileCapped });
 	}
 
 	append(data: Buffer): void {
@@ -251,6 +279,8 @@ export class OutputAccumulator {
 		stream?.off("error", this.onTempFileError);
 		const path = this.tempFilePath;
 		this.tempFilePath = undefined;
+		this.captureHash = undefined;
+		this.captureDigest = undefined;
 		if (!path) return "not_needed";
 		try { unlinkSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Incomplete output log retained at ${path}: ${String(error)}`); }
 		if (this.ownerMarkerCreated) {
@@ -338,14 +368,15 @@ export class OutputAccumulator {
 	private writeTempData(data: Buffer): void {
 		if (this.tempFileError) throw this.tempFileError;
 		if (!this.tempFileStream || this.tempFileCapped || data.length === 0) return;
-		const remaining = MAX_SPILL_PAYLOAD_BYTES - this.tempFileBytes;
+		const remaining = this.maxSpillPayloadBytes - this.tempFileBytes;
 		if (remaining > 0) {
 			const chunk = data.length <= remaining ? data : Buffer.from(data.subarray(0, remaining));
 			this.tempFileStream.write(chunk);
+			this.captureHash?.update(chunk);
 			this.tempFileBytes += chunk.length;
 		}
 		if (data.length > remaining) {
-			this.tempFileStream.write(SPILL_MARKER);
+			this.tempFileStream.write(this.spillMarker);
 			this.tempFileCapped = true;
 		}
 	}
@@ -363,6 +394,12 @@ export class OutputAccumulator {
 		try {
 			spillFd = privateOutputFileSystem.openSync(spillPath);
 			spillCreated = true;
+			if (this.captureData) {
+				const identity = fstatSync(spillFd);
+				this.captureDev = identity.dev;
+				this.captureIno = identity.ino;
+				this.captureHash = createHash("sha256");
+			}
 			this.tempFilePath = spillPath;
 			ownerFd = privateOutputFileSystem.openSync(ownerPath);
 			this.ownerMarkerCreated = true;

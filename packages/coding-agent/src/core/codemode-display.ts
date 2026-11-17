@@ -19,6 +19,7 @@ export interface CodemodeChildDisplay {
 	inputSummary?: string;
 	previewTruncated?: boolean;
 	outputPath?: string;
+	outputRefs?: { ref: string; format: "text" | "json"; complete: boolean | "unknown" }[];
 	executionStatus?: string;
 	exitCode?: number | null;
 	outputDigests?: string[];

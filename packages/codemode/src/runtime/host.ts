@@ -1,7 +1,7 @@
 import { MessageChannel, type MessagePort, Worker } from "node:worker_threads";
 import { WorkerPool } from "./worker-pool.ts";
 import { assignCodemodeIdentifiers } from "../identifier.ts";
-import { BoundedJson } from "../bounded-json.ts";
+import { BoundedJson, encodedJsonPayload } from "../bounded-json.ts";
 import { IDENTIFIER_RE as IDENTIFIER } from "../regex.ts";
 import {
 	DEFAULT_MEMORY_BYTES, DEFAULT_TIMEOUT_MS, MAX_BRIDGE_CHARS, MAX_CATALOG_CHARS, MAX_CODE_CHARS,
@@ -336,7 +336,8 @@ class Execution {
 			const args: unknown = message.args === undefined ? undefined : JSON.parse(message.args);
 			const value = await tool.execute(args, { signal: pending.controller.signal, callId: id });
 			if (this.finished) return;
-			const payload = value === undefined ? undefined : this.serializer.stringify(value, MAX_VALUE_CHARS);
+			const payload = encodedJsonPayload(value) ?? (value === undefined ? undefined : this.serializer.stringify(value, MAX_VALUE_CHARS));
+			if (payload !== undefined && payload.length > MAX_VALUE_CHARS) throw new RangeError("Codemode JSON value exceeds its limit");
 			this.replyChars += payload?.length ?? 0;
 			if (this.replyChars > MAX_BRIDGE_CHARS) throw new RangeError("Codemode cumulative tool result limit exceeded");
 			reply = { type: "result", id, ok: true, payload };

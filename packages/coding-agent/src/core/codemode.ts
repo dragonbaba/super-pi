@@ -8,9 +8,10 @@ import { BoundedJson } from "@super-pi/codemode/bounded-json";
 import type { ToolDefinition, CodemodeReadEvent, ExtensionContext } from "./extensions/types.ts";
 import type { ToolResultPresentationContent } from "./tool-result-presentation.ts";
 import { CODEMODE_DESCRIPTION, CODEMODE_FAILURE_GUIDANCE, CODEMODE_NAME, CODEMODE_PARAMETERS, CODEMODE_SAMPLING,
-	MAX_CODEMODE_RETAINED_CHARS } from "./codemode-constants.ts";
+	MAX_CODEMODE_RETAINED_CHARS, MAX_CODEMODE_RETAINED_RESULTS } from "./codemode-constants.ts";
 import { CODEMODE_MUTATION_NAMES } from "./codemode-constants.ts";
 import { CodemodeStore } from "./codemode-store.ts";
+import { CodemodeOutputs, type OutputReference } from "./codemode-output.ts";
 import { saveCodemodeImages } from "./codemode-images.ts";
 import { boundCodemodeResult, capCodemodeOutput, codemodeContentChars, codemodeImageChars, persistCodemodeResult } from "./codemode-result.ts";
 import { MUTATION_READ_SOURCE } from "./tools/read-window.ts";
@@ -62,8 +63,7 @@ const MAX_RETAINED_IMAGE_CHARS = 16 * 1024 * 1024;
 const MAX_SHOWN_IMAGE_CHARS = 16 * 1024 * 1024;
 /** Image data handed to the script per result; larger images stay host-side behind show(ref). */
 const MAX_SCRIPT_IMAGE_CHARS = 256 * 1024;
-const MAX_RETAINED_RECORDS = 256;
-const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details?: unknown; isError?: boolean; ref: string };\n';
+const TOOL_RESULT_DECLARATION = 'type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; details?: unknown; isError?: boolean; ref: string; outputs: Array<{ref:string;format:"text"|"json";complete:boolean|"unknown"}> };\n';
 const MAX_DESCRIBE_PAGE_CHARS = 16_000;
 const MAX_DESCRIBE_SCHEMA_CHARS = 64 * 1024;
 const MAX_DESCRIBE_TOOLS = 16;
@@ -165,6 +165,7 @@ export class CodemodeController {
 	private sandbox: CodemodeSandbox | undefined;
 	private current: Invocation | undefined;
 	private readonly store = new CodemodeStore();
+	private readonly outputs = new CodemodeOutputs();
 	private readonly serializer = new BoundedJson();
 	private readonly displayedReads = new Map<string, DisplayedRead[]>();
 	private visibleReads: CodemodeReadEvent[] = [];
@@ -230,8 +231,9 @@ export class CodemodeController {
 		for (const [name, identifier] of identifiers) this.identifierNames.set(identifier, name);
 	}
 
-	restoreStore(value?: unknown): void { this.pendingStore = undefined; this.store.restore(value); this.restoreError = undefined; this.clearReadEvidence(); }
+	restoreStore(value?: unknown): void { this.pendingStore = undefined; this.store.restore(value); this.restoreError = undefined; this.clearReadEvidence(); this.outputs.clear(); }
 	failStoreRestore(error: unknown): void {
+		this.outputs.clear();
 		this.pendingStore = undefined;
 		this.store.reset();
 		this.clearReadEvidence();
@@ -398,8 +400,16 @@ export class CodemodeController {
 			if (observation) entry.observationError = observation.error;
 			this.saveResult(entry);
 		}
+		const ref = `${invocation.prefix}:${++invocation.issued}`;
+		fact.ref = ref;
+		let outputs: OutputReference[] = [];
 		let result: ToolResultMessage;
-		try { result = await boundCodemodeResult(raw, this.serializer); }
+		try {
+			const captured = await this.outputs.capture(raw, ref);
+			outputs = captured.outputs;
+			fact.outputRefs = outputs;
+			result = await boundCodemodeResult(raw, this.serializer, captured.structured);
+		}
 		catch (error) { invocation.failed = true; throw error; }
 		if (result.details?.codemodeOutput?.capped === true) fact.resultComplete = false;
 		fact.displayLimited = result.content !== raw.content;
@@ -413,15 +423,13 @@ export class CodemodeController {
 		const contentChars = codemodeContentChars(result);
 		const chars = contentChars + (this.serializer.stringify(result.details, 128 * 1024)?.length ?? 0);
 		const imageChars = codemodeImageChars(result.content);
-		const ref = `${invocation.prefix}:${++invocation.issued}`;
-		fact.ref = ref;
 		const readInput = name === "read" && typeof input.path === "string" && input.path.length <= 32768
 			&& (input.offset === undefined || typeof input.offset === "number") && (input.limit === undefined || typeof input.limit === "number")
 			? { path: input.path, offset: input.offset, limit: input.limit } : undefined;
 		const record: ChildRecord = { result, input: readInput, chars, contentChars, imageChars, fact, recovery: undefined, recoveryAttempted: false, recoveryPending: undefined, automaticallyShown: false };
 		while ((invocation.retainedChars + chars > MAX_CODEMODE_RETAINED_CHARS
 			|| invocation.retainedImageChars + imageChars > MAX_RETAINED_IMAGE_CHARS
-			|| invocation.records.size >= MAX_RETAINED_RECORDS) && invocation.records.size) {
+			|| invocation.records.size >= MAX_CODEMODE_RETAINED_RESULTS) && invocation.records.size) {
 			const oldest = invocation.records.keys().next().value!;
 			const evicted = invocation.records.get(oldest)!;
 			invocation.retainedChars -= evicted.chars;
@@ -472,7 +480,7 @@ export class CodemodeController {
 			throw new ChildToolFailure(`[${ref}] ${diagnostic}${fact.outputPath ? "\nOutput: " + fact.outputPath : ""}`);
 		}
 		const content = imageChars > MAX_SCRIPT_IMAGE_CHARS ? scriptContent(result.content) : result.content;
-		return { content, details: result.details, isError: result.isError, ref, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
+		return { content, details: result.details, isError: result.isError, ref, outputs, executed: fact.executed, resultComplete: fact.resultComplete, failureHandled };
 	}
 	private show(ref: unknown): unknown {
 		const invocation = this.requireInvocation();
@@ -636,6 +644,11 @@ export class CodemodeController {
 				return this.invoke(name, input, options, context.callId);
 			} },
 			{ name: "show", execute: ref => this.show(ref) },
+			{ name: "readOutput", spread: true, execute: (args, context) => {
+				this.requireInvocation();
+				const [ref, options] = args as unknown[];
+				return this.outputs.read(ref, options, context.signal);
+			} },
 			{ name: "describeTools", spread: true, execute: args => {
 				const [names, options] = args as unknown[];
 				return this.describe(names, options);
@@ -705,6 +718,7 @@ export class CodemodeController {
 			if (imageFiles) summary += "\n" + imageFiles.notice;
 			const imagePrefix = imageFiles ? summary.length : 0;
 			for (const fact of invocation.facts) summary += `\n${fact.toolName.slice(0, 80)}: ${fact.executionStatus ?? (fact.isError ? "failed" : "completed")}${fact.executionStatus && (fact.toolName === "bash" || fact.toolName === "powershell") ? "; exit=" + (fact.exitCode ?? "unknown") : ""}${fact.outputTruncated ? "; output truncated" : ""}${fact.isError ? " — " + codemodeFailureReason(fact.preview, "model") + " [" + fact.ref + "]" : ""}${fact.outputPath ? " Output: " + fact.outputPath : ""}`;
+			for (const fact of invocation.facts) if (fact.outputRefs) for (const output of fact.outputRefs) summary += `\nData: ${output.ref} (${output.format}; complete=${output.complete}); use readOutput(ref,options).`;
 			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			for (const fact of invocation.facts) if (fact.evicted && fact.displayLimited) summary += `\n[CODEMODE_REF_EVICTED] ${fact.ref}: result left the memory cache.${fact.outputPath ? " Recover with read: " + fact.outputPath : " Recovery unavailable."}`;
 			if (failed || failedChildren) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
@@ -751,6 +765,7 @@ export class CodemodeController {
 	}
 	async close(): Promise<void> {
 		this.closed = true;
+		this.outputs.close();
 		this.pendingStore = undefined;
 		this.restoreError = undefined;
 		this.documentationSnapshot = undefined;

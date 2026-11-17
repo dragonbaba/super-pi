@@ -4,6 +4,24 @@ import test from "node:test";
 import ts from "typescript";
 import { PRELUDE_SOURCE } from "../packages/codemode/src/runtime/prelude-source.ts";
 
+test("raw capture hashes existing write buffers without adding per-chunk callback or Promise factories", () => {
+	const source = readFileSync("packages/coding-agent/src/core/tools/output-accumulator.ts", "utf8");
+	const ast = ts.createSourceFile("output-accumulator.ts", source, ts.ScriptTarget.Latest, true);
+	const expected = new Set(["append", "writeTempData", "appendDecodedData", "appendDecodedText", "getSnapshotText"]);
+	let checked = 0;
+	function audit(node: ts.Node): void {
+		assert.ok(!ts.isArrowFunction(node) && !ts.isFunctionExpression(node) && !ts.isAwaitExpression(node));
+		if (ts.isNewExpression(node)) assert.doesNotMatch(node.expression.getText(ast), /^(Promise|AbortController)$/);
+		if (ts.isCallExpression(node)) assert.doesNotMatch(node.expression.getText(ast), /\.(?:then|catch|finally|map|filter|reduce|stringify)$/);
+		ts.forEachChild(node, audit);
+	}
+	function visit(node: ts.Node): void {
+		if (ts.isMethodDeclaration(node) && expected.has(node.name.getText(ast))) { checked++; audit(node.body!); }
+		else ts.forEachChild(node, visit);
+	}
+	visit(ast); assert.equal(checked, expected.size);
+});
+
 test("explicit store inspection reuses JSON lengths with no value parsing or per-key callback factories", () => {
 	const source = ts.createSourceFile("codemode-prelude.js", PRELUDE_SOURCE, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 	let inspected = 0;

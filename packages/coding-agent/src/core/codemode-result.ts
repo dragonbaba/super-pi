@@ -28,7 +28,7 @@ function appendText(output: OutputAccumulator, text: string): void {
  * Reuse the native capped spill/cleanup mechanism; never join a large result to make a preview.
  * Only text counts toward the inline bound: up to MAX_KEPT_IMAGES image blocks are kept as images.
  */
-export async function boundCodemodeResult(result: ToolResultMessage, serializer: BoundedJson): Promise<ToolResultMessage> {
+export async function boundCodemodeResult(result: ToolResultMessage, serializer: BoundedJson, structured?: ReadonlyMap<McpTypedSource, string>): Promise<ToolResultMessage> {
 	let chars = 0, images = 0, needsRecovery = false;
 	let detailsNeedRecovery = false;
 	let details: unknown;
@@ -50,7 +50,7 @@ export async function boundCodemodeResult(result: ToolResultMessage, serializer:
 				// A structured block's text is a preview of its source; writing both repeats the value.
 				const source = (block as { mcpSource?: McpTypedSource }).mcpSource;
 				if (source?.kind !== "structured") appendText(output, block.text);
-				if (source) appendText(output, serializeMcpStructured(verifiedMcpSource(source).value));
+				if (source) appendText(output, structured?.get(source) ?? serializeMcpStructured(verifiedMcpSource(source).value));
 			} else if (content.length <= MAX_KEPT_IMAGES) {
 				content.push(block);
 				appendText(output, `[image ${block.mimeType} kept as attachment ${content.length - 1}]`);

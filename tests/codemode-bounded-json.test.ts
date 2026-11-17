@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { BoundedJson } from "../packages/codemode/src/bounded-json.ts";
+import { BoundedJson, encodedJsonPayload } from "../packages/codemode/src/bounded-json.ts";
 import { CodemodeStore } from "../packages/coding-agent/src/core/codemode-store.ts";
+
+test("an encoded host result serializes once and preserves the existing size boundary", () => {
+	const serializer = new BoundedJson(); let conversions = 0;
+	const value = { toJSON() { conversions++; return { rows: [1, 2, 3] }; } };
+	const encoded = serializer.encode(value, 64);
+	assert.equal(encodedJsonPayload(encoded), '{"rows":[1,2,3]}'); assert.equal(conversions, 1);
+	assert.equal(encodedJsonPayload({ rows: [1] }), undefined);
+	assert.throws(() => serializer.encode("x".repeat(65), 64), RangeError);
+});
 
 test("bounded JSON accepts actual-size boundaries for arrays, keys, escapes and boxed values", () => {
 	const serializer = new BoundedJson();
