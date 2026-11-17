@@ -1,4 +1,4 @@
-import { autoCompactionSettingKey, DEFAULT_AUTO_COMPACTION_PERCENTAGE, isAutoCompactionPercentage, type ThinkingLevel } from "@super-pi/agent-core";
+import { autoCompactionSettingKey, DEFAULT_AUTO_COMPACTION_PERCENTAGE, DEFAULT_COMPACTION_KEEP_RECENT_TOKENS, isAutoCompactionPercentage, type ThinkingLevel } from "@super-pi/agent-core";
 import type { Transport } from "@super-pi/ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@super-pi/tui";
 import { randomUUID } from "crypto";
@@ -1007,7 +1007,7 @@ export class SettingsManager {
 	}
 
 	getCompactionKeepRecentTokens(): number {
-		return this.settings.compaction?.keepRecentTokens ?? 20000;
+		return this.settings.compaction?.keepRecentTokens ?? DEFAULT_COMPACTION_KEEP_RECENT_TOKENS;
 	}
 
 	private getAutoCompactionKey(provider: string, modelId: string): string {

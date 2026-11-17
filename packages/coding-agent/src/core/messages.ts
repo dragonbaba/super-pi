@@ -6,7 +6,7 @@
  */
 
 import type { AgentMessage } from "@super-pi/agent-core";
-import type { ImageContent, Message, TextContent } from "@super-pi/ai";
+import { withCurrentContextUsage, withHistoricalContextUsage, type AssistantMessage, type ImageContent, type Message, type TextContent } from "@super-pi/ai";
 
 export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
@@ -146,6 +146,13 @@ export function createCustomMessage(
  * - Custom extensions and tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
+	return convertToLlmWithUsageEpoch(messages, undefined);
+}
+
+/** SDK request setup only. The existing conversion owns the output array; normal
+ * current-epoch conversion adds one small metadata view, never copies payloads.
+ */
+export function convertToLlmWithUsageEpoch(messages: AgentMessage[], current: AssistantMessage | null | undefined): Message[] {
 	return messages
 		.map((m): Message | undefined => {
 			switch (m.role) {
@@ -185,6 +192,8 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					return { role: "user", content: m.content, timestamp: m.timestamp };
 				case "assistant":
 					if (m.role === "assistant" && m.api === "host-operation") throw new Error("Unsupported legacy experimental host history; preserve session and journal for explicit migration");
+					if (current === null) return withHistoricalContextUsage(m);
+					if (m === current) return withCurrentContextUsage(m);
 				case "toolResult":
 					return m;
 				default:

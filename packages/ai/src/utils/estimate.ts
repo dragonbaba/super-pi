@@ -1,5 +1,24 @@
 import type { AssistantMessage, Context, ImageContent, Message, TextContent, Tool, Usage } from "../types.ts";
 
+const HISTORICAL_CONTEXT_USAGE = Symbol.for("pi.historical-context-usage.v1");
+const CURRENT_CONTEXT_USAGE = Symbol.for("pi.current-context-usage.v1");
+type EpochMessage = AssistantMessage & { [HISTORICAL_CONTEXT_USAGE]?: boolean; [CURRENT_CONTEXT_USAGE]?: boolean };
+
+/** Compaction setup only. Preserve billing/content; exclude retained usage from the new request epoch.
+ * The enumerable symbol survives object spreads but never enters JSON/provider wire payloads.
+ */
+export function withHistoricalContextUsage(message: AssistantMessage): AssistantMessage {
+	if ((message as EpochMessage)[HISTORICAL_CONTEXT_USAGE] && !(message as EpochMessage)[CURRENT_CONTEXT_USAGE]) return message;
+	const historical = { ...message, [HISTORICAL_CONTEXT_USAGE]: true, [CURRENT_CONTEXT_USAGE]: false };
+	return historical;
+}
+
+/** One metadata view of the response selected by the session's current-epoch owner. */
+export function withCurrentContextUsage(message: AssistantMessage): AssistantMessage {
+	const current = { ...message, [HISTORICAL_CONTEXT_USAGE]: false, [CURRENT_CONTEXT_USAGE]: true };
+	return current;
+}
+
 export interface ContextUsageEstimate {
 	/** Estimated total context tokens. */
 	tokens: number;
@@ -70,14 +89,17 @@ export function estimateMessageTokens(message: Message, toolCalling = true): num
 	return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
-function getLastAssistantUsageInfo(messages: readonly Message[], toolCalling = true): { usage: Usage; index: number } | undefined {
+function getLastAssistantUsageIndex(messages: readonly Message[], toolCalling = true): number {
 	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
-	let usageInfo: { usage: Usage; index: number } | undefined;
+	let usageIndex = -1;
+	let explicitEpoch = false;
 
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i];
 		if (message.role === "assistant") {
 			const assistant = message as AssistantMessage;
+			const currentEpoch = (assistant as EpochMessage)[CURRENT_CONTEXT_USAGE] === true;
+			if (currentEpoch) { explicitEpoch = true; usageIndex = -1; }
 			if (!toolCalling) {
 				let retained = false;
 				for (const block of assistant.content) if (block.type !== "thinking" || block.thinking) { retained = true; break; }
@@ -85,31 +107,35 @@ function getLastAssistantUsageInfo(messages: readonly Message[], toolCalling = t
 			}
 			// A newer prefix message was inserted after this response (for example, a
 			// compaction summary), so its usage cannot describe the current prefix.
-			const usageAppliesToPrefix = assistant.timestamp >= latestPrefixTimestamp;
+			// An explicit epoch owner already verified the canonical prefix by identity;
+			// historical clock skew cannot invalidate that committed response.
+			const usageAppliesToPrefix = currentEpoch || assistant.timestamp >= latestPrefixTimestamp;
 			if (
 				usageAppliesToPrefix &&
+				!(assistant as EpochMessage)[HISTORICAL_CONTEXT_USAGE] &&
+				(!explicitEpoch || currentEpoch) &&
 				assistant.stopReason !== "aborted" &&
 				assistant.stopReason !== "error" &&
 				calculateContextTokens(assistant.usage) > 0
 			) {
-				usageInfo = { usage: assistant.usage, index: i };
+				usageIndex = i;
 			}
 		}
 		latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
 	}
 
-	return usageInfo;
+	return usageIndex;
 }
 
 function estimateMessages(messages: readonly Message[], toolCalling = true): ContextUsageEstimate {
-	const usageInfo = getLastAssistantUsageInfo(messages, toolCalling);
-	if (usageInfo) {
-		const usageTokens = calculateContextTokens(usageInfo.usage);
+	const usageIndex = getLastAssistantUsageIndex(messages, toolCalling);
+	if (usageIndex >= 0) {
+		const usageTokens = calculateContextTokens((messages[usageIndex] as AssistantMessage).usage);
 		let trailingTokens = 0;
-		for (let i = usageInfo.index + 1; i < messages.length; i++) {
+		for (let i = usageIndex + 1; i < messages.length; i++) {
 			trailingTokens += estimateMessageTokens(messages[i], toolCalling);
 		}
-		return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
+		return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageIndex };
 	}
 
 	let tokens = 0;

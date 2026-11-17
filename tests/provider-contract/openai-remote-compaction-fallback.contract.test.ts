@@ -124,7 +124,10 @@ test("GPT compaction auth failure cancels compaction with enum-only telemetry", 
 		assert.equal(warnings.length, 1); assert.match(warnings[0]!, /upgrade the Super Pi host/);
 	} finally { console.warn = originalWarn; }
 	const { result, entries, notices } = await beforeCompact("gpt-5.1", `OAuth refresh failed for openai: token ${KEY}`);
-	assert.deepEqual(result, { cancel: true });
+	const cancellation = result as { cancel?: boolean; errorMessage?: string } | undefined;
+	assert.equal(cancellation?.cancel, true);
+	assert.match(cancellation?.errorMessage ?? "", /authentication_lookup_failed/);
+	assert.equal(JSON.stringify(result).includes(KEY), false);
 	assert.equal(entries.length, 1);
 	const [type, data] = entries[0]!;
 	assert.equal(type, "compaction-telemetry-v1");

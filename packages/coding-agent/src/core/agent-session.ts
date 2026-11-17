@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { CodemodeController } from "./codemode.ts";
 import { RequestImageBudget, supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { isRequestBodyTooLarge } from "@super-pi/ai";
-import { getAutoCompactionThreshold } from "@super-pi/agent-core";
+import { COMPACTION_CHARS_PER_TOKEN, getAutoCompactionThreshold } from "@super-pi/agent-core";
 import { WorkspaceSandboxTools } from "./sandbox/workspace-tools.ts";
 import { SandboxNetworkSession } from "./sandbox/network-policy.ts";
 import { getAgentDir } from "../config.ts";
@@ -679,24 +679,20 @@ function hasPendingPaidCompactionBoundary(entries: SessionEntry[], model: Model<
 	return false;
 }
 
-function getPersistedMaterializedBaseline(latestCompaction: CompactionEntry): number | null {
+function getPersistedMaterializedBaseline(latestCompaction: CompactionEntry, model?: Model<any>, policyThreshold?: number): number | null {
 	const details = latestCompaction.details as
-		| { contextAccounting?: { schemaVersion?: number; materializedTokensAfter?: number } }
+		| { contextAccounting?: { schemaVersion?: number; materializedTokensAfter?: number; thresholdTokens?: number; owner?: { provider?: string; model?: string } } }
 		| undefined;
 	const accounting = details?.contextAccounting;
+	// The no-loop baseline belongs to one model and one threshold. A changed policy
+	// gets one new attempt; the resulting checkpoint establishes its own baseline.
+	if (accounting?.owner && model && (accounting.owner.provider !== model.provider || accounting.owner.model !== model.id)) return 0;
+	if (policyThreshold !== undefined && Number.isFinite(accounting?.thresholdTokens) && accounting!.thresholdTokens !== policyThreshold) return 0;
 	if (accounting?.schemaVersion === 1 && Number.isFinite(accounting.materializedTokensAfter)) {
 		return accounting.materializedTokensAfter!;
 	}
 	if (!Array.isArray(latestCompaction.retainedTail)) return null;
-	return estimateMessagesTokens([
-		{
-			role: "compactionSummary",
-			summary: latestCompaction.summary,
-			tokensBefore: latestCompaction.tokensBefore,
-			timestamp: Date.parse(latestCompaction.timestamp),
-		},
-		...latestCompaction.retainedTail,
-	]);
+	return Math.ceil(latestCompaction.summary.length / COMPACTION_CHARS_PER_TOKEN) + estimateMessagesTokens(latestCompaction.retainedTail);
 }
 
 interface CompactionAwareEstimate {
@@ -710,6 +706,15 @@ interface CompactionAwareEstimate {
 	paidBoundaryPending: boolean;
 }
 
+interface AutoCompactionOutcome {
+	committed: boolean;
+	continue: boolean;
+	errorMessage?: string;
+}
+
+const AUTO_COMPACTION_INCOMPLETE = "[AUTO_COMPACTION_INCOMPLETE]";
+function isAutoCompactionBlock(message: string | undefined): boolean { return message?.startsWith(AUTO_COMPACTION_INCOMPLETE) === true; }
+
 function isPostCompactionMessage(entries: SessionEntry[], checkpointIndex: number, message: AgentMessage): boolean {
 	for (let index = entries.length - 1; index > checkpointIndex; index--) {
 		const entry = entries[index];
@@ -719,7 +724,7 @@ function isPostCompactionMessage(entries: SessionEntry[], checkpointIndex: numbe
 }
 
 function estimateCompactionAwareContextTokens(
-	entries: SessionEntry[], messages: AgentMessage[], model: Model<any> | undefined,
+	entries: SessionEntry[], messages: AgentMessage[], model: Model<any> | undefined, policyThreshold?: number,
 ): CompactionAwareEstimate {
 	const paidBoundaryPending = hasPendingPaidCompactionBoundary(entries, model);
 	let latestCompactionIndex = -1;
@@ -756,7 +761,7 @@ function estimateCompactionAwareContextTokens(
 	return {
 		tokens: trailingTokens, usageTokens: 0, trailingTokens, lastUsageIndex: null,
 		source: "materialized", epochVerified: false,
-		materializedBaselineTokens: getPersistedMaterializedBaseline(entries[latestCompactionIndex] as CompactionEntry),
+		materializedBaselineTokens: getPersistedMaterializedBaseline(entries[latestCompactionIndex] as CompactionEntry, model, policyThreshold),
 		paidBoundaryPending,
 	};
 }
@@ -800,6 +805,7 @@ function withContextAccounting(
 			contextWindow,
 			thresholdTokens: getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage),
 			autoCompactPercentage: settings.autoCompactPercentage,
+			keepRecentTokens: settings.keepRecentTokens,
 			reason,
 		},
 	};
@@ -876,6 +882,8 @@ export class AgentSession {
 	// Compaction state
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
+	/** One bounded failure per run; cleared by a new prompt, committed checkpoint or disposal. */
+	private _autoCompactionRequestBlock: Error | undefined;
 	private _overflowRecoveryAttempted = false;
 	// Only owns primitive identities during one length-recovery continuation.
 	private _pendingLengthRecovery: { sessionId: string; compactionId: string; abandonedEntryId: string } | undefined;
@@ -1404,15 +1412,14 @@ export class AgentSession {
 				const contextWindow = this.model?.contextWindow ?? 0;
 				if (settings.enabled && contextWindow > 0) {
 					const estimate = estimateCompactionAwareContextTokens(
-						this.sessionManager.getBranch(), turn.context.messages, this.model,
+						this.sessionManager.getBranch(), turn.context.messages, this.model, getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage),
 					);
 					if (shouldAutoThresholdCompact(estimate, contextWindow, settings)) {
-						const beforeCompactionId = getLatestCompactionEntry(this.sessionManager.getBranch())?.id;
-						await this._runAutoCompaction("threshold", false, estimate.tokens);
-						const afterCompactionId = getLatestCompactionEntry(this.sessionManager.getBranch())?.id;
-						if (afterCompactionId && afterCompactionId !== beforeCompactionId) {
-							messages = this.agent.state.messages.slice();
-						}
+						const outcome = await this._runAutoCompaction("threshold", false, estimate.tokens);
+						signal?.throwIfAborted();
+						if (!outcome.committed) this._blockUncommittedAutoCompaction(outcome);
+						this.assertAutomaticCompactionReady();
+						messages = this.agent.state.messages.slice();
 					}
 				}
 			}
@@ -2056,6 +2063,7 @@ export class AgentSession {
 	 * Call this when completely done with the session.
 	 */
 	dispose(): void {
+		this._autoCompactionRequestBlock = undefined;
 		if (this.agent.onToolObservationFailure === this._handleToolObservationFailure) this.agent.onToolObservationFailure = undefined;
 		if (this.agent.onToolResultObserved === this._handleToolResultObserved) this.agent.onToolResultObserved = undefined;
 		if (this._operationDisposed) return;
@@ -2308,7 +2316,12 @@ export class AgentSession {
 			if (this._toolBudgetPayloadPreviewDepth === 0) this._codemode.recordProjection(messages);
 			return messages;
 		}
-		if (this._toolBudgetPayloadPreviewDepth !== 0) return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, undefined, undefined, toolCalling, minimumOutputTokens);
+		if (this._toolBudgetPayloadPreviewDepth !== 0) {
+			// A compaction preview constructs canonical history, not a new regular answer.
+			// Keep its configured result projection; the native compactor owns admission.
+			if (this.isCompacting) return owner.projectMessagesForModel(messages, imagePolicy);
+			return owner.projectMessagesForModel(messages, imagePolicy, systemPrompt, tools, contextWindow, maxOutputTokens, requestPlanning, undefined, undefined, toolCalling, minimumOutputTokens);
+		}
 		this.discardPendingToolResultBudgetSources();
 		const sources = this._toolBudgetProjectionPending ? this._captureBudgetProjectionSources() : undefined;
 		try {
@@ -3083,13 +3096,14 @@ export class AgentSession {
 			this._retryAttempt = 0;
 		}
 
+		if (this._autoCompactionRequestBlock || isAutoCompactionBlock(msg.errorMessage)) return false;
 		if (await this._checkCompaction(msg)) {
 			return true;
 		}
 
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
-		return this._canContinueQueuedMessages();
+		return !this._autoCompactionRequestBlock && this._canContinueQueuedMessages();
 	}
 
 	/** Commit the existing retainedTail projection only after the recovery run succeeds.
@@ -3246,6 +3260,7 @@ export class AgentSession {
 
 			// Check if we need to compact before sending (catches aborted responses).
 			// The user's new prompt is sent below, so do not call agent.continue() here.
+			this._autoCompactionRequestBlock = undefined;
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) {
 				await this._checkCompaction(lastAssistant, false);
@@ -4153,6 +4168,7 @@ export class AgentSession {
 			const savedCompactionId = this.sessionManager.appendCompaction(
 				summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage, retainedTail,
 			);
+			this._autoCompactionRequestBlock = undefined;
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this._clearEvidenceBranch();
@@ -4252,7 +4268,7 @@ export class AgentSession {
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
 		// A local block never triggers paid overflow recovery in the failed run.
 		// A new explicit prompt still performs its ordinary enabled threshold check.
-		const requestBudgetBlocked = isRequestBudgetBlock(assistantMessage.errorMessage);
+		const requestBudgetBlocked = isRequestBudgetBlock(assistantMessage.errorMessage) || isAutoCompactionBlock(assistantMessage.errorMessage);
 		if (requestBudgetBlocked && skipAbortedCheck) return false;
 		if (isRequestBodyTooLarge(assistantMessage)) return false;
 		const settings = this.settingsManager.getCompactionSettings(this.model);
@@ -4291,7 +4307,9 @@ export class AgentSession {
 			const willRetry = assistantMessage.stopReason !== "stop";
 
 			if (!willRetry) {
-				return await this._runAutoCompaction("overflow", false);
+				const outcome = await this._runAutoCompaction("overflow", false);
+				if (!outcome.committed) this._blockUncommittedAutoCompaction(outcome);
+				return outcome.continue;
 			}
 
 			if (this._overflowRecoveryAttempted) {
@@ -4326,7 +4344,8 @@ export class AgentSession {
 				removedAssistant = true;
 			}
 			const compacted = await this._runAutoCompaction("overflow", willRetry, undefined, assistantMessage);
-			if (!compacted) {
+			if (!compacted.committed) {
+				this._blockUncommittedAutoCompaction(compacted);
 				if (removedAssistant) {
 					this.agent.state.messages = messages;
 					this._rebuildToolResultUiCanonicalIndex();
@@ -4337,10 +4356,12 @@ export class AgentSession {
 		}
 
 		const estimate = estimateCompactionAwareContextTokens(
-			this.sessionManager.getBranch(), this.agent.state.messages, this.model,
+			this.sessionManager.getBranch(), this.agent.state.messages, this.model, getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage),
 		);
 		if (shouldAutoThresholdCompact(estimate, contextWindow, settings)) {
-			return await this._runAutoCompaction("threshold", false, estimate.tokens);
+			const outcome = await this._runAutoCompaction("threshold", false, estimate.tokens);
+			if (!outcome.committed) this._blockUncommittedAutoCompaction(outcome);
+			return outcome.continue;
 		}
 		return false;
 	}
@@ -4353,7 +4374,7 @@ export class AgentSession {
 		willRetry: boolean,
 		contextTokens?: number,
 		abandonedMessage?: AssistantMessage,
-	): Promise<boolean> {
+	): Promise<AutoCompactionOutcome> {
 		const settings = this.settingsManager.getCompactionSettings(this.model);
 		let started = false;
 		let stage: "authentication" | "compaction" = "authentication";
@@ -4362,10 +4383,10 @@ export class AgentSession {
 
 		try {
 			const model = this.model;
-			if (!model) return false;
+			if (!model) return { committed: false, continue: false, errorMessage: "No model is selected." };
 			const pathEntries = this.sessionManager.getBranch();
 			const compactionSessionId = this.sessionId;
-			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return false;
+			if (reason === "threshold" && hasPendingPaidCompactionBoundary(pathEntries, model)) return { committed: false, continue: false, errorMessage: "Paid compaction has no committed checkpoint." };
 			// Exclude only the exact attempt selected by _checkCompaction from the summary.
 			// Its durable fallback tail remains until the recovery continuation succeeds.
 			const pending = this._pendingLengthRecovery;
@@ -4386,7 +4407,7 @@ export class AgentSession {
 
 			const preparation = prepareCompaction(compactionPathEntries, settings);
 			if (!preparation) {
-				return false;
+				return { committed: false, continue: false, errorMessage: "No compaction checkpoint could be prepared." };
 			}
 			const authoritativeTokensBefore = Number.isFinite(contextTokens)
 				? contextTokens!
@@ -4422,20 +4443,23 @@ export class AgentSession {
 				})) as SessionBeforeCompactResult | undefined;
 
 				if (extensionResult?.cancel) {
+					const failure = typeof extensionResult.errorMessage === "string" ? boundedAutoCompactionError("Auto-compaction strategy failed", new Error(extensionResult.errorMessage)) : undefined;
 					this._emit({
 						type: "compaction_end",
 						reason,
 						result: undefined,
-						aborted: true,
+						aborted: failure === undefined,
+						errorMessage: failure,
 						willRetry: false,
 					});
 					await this._emitSessionCompactFailed({
 						reason,
-						aborted: true,
+						aborted: failure === undefined,
+						errorMessage: failure,
 						willRetry: false,
 						fromExtension: false,
 					});
-					return false;
+					return { committed: false, continue: false, errorMessage: failure ?? "Automatic compaction was cancelled by the strategy." };
 				}
 
 				if (extensionResult?.compaction) {
@@ -4501,7 +4525,7 @@ export class AgentSession {
 					willRetry: false,
 					fromExtension,
 				});
-				return false;
+				return { committed: false, continue: false, errorMessage: "Automatic compaction was cancelled." };
 			}
 
 			tokensBefore = preparation.tokensBefore;
@@ -4526,6 +4550,7 @@ export class AgentSession {
 			const savedCompactionId = this.sessionManager.appendCompaction(
 				summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage, retainedTail,
 			);
+			this._autoCompactionRequestBlock = undefined;
 			if (omitted && retainedTail && this.sessionId === compactionSessionId) {
 				// Advance before post-save hooks can fail; the durable tail is still a fallback.
 				lengthRecoveryCheckpointId = savedCompactionId;
@@ -4594,12 +4619,12 @@ export class AgentSession {
 					this.agent.state.messages = messages.slice(0, -1);
 					this._rebuildToolResultUiCanonicalIndex();
 				}
-				return true;
+				return { committed: true, continue: true };
 			}
 
 			// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 			// Continue once so queued messages are delivered.
-			return this.agent.hasQueuedMessages();
+			return { committed: true, continue: this.agent.hasQueuedMessages() };
 		} catch (error) {
 			if (reason === "overflow" && lengthRecoveryCheckpointId &&
 				this._pendingLengthRecovery?.compactionId === lengthRecoveryCheckpointId) {
@@ -4635,10 +4660,19 @@ export class AgentSession {
 					fromExtension,
 				});
 			}
-			return false;
+			return { committed: false, continue: false, errorMessage: boundedAutoCompactionError("Auto-compaction failed", error) };
 		} finally {
 			this._autoCompactionAbortController = undefined;
 		}
+	}
+
+	private _blockUncommittedAutoCompaction(outcome: AutoCompactionOutcome): void {
+		this._autoCompactionRequestBlock = new Error(`${AUTO_COMPACTION_INCOMPLETE} ${outcome.errorMessage ?? "No checkpoint was committed."} The current run is stopped; completed tool outcomes are preserved and must not be replayed. A new user prompt or manual compaction can retry after the cause is resolved.`);
+	}
+
+	/** Internal request admission. Auxiliary compaction construction keeps its own checks. */
+	assertAutomaticCompactionReady(): void {
+		if (!this.isCompacting && this._autoCompactionRequestBlock) throw this._autoCompactionRequestBlock;
 	}
 
 	/**
@@ -5479,7 +5513,7 @@ export class AgentSession {
 	private _isRetryableError(message: AssistantMessage): boolean {
 		if (isRequestBodyTooLarge(message)) return false;
 		if (message.errorMessage?.includes("Image submission blocked:")) return false;
-		if (isRequestBudgetBlock(message.errorMessage)) return false;
+		if (isRequestBudgetBlock(message.errorMessage) || isAutoCompactionBlock(message.errorMessage)) return false;
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
 		return isRetryableAssistantError(message);
@@ -6116,6 +6150,33 @@ export class AgentSession {
 			epochVerified: estimate.epochVerified,
 			automaticCompactionBlocked: estimate.paidBoundaryPending ? "paid-boundary-uncommitted" : undefined,
 		};
+	}
+
+	/** Request setup after extension transforms: only the exact current-epoch response
+	 * can supply usage. Foreign/copied history is estimated, never trusted by timestamp.
+	 * No checkpoint returns undefined; unavailable/foreign usage returns null.
+	 * No array, payload or callback is materialized or cached.
+	 */
+	getRequestUsageEpoch(messages: AgentMessage[]): AssistantMessage | null | undefined {
+		const model = this.model;
+		let checkpoint = false, current: AssistantMessage | undefined;
+		let entry = this.sessionManager.getLeafEntry();
+		while (entry) {
+			if (entry.type === "compaction") { checkpoint = true; break; }
+			if (!current && entry.type === "message" && entry.message.role === "assistant" && entry.message.usage) {
+				const message = entry.message;
+				const tokens = calculateContextTokens(message.usage);
+				if (model && message.provider === model.provider && message.model === model.id && message.api === model.api && message.stopReason !== "error" && message.stopReason !== "aborted" && Number.isFinite(tokens) && tokens > 0) current = message;
+			}
+			entry = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined;
+		}
+		if (!checkpoint) return undefined;
+		if (!current) return null;
+		const currentIndex = messages.indexOf(current);
+		const canonical = this.agent.state.messages;
+		if (currentIndex < 0 || canonical.indexOf(current) !== currentIndex) return null;
+		for (let index = 0; index < currentIndex; index++) if (messages[index] !== canonical[index]) return null;
+		return current;
 	}
 
 	/**

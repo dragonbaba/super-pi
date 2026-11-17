@@ -1,5 +1,8 @@
 /** Automatic occupancy policy; summary/output reserves are separate budgets. */
 export const DEFAULT_AUTO_COMPACTION_PERCENTAGE = 85;
+export const DEFAULT_COMPACTION_KEEP_RECENT_TOKENS = 20_000;
+/** Compaction's materialized-message heuristic; request headroom uses its own calibration. */
+export const COMPACTION_CHARS_PER_TOKEN = 4;
 
 export function isAutoCompactionPercentage(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 100;

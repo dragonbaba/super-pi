@@ -6,7 +6,7 @@ import ts from "typescript";
 test("R1.1 capability cost counting never materializes a normalized result copy",()=>{
   const source=readFileSync("packages/ai/src/utils/estimate.ts","utf8");
   const ast=ts.createSourceFile("estimate.ts",source,ts.ScriptTarget.Latest,true);
-  const expected=new Set(["estimateMessageTokens","getLastAssistantUsageInfo","estimateMessages","estimateContextTokens","estimateContextTokensFromParts"]);
+  const expected=new Set(["estimateMessageTokens","getLastAssistantUsageIndex","estimateMessages","estimateContextTokens","estimateContextTokensFromParts"]);
   const found=new Set<string>();
   function visit(node:ts.Node):void {
     if(ts.isFunctionDeclaration(node)&&node.name&&expected.has(node.name.text)){

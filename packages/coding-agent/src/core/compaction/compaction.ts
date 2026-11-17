@@ -5,11 +5,12 @@
  * and after compaction the session is reloaded.
  */
 
-import { DEFAULT_AUTO_COMPACTION_PERCENTAGE, getAutoCompactionThreshold, type AgentMessage, type StreamFn, type ThinkingLevel } from "@super-pi/agent-core";
+import { DEFAULT_AUTO_COMPACTION_PERCENTAGE, DEFAULT_COMPACTION_KEEP_RECENT_TOKENS, COMPACTION_CHARS_PER_TOKEN, getAutoCompactionThreshold, type AgentMessage, type StreamFn, type ThinkingLevel } from "@super-pi/agent-core";
 import { contentText, type ProviderHeaders, type RetryCallbacks, type RetryPolicy, retryAssistantCall, uuidv7 } from "@super-pi/ai";
 import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@super-pi/ai/compat";
 import { completeSimple } from "@super-pi/ai/compat";
 import { convertToLlm } from "../messages.ts";
+import { condenseFailedCodemodeAttempts } from "./failed-attempts.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
@@ -137,7 +138,7 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	autoCompactPercentage: DEFAULT_AUTO_COMPACTION_PERCENTAGE,
 	enabled: true,
 	reserveTokens: 16384,
-	keepRecentTokens: 20000,
+	keepRecentTokens: DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
 };
 
 const configuredMinUserMessagesRaw = process.env.SP_COMPACTION_MIN_USER_MESSAGES;
@@ -288,7 +289,7 @@ export function estimateTokens(message: AgentMessage): number {
 			chars = estimateTextAndImageContentChars(
 				(message as { content: string | Array<{ type: string; text?: string }> }).content,
 			);
-			return Math.ceil(chars / 4);
+			return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN);
 		}
 		case "assistant": {
 			const assistant = message as AssistantMessage;
@@ -301,21 +302,21 @@ export function estimateTokens(message: AgentMessage): number {
 					chars += block.name.length + JSON.stringify(block.arguments).length;
 				}
 			}
-			return Math.ceil(chars / 4);
+			return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN);
 		}
 		case "custom":
 		case "toolResult": {
 			chars = estimateTextAndImageContentChars(message.content);
-			return Math.ceil(chars / 4);
+			return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN);
 		}
 		case "bashExecution": {
 			chars = message.command.length + message.output.length;
-			return Math.ceil(chars / 4);
+			return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN);
 		}
 		case "branchSummary":
 		case "compactionSummary": {
 			chars = message.summary.length;
-			return Math.ceil(chars / 4);
+			return Math.ceil(chars / COMPACTION_CHARS_PER_TOKEN);
 		}
 	}
 
@@ -431,7 +432,7 @@ export function prepareToolResultPruneCheckpoint(
 		omittedChars += pruned.omittedChars;
 		prunedResults++;
 	}
-	const savedTokens = Math.floor(omittedChars / 4);
+	const savedTokens = Math.floor(omittedChars / COMPACTION_CHARS_PER_TOKEN);
 	const threshold = getAutoCompactionThreshold(contextWindow, settings.autoCompactPercentage);
 	const estimatedTokensAfter = contextTokens - savedTokens;
 	if (
@@ -970,9 +971,9 @@ export function prepareCompaction(
 
 	return {
 		firstKeptEntryId,
-		messagesToSummarize,
-		turnPrefixMessages,
-		retainedTail,
+		messagesToSummarize: condenseFailedCodemodeAttempts(messagesToSummarize, settings.keepRecentTokens),
+		turnPrefixMessages: condenseFailedCodemodeAttempts(turnPrefixMessages, settings.keepRecentTokens),
+		retainedTail: condenseFailedCodemodeAttempts(retainedTail, settings.keepRecentTokens),
 		isSplitTurn: cutPoint.isSplitTurn,
 		tokensBefore,
 		previousSummary,

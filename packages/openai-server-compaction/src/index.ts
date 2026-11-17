@@ -93,7 +93,6 @@ const COMPACTION_TELEMETRY_TYPE = "compaction-telemetry-v1";
 const COMPACTION_USAGE_LEDGER_TYPE = "compaction-usage-ledger-v2";
 const COMPACTION_STRATEGY = "openai-remote-compaction-v2";
 const PRODUCER_VERSION = "@super-pi/openai-server-compaction@0.1.22-pi.84.1";
-const CANCEL_COMPACTION_RESULT = Object.freeze({ cancel: true as const });
 
 export type GptCompactionFailureClass =
   | "authentication_missing_credentials"
@@ -157,7 +156,7 @@ function failGptCompaction(
   model: Model<any>,
   stage: string,
   error: unknown,
-): { readonly cancel: true } {
+): { readonly cancel: true; readonly errorMessage: string } {
   const reason = unknownText(error).slice(0, 512);
   const failureClass = classifyGptCompactionFailure(stage, error);
   try {
@@ -173,7 +172,8 @@ function failGptCompaction(
   } catch { }
   const message = `GPT native compaction stopped at ${stage}: ${reason}`;
   if (ctx.hasUI) ctx.ui.notify(message, "error");
-  return CANCEL_COMPACTION_RESULT;
+  // Model-visible history receives only the bounded classification, never raw auth/provider text.
+  return { cancel: true, errorMessage: `GPT native compaction stopped at ${stage}: ${failureClass}` };
 }
 
 async function callConfiguredRemoteCompaction(
