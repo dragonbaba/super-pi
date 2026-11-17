@@ -155,6 +155,21 @@ test("the production worker receives typed MCP data separately from mixed presen
 	assert.match(JSON.stringify(outcome.results.at(-1)?.content), /1,2,3/); assert.equal(calls, 1);
 });
 
+test("an independent missing read cannot cancel a real successful command in batch", async t => {
+	const f = await fixture(t, { tools: ["read", "bash"] });
+	writeFileSync(join(f.cwd, "independent.cjs"), 'require("node:fs").appendFileSync("batch-calls.txt","1");setTimeout(()=>console.log("independent command complete"),60);');
+	const outcome = await f.run(['const b=await batch([{tool:"read",args:{path:"missing.txt"}},{tool:"bash",args:{command:"node independent.cjs"}}]);text(b.summary);store("batch-done",true);']);
+	const result = outcome.results.at(-1)!;
+	assert.equal(result.isError, false, JSON.stringify(result));
+	assert.equal((result.details as any).codemode.status, "partial");
+	const shell = (result.details as any).codemode.calls.find((item: any) => item.toolName === "bash");
+	assert.equal(shell.isError, false); assert.equal(shell.exitCode, 0); assert.equal(shell.resultComplete, true);
+	const summary = result.content.find(block => block.type === "text" && block.text.startsWith('{"completed":'));
+	assert.ok(summary?.type === "text");
+	const counts = JSON.parse(summary.text); assert.equal(counts.completed, 1); assert.equal(counts.failed, 1);
+	assert.equal(readFileSync(join(f.cwd, "batch-calls.txt"), "utf8"), "1");
+});
+
 test("Codemode forwards explicit risk review separately from tool arguments and failure handling", async t => {
   const observed: Array<{ review: boolean | undefined; input: unknown }> = [];
   let effects = 0;

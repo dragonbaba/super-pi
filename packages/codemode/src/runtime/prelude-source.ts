@@ -260,6 +260,40 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		Object.defineProperty(globalThis, namespace, { value, enumerable: true });
 	}
 
+	// Explicit independent work only. Each item uses the ordinary bridge and its
+	// existing call accounting; no host loop bypasses tool policy or scheduling.
+	const batchCaller = globalThis.callTool;
+	const batchOptions = Object.freeze({ allowFailure: true });
+	const batchReviewOptions = Object.freeze({ allowFailure: true, review: true });
+	async function batchItem(item, index) {
+		const tool = item.tool;
+		const result = await batchCaller(tool, item.args, item.review ? batchReviewOptions : batchOptions);
+		if (result.isError && result.failureHandled !== true) throw new ErrorCtor("Independent batch stopped on an unhandled tool failure");
+		return { index, tool, result };
+	}
+	async function batch(items) {
+		if (!Array.isArray(items)) throw new TypeErrorCtor("batch expects an array of independent {tool,args,review?} calls");
+		if (typeof batchCaller !== "function") throw new ErrorCtor("batch requires an owner-provided callTool bridge");
+		// Check descriptor shape before dispatch, never inspect command/script text.
+		for (const item of items) {
+			if (!item || typeof item !== "object" || Array.isArray(item) || typeof item.tool !== "string" || !item.tool
+				|| !item.args || typeof item.args !== "object" || Array.isArray(item.args)
+				|| item.review !== undefined && typeof item.review !== "boolean") throw new TypeErrorCtor("batch entries require {tool:string,args:object,review?:boolean}");
+		}
+		const pending = [];
+		for (let index = 0; index < items.length; index++) pending.push(batchItem(items[index], index));
+		// Ordinary failures return handled results. Fatal rejections retain normal
+		// fail-fast/cancellation semantics; never turn them into successful work.
+		const results = await Promise.all(pending), failures = [];
+		let completed = 0;
+		for (const item of results) {
+			if (!item.result.isError) { completed++; continue; }
+			failures.push({ index: item.index, tool: item.tool, ref: item.result.ref,
+				error: item.result.failureReason || "Tool failed; inspect its recorded result" });
+		}
+		return { summary: { completed, failed: failures.length, failures }, results };
+	}
+
 	// key -> JSON text. Sizes count key and JSON characters.
 	const stored = new Map(Object.entries(parse(storeJson)));
 	const writes = new Map();
@@ -471,6 +505,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 
 	Object.defineProperty(globalThis, "tools", { value: toolsProxy, enumerable: true });
 	Object.defineProperty(globalThis, "ALL_TOOLS", { value: allTools, enumerable: true });
+	Object.defineProperty(globalThis, "batch", { value: batch, enumerable: true });
 	Object.defineProperty(globalThis, "console", { value: console, enumerable: true });
 	Object.defineProperty(globalThis, "text", { value: text, enumerable: true });
 	Object.defineProperty(globalThis, "image", { value: image, enumerable: true });
