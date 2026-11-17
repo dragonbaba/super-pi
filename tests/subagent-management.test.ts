@@ -588,11 +588,16 @@ test("effective limits are visible before first invocation and enforce preflight
 	assert.throws(() => tool.prepareArguments({ tasks: new Array(9) }), /requested 9, maximum 8/);
 	await assert.rejects(h.run({ agent: "scout", task: "x", background: true }), /isolated workspace/);
 	h.ctx.mode = "json";
-	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /TUI or RPC/);
+	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /TUI or RPC.*No subagent was started.*background: false/);
 	h.ctx.mode = "tui";
 	h.ctx.getActiveTools = () => ["subagent"];
-	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /management tool/);
+	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /tasks or subagent_tasks management tool.*No subagent was started.*background: false/);
 	assert.match(await h.control("list"), /0\/2 running/);
+	assert.doesNotMatch(await h.control("list"), /[a-f0-9-]{36}-\d+/);
+	assert.match(tool.parameters.properties.background.description, /omit for foreground/i);
+	assert.match(tool.parameters.properties.background.description, /tasks or subagent_tasks/);
+	const result = await h.run({ agent: "scout", task: "fast-foreground-recovery", readOnly: true, background: false });
+	assert.match(result.content[0].text, /fixture result: Task: fast-foreground-recovery/);
 });
 
 test("foreground and background reject nested writers before launch while chains remain sequential", async t => {

@@ -49,6 +49,7 @@
 - [原生压缩与 CLI 钩子超时](evidence/native-compaction-deadline-2026-11-16.md)：原生压缩操作脱离 30 秒安全钩子期限，保留 veto 截止、provider 超时、主动取消和实际收尾所有权。
 - [搜索工具解析与重复探测](evidence/search-tool-resolution-2026-11-16.md)：按可执行文件元数据解析 rg/fd，去除版本探测子进程，保留真实搜索验证并指导模型复用环境事实。
 - [子代理执行期限与编排指引](evidence/subagent-lifetime-2026-11-16.md)：移除总执行计时器，保留等待/通信/清理边界；用现有纠偏、检查点和完成通知复用成功成果。
+- [子代理后台接纳与完成唤醒](evidence/subagent-background-admission-2026-11-18.md)：后台条件、前台调用和空闲主代理唤醒验证。
 - [Computer use 能力核实](evidence/computer-use-assessment-2026-11-16.md)：浏览器、MCP 与 Windows 验收探针的实际范围；桌面驱动及后续 provider 适配仍待实现。
 - [脚本输出与缓存诊断](evidence/session-script-cache-2026-11-16.md)：区分成功命令与截断 JSON 后处理错误，修正记忆查询误激活浏览器；显示记录的缓存用量和响应绑定的客户端变化。
 - [固定工具入口与按需契约](evidence/tool-prefix-guidance-2026-11-16.md)：稳定普通本地/MCP 工具前缀，区分注册名与脚本别名，明确发现状态、当前契约和其他缓存边界；对照 Codex、Claude 与 OpenCode。

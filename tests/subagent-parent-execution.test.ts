@@ -86,6 +86,55 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
 
 const liveSandbox = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
 
+test("a background subagent reports once and wakes its idle parent", { timeout: 15000 }, async t => {
+  const f = await fixture(t);
+  const previousLauncher = process.env.SP_SOURCE_LAUNCHER;
+  process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("./fixtures/subagent-managed-child.mjs", import.meta.url));
+  try {
+    const accepted = await f.run("", "reader", f.cwd, { task: "guidance-gate idle parent", readOnly: true, background: true });
+    await f.session.waitForIdle();
+    assert.equal(accepted?.isError, false, JSON.stringify(accepted));
+    const receipt = JSON.stringify(accepted.content);
+    assert.match(receipt, /end this turn.*completion report/);
+    assert.match(receipt, /Do not resubmit/);
+    const taskId = receipt.match(/[a-f0-9-]{36}-\d+/)?.[0];
+    assert.ok(taskId);
+    assert.equal(f.requests, 2);
+    assert.equal(f.session.isIdle, true);
+
+    let resumedInput = "";
+    const respond = f.session.agent.streamFunction;
+    f.session.agent.streamFunction = (model, context, options) => {
+      resumedInput = JSON.stringify(context.messages);
+      return respond(model, context, options);
+    };
+    const deadline = AbortSignal.timeout(8000);
+    let ready = "";
+    while (!ready) {
+      ready = (await fs.readdir(f.cwd)).find(name => /^child-\d+\.ready\.json$/.test(name)) ?? "";
+      if (!ready) await delay(10, undefined, { signal: deadline });
+    }
+    await fs.writeFile(join(f.cwd, ready.replace(".ready.json", ".release")), "");
+    while (f.requests < 3) await delay(10, undefined, { signal: deadline });
+    await f.session.waitForIdle();
+
+    const reports = f.session.messages.filter(message => message.role === "custom" && message.customType === "subagent-completion");
+    assert.equal(reports.length, 1);
+    const report = reports[0];
+    assert.ok(report.role === "custom");
+    const content = JSON.stringify(report.content);
+    assert.match(content, /Continue the parent task/);
+    assert.ok(content.includes(taskId));
+    assert.equal(resumedInput.split("AUTOMATIC BACKGROUND TASK REPORT").length - 1, 1);
+    assert.ok(resumedInput.includes(taskId));
+    assert.equal(f.requests, 3);
+    assert.equal((await fs.readdir(f.cwd)).filter(name => /^child-\d+\.ready\.json$/.test(name)).length, 1);
+  } finally {
+    if (previousLauncher === undefined) delete process.env.SP_SOURCE_LAUNCHER;
+    else process.env.SP_SOURCE_LAUNCHER = previousLauncher;
+  }
+});
+
 test("real child pages only its own delegated omitted results and rejects another parent call", { timeout: 60000 }, async t => {
   const f = await fixture(t), manager = f.session.sessionManager, input = { path: join(f.cwd, "parent-only") };
   const callEntryId = manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "other-task", name: "delete", arguments: input }], timestamp: 0 } as any);
