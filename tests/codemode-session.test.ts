@@ -136,6 +136,42 @@ test("structured and raw source tools accept whole long source without replay", 
 	}
 });
 
+test("pre-execution syntax failures stay visible collapsed and reuse the expanded diagnostic", async t => {
+	initTheme("dark");
+	const f = await fixture(t, { tools: ["read"] });
+	const read = 'await tools.read({path:"file.txt"});';
+	const line = `print("${"x".repeat(1000)}Markdown \`name\`${"y".repeat(1000)}")`;
+	const broken = [read, ...Array<string>(231).fill(`// ${"padding ".repeat(7)}`), 'const py = String.raw`', line, '`;'].join("\r\n");
+	const { results } = await f.run([broken, `${read} throw new SyntaxError("from script");`], undefined, true);
+	const [result, runtime] = results;
+	assert.equal(result!.isError, true);
+	const details = (result!.details as any).codemode;
+	assert.equal(details.scriptOk, false);
+	assert.deepEqual(details.calls, []);
+	assert.deepEqual(details.runtimeCalls, []);
+	const diagnostic = result!.content.find(block => block.type === "text" && block.text.startsWith("[CODEMODE_SCRIPT]"));
+	const excerpt = result!.content.find(block => block.type === "text" && block.text.startsWith("[Script source]"));
+	assert.match((diagnostic as any).text, /SyntaxError: Script did not start \(line 234, byte column \d+\)/);
+	assert.match((excerpt as any).text, /Markdown `name`/);
+	assert.ok((excerpt as any).text.length < 200);
+	assert.doesNotMatch(JSON.stringify(result!.content), /side effects are not rolled back/);
+	assert.match(JSON.stringify(runtime!.content), /from script/);
+	assert.doesNotMatch(JSON.stringify(runtime!.content), /Script did not start/);
+	assert.equal((runtime!.details as any).codemode.calls.length, 1);
+	const tree = new CodemodeTreeComponent();
+	try {
+		for (const expanded of [false, true, false, true]) {
+			tree.updateParent(broken, result, false, true, expanded);
+			const text = stripVTControlCharacters(tree.render(160).join("\n"));
+			assert.match(text, /SyntaxError: Script did not start \(line 234,/);
+			assert.equal(text.includes("[Script source]"), expanded);
+		}
+		assert.equal(tree.getLifecycleCounts().outputProjections, 1);
+	} finally { releaseComponentRenderCaches(tree); }
+	assert.equal(tree.getLifecycleCounts().resultReferences, 0);
+	assert.equal(tree.getLifecycleCounts().textChars, 0);
+});
+
 test("native captured JSON survives postprocessing failure and is read in the next script without replay", async t => {
 	const f = await fixture(t, { tools: ["bash", "read"] });
 	writeFileSync(join(f.cwd, "producer.cjs"), `const fs=require("node:fs");fs.appendFileSync("calls.txt","1");console.log(JSON.stringify({status:"completed",results:Array.from({length:344},(_,id)=>({id,status:id<4?"Failed":"Passed",text:"x".repeat(240)}))}));`);

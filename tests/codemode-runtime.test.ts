@@ -422,6 +422,36 @@ for (const [label, code, expected] of [
 	});
 }
 
+test("function creation errors report original UTF-8 positions without starting the script", async t => {
+	let executed = 0;
+	const sandbox = new CodemodeSandbox({ tools: [{ name: "probe", execute() { executed++; return true; } }] });
+	t.after(() => sandbox.close());
+	const ascii = 'const a = ["a" "b"];';
+	const unicode = 'const a = ["😀" "b"];';
+	const options = parseCodemodeSource(`// @options: {"max_output_tokens":256}\r\n${unicode}`).code;
+	for (const [code, line, byteColumn, excerpt] of [
+		[ascii, 1, 16, ascii],
+		[unicode, 1, 19, unicode],
+		[options, 2, 19, unicode],
+		["\nconst a = {", 2, 12, "const a = {"],
+	] as const) {
+		const result = await sandbox.execute(code);
+		assert.equal(result.ok, false);
+		assert.equal(result.error.name, "SyntaxError");
+		assert.equal(result.error.beforeExecution, true);
+		assert.deepEqual(result.error.sourceLocation, { line, byteColumn, excerpt });
+		assert.deepEqual(result.calls, []);
+		assert.deepEqual(result.output, []);
+	}
+	assert.equal(executed, 0);
+	const runtime = await sandbox.execute('await tools.probe({}); throw new SyntaxError("from script");');
+	assert.equal(runtime.ok, false);
+	assert.equal(runtime.error.name, "SyntaxError");
+	assert.equal(runtime.error.beforeExecution, undefined);
+	assert.equal(runtime.error.sourceLocation, undefined);
+	assert.equal(executed, 1);
+});
+
 test("Codemode store preserves prototype keys, returns copies, and discards writes on error", async () => {
 	const sandbox = new CodemodeSandbox();
 	try {

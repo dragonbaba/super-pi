@@ -15,6 +15,7 @@ import { JSException, type JSValueHandle, MAX_STACK_SIZE, QuickJS } from "quickj
 import { PRELUDE_SOURCE } from "./prelude-source.ts";
 import { BridgeBudget, isHostToWorkerMessage, type WorkerData, type WorkerToHostMessage } from "./protocol.ts";
 import { MAX_ERROR_CHARS } from "../limits.ts";
+import { describeScriptCreationError, SCRIPT_PREFIX } from "./script-creation-error.ts";
 
 /**
  * QuickJS writes engine diagnostics to fd 1 and 2, which the default shim
@@ -34,12 +35,6 @@ function discardOutput(memory: { readonly buffer: ArrayBufferLike }) {
 			return 0;
 		},
 	};
-}
-
-function describeException(error: JSException): string {
-	const head = error.message ? `${error.name}: ${error.message}` : error.name;
-	const stack = error.stack?.trimEnd();
-	return JSON.stringify({ name: error.name, message: error.message.slice(0, MAX_ERROR_CHARS), stack: (stack ? `${head}\n${stack}` : head).slice(0, MAX_ERROR_CHARS) });
 }
 
 async function main(data: WorkerData, port: MessagePort): Promise<void> {
@@ -230,10 +225,10 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		// match the script as written.
 		let fn: JSValueHandle;
 		try {
-			fn = vm.evalCode(`(async (tools, console) => {${data.code}\n})`, "codemode.js");
+			fn = vm.evalCode(`${SCRIPT_PREFIX}${data.code}\n})`, "codemode.js");
 		} catch (error) {
 			if (!(error instanceof JSException)) throw error;
-			post({ type: "done", ok: false, error: describeException(error), reusable: false });
+			post({ type: "done", ok: false, error: describeScriptCreationError(error, data.code), beforeExecution: true, reusable: false });
 			return;
 		}
 		vm.callFunction(run, api, fn).dispose();

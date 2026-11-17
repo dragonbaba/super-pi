@@ -81,6 +81,9 @@ export interface CodemodeError {
 	name?: string;
 	message: string;
 	stack?: string;
+	/** The worker could not create the script function and never invoked it. */
+	beforeExecution?: true;
+	sourceLocation?: { line: number; byteColumn?: number; excerpt: string };
 }
 
 /** Keys the script changed with `store()`. Only successful executions report writes. */

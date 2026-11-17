@@ -27,7 +27,7 @@ export interface WorkerData {
 	pauseTimeoutWhileWaiting?: boolean;
 }
 
-/** JSON-encoded `{ name?, message, stack? }` of an error thrown by the script. */
+/** JSON-encoded script error, with a source location when function creation fails. */
 export type ScriptErrorJson = string;
 
 export type WorkerToHostMessage =
@@ -37,7 +37,7 @@ export type WorkerToHostMessage =
 	| { type: "output"; item: CodemodeOutputItem }
 	/** `writes` is a JSON array of `[key, json]` for `store()` and `[key]` for deletions. */
 	| { type: "done"; ok: true; value: string | undefined; writes: string; reusable?: boolean; handledCallIds?: number[] }
-	| { type: "done"; ok: false; error: ScriptErrorJson; reusable?: boolean; handledCallIds?: number[] }
+	| { type: "done"; ok: false; error: ScriptErrorJson; beforeExecution?: true; reusable?: boolean; handledCallIds?: number[] }
 	/** The VM failed outside the script's control, for example a wasm trap. */
 	| { type: "crash"; message: string };
 
@@ -60,6 +60,7 @@ export function isWorkerToHostMessage(value: unknown): value is WorkerToHostMess
 		}
 		case "done":
 			if (message.reusable !== undefined && typeof message.reusable !== "boolean") return false;
+			if (message.beforeExecution !== undefined && (message.ok !== false || message.beforeExecution !== true)) return false;
 			if (message.handledCallIds !== undefined) {
 				if (!Array.isArray(message.handledCallIds) || message.handledCallIds.length > MAX_CALLS) return false;
 				for (let index = 0; index < message.handledCallIds.length; index++) {

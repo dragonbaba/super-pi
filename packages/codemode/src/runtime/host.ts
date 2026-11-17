@@ -311,8 +311,17 @@ class Execution {
 		for (const call of this.calls) if (call.status === "error") call.failureHandled = message.handledCallIds?.includes(call.id!) === true;
 		if (!message.ok) {
 			const parsed = JSON.parse(message.error) as Omit<CodemodeError, "kind">;
-			this.finish({ kind: "script", message: typeof parsed.message === "string" ? parsed.message : "Script failed",
-				name: typeof parsed.name === "string" ? parsed.name : undefined, stack: typeof parsed.stack === "string" ? parsed.stack : undefined }, undefined, undefined, false, message.handledCallIds);
+			const error: CodemodeError = { kind: "script", message: typeof parsed.message === "string" ? parsed.message : "Script failed",
+				name: typeof parsed.name === "string" ? parsed.name : undefined, stack: typeof parsed.stack === "string" ? parsed.stack : undefined };
+			if (message.beforeExecution) {
+				error.beforeExecution = true;
+				const location = parsed.sourceLocation;
+				if (location && Number.isSafeInteger(location.line) && location.line > 0 && typeof location.excerpt === "string"
+					&& (location.byteColumn === undefined || (Number.isSafeInteger(location.byteColumn) && location.byteColumn > 0))) {
+					error.sourceLocation = location;
+				}
+			}
+			this.finish(error, undefined, undefined, false, message.handledCallIds);
 			return;
 		}
 		this.finish(undefined, message.value === undefined ? undefined : JSON.parse(message.value), parseStoreWrites(message.writes), message.reusable === true, message.handledCallIds);
