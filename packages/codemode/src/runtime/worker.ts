@@ -15,6 +15,7 @@ import { JSException, type JSValueHandle, MAX_STACK_SIZE, QuickJS } from "quickj
 import { PRELUDE_SOURCE } from "./prelude-source.ts";
 import { BridgeBudget, isHostToWorkerMessage, type WorkerData, type WorkerToHostMessage } from "./protocol.ts";
 import { MAX_ERROR_CHARS } from "../limits.ts";
+import { describeScriptCreationError } from "./script-creation-error.ts";
 
 /**
  * QuickJS writes engine diagnostics to fd 1 and 2, which the default shim
@@ -34,12 +35,6 @@ function discardOutput(memory: { readonly buffer: ArrayBufferLike }) {
 			return 0;
 		},
 	};
-}
-
-function describeException(error: JSException): string {
-	const head = error.message ? `${error.name}: ${error.message}` : error.name;
-	const stack = error.stack?.trimEnd();
-	return JSON.stringify({ name: error.name, message: error.message.slice(0, MAX_ERROR_CHARS), stack: (stack ? `${head}\n${stack}` : head).slice(0, MAX_ERROR_CHARS) });
 }
 
 async function main(data: WorkerData, port: MessagePort): Promise<void> {
@@ -178,6 +173,7 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		);
 		const settle = api.getProp("settle");
 		const run = api.getProp("run");
+		const compile = api.getProp("compile");
 		const stalled = api.getProp("stalled");
 		const fire = api.getProp("fireTimer");
 		let receivedResults = 0;
@@ -226,14 +222,14 @@ async function main(data: WorkerData, port: MessagePort): Promise<void> {
 		};
 		port.on("message", onMessage);
 
-		// The prefix shares the first line with the script so reported line numbers
-		// match the script as written.
+		// The VM receives a function body through a data argument. Only `run` can
+		// enter that body, including for source with a misplaced closing brace.
 		let fn: JSValueHandle;
 		try {
-			fn = vm.evalCode(`(async (tools, console) => {${data.code}\n})`, "codemode.js");
+			fn = vm.withScope(scope => scope.escape(vm.callFunction(compile, api, vm.newString(data.code))));
 		} catch (error) {
 			if (!(error instanceof JSException)) throw error;
-			post({ type: "done", ok: false, error: describeException(error), reusable: false });
+			post({ type: "done", ok: false, error: describeScriptCreationError(error, data.code), beforeExecution: true, reusable: false });
 			return;
 		}
 		vm.callFunction(run, api, fn).dispose();

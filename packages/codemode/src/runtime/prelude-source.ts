@@ -16,7 +16,7 @@
  * JSON text passed in as `storeJson`, and the keys the script wrote are reported
  * with a successful "done".
  *
- * Evaluates to a function `(bridge, toolsJson, globalsJson, storeJson) => { settle, run, stalled }`.
+ * Evaluates to a function `(bridge, toolsJson, globalsJson, storeJson) => { compile, settle, run, stalled }`.
  * `toolsJson` lists `{ name, jsName, description }`: `tools[jsName]` and `tools[name]` call the
  * tool, and `ALL_TOOLS` lists `{ name: jsName, toolName: name, description }`.
  * `stalled()` reports a script that has neither pending host calls nor timers.
@@ -100,6 +100,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	const stringify = JSON.stringify;
 	const parse = JSON.parse;
 	const promiseThen = Promise.prototype.then;
+	const AsyncFunctionCtor = (async function () {}).constructor;
 	const ErrorCtor = Error;
 	const TypeErrorCtor = TypeError;
 	const pending = new Map();
@@ -514,6 +515,9 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 	Object.defineProperty(globalThis, "clearTimeout", { value: clearTimeout, enumerable: true });
 
 	return {
+		compile(source) {
+			return AsyncFunctionCtor("tools", "console", source);
+		},
 		fireTimer(id) {
 			const entry = timers && timers.get(id);
 			if (finished || !entry) return;
@@ -544,7 +548,7 @@ export const PRELUDE_SOURCE: string = `(function (bridge, toolsJson, globalsJson
 		run(fn) {
 			let promise;
 			try {
-				promise = fn(toolsProxy, console);
+				promise = fn.call(globalThis, toolsProxy, console);
 			} catch (error) {
 				fail(error);
 				return;

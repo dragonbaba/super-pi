@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import type { AgentTool, AgentToolExecutionContext, AgentToolResult } from "@super-pi/agent-core";
 import type { Message, ToolResultMessage, TextContent, ImageContent } from "@super-pi/ai";
 import type { CodemodeSandbox, CodemodeTool, CodemodeResult, CodemodeStoreWrites } from "@super-pi/codemode";
@@ -697,8 +698,20 @@ export class CodemodeController {
 			for (const call of result.calls) if (call.status !== "ok" && !(call.status === "error" && call.failureHandled)) failed = true;
 			if (failed) this.documentationSnapshot = undefined;
 			const content: (TextContent | ImageContent)[] = result.output;
+			const beforeExecution = !result.ok && result.error.beforeExecution === true;
 			if (result.ok && result.value !== undefined) content.push({ type: "text", text: typeof result.value === "string" ? result.value : JSON.stringify(result.value) });
-			if (!result.ok) content.push({ type: "text", text: `[CODEMODE_${result.error.kind.toUpperCase()}] ${scriptFailureMessage(result.error.message, invocation.facts)}` });
+			if (!result.ok) {
+				const error = result.error;
+				if (beforeExecution) {
+					const location = error.sourceLocation;
+					const position = location ? ` (line ${location.line}${location.byteColumn === undefined ? "" : `, byte column ${location.byteColumn}`})` : "";
+					const reason = stripVTControlCharacters(error.message);
+					content.push({ type: "text", text: `[CODEMODE_SCRIPT] ${error.name ?? "Error"}: Script did not start${position}. ${reason}` });
+					if (location?.excerpt) content.push({ type: "text", text: `[Script source] ${stripVTControlCharacters(JSON.stringify(location.excerpt))}` });
+				} else {
+					content.push({ type: "text", text: `[CODEMODE_${error.kind.toUpperCase()}] ${scriptFailureMessage(error.message, invocation.facts)}` });
+				}
+			}
 			if (result.unobservedGlobals) for (const failure of result.unobservedGlobals) if (!hasRuntimeFact(invocation.facts, failure.id)) content.push({ type: "text",
 				text: `[CODEMODE_UNOBSERVED_CALL] ${failure.name}: ${failure.status}${failure.error ? "; " + unicodePrefix(failure.error, 512) : "; not awaited before script completion"}` });
 			// Compact causes stay in the summary. A separate bounded tail preserves status
@@ -723,7 +736,7 @@ export class CodemodeController {
 			for (const fact of invocation.facts) if (fact.outputRefs) for (const output of fact.outputRefs) summary += `\nData: ${output.ref} (${output.format}; complete=${output.complete}); use readOutput(ref,options).`;
 			for (const fact of invocation.facts) if (fact.recoveryError) summary += `\n[CODEMODE_RECOVERY_UNAVAILABLE] ${fact.ref}: ${fact.recoveryError}. Do not repeat completed tools.`;
 			for (const fact of invocation.facts) if (fact.evicted && fact.displayLimited) summary += `\n[CODEMODE_REF_EVICTED] ${fact.ref}: result left the memory cache.${fact.outputPath ? " Recover with read: " + fact.outputPath : " Recovery unavailable."}`;
-			if (failed || failedChildren) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
+			if (!beforeExecution && (failed || failedChildren)) summary += "\nCompleted tool side effects are not rolled back. Do not automatically retry mutations.";
 			const summaryBlock: TextContent & { projectionPrefix?: number } = { type: "text", text: summary };
 			content.unshift(summaryBlock);
 			let projected: (TextContent | ImageContent)[];
