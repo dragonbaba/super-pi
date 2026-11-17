@@ -4,7 +4,7 @@
 
 目录读取、排序、比较和发布都由一次显式命令所属的 Worker 完成。Worker 每 256 条记录或阶段边界检查取消。主线程复用一个周期回调，最多每 150 ms 读取共享阶段和文件计数，只有文本有变化才经 `ctx.ui.setStatus` 触发页脚刷新。终止后停止定时器，清除进度与取消监听。原渲染队列、视口布局和终端写入路径沿用已有机制。
 
-定向回归验证 50,001 条真实文件记录、宽目录、目录栈溢出、重复刷新字节一致以及摘要哈希。取消覆盖发布前、Worker 启动和交互加载器关闭。注入第二个产物发布失败后，旧摘要和索引逐字节保留。已提交事务的清理恢复覆盖其中一个旧备份已删除的情况。
+常规回归以 2,051 条文件记录验证宽目录、目录栈溢出、重复刷新字节一致以及摘要哈希。独立压力验收使用 50,001 条真实文件记录并覆盖多轮归并。取消覆盖发布前、Worker 启动和交互加载器关闭。注入第二个产物发布失败后，旧摘要和索引逐字节保留。已提交事务的清理恢复覆盖其中一个旧备份已删除的情况。
 
 Windows、Node 26.13.0，同一独立 Git 工作区与同一已发布状态，24,001 条记录。每种路径各运行三个独立进程，表中是中位数。所有轮次报告产物相同，摘要和索引的组合 SHA-256 均为 `f4516bff4af470bc660a27dbb856c0560f807aa9a8397250ff66d969dd40141b`。
 
@@ -19,4 +19,6 @@ Worker 路径的主线程 GC 后堆约 41.4 MB，旧同步路径约 48.5 MB。�
 ```powershell
 node --experimental-strip-types --test tests/project-context-retirement.test.ts tests/bundled-extensions.test.ts
 node --experimental-strip-types --test tests/tui-frame-hot-paths.test.ts tests/tui-frame-queue.test.ts
+$env:SP_TEST_PROJECT_INDEX_STRESS = '1'
+node --experimental-strip-types --test --test-name-pattern 'indexes 50001' tests/project-context-retirement.test.ts
 ```

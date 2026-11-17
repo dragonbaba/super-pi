@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs, { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { initTheme } from "@super-pi/coding-agent";
 import { searchFixture } from "./helpers/tool-search-fixture.ts";
@@ -235,23 +235,25 @@ test("status reads neither the workspace listing nor published artifact bodies",
   finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
-test("indexes 50,001 included files with bounded sorting, deterministic bytes, and no retained scratch", t => {
+const largeIndexFiles = process.env.SP_TEST_PROJECT_INDEX_STRESS === "1" ? 50_001 : 2_051;
+
+test(`indexes ${largeIndexFiles} included files with bounded sorting and no retained scratch`, t => {
   const f = fixture(t);
   const project = core.initializeProject(f.cwd);
-  for (let i = 0; i < 49_999; i++) writeFileSync(join(f.cwd, `item-${String(i).padStart(5, "0")}.ts`), "");
+  for (let i = 0; i < largeIndexFiles - 2; i++) writeFileSync(join(f.cwd, `item-${String(i).padStart(5, "0")}.ts`), "");
   for (let i = 0; i < 260; i++) mkdirSync(join(f.cwd, "src", `empty-${i}`));
   const first = core.refreshProject(f.cwd, project);
   const directory = join(f.cwd, ".sp");
   const index = join(directory, "project-index.jsonl");
   const profile = join(directory, "project-context.md");
   const indexBytes = readFileSync(index);
-  assert.equal(first.fileCount, 50_001);
+  assert.equal(first.fileCount, largeIndexFiles);
   assert.equal(first.diagnostics.peakRecords, 2048);
-  assert.ok(first.diagnostics.initialRuns > 8);
-  assert.equal(first.diagnostics.peakReaders, 8);
+  assert.equal(first.diagnostics.initialRuns, Math.ceil(largeIndexFiles / 2048));
+  assert.equal(first.diagnostics.peakReaders, Math.min(8, first.diagnostics.initialRuns));
   assert.equal(first.diagnostics.peakDirectories, 256);
   assert.ok(first.diagnostics.directorySpills > 0);
-  assert.equal(indexBytes.toString("utf8").split("\n").length, 50_002);
+  assert.equal(indexBytes.toString("utf8").split("\n").length, largeIndexFiles + 1);
   const digest = createHash("sha256").update(indexBytes.subarray(0, -1)).digest("hex");
   assert.ok(readFileSync(profile, "utf8").includes(digest));
   const unchanged = core.refreshProject(f.cwd, project);
@@ -280,7 +282,7 @@ test("cancel and a second-artifact publication fault preserve both previous file
   assert.deepEqual(readFileSync(index), oldIndex);
   assert.deepEqual(readFileSync(profile), oldProfile);
   const operations = { renameSync(from: string, to: string) {
-    if (to === index && from.endsWith(".tmp")) throw new Error("fixture publication failure");
+    if (basename(to) === "project-index.jsonl" && from.endsWith(".tmp")) throw new Error("fixture publication failure");
     fs.renameSync(from, to);
   } };
   assert.throws(() => core.refreshProject(f.cwd, project, { operations }), /fixture publication failure/);
