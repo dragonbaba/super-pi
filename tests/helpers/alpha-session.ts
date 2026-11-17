@@ -66,6 +66,8 @@ export async function alphaSession(options: {
   codemode?: boolean;
   /** Caller-owned isolated root for repeated-path GC controls; never a real user HOME. */
   fixtureRoot?: string;
+  /** Persisted synthetic journals for resume/branch tests; never a real user session. */
+  sessionManager?: SessionManager;
 } = {}) {
   const root = options.fixtureRoot ?? mkdtempSync(join(tmpdir(), 'g2s-session-'));
   const agentDir = join(root, 'agent'); mkdirSync(agentDir, { recursive: true });
@@ -73,7 +75,7 @@ export async function alphaSession(options: {
   const resourceLoader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager: settings, noContextFiles: true,
     noExtensions: !options.extensions?.length, extensionFactories: options.extensions, noSkills: true, noPromptTemplates: true, noThemes: true });
   await resourceLoader.reload();
-  const sessionManager = SessionManager.inMemory(root);
+  const sessionManager = options.sessionManager ?? SessionManager.inMemory(root);
   for (const message of options.messages ?? []) sessionManager.appendMessage(message);
   const customTools = options.codemode ? options.customTools : options.customTools?.map(tool => ({ ...tool, modelOnly: true }));
   const { session } = await createAgentSession({ cwd: root, agentDir, model: ALPHA_MODEL, modelRuntime: options.runtime ?? alphaModelRuntime(),

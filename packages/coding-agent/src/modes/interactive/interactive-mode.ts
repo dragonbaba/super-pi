@@ -98,6 +98,7 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage, type CustomMessage } from "../../core/messages.ts";
+import { isLocalCompactionMaintenance } from "../../core/compaction/normalize-checkpoint.ts";
 import {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
@@ -5537,7 +5538,7 @@ export class InteractiveMode {
 
 	/**
 	 * Render session entries to chat. Used for initial load and rebuild after compaction.
-	 * @param entries Compaction-aware session entries to render
+	 * @param entries Archived entries on the selected branch; model context is separate
 	 * @param options.updateFooter Update footer state
 	 * @param options.populateHistory Add user messages to editor history
 	 */
@@ -5549,8 +5550,11 @@ export class InteractiveMode {
 		this.renderer.resetTextSelection();
 		const items: RenderSessionItem[] = [];
 		for (const entry of entries) {
-			if (entry.type === "compaction") continue;
-			if (entry.type === "custom") {
+			if (entry.type === "compaction") {
+				// The archived calls/results are already present on this branch. A retained
+				// tail belongs to model context and must not duplicate them in the transcript.
+				if (!isLocalCompactionMaintenance(entry)) items.push(createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp));
+			} else if (entry.type === "custom") {
 				items.push(entry);
 			} else {
 				for (const message of sessionEntryToContextMessages(entry)) items.push(message);
@@ -5600,7 +5604,7 @@ export class InteractiveMode {
 	}
 
 	renderInitialMessages(): void {
-		const entries = this.sessionManager.buildContextEntries();
+		const entries = this.sessionManager.getBranch();
 		this.renderSessionEntries(entries, {
 			updateFooter: true,
 			populateHistory: true,
@@ -5608,9 +5612,8 @@ export class InteractiveMode {
 		this.renderProjectTrustWarningIfNeeded();
 
 		// Show compaction info if session was compacted
-		const allEntries = this.sessionManager.getEntries();
 		let compactionCount = 0;
-		for (const entry of allEntries) if (entry.type === "compaction") compactionCount++;
+		for (const entry of entries) if (entry.type === "compaction" && !isLocalCompactionMaintenance(entry)) compactionCount++;
 		if (compactionCount > 0) {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.showStatus(`Session compacted ${times}`);
@@ -5653,7 +5656,7 @@ export class InteractiveMode {
 
 	private rebuildChatFromMessages(): void {
 		this.chatContainer.clear();
-		this.renderSessionEntries(this.sessionManager.buildContextEntries());
+		this.renderSessionEntries(this.sessionManager.getBranch());
 	}
 
 	// =========================================================================

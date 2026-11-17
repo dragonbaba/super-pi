@@ -1,7 +1,27 @@
 import type { AgentMessage } from "@super-pi/agent-core";
-import type { SessionManager } from "../session-manager.ts";
+import type { SessionEntry, SessionManager } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
 import { condenseFailedCodemodeAttempts } from "./failed-attempts.ts";
+
+const CONTEXT_MAINTENANCE_VERSION = 1;
+const FAILED_SOURCE_MAINTENANCE = "completed-failed-codemode-source";
+const LENGTH_RECOVERY_MAINTENANCE = "length-recovery-settlement";
+type MaintenanceKind = typeof FAILED_SOURCE_MAINTENANCE | typeof LENGTH_RECOVERY_MAINTENANCE;
+
+/** Checkpoint setup only: share nested native history and accounting without copying payloads. */
+export function withLocalCompactionMaintenance(details: unknown, kind: MaintenanceKind, previousCheckpointId: string): Record<string, unknown> {
+	const previous = details && typeof details === "object" && !Array.isArray(details) ? details as Record<string, unknown> : {};
+	return { ...previous, contextMaintenance: { version: CONTEXT_MAINTENANCE_VERSION, kind, previousCheckpointId } };
+}
+
+/** Local maintenance reuses an existing summary; it is not another compaction event. */
+export function isLocalCompactionMaintenance(entry: SessionEntry): boolean {
+	if (entry.type !== "compaction") return false;
+	const details = entry.details as { contextMaintenance?: { version?: number; kind?: string } } | undefined;
+	const maintenance = details?.contextMaintenance;
+	return maintenance?.version === CONTEXT_MAINTENANCE_VERSION &&
+		(maintenance.kind === FAILED_SOURCE_MAINTENANCE || maintenance.kind === LENGTH_RECOVERY_MAINTENANCE);
+}
 
 /** Restore/setup only: durably reduce a checkpoint that no later request consumed.
  * Once any entry follows it, leave the established prefix until the next compaction.
@@ -21,10 +41,9 @@ export function normalizeUnconsumedCompaction(manager: SessionManager, keepRecen
 	else for (const message of checkpoint.retainedTail) before += estimateTokens(message);
 	for (const message of tail) after += estimateTokens(message);
 	const { usageLedger: _ledger, usageComponents: _components, ...details } = previous;
-	manager.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, before, {
+	manager.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, before, withLocalCompactionMaintenance({
 		...details,
-		contextMaintenance: { version: 1, kind: "completed-failed-codemode-source", previousCheckpointId: checkpoint.id },
 		contextAccounting: { ...accounting, schemaVersion: 1, providerUsageState: "unverified", estimateSource: "materialized", materializedTokensAfter: after, keepRecentTokens },
-	}, checkpoint.fromHook, undefined, tail);
+	}, FAILED_SOURCE_MAINTENANCE, checkpoint.id), checkpoint.fromHook, undefined, tail);
 	return true;
 }

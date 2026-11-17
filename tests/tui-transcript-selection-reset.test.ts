@@ -19,7 +19,7 @@ function fixture() {
 		renderer: ui, ui, chatContainer: chat,
 		loadedResourcesContainer: new RetainedContainer(), pendingMessagesContainer: new RetainedContainer(),
 		pendingTools: new Map(), runtimeHost: { session: {
-			sessionManager: { buildContextEntries: () => [], getEntries: () => [] },
+			sessionManager: { getBranch: () => [], getEntries: () => [] },
 			settingsManager: { getShowTerminalProgress: () => false },
 		} },
 		renderProjectTrustWarningIfNeeded() {},
@@ -135,15 +135,15 @@ test("ordinary assistant updates and append-only compaction keep the current sel
 	} finally { await f.ui.dispose({ preserveScreen: true }); }
 });
 
-test("entry rebuilding forwards compaction entries through the fullscreen renderer", async () => {
+test("entry rebuilding forwards the compaction summary without its duplicated context tail", async () => {
 	const ui = new TuiAltScreen(new FakeTerminal(), false, undefined, { mouse: false });
 	let calls = 0;
 	const options = { updateFooter: true };
 	const mode = Object.assign(Object.create(InteractiveMode.prototype), {
 		renderer: ui,
-		renderSessionItems(items: unknown[], actualOptions: unknown) { calls++; assert.deepEqual(items, []); assert.equal(actualOptions, options); },
+		renderSessionItems(items: any[], actualOptions: unknown) { calls++; assert.equal(items.length, 1); assert.equal(items[0].role, "compactionSummary"); assert.equal(items[0].summary, "summary"); assert.equal(actualOptions, options); },
 	});
-	try { mode.renderSessionEntries([{ type: "compaction" }], options); assert.equal(calls, 1); }
+	try { mode.renderSessionEntries([{ type: "compaction", summary: "summary", tokensBefore: 10, timestamp: "2026-11-18T00:00:00Z", retainedTail: [{ role: "user", content: "already archived" }] }], options); assert.equal(calls, 1); }
 	finally { await ui.dispose(); }
 });
 
