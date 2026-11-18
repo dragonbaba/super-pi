@@ -17,6 +17,8 @@ Every run read each file exactly once. All reading answers explained the transfo
 
 ## Reproduction
 
+After integrating the stable delegation guidance, a separate dependent-file task used the same Sol configuration and working directory on base `00fa42093` and candidate `a9c7c0f18`. The model read `route.txt`, changed only the selected `blue.txt`, and reported its name. The manifest and the `red.txt` decoy remained byte-identical. One run per version took 6 → 5 model turns, 10,364 → 10,200 uncached input tokens, 12,800 → 6,912 cached input tokens and 197 → 160 output tokens. This single pair checks ordered execution and does not estimate an average.
+
 For the read fixture, app.js imports compact from format.js and returns compact(value) + '/opal'. format.js imports prefix from label.js and returns prefix + value.trim(). label.js exports the string 'pinetree:'. The prompt was “Read app.js, format.js, and label.js. Explain how receipt obtains its result and give the exact output for input ' x '.” For the edit fixture each file contains `export const channel = 'copper';`, then a comment with its filename, both lines LF-terminated. The prompt was “Change the channel string from copper to silver in app.js, format.js, and label.js. Preserve everything else. Report the files changed.”
 
 Run each built CLI in the same synthetic task directory with `--mode json --no-session --no-context-files --no-skills --no-mcp --no-extensions --no-prompt-templates --tools read,edit,file_batch --provider openai-codex --model gpt-6.2-sol --thinking medium -p` followed by the task prompt. Sum the assistant message_end usage records once per completed turn. For the deterministic regressions run:
