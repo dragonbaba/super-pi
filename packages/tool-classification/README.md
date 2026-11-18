@@ -19,7 +19,7 @@ shorter browser prefix, so `browser DOM inspection` selects DevTools.
 - Browser: `browser` discovers `browser_exec` for public-web reading and interaction in the user's browser.
 - Web search: `web search` and `网页搜索` discover `web_search` when [SearXNG is configured](../../docs/web-search.md). Without a configured search tool, a general keyword search can still discover Browser Use.
 - Browser debugging: `browser_debug`, `cdp`, local-preview queries, DOM/JavaScript inspection, UI validation and exact `chrome_devtools_*` names discover DevTools for those tasks. The model can activate these tools without a manual enable command. A missing endpoint may launch an isolated profile; choose the correct target and do not assume the user's login is present.
-- Delegation: `subagent`.
+- Direct controls already enabled by the host stay visible from the first request. This includes the foreground `subagent` launcher and, when enabled, `tasks` and `subagent_tasks`. A delegation lookup reports active controls. On a restricted surface use the current schemas, and request background work only when a management control is available.
 - Memory/session: `memory`, `memory_search`, `session_search`.
 - Skill management: `skill_manage`.
 - MCP: `mcp_search_tools`.
@@ -43,8 +43,10 @@ The session canonicalizes active definitions by exact registered name, including
 top-level controls and the gateway. Equivalent selections do not reorder provider
 declarations or prompt guidance. Ordinary-tool capability hints, Skills visibility
 and scoped operating guidelines use the permitted registry rather than the active
-subset; discovery still grants no authority. Actual rule updates and control-set
-changes remain visible. The maintained wire matrix covers all ten built-in APIs;
+subset. Changes to model-facing instructions and the visible control set reach
+the next request. The host checks current execution rules on each invocation.
+Approvals and directory grants do not contribute to the provider cache key.
+The maintained wire matrix covers all ten built-in APIs;
 see [cross-provider evidence](../../docs/evidence/provider-prefix-matrix-2026-11-16.md).
 
 Known conditional providers omit `promptSnippet` and `promptGuidelines`; their complete operating contracts stay in tool descriptions/schemas. Keep those instructions available through paged `describeTools`, rather than rebuilding the entry definition. The pinned Chrome DevTools npm package is patched in place and must be re-audited after package reinstall/update.
@@ -67,7 +69,7 @@ Session replacement, branch switching and shutdown clear it; shutdown also relea
 the one user-selection event subscription. Existing explicit
 tool allowlists and Plan-mode restrictions still govern every activation.
 
-A resumed restrictive Plan-mode tool set is preserved exactly. Active Goal tools and the model-driven `inspect_image` fallback are retained alongside the core pack instead of being erased by the final session-start reset.
+A resumed Plan selection is preserved exactly. If the user includes `tool_search` in Plan, lookup only reports tools already selected for that mode. Exiting Plan restores the previous selection. Active Goal tools and the model-driven `inspect_image` fallback are retained alongside the core pack.
 
 Use `/tool-classes` to inspect the current active split. From the monorepo root,
 run the maintained offline activation and search regressions:

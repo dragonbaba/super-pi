@@ -18,6 +18,79 @@ import { historyContent, prefixCases, prefixTransport } from "./helpers/provider
 import dynamicInstructions from "../packages/dynamic-instructions/src/index.ts";
 import { withCurrentContextUsage, withHistoricalContextUsage } from "../packages/ai/src/utils/estimate.ts";
 import { epochAssistant } from "./helpers/compaction-epoch-fixture.ts";
+import toolClassification from "../packages/tool-classification/src/index.ts";
+import { createJiti } from "jiti";
+
+const { default: planMode } = await createJiti(import.meta.url).import<typeof import("../packages/plan-mode/src/plan-mode.ts")>("../packages/plan-mode/src/plan-mode.ts");
+
+for (const { label, model } of prefixCases) test(`${label}: default controls survive discovery and Plan owns its visible selection`, async t => {
+  const transport = await prefixTransport(t, model);
+  const root = await mkdtemp(join(tmpdir(), "sp-control-prefix-"));
+  let owner: AgentSession | undefined;
+  t.after(async () => {
+    try {
+      if (owner) { owner.dispose(); await (owner as any)._codemode.close(); await owner.waitForSessionLeaseRelease(); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings,
+    noExtensions: true, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true,
+    extensionFactories: [
+      pi => planMode(pi, { readSettings: async () => ({ kind: "loaded", settings: { thinkingLevel: "inherit", defaultPlanTools: ["read", "tool_search"] } }) }),
+      toolClassification,
+    ] });
+  await loader.reload();
+  const tools = ["fixture_control", "fixture_lookup", "excluded_control"].map(name => ({ name, label: name, description: name,
+    modelOnly: name.endsWith("_control"), parameters: Type.Object({}), execute: async () => ({ content: [], details: {} }) }));
+  const { session } = await createAgentSession({ cwd: root, agentDir: root, model, resourceLoader: loader, settingsManager: settings,
+    sessionManager: SessionManager.inMemory(root), modelRuntime: alphaModelRuntime(transport.stream),
+    customTools: tools, excludeTools: ["excluded_control"] });
+  owner = session;
+  await session.bindExtensions({});
+  const probe = async (message: string) => {
+    const count = transport.sent.length;
+    await session.prompt(message);
+    assert.equal(transport.sent.length, count + 1);
+    const last = session.messages.at(-1);
+    assert.ok(last?.role === "assistant" && last.stopReason === "stop", last?.role === "assistant" ? last.errorMessage : message);
+    return transport.sent[count]!;
+  };
+  const lookup = async (query: string) => {
+    const tool = session.agent.state.tools.find(entry => entry.name === "tool_search");
+    assert.ok(tool);
+    return (await tool.execute("catalog", { query, exact: true })).details as { added: string[]; alreadyActive?: string[] };
+  };
+  const baseline = await probe("Inspect available controls");
+  assert.match(baseline.prefix, /fixture_control/);
+  assert.doesNotMatch(baseline.prefix, /excluded_control/);
+  assert.deepEqual((await lookup("fixture_lookup")).added, ["fixture_lookup"]);
+  assert.deepEqual((await lookup("fixture_control")).alreadyActive, ["fixture_control"]);
+  const warm = await probe("Continue after discovery");
+  assert.equal(warm.prefix, baseline.prefix);
+  assert.deepEqual(historyContent(warm.history).slice(0, baseline.history.length), historyContent(baseline.history));
+  const runner = session.extensionRunner!;
+  const command = runner.getCommand("plan")!;
+  await command.handler("start", runner.createCommandContext());
+  const planned = await probe("Explore in Plan");
+  assert.equal(session.getToolCatalog().selectionMode, "plan");
+  if (model.id === "claude-opus-5") {
+    const updates = planned.history.flatMap(message => message.role === "system" && Array.isArray(message.content) ? message.content : []);
+    assert.ok(updates.some(block => block.type === "tool_removal" && block.tool.name === "fixture_control"));
+    assert.ok(updates.some(block => block.type === "tool_addition" && block.tool.definition?.name === "plan_mode_complete"));
+  } else {
+    assert.doesNotMatch(planned.prefix, /fixture_control/);
+    assert.match(planned.prefix, /plan_mode_complete/);
+  }
+  assert.deepEqual((await lookup("fixture_control")).added, [], "optional Plan discovery respects the selected tools");
+  assert.equal((await probe("Continue planning")).prefix, planned.prefix);
+  await command.handler("exit", runner.createCommandContext());
+  const restored = await probe("Return to ordinary work");
+  assert.equal(restored.prefix, baseline.prefix);
+  if (model.id === "claude-opus-5") {
+    const updates = restored.history.slice(planned.history.length).flatMap(message => message.role === "system" && Array.isArray(message.content) ? message.content : []);
+    assert.ok(updates.some(block => block.type === "tool_addition" && (block.tool.name ?? block.tool.definition?.name) === "fixture_control"));
+  }
+});
 
 for (const { label, model } of prefixCases) test(`${label}: usage epoch metadata leaves the serialized prefix and history identical`, async t => {
   const transport = await prefixTransport(t, model);

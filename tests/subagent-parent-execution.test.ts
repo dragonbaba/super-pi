@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
@@ -17,6 +17,9 @@ import { emitSessionShutdownEvent } from "../packages/coding-agent/src/core/exte
 import { getToolPath } from "../packages/coding-agent/src/utils/tools-manager.ts";
 import { FileResultWriter } from "../packages/coding-agent/src/core/files/file-result-store.ts";
 import { mutationRequestHash } from "../packages/coding-agent/src/core/files/file-invocation.ts";
+import toolClassification from "../packages/tool-classification/src/index.ts";
+import { historyContent, prefixTransport } from "./helpers/provider-prefix-transport.ts";
+import type { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 
 const owned = createOwnedTaskFixture("subagent-parent-execution-"), agentDir = join(owned.root, "agent");
 const keys = ["TMP", "TEMP", "TMPDIR", "SP_CODING_AGENT_DIR", "SP_SOURCE_LAUNCHER", "SP_BUNDLED_AGENTS_DIR", "SP_OFFLINE"];
@@ -36,7 +39,7 @@ test.after(async () => {
   owned.cleanup();
 });
 
-async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-write" | "read-only" | "sandbox-write" = "host-write") {
+async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-write" | "read-only" | "sandbox-write" = "host-write", extensionFactories = [subagent]) {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), cwd = join(root, "project 中文 space");
   await fs.mkdir(cwd); await fs.writeFile(join(cwd, "sample.txt"), "marker\n");
   await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false },
@@ -51,7 +54,7 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
   // Prefix compatibility also exercises the same Windows directory with a different spelling.
   const sessionCwd = shellCommandPrefix && process.platform === "win32" ? cwd.toUpperCase() : cwd;
   const resources = new DefaultResourceLoader({ cwd: sessionCwd, agentDir, settingsManager: settings, noExtensions: true,
-    noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: [subagent] });
+    noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories });
   await resources.reload(); assert.deepEqual(resources.getExtensions().errors, []);
   const { session } = await createAgentSession({ cwd: sessionCwd, agentDir, resourceLoader: resources, settingsManager: settings,
     sessionManager: SessionManager.create(sessionCwd, join(root, "sessions")), model: ALPHA_MODEL, modelRuntime: alphaModelRuntime() });
@@ -64,12 +67,11 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
     session.dispose(); await runtime.executionBoundary.dispose(); await runtime.nativeFiles?.dispose(); await runtime.nativeTasks?.dispose();
     await session.waitForSessionLeaseRelease();
   });
-  async function run(code: string, agent = "reader", childCwd = cwd, extraArguments: Record<string, unknown> = {}) {
-    await fs.writeFile(join(childCwd, "child-request.json"), JSON.stringify({ code, temp: owned.root }));
+  async function runCall(name: string, args: Record<string, unknown>) {
     let first = true;
     session.agent.streamFunction = () => {
       requests++;
-      const content = first ? [{ type: "toolCall", id: "parent-delegation", name: "subagent", arguments: { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, ...extraArguments } }]
+      const content = first ? [{ type: "toolCall", id: `parent-call-${requests}`, name, arguments: args }]
         : [{ type: "text", text: "Parent complete" }];
       const stopReason = first ? "toolUse" : "stop"; first = false;
       const message: any = { role: "assistant", api: "openai-responses", provider: "fixture", model: ALPHA_MODEL.id, content, stopReason, timestamp: Date.now(),
@@ -80,17 +82,90 @@ async function fixture(t: test.TestContext, environment?: "trusted-host" | "sand
     const result = session.agent.state.messages.filter(message => message.role === "toolResult").at(-1);
     return result;
   }
-  return { root, cwd, additional, session, runtime, notices, run, get requests() { return requests; }, get dialogs() { return dialogs; },
+  async function run(code: string, agent = "reader", childCwd = cwd, extraArguments: Record<string, unknown> = {}) {
+    await fs.writeFile(join(childCwd, "child-request.json"), JSON.stringify({ code, temp: owned.root }));
+    return runCall("subagent", { agent, task: "Run the owned fixture", scope: "Owned fixture files", deliverable: "Tool receipts", stopCondition: "Return after the fixture code", cwd: childCwd, ...extraArguments });
+  }
+  return { root, cwd, additional, session, runtime, notices, run, runCall, get requests() { return requests; }, get dialogs() { return dialogs; },
     async observations(path = cwd) { return (await fs.readFile(join(path, "child-observation.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line)); } };
 }
 
 const liveSandbox = process.platform === "win32" && process.env.SUPERPI_MXC_LIVE === "1";
 
-test("a background subagent reports once and wakes its idle parent", { timeout: 15000 }, async t => {
-  const f = await fixture(t);
+async function recordWireTurns(t: test.TestContext, session: AgentSession) {
+  const transport = await prefixTransport(t, ALPHA_MODEL);
+  return async (text: string) => {
+    const before = transport.sent.length;
+    session.agent.streamFunction = transport.stream;
+    await session.prompt(text);
+    const last = session.messages.at(-1);
+    assert.ok(last?.role === "assistant" && last.stopReason === "stop", last?.role === "assistant" ? last.errorMessage : text);
+    assert.equal(transport.sent.length, before + 1);
+    return transport.sent[before]!;
+  };
+}
+
+test("approval and project rule revocation preserve the request prefix and govern the next direct, nested and delegated calls", { timeout: 60000 }, async t => {
+  const f = await fixture(t, "trusted-host", true, undefined, "host-write", [subagent, toolClassification]);
+  const rules = await f.session.getProjectPermissionRules();
+  assert.ok(rules);
+  await fs.mkdir(dirname(rules.file), { recursive: true });
+  const setDecision = (decision: "ask" | "deny") => fs.writeFile(rules.file, JSON.stringify({ version: 1,
+    rules: ["read", "tasks"].map(tool => ({ tool, decision })) }));
+  const probe = await recordWireTurns(t, f.session);
+  const before = await probe("Baseline before approval");
+  assert.ok(JSON.parse(before.prefix).prompt_cache_key, "exercise a transmitted session cache key");
+  const read = 'await show((await tools.read({path:"sample.txt"})).ref)';
+  await setDecision("ask");
+  const nested = await f.runCall("codemode", { code: read });
+  assert.equal(nested?.isError, false, JSON.stringify(nested));
+  assert.match(JSON.stringify(nested.content), /marker/);
+  const direct = await f.runCall("tasks", { action: "list" });
+  assert.equal(direct?.isError, false, JSON.stringify(direct));
+  assert.ok(f.dialogs > 0, "approval went through the real host");
+  assert.equal((await probe("After approval")).prefix, before.prefix);
+
+  await setDecision("deny");
+  assert.equal((await probe("After revocation")).prefix, before.prefix);
+  const deniedDirect = await f.runCall("tasks", { action: "list" });
+  assert.equal(deniedDirect?.isError, true, JSON.stringify(deniedDirect));
+  assert.match(JSON.stringify(deniedDirect.content), /POLICY_BLOCKED/);
+  const deniedNested = await f.runCall("codemode", { code: read });
+  assert.equal(deniedNested?.isError, true, JSON.stringify(deniedNested));
+  assert.match(JSON.stringify(deniedNested.content), /POLICY_BLOCKED/);
+  await f.run(read);
+  const deniedChild = (await f.observations()).find(entry => entry.event === "result" && entry.name === "read");
+  assert.equal(deniedChild?.isError, true, JSON.stringify(deniedChild));
+  assert.match(JSON.stringify(deniedChild.content), /POLICY_BLOCKED/);
+  assert.equal((await probe("Continue after refusals")).prefix, before.prefix);
+});
+
+test("first request exposes delegation and discovery preserves its prefix before a background child wakes its idle parent", { timeout: 15000 }, async t => {
+  const f = await fixture(t, undefined, true, undefined, "host-write", [subagent, toolClassification]);
   const previousLauncher = process.env.SP_SOURCE_LAUNCHER;
   process.env.SP_SOURCE_LAUNCHER = fileURLToPath(new URL("./fixtures/subagent-managed-child.mjs", import.meta.url));
   try {
+    const firstTools = f.session.getActiveToolNames();
+    assert.ok(firstTools.includes("subagent"), "launcher available before first discovery");
+    assert.ok(firstTools.includes("subagent_tasks"), "controller available before first discovery");
+    const probe = await recordWireTurns(t, f.session);
+    const first = await probe("Inspect available tools");
+    assert.match(first.prefix, /"name":"subagent"/);
+    const discovered = await f.runCall("codemode", { code: 'await show((await tools.tool_search({query:"delegation"})).ref)' });
+    assert.equal(discovered?.isError, false, JSON.stringify(discovered?.content));
+    assert.deepEqual(f.session.getActiveToolNames(), firstTools);
+    const after = await probe("Continue after discovery");
+    assert.equal(after.prefix, first.prefix);
+    assert.deepEqual(historyContent(after.history).slice(0, first.history.length), historyContent(first.history));
+    const visible = f.session.agent.state.modelTools!;
+    assert.ok(visible.some(tool => tool.name === "subagent_tasks"));
+    assert.match(visible.find(tool => tool.name === "subagent")!.description, /Define each assignment before launch/);
+    assert.match(visible.find(tool => tool.name === "codemode")!.description, /Before calling subagent, define agent, task, scope, deliverable and stopCondition/);
+    const incomplete = await f.runCall("subagent", { agent: "reader", task: "inspect", background: true });
+    assert.equal(incomplete?.isError, true);
+    assert.match(JSON.stringify(incomplete.content), /scope/);
+    assert.deepEqual(await fs.readdir(f.cwd), ["sample.txt"]);
+    const setupRequests = f.requests;
     const accepted = await f.run("", "reader", f.cwd, { task: "guidance-gate idle parent", readOnly: true, background: true });
     await f.session.waitForIdle();
     assert.equal(accepted?.isError, false, JSON.stringify(accepted));
@@ -99,7 +174,7 @@ test("a background subagent reports once and wakes its idle parent", { timeout: 
     assert.match(receipt, /Do not resubmit/);
     const taskId = receipt.match(/[a-f0-9-]{36}-\d+/)?.[0];
     assert.ok(taskId);
-    assert.equal(f.requests, 2);
+    assert.equal(f.requests - setupRequests, 2);
     assert.equal(f.session.isIdle, true);
 
     let resumedInput = "";
@@ -115,7 +190,7 @@ test("a background subagent reports once and wakes its idle parent", { timeout: 
       if (!ready) await delay(10, undefined, { signal: deadline });
     }
     await fs.writeFile(join(f.cwd, ready.replace(".ready.json", ".release")), "");
-    while (f.requests < 3) await delay(10, undefined, { signal: deadline });
+    while (f.requests - setupRequests < 3) await delay(10, undefined, { signal: deadline });
     await f.session.waitForIdle();
 
     const reports = f.session.messages.filter(message => message.role === "custom" && message.customType === "subagent-completion");
@@ -127,7 +202,7 @@ test("a background subagent reports once and wakes its idle parent", { timeout: 
     assert.ok(content.includes(taskId));
     assert.equal(resumedInput.split("AUTOMATIC BACKGROUND TASK REPORT").length - 1, 1);
     assert.ok(resumedInput.includes(taskId));
-    assert.equal(f.requests, 3);
+    assert.equal(f.requests - setupRequests, 3);
     assert.equal((await fs.readdir(f.cwd)).filter(name => /^child-\d+\.ready\.json$/.test(name)).length, 1);
   } finally {
     if (previousLauncher === undefined) delete process.env.SP_SOURCE_LAUNCHER;

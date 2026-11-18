@@ -111,7 +111,7 @@ function categoryFor(name: string): string {
   if (name === "browser_exec") return "browser";
   if (name === "web_search") return "web_search";
   if (name.startsWith("chrome_devtools_")) return "browser_debug";
-  if (name === "subagent") return "delegation";
+  if (name === "subagent" || name === "subagent_tasks") return "delegation";
   if (name === "memory" || name === "memory_search" || name === "session_search") return "memory";
   if (name === "skill_manage") return "skills";
   if (name === "mcp_search_tools") return "mcp";
@@ -184,7 +184,7 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
-    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use exact:true when checking a registered name, especially one from earlier history; this never activates category or description matches. Use when the stable core tools cannot perform the task. Use web search for keyword lookup through SearXNG when configured, and browser/browser_exec for reading or interacting with pages in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
+    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. In Plan mode, search only reports tools in the selected plan. Use exact:true when checking a registered name, especially one from earlier history; this never activates category or description matches. Use when the stable core tools cannot perform the task. Use web search for keyword lookup through SearXNG when configured, and browser/browser_exec for reading or interacting with pages in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: web search for keyword lookup; browser for page interaction; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, skills, or mcp." }),
@@ -209,14 +209,16 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         details: { query: params.query, matches: [], added: [], rejected: [], blocked: "browser_approval" } as ToolSearchDetails,
       };
       const catalog = readToolCatalog(pi);
-      const category = browserDebug ? "browser_debug"
-        : requested === "web_search" && !catalog.tools.some(isAvailableWebSearch) ? "browser" : requested;
       const active = catalog.activeTools;
       const activeSet = new Set(active);
+      const planSelection = planOwnsToolSelection(catalog, activeSet);
+      const category = browserDebug ? "browser_debug"
+        : requested === "web_search" && ((planSelection && !activeSet.has("web_search")) || !catalog.tools.some(isAvailableWebSearch)) ? "browser" : requested;
       for (const tool of catalog.tools) {
         if (
           tool.name === "tool_search"
           || tool.available === false
+          || planSelection && !activeSet.has(tool.name)
           || POLICY_OWNED_TOOL_NAMES.has(tool.name)
           || exactName !== undefined && tool.name !== exactName
         ) continue;
@@ -324,11 +326,18 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
     const nextActive: string[] = [];
     for (let index = 0; index < CORE_TOOL_NAMES.length; index += 1) {
       const name = CORE_TOOL_NAMES[index];
-      if (available.has(name)) nextActive.push(name);
+      if (available.delete(name)) nextActive.push(name);
     }
     for (let index = 0; index < PRESERVABLE_POLICY_TOOL_NAMES.length; index += 1) {
       const name = PRESERVABLE_POLICY_TOOL_NAMES[index];
-      if (available.has(name) && activeSet.has(name)) nextActive.push(name);
+      if (available.delete(name) && activeSet.has(name)) nextActive.push(name);
+    }
+    // Discovery can load ordinary contracts behind CodeMode. Dropping an already
+    // active direct control would require changing the provider prefix to restore it.
+    for (const tool of allTools) {
+      if (tool.directControl && available.has(tool.name) && activeSet.has(tool.name) && !POLICY_OWNED_TOOL_NAMES.has(tool.name)) {
+        nextActive.push(tool.name);
+      }
     }
     pi.setActiveTools(nextActive);
   });
