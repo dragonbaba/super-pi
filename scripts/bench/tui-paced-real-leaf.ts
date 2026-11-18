@@ -24,6 +24,7 @@ import type { Terminal } from "../../packages/tui/src/terminal.ts";
 import { Text } from "../../packages/tui/src/components/text.ts";
 import type { TUI } from "../../packages/tui/src/tui.ts";
 import { TuiAltScreen } from "../../packages/tui/src/tui-alt-screen.ts";
+import { TypeScriptPaintQueue } from "../../packages/coding-agent/src/modes/interactive/components/typescript-paint.ts";
 import { currentCommit, readIntegerOption } from "./benchmark.ts";
 
 type BenchEvent = { type: string; [key: string]: unknown };
@@ -348,6 +349,7 @@ async function measureAssistant(
 	const { renderer, reference, transcript, instrumentation, terminal } = createRenderer(historyItems);
 	const metrics = createAssistantMetrics();
 	const component = new AssistantMessageComponent(undefined, false, getMarkdownTheme(), "Thinking...", 1, [], metrics);
+	component.enableCodePaint(new TypeScriptPaintQueue(), publishNoopExtensionObserver);
 	const retained = transcript.addRetainedChild(component, { id: "paced-assistant", version: 0 });
 	const mode = Object.create(InteractiveMode.prototype) as { handleEvent(event: BenchEvent): void } & Record<string, unknown>;
 	Object.assign(mode, {
@@ -433,7 +435,7 @@ async function measureAssistant(
 		if (growing) {
 			const oracle = new AssistantMessageComponent({
 				role: "assistant", content: [{ type: "text", text: body }], stopReason: "stop",
-			} as AssistantMessage, false, getMarkdownTheme(), "Thinking...", 1);
+			} as AssistantMessage, false, scenario === "code" ? { ...getMarkdownTheme(), highlightCode: code => code.split("\n") } : getMarkdownTheme(), "Thinking...", 1);
 			assert.equal(rendered, oracle.render(120).join("\n"), "growing stream must match a fresh render");
 			assert.equal(stats.delivered - statsBefore.delivered, deliveries);
 			assert.equal(metrics.updateContentCalls, deliveries);

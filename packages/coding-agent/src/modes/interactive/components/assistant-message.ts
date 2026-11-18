@@ -1,7 +1,8 @@
 import type { AssistantMessage } from "@super-pi/ai";
-import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@super-pi/tui";
+import { Container, Markdown, type MarkdownTheme, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text } from "@super-pi/tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
+import { MessageCodePaint, type TypeScriptPaintQueue } from "./typescript-paint.ts";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -41,6 +42,15 @@ export class AssistantMessageComponent extends Container {
 	private lastMessage?: AssistantMessage;
 	private hasToolCalls = false;
 	private isStreaming = false;
+	private codePaint?: MessageCodePaint;
+
+	enableCodePaint(queue: TypeScriptPaintQueue, repaint: (owner: AssistantMessageComponent) => void): void {
+		this.codePaint = new MessageCodePaint(queue, this.markdownTheme, this, repaint);
+	}
+
+	[RELEASE_COMPONENT_RENDER_CACHE](): void {
+		this.codePaint?.reset(false, this.markdownTheme);
+	}
 	private streamingMarkdownSlots = new Map<number, StreamingMarkdownSlot>();
 	private nextStreamingMarkdownSlots = new Map<number, StreamingMarkdownSlot>();
 	private readonly maxStreamingMarkdownSlots = 4;
@@ -76,6 +86,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	override invalidate(): void {
+		this.codePaint?.refreshGrammar();
 		super.invalidate();
 		if (this.lastMessage) {
 			this.updateContent(this.lastMessage);
@@ -99,6 +110,7 @@ export class AssistantMessageComponent extends Container {
 	setMarkdownTheme(markdownTheme: MarkdownTheme): void {
 		if (this.markdownTheme === markdownTheme) return;
 		this.markdownTheme = markdownTheme;
+		this.codePaint?.reset(!this.isStreaming, markdownTheme);
 		this.streamingMarkdownSlots.clear();
 		this.nextStreamingMarkdownSlots.clear();
 		if (this.lastMessage) this.updateContent(this.lastMessage);
@@ -107,6 +119,7 @@ export class AssistantMessageComponent extends Container {
 	setMarkdownTransformers(markdownTransformers: readonly MarkdownTransformer[]): void {
 		if (this.markdownTransformers === markdownTransformers) return;
 		this.markdownTransformers = markdownTransformers;
+		this.codePaint?.reset(!this.isStreaming, this.markdownTheme);
 		this.streamingMarkdownSlots.clear();
 		this.nextStreamingMarkdownSlots.clear();
 		if (this.lastMessage) this.updateContent(this.lastMessage);
@@ -124,6 +137,7 @@ export class AssistantMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const lines = super.render(width);
+		this.codePaint?.finishRender();
 		if (this.hasToolCalls || lines.length === 0) {
 			return lines;
 		}
@@ -134,6 +148,9 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	updateContent(message: AssistantMessage, isStreaming = this.isStreaming): void {
+		if (this.codePaint && (isStreaming !== this.isStreaming || (!isStreaming && message !== this.lastMessage))) {
+			this.codePaint.reset(!isStreaming && message.stopReason !== "aborted" && message.stopReason !== "error", this.markdownTheme);
+		}
 		if (this.allocationMetrics) this.allocationMetrics.updateContentCalls++;
 		if (
 			isStreaming && this.isStreaming && !this.hasToolCalls &&
@@ -201,6 +218,7 @@ export class AssistantMessageComponent extends Container {
 					if (this.allocationMetrics) this.allocationMetrics.markdownInstances++;
 					markdown = new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
 						transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+						highlightCode: this.codePaint?.highlight,
 						incrementalRenderCache: this.isStreaming && nextMarkdownSlots.size < this.maxStreamingMarkdownSlots,
 					});
 				}

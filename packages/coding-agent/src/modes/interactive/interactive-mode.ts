@@ -132,6 +132,7 @@ import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
+import { TypeScriptPaintQueue } from "./components/typescript-paint.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
@@ -599,6 +600,7 @@ export class InteractiveMode {
 	private lastStatusText: Text | undefined = undefined;
 
 	// Streaming message tracking
+	private codePaintQueue?: TypeScriptPaintQueue;
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private streamingMessage: AssistantMessage | undefined = undefined;
 	private streamingItem: RetainedItem | undefined = undefined;
@@ -867,11 +869,13 @@ export class InteractiveMode {
 		this.options = { ...options };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
+			this.codePaintQueue?.retire();
 			this.clearCacheOverlapCursor();
 			this.resetExtensionUI();
 		});
 		let draftSessionId = this.sessionManager.getSessionId();
 		this.runtimeHost.setRebindSession(async () => {
+			await this.closeCodePaintQueue();
 			// Budget revisions belong to one AgentSession. A replacement starts at
 			// zero; explicit configuration made by its factory stays pending (> 0).
 			this.toolResultBudgetUiGeneration = 0;
@@ -4284,6 +4288,7 @@ export class InteractiveMode {
 						this.outputPad,
 						this.getMarkdownTransformers(),
 					);
+					this.enableStreamingCodePaint(this.streamingComponent);
 					this.streamingMessage = event.message;
 					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.streamingItemVersion = 1;
@@ -5401,6 +5406,23 @@ export class InteractiveMode {
 			completed: true,
 		});
 	}
+
+	private async closeCodePaintQueue(): Promise<void> {
+		const queue = this.codePaintQueue;
+		this.codePaintQueue = undefined;
+		await queue?.close();
+	}
+
+	private enableStreamingCodePaint(component: AssistantMessageComponent): void {
+		const queue = this.codePaintQueue ??= new TypeScriptPaintQueue();
+		component.enableCodePaint(queue, this.repaintCompletedCode);
+	}
+
+	private readonly repaintCompletedCode = (component: AssistantMessageComponent): void => {
+		if (!this.chatContainer.invalidateRetainedChild(component)) return;
+		component.invalidate();
+		this.ui.requestRender();
+	};
 
 	private addStreamingTranscriptItem(): void {
 		if (!this.streamingComponent) return;
@@ -8707,6 +8729,8 @@ export class InteractiveMode {
 		if (unsubscribe) {
 			release(this, unsubscribe);
 		}
+		try { await this.closeCodePaintQueue(); }
+		catch (error) { if (!cleanupFailed) { cleanupFailed = true; cleanupError = error; } }
 		try {
 			if (this.isInitialized) {
 				await this.stopInteractiveTui();
