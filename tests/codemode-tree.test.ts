@@ -54,7 +54,48 @@ test("tree groups two calls, decodes exact content JSON and renders each output 
 	assert.equal(plain(summaryTree).split(printedSummary).length - 1, 1, "only the host's first summary block is hidden; identical script output is preserved");
 });
 
-test("all collapsed calls hide output equally, including the final script return and shared output", () => {
+test("a successful script with no child calls previews two output lines and counts the rest", () => {
+	const tree = new CodemodeTreeComponent();
+	const source = 'const page = await readOutput(load("implement")); text(page.data);';
+	const longLine = "x".repeat(600);
+	try {
+		const final = parent([], ["page starts here\r\nsecond line\r\nthird line\r\nfinal line\r\n"]);
+		tree.updateParent(source, final, true, false, false);
+		assert.doesNotMatch(plain(tree), /page starts here/);
+		tree.updateParent(source, final, false, false, false);
+		const collapsed = plain(tree);
+		assert.match(collapsed, /Codemode \(0 child calls\) — completed/);
+		assert.match(collapsed, /page starts here[^\S\n]*\n[^\S\n]*second line[^\S\n]*\n[^\S\n]*\+2\s/);
+		assert.doesNotMatch(collapsed, /Script output|third line|final line|readOutput/);
+		tree.updateParent(source, final, false, false, true);
+		assert.match(plain(tree), /readOutput/);
+		assert.match(plain(tree), /final line/);
+		tree.updateParent(source, final, false, false, false);
+		tree.invalidate();
+		assert.equal(plain(tree), collapsed);
+		assert.equal(tree.getLifecycleCounts().outputProjections, 1);
+
+		tree.updateParent(source, parent([], [longLine + "😃hidden tail\nsecond line"]), false, false, false);
+		const capped = plain(tree, 20);
+		assert.match(capped, /x+… *\n +second line/);
+		assert.equal(capped.match(/x{5,}/g)?.length, 1, "a long logical line uses one terminal row");
+		assert.doesNotMatch(capped, /hidden tail|\+\d/);
+		assert.ok(plain(tree, 700).includes(longLine + "😃hidden tail"), "the viewport width governs horizontal clipping");
+
+		tree.updateParent(source, parent([], ["head\nnext\n" + "\n".repeat(16_000) + "tail"]), false, false, false);
+		assert.match(plain(tree), /head\s+next\s+\+16001\s/);
+
+		tree.updateParent(source, parent([], []), false, false, false);
+		assert.doesNotMatch(plain(tree), /Script output|head|\+\d/);
+	} finally {
+		releaseComponentRenderCaches(tree);
+	}
+	assert.equal(tree.getLifecycleCounts().textChars, 0);
+	assert.equal(tree.getLifecycleCounts().resultReferences, 0);
+	assert.equal(tree.getLifecycleCounts().timers, 0);
+});
+
+test("collapsed child rows hide successful child and script output equally", () => {
 	const tree = new CodemodeTreeComponent();
 	const texts = ["first detail\n".repeat(10), "middle detail\n".repeat(10), "last detail\n".repeat(10)];
 	const facts = texts.map((text, index) => ({ ...fact(`p:${index}`, "read", text), durationMs: 0 }));

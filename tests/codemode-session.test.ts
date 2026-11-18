@@ -182,9 +182,20 @@ test("native captured JSON survives postprocessing failure and is read in the ne
 	assert.equal(facts.length, 1); assert.equal(facts[0].isError, false); assert.equal(facts[0].exitCode, 0); assert.equal(facts[0].resultComplete, true);
 	const ref = facts[0].outputRefs[0].ref;
 	assert.match(JSON.stringify(failed.content), /postprocessing fixture/);
-	const recovered = await f.run([`const page=await readOutput(${JSON.stringify(ref)},{format:"json",path:["results"],offset:340,limit:4});text({ids:page.data.map(x=>x.id),next:page.nextOffset});`]);
-	assert.equal(recovered.results.at(-1)?.isError, false, JSON.stringify(recovered.results.at(-1)));
-	assert.match(JSON.stringify(recovered.results.at(-1)?.content), /340,341,342,343/);
+	const recoveryScript = `const page=await readOutput(${JSON.stringify(ref)},{format:"json",path:["results"],offset:340,limit:4});text({ids:page.data.map(x=>x.id),next:page.nextOffset});`;
+	const recovered = (await f.run([recoveryScript])).results.at(-1)!;
+	assert.equal(recovered.isError, false, JSON.stringify(recovered));
+	assert.equal((recovered.details as any).codemode.calls.length, 0);
+	assert.match(JSON.stringify(recovered.content), /340,341,342,343/);
+	initTheme("dark");
+	const tree = new CodemodeTreeComponent();
+	try {
+		tree.updateParent(recoveryScript, recovered, false, false, false);
+		const collapsed = stripVTControlCharacters(tree.render(120).join("\n"));
+		assert.match(collapsed, /Codemode \(0 child calls\) — completed/);
+		assert.match(collapsed, /\{"ids":\[340,341,342,343\]/);
+		assert.doesNotMatch(collapsed, /Script output|\+\d/);
+	} finally { releaseComponentRenderCaches(tree); }
 	assert.equal(readFileSync(join(f.cwd, "calls.txt"), "utf8"), "1");
 	(f.session as any)._codemode.restoreStore();
 	const expired = await f.run([`await readOutput(${JSON.stringify(ref)},{format:"json"});`]);

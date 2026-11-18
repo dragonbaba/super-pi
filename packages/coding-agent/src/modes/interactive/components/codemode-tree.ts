@@ -1,4 +1,4 @@
-import { Container, Text, RELEASE_COMPONENT_RENDER_CACHE, type Component } from "@super-pi/tui";
+import { Container, Text, RELEASE_COMPONENT_RENDER_CACHE, truncateToWidth, type Component } from "@super-pi/tui";
 import {
 	CODEMODE_DISPLAY_MAX_CALLS, CODEMODE_DISPLAY_PREVIEW_CHARS, CODEMODE_DISPLAY_JSON_CHARS,
 	codemodeFailureReason, codemodeInputSummary, codemodeTextDigest, type CodemodeChildDisplay,
@@ -9,6 +9,8 @@ import { theme } from "../theme/theme.ts";
 import { keyHint } from "./keybinding-hints.ts";
 
 type Result = { content: readonly { type: string; text?: string }[]; details?: any; isError?: boolean };
+const COLLAPSED_SCRIPT_PREVIEW_LINES = 2;
+const SCRIPT_OUTPUT_PADDING = 2;
 const PREVIEW_TRUNCATED_NOTICE = "\n… (preview truncated)";
 const PARTIAL_EFFECTS_NOTICE = "Completed tool side effects are not rolled back. Do not automatically retry mutations.";
 const CHILD_SCRIPT_ERROR = /^\[CODEMODE_SCRIPT\] \[[^\]\r\n]{1,128}\] /;
@@ -16,6 +18,59 @@ const RECOVERY_NOTICE = /^\[[^\]\r\n]{1,64} recovery\] /;
 
 function shellStatus(status: string, exit: number | null | undefined): string {
 	return status === "not_executed" ? "not executed" : `${status}; exit=${exit ?? "unknown"}`;
+}
+
+/** The collapsed output keeps two source lines and an optional count row. */
+class CodemodeScriptOutput extends Text {
+	previewVisible = false;
+	private previewLines: string[] | undefined;
+	private renderedPreview: string[] | undefined;
+	private previewWidth = 0;
+
+	setPreview(output: string): void {
+		this.previewLines = this.renderedPreview = undefined;
+		if (!output) return;
+		const lines: string[] = [];
+		let hidden = 0;
+		for (let start = 0; start < output.length;) {
+			const newline = output.indexOf("\n", start);
+			const end = newline < 0 ? output.length : newline;
+			if (lines.length < COLLAPSED_SCRIPT_PREVIEW_LINES) {
+				const lineEnd = output.charCodeAt(end - 1) === 13 ? end - 1 : end;
+				lines.push(output.slice(start, lineEnd).replaceAll("\t", "   "));
+			} else hidden++;
+			start = end + 1;
+		}
+		if (hidden > 0) lines.push(`+${hidden}`);
+		this.previewLines = lines;
+	}
+
+	override render(width: number): string[] {
+		const lines = this.previewLines;
+		if (!this.previewVisible || !lines) return super.render(width);
+		if (this.renderedPreview && this.previewWidth === width) return this.renderedPreview;
+		const pad = width > SCRIPT_OUTPUT_PADDING * 2 ? SCRIPT_OUTPUT_PADDING : 0;
+		const margin = " ".repeat(pad);
+		const rendered: string[] = [];
+		for (let index = 0; index < lines.length; index++) {
+			const line = truncateToWidth(lines[index]!, width - pad * 2, "…", true);
+			rendered.push(margin + theme.fg(index === COLLAPSED_SCRIPT_PREVIEW_LINES ? "muted" : "toolOutput", line) + margin);
+		}
+		this.previewWidth = width;
+		this.renderedPreview = rendered;
+		return rendered;
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+		this.renderedPreview = undefined;
+	}
+
+	getPreviewTextChars(): number {
+		let chars = 0;
+		if (this.previewLines) for (const line of this.previewLines) chars += line.length;
+		return chars;
+	}
 }
 
 function boundedPreview(row: CodemodeTreeRow, result: Result): void {
@@ -121,7 +176,7 @@ export class CodemodeTreeComponent extends Container {
 	private readonly title = new Text("", 0, 0);
 	private readonly source = new Text("", 2, 0);
 	private readonly rowsView = new Container();
-	private readonly output = new Text("", 2, 0);
+	private readonly output = new CodemodeScriptOutput("", SCRIPT_OUTPUT_PADDING, 0);
 	private readonly hint = new Text("", 0, 0);
 	private readonly rows = new Map<string, CodemodeTreeRow>();
 	private lastRow: CodemodeTreeRow | undefined;
@@ -206,9 +261,11 @@ export class CodemodeTreeComponent extends Container {
 		if (title !== this.titleText) { this.titleText = title; this.title.setText(theme.fg("toolTitle", theme.bold(title))); }
 		const source = this.expanded && this.script ? "Script\n" + this.script : "";
 		if (source !== this.sourceText) { this.sourceText = source; this.source.setText(source ? theme.fg("muted", source) : ""); }
+		this.output.previewVisible = !this.expanded && !this.partial && !this.failed && this.rows.size === 0;
 		const visibleOutput = this.expanded ? this.scriptOutput : this.failed ? this.scriptPreview : "";
-		const output = visibleOutput ? (this.expanded ? "Script output\n" : "Script ×\n") + visibleOutput : "";
-		if (output !== this.outputText) { this.outputText = output; this.output.setText(output ? theme.fg(this.expanded ? "toolOutput" : "error", output) : ""); }
+		const errorPreview = this.failed && !this.expanded;
+		const output = visibleOutput ? (errorPreview ? "Script ×\n" : "Script output\n") + visibleOutput : "";
+		if (output !== this.outputText) { this.outputText = output; this.output.setText(output ? theme.fg(errorPreview ? "error" : "toolOutput", output) : ""); }
 		let hint = this.expanded ? "" : theme.fg("muted", keyHint("app.tools.expand", "details"));
 		if (this.expanded && this.failed && this.mayHaveSideEffects) hint += (hint ? "\n" : "") + theme.fg("warning", PARTIAL_EFFECTS_NOTICE);
 		if (hint !== this.hintText) { this.hintText = hint; this.hint.setText(hint); }
@@ -280,6 +337,7 @@ export class CodemodeTreeComponent extends Container {
 			row.refresh();
 		}
 		if (this.failed && !this.partial && !this.hasFailedChild && !this.scriptPreview) this.scriptPreview = "Execution failed; no diagnostic was returned.";
+		this.output.setPreview(!this.failed && this.rows.size === 0 ? this.scriptOutput : "");
 		owners.clear();
 	}
 	private appendScriptOutput(text: string): void {
@@ -349,6 +407,7 @@ export class CodemodeTreeComponent extends Container {
 		}
 		this.result = undefined;
 		this.script = this.scriptOutput = this.scriptPreview = this.sourceText = this.outputText = this.titleText = this.hintText = "";
+		this.output.setPreview("");
 		this.mayHaveSideEffects = false;
 		this.hasFailedChild = false;
 		this.hasScriptError = false;
@@ -357,7 +416,7 @@ export class CodemodeTreeComponent extends Container {
 	}
 	/** Diagnostics are lifecycle-only, never called from render/update. */
 	getLifecycleCounts() {
-		let textChars = this.script.length + this.scriptOutput.length + this.scriptPreview.length;
+		let textChars = this.script.length + this.scriptOutput.length + this.scriptPreview.length + this.output.getPreviewTextChars();
 		let labelMaterializations = 0, previewMaterializations = 0, failureProjections = 0;
 		for (const row of this.rows.values()) {
 			textChars += row.preview.length + row.reported.length + row.input.length + row.outputPath.length + row.failureReason.length;
