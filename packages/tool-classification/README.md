@@ -17,6 +17,7 @@ shorter browser prefix, so `browser DOM inspection` selects DevTools.
 
 - Core: `read`, `grep`, `find`, `ls`, `bash`, `edit`, `write`, `copy`, `delete`, `move`, `file_batch`, `file_result`, `lsp_diagnostics`, `lsp_fix`, `lsp_navigate`, `tool_search`, when registered and allowed by the caller's selection. PowerShell retains explicit activation and known-availability handling.
 - Browser: `browser` discovers `browser_exec` for public-web reading and interaction in the user's browser.
+- Web search: `web search` and `网页搜索` discover `web_search` when [SearXNG is configured](../../docs/web-search.md). Without a configured search tool, a general keyword search can still discover Browser Use.
 - Browser debugging: `browser_debug`, `cdp`, local-preview queries, DOM/JavaScript inspection, UI validation and exact `chrome_devtools_*` names discover DevTools for those tasks. The model can activate these tools without a manual enable command. A missing endpoint may launch an isolated profile; choose the correct target and do not assume the user's login is present.
 - Delegation: `subagent`.
 - Memory/session: `memory`, `memory_search`, `session_search`.

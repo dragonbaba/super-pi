@@ -72,6 +72,17 @@ test("browser debugging phrases retain precedence over a shorter browser categor
   assert.deepEqual((await f.search("browser DOM inspection", 1)).details.added, ["chrome_devtools_evaluate"]);
 });
 
+test("configured keyword search activates SearXNG while browser discovery stays independent", async () => {
+  const f = searchFixture([
+    { name: "web_search", description: "Public web search through SearXNG" },
+    { name: "browser_exec", description: "Browser automation" },
+    { name: "chrome_devtools_evaluate", description: "inspect DOM and JavaScript" },
+  ]);
+  assert.deepEqual((await f.search("web search")).details.added, ["web_search"]);
+  assert.deepEqual((await f.search("网页搜索")).details.alreadyActive, ["web_search"]);
+  assert.deepEqual((await f.search("browser")).details.added, ["browser_exec"]);
+});
+
 test("debug words do not override non-browser categories or borrow the browser approval pause", async () => {
   for (const [category, name] of [["memory", "memory_search"], ["delegation", "subagent"], ["skills", "skill_manage"], ["mcp", "mcp_search_tools"], ["navigation", "lsp_navigate"]]) {
     const f = searchFixture([

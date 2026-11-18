@@ -15,7 +15,8 @@
       "./resource-lifecycle-guard/index.ts",
       "./session-memory-manager/index.ts",
       "./subagent/index.ts",
-      "./tool-loop-guardrails/index.ts"
+      "./tool-loop-guardrails/index.ts",
+      "./web-search/index.ts"
     ]
   },
   "scripts": {},

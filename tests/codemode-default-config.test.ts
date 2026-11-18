@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 test("complete repository default configuration supports Codemode verification and real test-fix-test", async () => {
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-default-config-"));
 	const cwd = join(root, "work"), agentDir = join(root, "agent"); mkdirSync(cwd); mkdirSync(agentDir);
-	const names = ["HOME", "USERPROFILE", "SP_CODING_AGENT_DIR", "SP_OFFLINE"];
+	const names = ["HOME", "USERPROFILE", "SP_CODING_AGENT_DIR", "SP_OFFLINE", "SP_SEARXNG_URL"];
 	const previous = names.map(name => process.env[name]);
 	process.env.HOME = process.env.USERPROFILE = root; process.env.SP_CODING_AGENT_DIR = agentDir; process.env.SP_OFFLINE = "1";
+	delete process.env.SP_SEARXNG_URL;
 	const originalFetch = globalThis.fetch;
 	const originalEntry = process.argv[1];
 	let network = 0;
@@ -33,13 +34,14 @@ test("complete repository default configuration supports Codemode verification a
 		const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
 		await resources.reload();
 		assert.deepEqual(resources.getExtensions().errors, []);
-		assert.equal(resources.getExtensions().extensions.length, 21);
+		assert.equal(resources.getExtensions().extensions.length, 22);
 		writeFileSync(join(cwd, "file.txt"), "hello\nworld\n");
 		({ session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: SessionManager.inMemory(cwd),
 			model: { id: "fixture", name: "fixture", api: "openai-responses", provider: "fixture", baseUrl: "https://example.test", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 },
 			modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }), isUsingOAuth: () => false, getModel: () => undefined, getCredentialGeneration: () => 0, getAuth: async () => undefined } as never }));
 		await session.bindExtensions({});
 		assert.ok(session._toolRegistry.has("mcp_search_tools"), "MCP extension must be enabled, not just imported");
+		assert.equal(session._toolRegistry.has("web_search"), false, "search remains opt-in when no instance is configured");
 		const scripts = [
 			'await show((await tools.read({path:"file.txt"})).ref)',
 			'const before = await tools.bash({command:"grep -q changed file.txt"}); if (before.details.shellExecution.exitCode !== 1) throw new Error("Expected no match before edit"); await tools.edit({path:"file.txt",edits:[{oldText:"hello",newText:"changed"}]});await tools.bash({command:"grep -q changed file.txt"});await show((await tools.read({path:"file.txt"})).ref)',

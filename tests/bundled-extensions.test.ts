@@ -22,6 +22,7 @@ const retainedEntries = [
   "./session-memory-manager/index.ts",
   "./subagent/index.ts",
   "./tool-loop-guardrails/index.ts",
+  "./web-search/index.ts",
 ];
 
 function json(path: string): any {
