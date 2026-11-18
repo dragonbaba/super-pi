@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Session } from "node:inspector/promises";
 import { constants, performance, PerformanceObserver, type PerformanceEntry } from "node:perf_hooks";
@@ -295,10 +296,10 @@ async function profilePaced(
 		}
 	});
 	gcObserver.observe({ entryTypes: ["gc"] });
-	const inspector = new Session();
-	inspector.connect();
-	await inspector.post("HeapProfiler.enable");
-	await inspector.post("HeapProfiler.startSampling", {
+	const inspector = timingOnly ? undefined : new Session();
+	inspector?.connect();
+	await inspector?.post("HeapProfiler.enable");
+	await inspector?.post("HeapProfiler.startSampling", {
 		samplingInterval,
 		includeObjectsCollectedByMajorGC: true,
 		includeObjectsCollectedByMinorGC: true,
@@ -309,12 +310,12 @@ async function profilePaced(
 		await runDelivery(delivery * RAW_PER_DELIVERY);
 		durations[delivery] = performance.now() - started;
 	}
-	const stopped = await inspector.post("HeapProfiler.stopSampling");
-	await inspector.post("HeapProfiler.disable");
-	inspector.disconnect();
+	const stopped = await inspector?.post("HeapProfiler.stopSampling");
+	await inspector?.post("HeapProfiler.disable");
+	inspector?.disconnect();
 	await new Promise<void>((resolve) => setTimeout(resolve, 50));
 	gcObserver.disconnect();
-	const sampled = allocationSites(stopped.profile.head as SamplingNode);
+	const sampled = stopped && allocationSites(stopped.profile.head as SamplingNode);
 	const sorted = durations.slice().sort((left, right) => left - right);
 	return {
 		name,
@@ -325,21 +326,21 @@ async function profilePaced(
 			cpuP95MsPerDelivery: percentile(sorted, 0.95),
 			cpuP50MsPerRawUpdate: percentile(sorted, 0.5) / RAW_PER_DELIVERY,
 			cpuP95MsPerRawUpdate: percentile(sorted, 0.95) / RAW_PER_DELIVERY,
-			sampledAllocationBytes: sampled.sampledBytes,
-			sampledAllocationBytesPerRawUpdate: sampled.sampledBytes / (deliveries * RAW_PER_DELIVERY),
-			sampledAllocationBytesPerDelivery: sampled.sampledBytes / deliveries,
+			sampledAllocationBytes: sampled?.sampledBytes ?? null,
+			sampledAllocationBytesPerRawUpdate: sampled ? sampled.sampledBytes / (deliveries * RAW_PER_DELIVERY) : null,
+			sampledAllocationBytesPerDelivery: sampled ? sampled.sampledBytes / deliveries : null,
 			minorGcCount,
 			majorGcCount,
 			totalGcDurationMs,
 			...metrics(),
 		},
-		topAllocationSites: sampled.top,
+		topAllocationSites: sampled?.top ?? [],
 	};
 }
 
 async function measureAssistant(
 	name: string,
-	thinking: boolean,
+	scenario: "replacement" | "thinking" | "prose" | "code",
 	historyItems: number,
 	deliveries: number,
 	warmupDeliveries: number,
@@ -375,26 +376,46 @@ async function measureAssistant(
 	let snapshotsBefore = snapshotCount;
 	let promisesBefore = builtInListenerPromises;
 	let finalSentinel = "";
+	const thinking = scenario === "thinking";
+	const growing = scenario === "prose" || scenario === "code";
+	let body = "";
+	const deliveryTimes = growing && timingOnly ? new Float64Array(deliveries) : undefined;
+	const renderTimes = growing && timingOnly ? new Float64Array(deliveries) : undefined;
 	const runDelivery = async (firstRawIndex: number): Promise<void> => {
+		if (firstRawIndex === 0) body = "";
 		for (let offset = 0; offset < RAW_PER_DELIVERY; offset++) {
 			const index = firstRawIndex + offset;
 			finalSentinel = `${thinking ? "thinking" : "assistant"}-${index}`;
+			let delta = "";
+			if (growing) {
+				delta = scenario === "code" ? `// ${finalSentinel}\n` : `${finalSentinel} 中文 `;
+				if (scenario === "code" && body.length === 0) delta = "```ts\n" + delta;
+				body += delta;
+			}
 			const message = {
 				role: "assistant",
 				content: thinking
 					? [{ type: "thinking", thinking: finalSentinel }]
-					: [{ type: "text", text: finalSentinel }],
+					: [{ type: "text", text: growing ? body : finalSentinel }],
 				timestamp: index,
 			} as AssistantMessage;
+			if (growing) message.stopReason = "stop";
 			delivery.publishLatest("message", {
 				type: "message_update",
 				message,
-				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "", partial: message },
+				assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
 			});
 		}
+		const start = deliveryTimes && firstRawIndex >= 0 ? performance.now() : 0;
 		scheduler.advanceBy(16);
 		await delivery.flushLatest("message");
+		const delivered = start ? performance.now() : 0;
 		renderer.renderNow();
+		if (deliveryTimes && renderTimes && firstRawIndex >= 0) {
+			const index = firstRawIndex / RAW_PER_DELIVERY;
+			renderTimes[index] = performance.now() - delivered;
+			deliveryTimes[index] = delivered - start;
+		}
 	};
 	const result = await profilePaced(name, deliveries, warmupDeliveries, runDelivery, () => {
 		resetMetrics(metrics);
@@ -409,8 +430,21 @@ async function measureAssistant(
 		const stats = delivery.stats;
 		const render = instrumentation.snapshot();
 		const rendered = component.render(120).join("\n");
+		if (growing) {
+			const oracle = new AssistantMessageComponent({
+				role: "assistant", content: [{ type: "text", text: body }], stopReason: "stop",
+			} as AssistantMessage, false, getMarkdownTheme(), "Thinking...", 1);
+			assert.equal(rendered, oracle.render(120).join("\n"), "growing stream must match a fresh render");
+			assert.equal(stats.delivered - statsBefore.delivered, deliveries);
+			assert.equal(metrics.updateContentCalls, deliveries);
+		}
 		return {
 			historyItems,
+			...(growing && { sourceCodeUnits: body.length }),
+			...(deliveryTimes && renderTimes && {
+				dispatchAndFlushP95Ms: deliveryTimes.sort()[Math.ceil(deliveries * 0.95) - 1],
+				renderToSynchronousSinkP95Ms: renderTimes.sort()[Math.ceil(deliveries * 0.95) - 1],
+			}),
 			coalescedUpdates: stats.coalesced - statsBefore.coalesced,
 			deliveries: stats.delivered - statsBefore.delivered,
 			snapshotCount: snapshotCount - snapshotsBefore,
@@ -444,17 +478,23 @@ async function measureAssistant(
 if (typeof globalThis.gc !== "function") throw new Error("tui-paced-real-leaf requires --expose-gc");
 initTheme("dark");
 const samplingInterval = readIntegerOption("--sampling-interval", 8_192);
-const deliveries = readIntegerOption("--deliveries", 1_000);
-const warmupDeliveries = readIntegerOption("--warmup-deliveries", 100);
+const timingOnly = process.argv.includes("--timing-only");
+const growing = process.argv.includes("--growing");
+const deliveries = readIntegerOption("--deliveries", growing ? 100 : 1_000);
+const warmupDeliveries = readIntegerOption("--warmup-deliveries", growing ? 10 : 100);
 const historyItems = readIntegerOption("--history-items", 5_000);
-const fixtures = [
-	await measureAssistant("assistant-plain-text", false, historyItems, deliveries, warmupDeliveries),
-	await measureAssistant("assistant-thinking", true, historyItems, deliveries, warmupDeliveries),
+const fixtures = growing ? [
+	await measureAssistant("growing-prose", "prose", historyItems, deliveries, warmupDeliveries),
+	await measureAssistant("growing-code", "code", historyItems, deliveries, warmupDeliveries),
+] : [
+	await measureAssistant("assistant-plain-text", "replacement", historyItems, deliveries, warmupDeliveries),
+	await measureAssistant("assistant-thinking", "thinking", historyItems, deliveries, warmupDeliveries),
 ];
 
 process.stdout.write(`${JSON.stringify({
 	schemaVersion: 1,
 	benchmark: "tui-paced-assistant-leaf",
+	allocationSampling: !timingOnly,
 	commit: currentCommit(),
 	node: process.version,
 	platform: process.platform,
