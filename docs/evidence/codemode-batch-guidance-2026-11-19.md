@@ -1,22 +1,26 @@
-# CodeMode batch reads and model turns
+# CodeMode batch reads and exact edits
 
-The previous multi-file example printed completion counts and omitted the source a model needed to decide the next step. The default gateway now shows successful reads from the batch and reports any failures. Its system guidance groups independent inputs, continues computable dependent steps within one script, and returns the relevant originals when a decision requires model judgment. Known independent edits across files use the existing `file_batch` tool when available.
+The previous multi-file example returned counts and omitted source. The first replacement showed successful reads but grew the first request by 67 tokens in a three-file reading probe. A live edit trace also found a host read unnecessarily repeated to obtain a sandbox snapshot. The revised gateway consolidates discovery and failure instructions, shows source when judgment requires it, and gives the native file_batch shape for exact edits. Host exact edits reuse current read evidence across scripts. Sandbox items require their own verified snapshot.
 
-Two session regressions execute the example from the actual tool description and inspect the following model request. Both source markers arrive together when both files exist. When one is missing, the other marker arrives with the failure diagnostic. The three relevant suites passed 146/146 locally. Type checking and the 12-package offline build passed. The change touches prompt text, documentation and tests only. No runtime hot path changed.
+Session tests exercise the actual read example with both files present and with one missing, then inspect the next model request. A separate regression batch-reads two files and applies both exact edits from the following script. Type checking and the twelve-package build passed. The local Windows suite passed 6,554 tests with 119 skipped across 486 units. Both real MXC acceptance modes passed separately with the dist worker. No runtime hot path changed.
 
 ## Live comparison
 
-One paired run per task used the CLI from base `7391117cb` and the candidate, with openai-codex/gpt-6.2-sol, medium thinking, fresh sessions, identical synthetic files, and the same read/edit/file_batch tool selection. Context files, extensions, skills, MCP and prompt templates were disabled. The prompts named all three files without specifying an orchestration strategy. Model turns include the final answer.
+The provider was openai-codex/gpt-6.2-sol with medium thinking. Each task used three fresh sessions per version in ABBAAB order, an identical working directory per task, and freshly restored file bytes. A used the main-branch gateway at `7391117cb` (the sibling TUI checkout, in JSON mode). B used the revised prompt. Tool selection was read,edit,file_batch. Context files, MCP, skills, prompt templates and extensions were disabled. Model turns include the final answer. Token counts come from assistant usage on every request, including cached input. They measure usage, not invoices.
 
-| Task | Model turns, base → candidate | CodeMode scripts | Repeated reads | Verified outcome on both |
-| --- | --- | --- | --- | --- |
-| Trace a three-file call chain and calculate the output for a whitespace-padded input | 2 → 2 | 1 → 1 | 0 → 0 | One batch read all three files. Both answers explained trimming, prefixing and suffixing and gave the exact result. |
-| Replace one specified literal in each of three files, preserving all other bytes | 7 → 8 | 6 → 7 | 0 → 0 | One batch read all three files, then one native file_batch applied the edits. All three postimages matched byte for byte. |
+| Task | Turns A → B (individual runs) | First input A → B | Mean uncached input A → B | Mean cache read A → B | Mean output A → B | Mean total A → B |
+| --- | --- | --- | --- | --- | --- | --- |
+| Trace three files | 2,2,2 → 2,2,2 | 3,200 → 2,895 | 4,153 → 3,791 | 2,560 → 2,304 | 122 → 123 | 6,835 → 6,219 (−9.0%) |
+| Replace a literal in three files | 7,5,5 → 3,3,7 | 3,201 → 2,896 | 15,245 → 8,590 | 10,240 → 7,680 | 260 → 285 | 25,746 → 16,555 (−35.7%) |
 
-The baseline already batched both tasks. These samples verify output and tool choice, and do not establish an increase in adoption or a reduction in model turns.
+Every run read each file exactly once. All reading answers explained the transformation and produced `pinetree:x/opal`; all edit postimages matched byte for byte. Two candidate edits used one read script and one file_batch script before answering. The third used two file_batch calls and took seven turns (30,023 tokens). Three runs per task characterize these fixtures only.
 
-Rerun the deterministic checks from the repository root after building offline:
+## Reproduction
+
+For the read fixture, app.js imports compact from format.js and returns compact(value) + '/opal'. format.js imports prefix from label.js and returns prefix + value.trim(). label.js exports the string 'pinetree:'. The prompt was “Read app.js, format.js, and label.js. Explain how receipt obtains its result and give the exact output for input ' x '.” For the edit fixture each file contains `export const channel = 'copper';`, then a comment with its filename, both lines LF-terminated. The prompt was “Change the channel string from copper to silver in app.js, format.js, and label.js. Preserve everything else. Report the files changed.”
+
+Run each built CLI in the same synthetic task directory with `--mode json --no-session --no-context-files --no-skills --no-mcp --no-extensions --no-prompt-templates --tools read,edit,file_batch --provider openai-codex --model gpt-6.2-sol --thinking medium -p` followed by the task prompt. Sum the assistant message_end usage records once per completed turn. For the deterministic regressions run:
 
 ```powershell
-node --experimental-strip-types --test --test-concurrency=1 tests/codemode-r2-description.test.ts tests/codemode-independent-batch.test.ts tests/codemode-session.test.ts
+node --experimental-strip-types --test --test-concurrency=1 tests/codemode-r2-description.test.ts tests/codemode-independent-batch.test.ts tests/codemode-session.test.ts tests/mcp-background-activation.test.ts
 ```

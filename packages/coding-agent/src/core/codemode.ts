@@ -186,7 +186,7 @@ export class CodemodeController {
 		this.saveResult = saveResult;
 		this.definition = { name: CODEMODE_NAME, label: "Codemode", description: CODEMODE_DESCRIPTION,
 			promptSnippet: "Run JavaScript to call ordinary tools via tools.NAME(args) or callTool(name,args)",
-			promptGuidelines: ["Call ordinary tools only inside codemode scripts; ask_user and other declared control tools are called directly. Group known independent reads or checks with batch(). When later arguments can be computed from the results, await those steps in the same script. When the next decision needs your judgment, show the relevant original results together. Native read revisions permit same-script edits of that version; mutation authorization still applies."],
+			promptGuidelines: ["Call ordinary tools inside codemode and control tools directly. Group known independent reads or checks with batch(). Continue computable steps in-script; show only the originals needed for your next decision. Native revisions permit same-script edits under normal authorization."],
 			parameters: CODEMODE_PARAMETERS, constrainedSampling: CODEMODE_SAMPLING, orchestration: true, executionMode: "sequential",
 			prepareArguments: args => typeof args === "string" ? { code: args } : args as { code: string },
 			execute: (_id, args, signal, _update, ctx, context) => this.execute((args as { code: string }).code, context, signal, ctx) };

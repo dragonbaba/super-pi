@@ -91,7 +91,7 @@ for (const item of result.results) {
 }
 ```
 
-已知要对照哪些文件或区间时，一次读取，把判断所需的正文一起展示给模型。若后续参数可以从结果直接算出，例如对三个已确认唯一匹配的文件做同一项替换，可在同一脚本核对读取结果，再顺序调用一次 `file_batch`，每个文件一个 edit 项。
+已知要对照哪些文件或区间时，一次读取，把判断所需的正文一起展示给模型。若路径和精确替换内容已知，可在同一脚本批读并核对唯一匹配，再调用一次 `file_batch({operations})`，每个文件一个 `{operation:"edit",path,edits:[{oldText,newText}]}`。宿主已记录原生读取的版本，精确替换省略 `snapshot`；沙箱读取返回 `result.details.sandbox === true` 时，每项另传该文件的 `result.details.snapshot`。遇到不熟悉的工具，可在一次 `describeTools` 中查询多个名称。
 
 每项使用普通 `callTool` 桥接、权限、调度、取消和既有调用预算。描述符的 `review: true` 仅传递该项通常的风险审查请求。取消、权限失效、结果未知、要求验证和观察/日志错误仍会失败或停止，不能把这些状态当作普通失败继续。`completed` 表示工具调用完成；命令是否通过仍须检查其真实退出码或应用状态。`Promise.all`、`Promise.allSettled` 和合法 JavaScript 保持标准语义；`batch` 不解析命令，不推断依赖，不授予额外权限。独立 CodeMode 库宿主须提供 `callTool` 才能使用此助手。
 

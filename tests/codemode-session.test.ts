@@ -253,6 +253,19 @@ for (const missingReadme of [false, true]) test(`model-facing batch read example
 	}
 });
 
+test("native file_batch uses the prior script's reads for exact edits of multiple files", async t => {
+	const f = await fixture(t, { tools: ["read", "file_batch"] });
+	writeFileSync(join(f.cwd, "second.txt"), "hello again\n");
+	const { results } = await f.run([
+		'const b=await batch(["file.txt","second.txt"].map(path=>({tool:"read",args:{path}}))); for(const {result} of b.results) await show(result.ref);',
+		'const paths=["file.txt","second.txt"], oldText="hello", newText="bye"; await tools.file_batch({operations:paths.map(path=>({operation:"edit",path,edits:[{oldText,newText}]}))});',
+	]);
+	assert.equal(results.length, 2);
+	for (const result of results) assert.equal(result.isError, false, JSON.stringify(result.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "bye\nworld\n");
+	assert.equal(readFileSync(join(f.cwd, "second.txt"), "utf8"), "bye again\n");
+});
+
 test("bundled discovery exposes native searches and retires the duplicate command frontend", async t => {
 	const f = await fixture(t, {}, [toolClassification], true);
 	assert.equal(f.session.getAllTools().some(tool => tool.name === "structured_readonly_command"), false);
