@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { supportsLanguage } from "../../../utils/syntax-highlight.ts";
 import type { MarkdownTheme } from "@super-pi/tui";
 import type { AssistantMessageComponent } from "./assistant-message.ts";
 import { paintSyntaxHtml } from "../theme/theme.ts";
@@ -42,7 +43,7 @@ export class TypeScriptPaintQueue {
 				worker.unref();
 			}
 			this.active = job;
-			this.worker.postMessage(job.sources);
+			this.worker.postMessage({ sources: job.sources, embeddedLanguages: supportsLanguage("xml") });
 		} catch {
 			this.active = undefined;
 		}

@@ -6,7 +6,7 @@ The audited path runs from snapshot delivery through InteractiveMode, assistant 
 
 The fast path uses one callback per paint owner, direct newline scanning and the existing required row materialization. It creates zero per-delta worker jobs, callbacks, promises or abort controllers. Only the final render can collect a bounded batch. One session worker parses normalized tokens and returns HTML without theme state. One waiting completion can replace another. Aborted, replaced and released generations discard their results. Earlier waiting messages remain readable and may be colored on a subsequent layout. Theme formatting and targeted retained-cache invalidation happen on the UI thread. The session retires or terminates its worker on replacement and shutdown.
 
-A separate controlled-GC 80-message completion probe rendered the same 35,000-unit source, checked each final result against a fresh render and tracked the component and its early/final arrays. Both runs released all 240 references. Sampled process RSS peaked at 197 MiB synchronously and 229 MiB with the worker. Final main-thread heap after GC was 16 MiB in both runs. This measures process memory with one worker and includes the oracle.
+A separate controlled-GC 80-message completion probe rendered the same 35,000-unit source, checked each final result against a fresh render and tracked the component and its early/final arrays. Both runs released all 240 references. Sampled process RSS peaked at 202 MiB synchronously and 234 MiB with the worker using the production language registry. Final main-thread heap after GC was 24 and 19 MiB respectively. This measures process memory with one worker and includes the oracle.
 
 ```sh
 npm run build:offline

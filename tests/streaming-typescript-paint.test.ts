@@ -6,6 +6,7 @@ import type { AssistantMessage } from "../packages/ai/src/types.ts";
 import { RetainedItem } from "@super-pi/tui";
 import { AssistantMessageComponent } from "../packages/coding-agent/src/modes/interactive/components/assistant-message.ts";
 import { TypeScriptPaintQueue } from "../packages/coding-agent/src/modes/interactive/components/typescript-paint.ts";
+import { loadAllHighlightLanguages } from "../packages/coding-agent/src/utils/syntax-highlight.ts";
 import { getMarkdownTheme, initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 
 function completion() {
@@ -20,6 +21,7 @@ function message(text: string, stopReason: AssistantMessage["stopReason"]): Assi
 
 test("streamed TS paint uses parsed blocks, repaints only its completion and survives an identical final body", async () => {
 	initTheme("dark");
+	await loadAllHighlightLanguages();
 	const queue = new TypeScriptPaintQueue();
 	const theme = getMarkdownTheme();
 	const component = new AssistantMessageComponent(undefined, false, theme);
@@ -30,7 +32,7 @@ test("streamed TS paint uses parsed blocks, repaints only its completion and sur
 		item.invalidate();
 		painted.resolve();
 	});
-	const src = ["```TS", "const x = \"中文\";", "\t/* multiline", "comment */", "```", "", "```tsx", "const view = <div />;", "```", "", "```js", "const y = 10;", "```"].join("\n");
+	const src = ["```TS", "const x = \"中文\";", "\t/* multiline", "comment */", "```", "", "```tsx", 'const view = <div className="box">value</div>;', 'const cssText = css`body { color: red; }`;', "```", "", "```js", "const y = 10;", "```"].join("\n");
 	try {
 		component.updateContent(message(src, "stop"), true);
 		const mono = item.render(75);
