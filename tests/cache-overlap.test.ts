@@ -7,6 +7,7 @@ import { Container } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 import { collectCacheOverlapEstimates, computeCacheOverlapTotals, detectCacheOverlapEstimate } from "../packages/coding-agent/src/core/cache-stats.ts";
 import { SessionManager, type SessionEntry } from "../packages/coding-agent/src/core/session-manager.ts";
+import { getCacheTurnProfile } from "../packages/coding-agent/src/core/cache-turn-profile.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { FooterComponent } from "../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -21,6 +22,20 @@ function entries(...messages: AssistantMessage[]): SessionEntry[] {
 	return messages.map((message, i) => ({ type: "message", message, id: String(i), parentId: i ? String(i - 1) : null, timestamp: "fixture" }));
 }
 const bound = (value: number) => ({ uncachedOverlapUpperBound: value });
+
+test("follow-up percentiles use normalized reported usage and adjacent input lengths on the current route", () => {
+	const items = entries(message(9000), message(2000, 8000, 100), message(1500, 8000), message(3000, 7500));
+	assert.deepEqual(getCacheTurnProfile(items), { count: 3, uncachedMedian: 2100, uncachedP95: 3000, growthMedian: 1000 });
+	assert.equal(getCacheTurnProfile(entries(message(9000), message(9100))), undefined);
+	const changed = { ...message(1500, 8000), responseModel: "new-deployment" };
+	assert.equal(getCacheTurnProfile([...items, ...entries(changed)]), undefined);
+	const suffix = entries(changed, { ...changed, usage: message(150, 8000, 50).usage });
+	for (const boundary of ["model_change", "compaction", "branch_summary"]) {
+		assert.deepEqual(getCacheTurnProfile([...items, { type: boundary } as SessionEntry, ...suffix]),
+			{ count: 1, uncachedMedian: 200, uncachedP95: 200, growthMedian: -1300 });
+	}
+	assert.equal(getCacheTurnProfile([...items, ...entries({ ...changed, stopReason: "aborted" })]), undefined);
+});
 
 test("same-length unrelated prompts have only a length bound, with no invented cost or cause", () => {
 	const prior = message(0, 40_000), current = message(40_000);
@@ -115,6 +130,9 @@ test("optional notice and session command explicitly label bounds and preserve t
 		mode.handleSessionCommand();
 		const output = plain(chat);
 		assert.match(output, /Cached: 10,000 \(10\.0%\)/);
+		assert.match(output, /Current branch, same-route follow-ups: 1/);
+		assert.match(output, /Uncached input \(tokens\): median 90,000, p95 90,000/);
+		assert.match(output, /Net prompt growth \(tokens\): median 80,000/);
 		assert.match(output, /Uncached overlap upper bound: 10,000 tokens \(1 turn; repeated content unverified\)/);
 		assert.doesNotMatch(output, /re-billed|miss|idle|expired|\$/i);
 		assert.match(footer.render(200).join("\n"), /CH0\.0%/, "footer remains the latest turn, not cumulative ratio");

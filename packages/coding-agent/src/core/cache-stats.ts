@@ -23,7 +23,7 @@ interface PreviousRequest {
 	reportedCache: boolean;
 }
 
-function promptTokens(message: AssistantMessage): number {
+export function promptTokens(message: AssistantMessage): number {
 	if (message.stopReason === "error" || message.stopReason === "aborted") return 0;
 	const usage = message.usage;
 	if (!Number.isFinite(usage.input) || usage.input < 0 ||

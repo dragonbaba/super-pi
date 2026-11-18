@@ -55,6 +55,7 @@
 - [脚本输出与缓存诊断](evidence/session-script-cache-2026-11-16.md)：区分成功命令与截断 JSON 后处理错误，修正记忆查询误激活浏览器；显示记录的缓存用量和响应绑定的客户端变化。
 - [固定工具入口与按需契约](evidence/tool-prefix-guidance-2026-11-16.md)：稳定普通本地/MCP 工具前缀，区分注册名与脚本别名，明确发现状态、当前契约和其他缓存边界；对照 Codex、Claude 与 OpenCode。
 - [跨 provider 工具前缀矩阵](evidence/provider-prefix-matrix-2026-11-16.md)：全部十类 API 的实际发送回归，稳定工具与规则顺序、能力和 Skills 提示，覆盖真实替换及 MCP 刷新。
+- [连续请求的缓存用量](evidence/cache-turn-profile.md)说明 `/session` 中未命中输入与输入净增长的统计范围。
 - [复制/移动的缺失父目录](evidence/post-review-file-parents-2026-11-13.md)：复用 write 的建目录身份清单、共享父目录和失败回执。
 - [文件复制/删除/移动、CodeGraph 退役与记忆批量清理计划](file-ops-codegraph-memory-cleanup-plan.md)：按 B → A → C 交付；B 在 #296、A 在 #297 已审核、通过原有 CI 并合并，见[B 的证据](evidence/codegraph-retirement-2026-11-12.md)和[A 的证据](evidence/file-operations-v3-2026-11-13.md)。C 的批量清理实现及本机验证见[C 的证据](evidence/memory-bulk-cleanup-2026-11-13.md)，最终交付状态见[PR #298](https://github.com/dragonbaba/super-pi/pull/298)。当前文件工具接口见[会话权限与沙箱](execution-environments.md#文件结果的完整性)。
 - [任务历史持久化](task-history-persistence-plan.md)：有界记录、重启后的中断状态及不自动重跑的恢复边界。

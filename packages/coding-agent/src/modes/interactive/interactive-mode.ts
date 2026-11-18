@@ -79,6 +79,7 @@ import {
 	collectCacheOverlapEstimates,
 	computeCacheOverlapTotals,
 } from "../../core/cache-stats.ts";
+import { getCacheTurnProfile } from "../../core/cache-turn-profile.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -8253,6 +8254,7 @@ export class InteractiveMode {
 		const sessionName = this.sessionManager.getSessionName();
 		const entries = this.sessionManager.getEntries();
 		const cacheOverlap = computeCacheOverlapTotals(entries);
+		const turnProfile = getCacheTurnProfile(this.sessionManager.getBranch());
 
 		// Cost/token totals per provider/model actually used (e.g. OpenRouter `auto`
 		// resolves to a concrete responseModel). Usage without model attribution is
@@ -8290,6 +8292,11 @@ export class InteractiveMode {
 		if (cacheOverlap.uncachedOverlapUpperBound > 0) {
 			const turns = cacheOverlap.estimatedTurns === 1 ? "1 turn" : `${cacheOverlap.estimatedTurns} turns`;
 			info += `${theme.fg("dim", "Uncached overlap upper bound:")} ${formatLocaleInteger(cacheOverlap.uncachedOverlapUpperBound)} tokens (${turns}; repeated content unverified)\n`;
+		}
+		if (turnProfile) {
+			info += `${theme.fg("dim", "Current branch, same-route follow-ups:")} ${turnProfile.count}\n`;
+			info += `  Uncached input (tokens): median ${formatLocaleInteger(turnProfile.uncachedMedian)}, p95 ${formatLocaleInteger(turnProfile.uncachedP95)}\n`;
+			info += `  Net prompt growth (tokens): median ${formatLocaleInteger(turnProfile.growthMedian)}\n`;
 		}
 
 		if (stats.cost > 0) {
