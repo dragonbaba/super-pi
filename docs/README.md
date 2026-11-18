@@ -13,6 +13,7 @@
 - [沙箱路径与网络](execution-environments.md#路径网络与工具安装)：工作区绝对路径、来宾 cwd、全局网络开关和依赖安装。
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
+- [DeepSeek 思考模式的历史回传](evidence/deepseek-thinking-history.md)覆盖带工具的连续请求与模型切换边界。
 - [分支摘要配置](branch-summaries.md)：输出额度、历史输入预留、推理预算和空结果处理。
 - [自动压缩百分比](auto-compaction.md)：默认 85%，按供应商和模型保存文本百分比，统一触发、记账和状态栏阈值。
 

@@ -166,6 +166,7 @@ export interface OpenAICompletionsOptions extends AzureEndpointOptions {
 
 export interface ConvertCompletionsMessagesOptions {
 	grammarToolInputProperties?: ReadonlyMap<string, string>;
+	replayDeepSeekReasoning?: boolean;
 }
 
 interface OpenAICompatCacheControl {
@@ -880,7 +881,13 @@ function buildParams(
 	};
 	cacheRetention = capabilityCacheRetention(model, cacheRetention);
 	const wireContext = contextForModelCapabilities(model, context);
-	const messages = convertMessages(model, wireContext, compat, { grammarToolInputProperties });
+	const deferredToolNames =
+		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(wireContext.messages) : new Set<string>();
+	const activeTools = wireContext.tools?.filter((tool) => !deferredToolNames.has(tool.name));
+	const sendTools = !!activeTools?.length || (capabilities.toolCalling && hasToolHistory(wireContext.messages));
+	const replayDeepSeekReasoning = sendTools && compat.thinkingFormat === "deepseek" &&
+		compat.requiresReasoningContentOnAssistantMessages && reasoningEnabled && (reasoningEffort !== undefined || model.thinkingLevelMap?.off === null);
+	const messages = convertMessages(model, wireContext, compat, { grammarToolInputProperties, replayDeepSeekReasoning });
 	const cacheControl = getCompatCacheControl(compat, cacheRetention);
 
 	const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming = {
@@ -916,15 +923,12 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
-	const deferredToolNames =
-		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(wireContext.messages) : new Set<string>();
-	const activeTools = wireContext.tools?.filter((tool) => !deferredToolNames.has(tool.name));
 	if (activeTools && activeTools.length > 0) {
 		params.tools = convertTools(activeTools, compat);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
-	} else if (capabilities.toolCalling && hasToolHistory(wireContext.messages)) {
+	} else if (sendTools) {
 		// Anthropic (via LiteLLM/proxy) requires tools param when conversation has tool_calls/tool_results
 		params.tools = [];
 	}
@@ -1343,7 +1347,7 @@ export function convertMessages(
 
 			const nonEmptyThinkingBlocks = msg.content
 				.filter(isThinkingContentBlock)
-				.filter((block) => block.thinking.trim().length > 0);
+				.filter((block) => (!options?.replayDeepSeekReasoning || !block.redacted) && block.thinking.trim().length > 0);
 			if (nonEmptyThinkingBlocks.length > 0) {
 				if (compat.requiresThinkingAsText) {
 					// Convert thinking blocks to plain text (no tags to avoid model mimicking them)
@@ -1366,7 +1370,12 @@ export function convertMessages(
 					if (model.provider === "opencode-go" && signature === "reasoning") {
 						signature = "reasoning_content";
 					}
-					if (
+					if (options?.replayDeepSeekReasoning) {
+						// transformMessages already enforces same-model history. This field
+						// contains plain streamed text independently of opaque signatures.
+						(assistantMsg as { reasoning_content?: string }).reasoning_content =
+							nonEmptyThinkingBlocks.map(block => block.thinking).join("");
+					} else if (
 						(!compat.requiresReasoningContentOnAssistantMessages || toolCalls.length > 0) &&
 						signature &&
 						signature.length > 0
