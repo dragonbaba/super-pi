@@ -99,6 +99,12 @@ export function formatFailure(category: string, evidence: string): string {
     const guidance = `${prefix}[BROWSER_APPROVAL_PENDING] Browser execution stopped before approval was confirmed; its current state is unknown. Ask the user to check Chrome; do not automatically retry or switch browsers.\n`;
     return guidance + boundedFailure(evidence, MAX_ERROR_CHARS - guidance.length);
   }
+  if (category === "FAILED" && !hasTraceback && evidence.startsWith("browser-harness: daemon ")
+    && evidence.includes(" didn't come up -- check ")) {
+    const guidance = `${prefix}Browser daemon did not start. Open Chrome if the log reports chrome-not-running.\n`;
+    const next = "\nRun browser-harness --doctor. If Chrome asks for remote debugging approval, wait for the user.";
+    return guidance + boundedFailure(evidence, MAX_ERROR_CHARS - guidance.length - next.length) + next;
+  }
   if (hasTraceback) {
     // One failure-lifecycle scan, before Codemode/UI take their bounded prefix.
     // Keep the final Python exception visible without growing the error budget.
@@ -384,7 +390,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         const executable = await core.findBrowserUseExecutable(getAgentDir());
         if (!executable) throw new Error("[BROWSER_EXEC_UNAVAILABLE] Browser Harness 0.1.13 is required. Run /browser-use install.");
         runtimeVersion ??= new core.BrowserHarnessVersionGate(runHelper);
-        await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: executionSignal, assertCurrent: authorization.assertCurrent });
+        const version = await runtimeVersion.check(executable, { cwd: ctx.cwd, env: process.env, signal: executionSignal, assertCurrent: authorization.assertCurrent });
         permission.assertBrowserExecAuthorization(authorization, params, toolCallId);
         executionSignal.throwIfAborted();
         const currentWorkspace = await ensureWorkspace(ctx, executable.command, core.buildBrowserUseEnvironment, params.session);
@@ -399,7 +405,7 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
         executionSignal.throwIfAborted();
         let result;
         try {
-          result = await runHelper({
+          const options: BrowserUseRunOptions = {
             command: executable.command,
             code: withOwnedScreenshotDefault(params.code, expectedScreenshotPath, params.timeoutMs ?? DEFAULT_TIMEOUT_MS, join(currentWorkspace, "tabs.json")),
             // Browser Harness daemons inherit this cwd. Keep their lifetime outside
@@ -409,7 +415,12 @@ export default function browserUseExtension(pi: ExtensionAPI): void {
             timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
             maxBytesPerStream: MAX_OUTPUT_BYTES,
             signal: executionSignal,
-          });
+          };
+          result = core.needsWindowsColdStartWorkaround(version, options.env)
+            ? await core.runWithWindowsColdStart(options, runHelper, () => {
+              permission.assertBrowserExecAuthorization(authorization, params, toolCallId);
+            })
+            : await runHelper(options);
         } catch (error) {
           throw new Error(formatFailure("LAUNCH", error instanceof Error ? error.message : String(error)));
         }

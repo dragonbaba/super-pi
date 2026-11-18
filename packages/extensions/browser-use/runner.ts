@@ -38,6 +38,7 @@ export interface BrowserUseRunOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxBytesPerStream: number;
+  maxStderrBytes?: number;
   signal?: AbortSignal;
 }
 
@@ -134,7 +135,7 @@ class BrowserUseProcessRun {
   constructor(options: BrowserUseRunOptions, resolve: RunResolve, reject: RunReject) {
     this.#signal = options.signal;
     this.#stdout = new BoundedStream(options.maxBytesPerStream);
-    this.#stderr = new BoundedStream(options.maxBytesPerStream);
+    this.#stderr = new BoundedStream(options.maxStderrBytes ?? options.maxBytesPerStream);
     this.#resolve = resolve;
     this.#reject = reject;
     this.#child = spawn(options.command, options.args ? [...options.args] : [], {

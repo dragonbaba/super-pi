@@ -87,6 +87,7 @@
 - [缓存、传输与渲染审计](evidence/system-cache-performance-audit-2026-11-16.md)：压缩后规则恢复、混合 WebSocket 帧顺序、终止等待者、大 Markdown 崩溃及同机分配/释放对照，包含全部 provider 的压缩后前缀验证。
 - [渲染热路径核实](evidence/render-hot-paths-2026-11-16.md)：选区/覆盖层、ASCII Markdown 与帧 UTF-8 计量的分配及 CPU 对照，视口和资源释放证据。
 - [CodeMode 语法错误诊断](evidence/codemode-syntax-diagnostics.md)：原源码位置、折叠投影和引用释放的回归证据。
+- [Codemode 折叠输出与 Windows 浏览器冷启动](evidence/codemode-preview-browser-cold-start-2026-11-18.md) 记录零子调用输出预览、渲染基准与 Browser Harness 冷启动验证。
 - [项目初始化和索引排除](evidence/project-context-init-and-ignore.md)：初始化失败边界、排除范围和只读状态查询的核实。
 - [大项目索引构建](evidence/project-context-streaming-index.md)：定量内存边界、交互线程响应和发布恢复的核实。
 - [视口空清理优化](evidence/tui-empty-viewport-cleanup.md)：稳定视口与工具卡的分配对照和释放证据。
