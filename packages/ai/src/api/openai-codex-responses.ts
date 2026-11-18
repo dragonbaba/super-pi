@@ -179,6 +179,7 @@ export interface OpenAICodexWebSocketDebugStats {
 // Configuration
 // ============================================================================
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
+const DEFAULT_CODEX_INSTRUCTIONS = "You are a helpful assistant.";
 const X_CODEX_ROUTING_HINT_HEADER = "x-codex-routing-hint";
 const X_CODEX_BETA_FEATURES_HEADER = "x-codex-beta-features";
 const REMOTE_COMPACTION_V2_FEATURE = "remote_compaction_v2";
@@ -610,8 +611,12 @@ export function buildOpenAICodexRequestBody(
 		wireContext,
 		(model.compat?.supportsToolSearch ?? false) && capabilities.deferredTools,
 	);
+    // These Codex models append top-level instructions after the cacheable input.
+    const cacheableInstructions = model.provider === "openai-codex" &&
+        (model.id === "gpt-6.2-astra" || model.id === "gpt-6.2-sol") &&
+        capabilities.reasoning.mode !== "none" && resolveCodexUrl(model.baseUrl) === DEFAULT_CODEX_BASE_URL + "/codex/responses";
     const messages = convertResponsesMessages(model, wireContext, CODEX_TOOL_CALL_PROVIDERS, {
-        includeSystemPrompt: false,
+        includeSystemPrompt: cacheableInstructions,
         grammarToolInputProperties,
         deferredTools: toolPlacement.deferred,
         toolOptions: {
@@ -624,7 +629,7 @@ export function buildOpenAICodexRequestBody(
         model: model.id,
         store: false,
         stream: true,
-		instructions: wireContext.systemPrompt || "You are a helpful assistant.",
+		instructions: cacheableInstructions ? DEFAULT_CODEX_INSTRUCTIONS : wireContext.systemPrompt || DEFAULT_CODEX_INSTRUCTIONS,
         input: messages,
         text: { verbosity: options?.textVerbosity || "low" },
 		...(capabilities.reasoning.mode !== "none" ? { include: ["reasoning.encrypted_content"] } : {}),
@@ -1797,8 +1802,17 @@ function jsonValuesEqual(a: unknown, b: unknown): boolean {
 function responseInputsEqual(a: ResponseInput | undefined, b: ResponseInput | undefined): boolean {
     return jsonValuesEqual(a ?? [], b ?? []);
 }
+function leadingDeveloperItem(body: RequestBody) {
+    const first = body.input?.[0];
+    return first && "role" in first && first.role === "developer" ? first : undefined;
+}
+function effectiveCodexInstructions(body: RequestBody) {
+    const developer = leadingDeveloperItem(body);
+    return developer ? [body.instructions ?? null, developer] : body.instructions ?? null;
+}
 function requestBodiesMatchExceptInput(a: RequestBody, b: RequestBody): boolean {
-    return jsonValuesEqual(requestBodyWithoutInput(a), requestBodyWithoutInput(b));
+    return jsonValuesEqual(requestBodyWithoutInput(a), requestBodyWithoutInput(b)) &&
+        jsonValuesEqual(leadingDeveloperItem(a), leadingDeveloperItem(b));
 }
 function normalizedHeadersForCommitment(headers: Headers): Array<[string, string]> {
     const values: Array<[string, string]> = [];
@@ -1817,7 +1831,8 @@ function createSuccessfulDispatchCommitment(
     responseItems: ResponseInput,
     responseId?: string,
 ): SuccessfulDispatchCommitment | undefined {
-    const instructionsHash = sha256Json(actualBody.instructions ?? null);
+    const instructions = effectiveCodexInstructions(fullBody);
+    const instructionsHash = sha256Json(instructions);
     const inputHash = sha256Json(fullBody.input ?? []);
     const responseItemsHash = sha256Json(responseItems);
     const toolsHash = sha256Json(actualBody.tools ?? []);
@@ -1873,7 +1888,7 @@ function createSuccessfulDispatchCommitment(
         serviceTierHash,
         headersHash,
         actualBodyHash,
-        instructionsBytes: requestBodyUtf8Bytes(typeof actualBody.instructions === "string" ? actualBody.instructions : JSON.stringify(actualBody.instructions ?? null)),
+        instructionsBytes: requestBodyUtf8Bytes(typeof instructions === "string" ? instructions : JSON.stringify(instructions)),
         toolOrderHash,
         toolIdentifierSetHash,
         toolCount: actualBody.tools?.length ?? 0,
@@ -2214,7 +2229,7 @@ function compareCompactionToSuccessfulDispatch(
     const priorInput = input.slice(0, commitment.inputItems);
     const responseEnd = commitment.inputItems + commitment.responseItems;
     const priorResponseItems = input.slice(commitment.inputItems, responseEnd);
-    const compactionInstructionsHash = requiredSha256Json(body.instructions ?? null);
+    const compactionInstructionsHash = requiredSha256Json(effectiveCodexInstructions(body));
     const compactionInputPrefixHash = requiredSha256Json(priorInput);
     const compactionResponseItemsHash = requiredSha256Json(priorResponseItems);
     const compactionToolsHash = requiredSha256Json(body.tools ?? []);
