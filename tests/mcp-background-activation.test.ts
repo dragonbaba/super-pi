@@ -123,6 +123,24 @@ async function fixture(t: TestContext) {
 
 const REMOTE = "mcp__fixture__lookup";
 
+test("cold on-demand desktop discovery starts once on an exact server word", async t => {
+	const f = await fixture(t), h = f.host();
+	f.writeConfig({ onDemand: true }, "desktop");
+	await h.start();
+	assert.equal((await h.search("otherdesktop lookup")).details.matches.length, 0);
+	assert.equal(f.endpoint.initializes, 0);
+	const gate = f.block();
+	const first = h.search("DESKTOP lookup");
+	await f.endpoint.listed.promise;
+	assert.equal((await h.search("unrelated")).details.matches.length, 0);
+	gate.resolve();
+	await first;
+	const result = await h.search("lookup");
+	assert.deepEqual(result.details.matches, ["mcp__desktop__lookup"]);
+	assert.equal(f.endpoint.initializes, 1);
+	assert.equal(f.endpoint.calls, 0);
+});
+
 test("MCP discovery reports exact accepted names and current-contract guidance without executing or retrying tools", async t => {
 	const f = await fixture(t), h = f.host();
 	await h.start();

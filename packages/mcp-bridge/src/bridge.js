@@ -379,11 +379,16 @@ export class McpBridgeRuntime {
     return pending;
   }
 
-  async waitForDiscovery(signal) {
+  async waitForDiscovery(signal, query = "") {
     this.pi.assertExecutionCurrent?.();
     if (this.closed || signal?.aborted) throw new McpCallError("aborted");
     const pending = [];
+    let words;
     for (const state of this.states.values()) {
+      if (state.config.onDemand && !state.catalogReady) {
+        words ??= query.toLowerCase().split(SEARCH_WORD_SEPARATOR);
+        if (!words.includes(state.config.id.toLowerCase())) continue;
+      }
       if (state.connectPromise) pending.push(state.connectPromise);
       else if (state.config.enabled && !state.catalogReady && state.status === "disconnected") pending.push(this.connect(state.config));
     }

@@ -91,11 +91,13 @@ function normalizeServer(id, raw, workspace, source, projectScope) {
   const label = `${source}.servers.${id}`;
   const transport = raw.transport ?? "stdio";
   if (!TRANSPORTS.has(transport)) throw new Error(`${label}.transport is unsupported`);
+  if (raw.onDemand !== undefined && typeof raw.onDemand !== "boolean") throw new Error(`${label}.onDemand must be boolean`);
   const common = {
     id,
     source,
     projectScope: source === "project" ? projectScope : undefined,
     enabled: raw.enabled !== false,
+    onDemand: raw.onDemand === true,
     transport,
     startupTimeoutMs: boundedInt(raw.startupTimeoutMs, 30_000, 1_000, 300_000, `${label}.startupTimeoutMs`),
     toolTimeoutMs: boundedInt(raw.toolTimeoutMs, 120_000, 1_000, 1_800_000, `${label}.toolTimeoutMs`),

@@ -211,7 +211,7 @@ export default function mcpBridgeExtension(pi) {
     description: "Search tools from configured MCP servers; this does not search the web itself. An empty configuration returns no matches. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
     parameters: {
       type: "object",
-      properties: { query: { type: "string", description: "Words from the desired MCP server, tool, or capability" } },
+      properties: { query: { type: "string", description: "Words from the desired MCP server, tool, or capability. Include the configured server ID as a separate word for first discovery of an on-demand server (for example, desktop ui_find)." } },
       required: ["query"],
       additionalProperties: false,
     },
@@ -229,9 +229,9 @@ export default function mcpBridgeExtension(pi) {
         throw new Error("[MCP_NOT_READY] MCP runtime is not ready or has stopped. Check /mcp-status before another request.");
       }
       const generation = activationGeneration;
-      await runtime.waitForDiscovery(signal);
-      if (lifecycle.current !== runtime || generation !== activationGeneration || signal?.aborted) throw new Error("MCP search was cancelled or replaced");
       const query = typeof args.query === "string" ? args.query.slice(0, 200) : "";
+      await runtime.waitForDiscovery(signal, query);
+      if (lifecycle.current !== runtime || generation !== activationGeneration || signal?.aborted) throw new Error("MCP search was cancelled or replaced");
       const catalog = pi.getToolCatalog?.();
       let eligibleNames;
       if (catalog) {
@@ -349,7 +349,7 @@ export default function mcpBridgeExtension(pi) {
           if (cached) nextRuntime.addCached(server, cached);
           else {
             nextRuntime.addConfigured(server);
-            uncached.push(server);
+            if (!server.onDemand) uncached.push(server);
           }
         }
       }
