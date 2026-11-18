@@ -16,7 +16,7 @@ import { getCustomThemesDir, getThemesDir } from "../../../config.ts";
 import { compareCanonicalIdentifiers } from "../../../core/prefix-manifest.ts";
 import type { SourceInfo } from "../../../core/source-info.ts";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.ts";
-import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
+import { highlight, renderHighlightedHtml, supportsLanguage } from "../../../utils/syntax-highlight.ts";
 import { stripBom } from "../../../utils/text.ts";
 
 // ============================================================================
@@ -1255,6 +1255,10 @@ export function getLanguageFromPath(filePath: string): string | undefined {
 	};
 
 	return extToLang[ext];
+}
+
+export function paintSyntaxHtml(html: string): string[] {
+	return renderHighlightedHtml(html, getCliHighlightTheme(theme)).split("\n");
 }
 
 export function getMarkdownTheme(): MarkdownTheme {

@@ -315,6 +315,8 @@ export interface MarkdownTheme {
 }
 
 export interface MarkdownOptions {
+	/** A component-owned highlighter may return undefined to present the original code immediately. */
+	highlightCode?: (code: string, lang?: string) => readonly string[] | undefined;
 	/** Preserve source list markers instead of normalizing them. */
 	preserveOrderedListMarkers?: boolean;
 	/** Preserve source backslash escapes instead of normalizing escaped punctuation. */
@@ -1363,16 +1365,21 @@ export class Markdown implements Component {
 			case "code": {
 				const indent = this.theme.codeBlockIndent ?? "  ";
 				lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
-				if (this.theme.highlightCode) {
-					const highlightedLines = this.theme.highlightCode(token.text, token.lang);
+				const highlight = this.options.highlightCode ?? this.theme.highlightCode;
+				const highlightedLines = highlight?.(token.text, token.lang);
+				if (highlightedLines) {
 					for (const hlLine of highlightedLines) {
 						lines.push(`${indent}${hlLine}`);
 					}
 				} else {
-					// Split code by newlines and style each line
-					const codeLines = token.text.split("\n");
-					for (const codeLine of codeLines) {
-						lines.push(`${indent}${this.theme.codeBlock(codeLine)}`);
+					const code = token.text;
+					let start = 0;
+					for (;;) {
+						const newline = code.indexOf("\n", start);
+						const line = code.slice(start, newline < 0 ? code.length : newline);
+						lines.push(indent + (highlight ? line : this.theme.codeBlock(line)));
+						if (newline < 0) break;
+						start = newline + 1;
 					}
 				}
 				lines.push(this.theme.codeBlockBorder("```"));
