@@ -50,7 +50,7 @@ executes the remote tool, and neither tool metadata nor remote content grants
 authorization. CodeMode's fixed provider entry does not embed these schemas.
 
 Session startup performs local configuration/cache setup, then connects uncached
-servers in the background. `/mcp-status` shows connections in progress. Tool
+servers in the background by default. With `onDemand: true`, a cold server starts only when search includes its configured ID as a separate word. A cached catalog remains searchable by capability. See the [Windows desktop setup](../../docs/windows-computer-use.md). `/mcp-status` shows connections in progress. Tool
 search waits for outstanding discovery so it does not incorrectly report an
 empty catalog; a call to an already registered cached tool waits only for that
 tool's server. Concurrent callers share the connection attempt. Cancelling a
@@ -399,7 +399,7 @@ override. Search for its tools again to activate the project definition.
   existing per-entry/schema validation still applies, and it does not authenticate
   the file. Missing files, symlinks, directories, oversized files and read failures
   remain outside the replacement path. Failed replacements are never reused.
-- A cache hit registers deferred tools without starting the MCP server; the first actual remote call connects and refreshes the cache. A cache miss connects once at startup to discover schemas.
+- A cache hit registers deferred tools without starting the MCP server; the first actual remote call connects and refreshes the cache. A cache miss follows the configured background or on-demand discovery mode.
 - At most 16 configured servers, 128 tools per server, and 64 KiB per tool schema.
 - Tool descriptions, errors, and text/resource output are stripped of ANSI/OSC/control sequences.
 - Text is bounded to approximately 50 KiB; images are bounded to 5 MiB each and 10 MiB total. Response bodies are capped at 10 MiB, SSE events at 4 MiB, and content arrays at 256 items before conversion.
