@@ -183,7 +183,7 @@ test("unsupported hosts load the entry, warn and stop before tool or owner regis
 			const extension = join(fixture, "extension");
 			mkdirSync(extension);
 			// Deliberately omit bridge.js: unsupported hosts must never import the runtime.
-			for (const file of ["index.js", "config.js", "runtime-compat.js", "security.js", "lifecycle.js", "manager.js", "regex.js"]) {
+			for (const file of ["index.js", "config.js", "runtime-compat.js", "security.js", "lifecycle.js", "manager.js", "regex.js", "tool-directory.js"]) {
 				copyFileSync(new URL(`../packages/mcp-bridge/src/${file}`, import.meta.url), join(extension, file));
 			}
 			const entry = await import(pathToFileURL(join(extension, "index.js")).href);

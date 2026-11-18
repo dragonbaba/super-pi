@@ -41,7 +41,7 @@ Remote tools are registered as `mcp__<server>__<tool>` (bounded and collision-ch
 ## Startup and restoring activated tools
 
 Discovery results distinguish `activated`, `alreadyActive` and `rejected` exact
-registered names; `status` is `matched`, `rejected` or `no_matches` for a configured
+registered names. An unambiguous search returns `matched`, `rejected` or `no_matches` for a configured
 runtime. Mixed accepted/rejected results use `matched` and retain the rejected
 names. Read accepted tools' current full instructions and schema through
 `describeTools([name])`, then call `callTool(name, args)` in the same script.
@@ -49,8 +49,12 @@ Do not derive names from server labels or JavaScript aliases. Discovery never
 executes the remote tool, and neither tool metadata nor remote content grants
 authorization. CodeMode's fixed provider entry does not embed these schemas.
 
+Use `tools.mcp_search_tools({mode:"servers"})` to list configured enabled server IDs. For a known catalog the host must expose at least one tool to list its server. Cold IDs let the model choose which service to discover. Use `{mode:"names",server:"desktop"}` to enumerate visible, fully qualified tool names. Each page contains up to 32 names without schemas or activation. Pass its `nextOffset` as `offset` and copy its `revision` to continue. After a `stale_page` response restart at offset zero.
+
+A fully qualified query or a server paired with an exact remote name activates only the matched tool. Use `{server:"desktop",query:"ui_find",exact:true}` to require a name match. An ambiguous query returns candidate server IDs. Supply the original configured ID in `server` to disambiguate. If a remote name also spells another tool's qualified name, the response lists both visible choices. Set `nameKind:"qualified"` for the directory spelling or `nameKind:"raw"` for the remote spelling. Capability queries continue to use the ranked search and activation budgets.
+
 Session startup performs local configuration/cache setup, then connects uncached
-servers in the background by default. With `onDemand: true`, a cold server starts only when search includes its configured ID as a separate word. A cached catalog remains searchable by capability. See the [Windows desktop setup](../../docs/windows-computer-use.md). `/mcp-status` shows connections in progress. Tool
+servers in the background by default. With `onDemand: true`, a cold server starts when selected explicitly, by a unique qualified prefix, or by a query containing its configured ID as a separate word. A cached catalog remains searchable by capability. See the [Windows desktop setup](../../docs/windows-computer-use.md). `/mcp-status` shows connections in progress. Tool
 search waits for outstanding discovery so it does not incorrectly report an
 empty catalog; a call to an already registered cached tool waits only for that
 tool's server. Concurrent callers share the connection attempt. Cancelling a

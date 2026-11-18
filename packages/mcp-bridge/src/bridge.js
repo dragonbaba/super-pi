@@ -379,13 +379,14 @@ export class McpBridgeRuntime {
     return pending;
   }
 
-  async waitForDiscovery(signal, query = "") {
+  async waitForDiscovery(signal, query = "", server) {
     this.pi.assertExecutionCurrent?.();
     if (this.closed || signal?.aborted) throw new McpCallError("aborted");
     const pending = [];
     let words;
     for (const state of this.states.values()) {
-      if (state.config.onDemand && !state.catalogReady) {
+      if (server !== undefined && state.config.id !== server) continue;
+      if (server === undefined && state.config.onDemand && !state.catalogReady) {
         words ??= query.toLowerCase().split(SEARCH_WORD_SEPARATOR);
         if (!words.includes(state.config.id.toLowerCase())) continue;
       }
@@ -447,6 +448,7 @@ export class McpBridgeRuntime {
       state.status = "connected";
       state.connectFetch = null;
       for (const tool of listed.tools) this.registerRemoteTool(state, tool, tool.inputSchema);
+      state.directoryId = undefined;
       state.catalogReady = true;
       this.schemaCache?.put(config, this.workspace, listed.tools, state.serverInfo);
       this.onToolsChanged?.();
@@ -582,19 +584,24 @@ export class McpBridgeRuntime {
     return this.registeredSchemaBytes.get(name) ?? 0;
   }
 
-  searchTools(query, limit = 8, eligibleNames) {
+  searchTools(query, limit = 8, eligibleNames, server) {
     // Each word counts on its own: "blender scene execute python" must still find a
     // tool that mentions three of the four. Tools matching more words come first.
     const words = [];
     for (const word of query.toLowerCase().split(SEARCH_WORD_SEPARATOR, 18)) if (word && words.length < 16) words.push(word);
     if (words.length === 0) return [];
+    const prefix = server === undefined ? undefined : piToolServerPrefix(server);
     const ranked = [];
     for (let index = 0; index <= words.length; index++) ranked.push([]);
     for (const [piName, haystack] of this.searchIndex) {
+      if (prefix && !piName.startsWith(prefix)) continue;
       if (eligibleNames !== undefined && !eligibleNames.has(piName)) continue;
       let score = 0;
       for (const word of words) if (haystack.includes(word)) score++;
-      if (score > 0 && this.toolConfig(piName)) ranked[score].push(piName);
+      if (score > 0 && ranked[score].length < limit) {
+        const config = this.toolConfig(piName);
+        if (config && (server === undefined || config.id === server)) ranked[score].push(piName);
+      }
     }
     const matches = [];
     for (let score = words.length; score > 0 && matches.length < limit; score--) {
