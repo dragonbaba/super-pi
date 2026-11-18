@@ -557,12 +557,19 @@ export class Markdown implements Component {
 			plainKind = 0;
 		}
 		const signatureEligible = incrementalEligible && plainKind === 0;
+		const onlyToken = tokens.length === 1 ? tokens[0] : undefined;
+		const soleCode = onlyToken?.type === "code" ? onlyToken as Tokens.Code : undefined;
 		const linksSignature = signatureEligible ? getTokenSignature(tokens.links ?? {}) : undefined;
 		const tokenSignatures = signatureEligible ? new Array<string | undefined>(tokens.length) : undefined;
 		let signaturesValid = signatureEligible && linksSignature !== undefined;
 		if (tokenSignatures) {
 			for (let i = 0; i < tokens.length; i++) {
-				const signature = getTokenSignature(tokens[i]);
+				// For a lone code block the parser has already resolved the fence and
+				// indentation. Only the language and resulting body reach the renderer.
+				// Length-prefix the language and distinguish absent from empty.
+				const signature = soleCode
+					? "C" + (soleCode.lang === undefined ? "-" : soleCode.lang.length + ":" + soleCode.lang) + soleCode.text
+					: getTokenSignature(tokens[i]);
 				tokenSignatures[i] = signature;
 				if (signature === undefined) signaturesValid = false;
 			}
@@ -571,15 +578,18 @@ export class Markdown implements Component {
 		if (
 			signaturesValid &&
 			this.incrementalNormalizedText !== undefined &&
-			normalizedText.startsWith(this.incrementalNormalizedText) &&
 			this.incrementalWidth === width &&
 			this.incrementalLinksSignature === linksSignature &&
 			this.incrementalTokenSignatures &&
 			this.incrementalTokenContentLines
 		) {
-			const comparable = Math.min(tokens.length, this.incrementalTokenSignatures.length);
-			while (reuseCount < comparable && tokenSignatures?.[reuseCount] === this.incrementalTokenSignatures[reuseCount]) reuseCount++;
-			reuseCount = Math.max(0, reuseCount - 1);
+			if (soleCode && tokenSignatures?.[0] === this.incrementalTokenSignatures[0]) {
+				reuseCount = 1;
+			} else if (normalizedText.startsWith(this.incrementalNormalizedText)) {
+				const comparable = Math.min(tokens.length, this.incrementalTokenSignatures.length);
+				while (reuseCount < comparable && tokenSignatures?.[reuseCount] === this.incrementalTokenSignatures[reuseCount]) reuseCount++;
+				reuseCount = Math.max(0, reuseCount - 1);
+			}
 		}
 		this.lastIncrementalReuseCount = reuseCount;
 		if (this.incrementalMetrics) {
@@ -591,6 +601,7 @@ export class Markdown implements Component {
 		const bgFn = this.defaultTextStyle?.bgColor;
 		const tokenContentLines = signatureEligible ? new Array<string[]>(tokens.length) : undefined;
 		const contentLines: string[] = [];
+		let padding = "";
 		let plainWrappedLines: string[] | undefined;
 		let renderedCharacterCount = 0;
 		for (let i = 0; i < tokens.length; i++) {
@@ -601,8 +612,11 @@ export class Markdown implements Component {
 				const tokenLines = this.renderToken(tokens[i], contentWidth, tokens[i + 1]?.type);
 				const wrappedLines: string[] = [];
 				for (const line of tokenLines) {
-					if (isImageLine(line)) wrappedLines.push(line);
-					else appendLines(wrappedLines, wrapTextWithAnsi(line, contentWidth));
+					if (isImageLine(line) || (!line.includes("\n") && !line.includes("\r") && visibleWidth(line) <= contentWidth)) {
+						wrappedLines.push(line);
+					} else {
+						appendLines(wrappedLines, wrapTextWithAnsi(line, contentWidth));
+					}
 				}
 				if (plainKind !== 0 && i === 0) plainWrappedLines = wrappedLines;
 				lines = [];
@@ -612,7 +626,9 @@ export class Markdown implements Component {
 					if (bgFn) lines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
 					else {
 						const visibleLen = visibleWidth(lineWithMargins);
-						lines.push(lineWithMargins + " ".repeat(Math.max(0, width - visibleLen)));
+						const missing = Math.max(0, width - visibleLen);
+						if (padding.length !== missing) padding = " ".repeat(missing);
+						lines.push(lineWithMargins + padding);
 					}
 				}
 			}
