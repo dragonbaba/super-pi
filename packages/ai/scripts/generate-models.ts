@@ -1888,9 +1888,10 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Kimi For Coding models
-		if (data["kimi-for-coding"]?.models) {
-			const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
+		// The registered api.kimi.com endpoint uses the CN plan after the catalog split.
+		const kimiModels = data["kimi-code-plan-cn"]?.models ?? data["kimi-for-coding"]?.models;
+		const beforeKimi = models.length;
+		if (kimiModels) {
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
 			const kimiAliases = new Set(["k2p5", "k2p6", "k2p7"]);
@@ -1933,6 +1934,10 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				});
 				recordModelsDevReasoningOptions("kimi-coding", normalizedId, m);
 			}
+		}
+
+		if (generatorOptions.strict && models.length === beforeKimi) {
+			throw new Error("No tool-capable models for kimi-coding in models.dev (kimi-code-plan-cn or legacy kimi-for-coding).");
 		}
 
 		// Process Moonshot AI models

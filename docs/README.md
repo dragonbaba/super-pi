@@ -9,6 +9,7 @@
 - [项目首页（English）](../README.md)：定位、快速开始、认证、模型选择、目标项目启动方式和边界。
 - [项目首页（简体中文）](../README.zh-CN.md)：中文对等版本。
 - [本地构建](building.md)：统一入口、依赖顺序、并发控制、失败处理和实测结果。
+- [Kimi 与 OpenCode Go 离线构建修复](evidence/offline-kimi-opencode-catalog-2026-11-19.md) 记录模型目录刷新后的编译错误、修复及验证。
 - [沙箱路径与网络](execution-environments.md#路径网络与工具安装)：工作区绝对路径、来宾 cwd、全局网络开关和依赖安装。
 - [Coding-agent 说明](../packages/coding-agent/README.md)：全屏退出、Windows PowerShell、扩展观察者和运行时细节。
 - [模型能力参考](model-capabilities.md)：模型输入模态、工具调用、推理、上下文、缓存和 provider 能力。
