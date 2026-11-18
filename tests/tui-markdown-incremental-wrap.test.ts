@@ -30,6 +30,34 @@ const PLAIN_THEME: MarkdownTheme = {
 	underline: identityStyle,
 };
 
+test("a streamed fence reuses identical code and invalidates on body, language, width and lifecycle changes", () => {
+	let highlights = 0;
+	function highlight(code: string, lang?: string): string[] {
+		highlights++;
+		return [lang + "\r\n" + code];
+	}
+	const theme = { ...PLAIN_THEME, highlightCode: highlight };
+	const markdown = new Markdown("", 1, 1, theme, undefined, { incrementalRenderCache: true });
+	function verify(source: string, width: number, expectedHighlights: number): void {
+		const before = highlights;
+		markdown.setText(source);
+		const actual = markdown.render(width);
+		assert.equal(highlights - before, expectedHighlights);
+		assert.deepEqual(actual, new Markdown(source, 1, 1, theme).render(width));
+	}
+	const open = "```ts\n// 中文\n";
+	verify(open + "`", 20, 1);
+	verify(open + "``", 20, 0);
+	verify(open + "```", 20, 0);
+	verify(open + "`", 5, 1);
+	verify(open + "// 次", 5, 1);
+	verify(open.replace("ts", "js") + "// 次", 5, 1);
+	markdown.invalidate();
+	verify(open.replace("ts", "js") + "// 次", 5, 1);
+	verify("heading\n\n" + open, 5, 1);
+	verify(open, 5, 1);
+});
+
 test("large Markdown lists and wrapped paragraphs append every rendered line", () => {
 	const count = 150000;
 	const list = new Markdown("- a\n".repeat(count), 0, 0, PLAIN_THEME).render(12);
