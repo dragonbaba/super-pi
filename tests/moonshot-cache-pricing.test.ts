@@ -74,8 +74,10 @@ test("Moonshot K3 correction leaves non-K3, reseller and subscription rates inta
 for (const providerId of providerIds) {
 	test(`${providerId} ships the default K3 write price in the existing USD cost convention`, () => {
 		const provider = shipped.find(provider => provider.id === providerId)!;
-		assert.deepEqual(provider.getModels().find(model => model.id === "kimi-k3")!.cost,
-			{ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 });
+		const expected = providerId === "moonshotai-cn"
+			? { input: 2.9879, output: 14.9395, cacheRead: 0.2988, cacheWrite: 2.9879 }
+			: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 };
+		assert.deepEqual(provider.getModels().find(model => model.id === "kimi-k3")!.cost, expected);
 	});
 	for (const source of ["generated", "shipped"] as const) {
 		for (const entry of ["stream", "streamSimple"] as const) {
@@ -106,8 +108,10 @@ for (const providerId of providerIds) {
 					assert.equal(result.usage.cacheRead, read);
 					assert.equal(result.usage.cacheWrite, write);
 					assert.equal(result.usage.totalTokens, 1100);
-					assert.equal(result.usage.cost.cacheWrite, 3 * write / 1e6);
-					assert.ok(Math.abs(result.usage.cost.total - (3 * (1000 - read) + 0.3 * read + 15 * 100) / 1e6) < 1e-12);
+					const rates = model.cost;
+					assert.equal(result.usage.cost.cacheWrite, rates.input * write / 1e6);
+					const expectedTotal = (rates.input * (1000 - read) + rates.cacheRead * read + rates.output * 100) / 1e6;
+					assert.ok(Math.abs(result.usage.cost.total - expectedTotal) < 1e-12);
 				}
 			});
 		}

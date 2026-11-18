@@ -86,8 +86,11 @@ for (const model of models) for (const entry of ["stream", "streamSimple"] as co
 	for (const choiceUsage of [false, true]) test(`${model.provider} ${entry} ${choiceUsage ? "choice" : "chunk"} usage splits long writes`, async () => {
 		const { usage, headerReads } = await send(model, entry, { long: "100", choiceUsage, repeated: true });
 		assert.equal(usage.cacheWrite1h, 100);
-		assert.equal(usage.cost.cacheWrite, 0.0009);
-		assert.ok(Math.abs(usage.cost.total - 0.00372) < 1e-12);
+		const rates = model.cost;
+		const expectedWrite = (100 * rates.cacheWrite + 100 * 2 * rates.input) / 1e6;
+		assert.equal(usage.cost.cacheWrite, expectedWrite);
+		const expectedTotal = (400 * rates.input + 400 * rates.cacheRead + 100 * rates.output) / 1e6 + expectedWrite;
+		assert.ok(Math.abs(usage.cost.total - expectedTotal) < 1e-12);
 		assert.equal(headerReads, 1, "read once per response, never per usage/delta");
 	});
 	for (const [label, fixture, expected] of [
@@ -105,7 +108,9 @@ for (const model of models) for (const entry of ["stream", "streamSimple"] as co
 	] as const) test(`${model.provider} ${entry}: ${label}`, async () => {
 		const { usage } = await send(model, entry, fixture);
 		assert.equal(usage.cacheWrite1h, expected);
-		assert.equal(usage.cost.cacheWrite, (3 * usage.cacheWrite + 3 * (expected ?? 0)) / 1e6);
+		const long = expected ?? 0;
+		const short = usage.cacheWrite - long;
+		assert.equal(usage.cost.cacheWrite, (model.cost.cacheWrite * short + model.cost.input * 2 * long) / 1e6);
 	});
 }
 
