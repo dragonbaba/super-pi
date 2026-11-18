@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { Type } from "typebox";
 import { AssistantMessageEventStream } from "../packages/ai/src/utils/event-stream.ts";
@@ -11,6 +13,7 @@ import { recoverLocalSearxng } from "../packages/extensions/web-search/local-ser
 import toolClassification from "../packages/tool-classification/src/index.ts";
 import { assistant, body } from "./codemode-recovery/fixture.ts";
 import { alphaSession } from "./helpers/alpha-session.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 function withSearchBase<T>(base: string | undefined, initialize: () => T): T {
   const before = process.env.SP_SEARXNG_URL;
@@ -24,12 +27,20 @@ function withSearchBase<T>(base: string | undefined, initialize: () => T): T {
   }
 }
 
-function makeTool(base?: string): ToolDefinition | undefined {
+function makeTool(base?: string, localAppData?: string): ToolDefinition | undefined {
   let tool: ToolDefinition | undefined;
-  withSearchBase(base, () => webSearch({
-    on() {},
-    registerTool: entry => { tool = entry as ToolDefinition; },
-  } as Pick<ExtensionAPI, "on" | "registerTool"> as ExtensionAPI));
+  const before = process.env.LOCALAPPDATA;
+  try {
+    if (localAppData === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = localAppData;
+    withSearchBase(base, () => webSearch({
+      on() {},
+      registerTool: entry => { tool = entry as ToolDefinition; },
+    } as Pick<ExtensionAPI, "on" | "registerTool"> as ExtensionAPI));
+  } finally {
+    if (before === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = before;
+  }
   return tool;
 }
 
@@ -47,6 +58,25 @@ async function endpoint(t: TestContext, handler: RequestListener): Promise<strin
 function search(tool: ToolDefinition, query: string, limit?: number, signal?: AbortSignal, fresh?: boolean) {
   return tool.execute("fixture", { query, limit, fresh }, signal, undefined, {} as ExtensionContext);
 }
+
+test("a managed Windows installation registers search without an inherited endpoint", { skip: process.platform !== "win32" }, async t => {
+  const owned = createOwnedTaskFixture("searxng-installed-default-");
+  t.after(() => owned.cleanup());
+  assert.equal(makeTool(undefined, owned.root), undefined);
+  const install = join(owned.root, "SuperPi", "SearXNG");
+  mkdirSync(install, { recursive: true });
+  writeFileSync(join(install, "install.json"), JSON.stringify({
+    endpoint: "http://127.0.0.1:8888", source: "https://github.com/searxng/searxng", upstream: "b".repeat(40),
+  }));
+  const fetcher = t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({ results: [] })));
+  const local = makeTool(undefined, owned.root);
+  assert.ok(local, "the local installation should expose web_search even without SP_SEARXNG_URL");
+  await search(local, "fixture");
+  await search(makeTool("https://search.example.test", owned.root)!, "fixture");
+  assert.deepEqual(fetcher.mock.calls.map(call => String(call.arguments[0])), [
+    "http://127.0.0.1:8888/search", "https://search.example.test/search",
+  ]);
+});
 
 test("SearXNG search is opt-in and posts encoded keywords with no API key", async t => {
   assert.equal(makeTool(), undefined);

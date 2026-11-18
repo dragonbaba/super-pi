@@ -4,6 +4,8 @@ Super Pi 可以用 `web_search` 直接查询 SearXNG，返回标题、链接和�
 
 ## 连接实例
 
+Windows 上安装到 `LOCALAPPDATA/SuperPi/SearXNG` 的本机实例会自动注册 `web_search`。`SP_SEARXNG_URL` 可以指定其他地址。
+
 部署独立的 SearXNG 实例后，在它的 `settings.yml` 中启用 JSON。仅在本机使用时，可以将服务端口绑定到环回地址。
 
 ```yaml
@@ -26,7 +28,7 @@ Codemode 脚本可以直接读取 `result.details.results` 中的 `title`、`url
 
 每个会话在内存中保留最近一次完整、非空的搜索结果。60 秒内用相同关键词和 `limit` 查询时可以复用，传入 `fresh: true` 可立即重新请求。工具发现沿用固定的 Codemode 入口，返回的搜索结果追加到对话历史。
 
-对于已安装到 `LOCALAPPDATA/SuperPi/SearXNG` 的 Windows 本机实例，配置 `http://127.0.0.1:8888` 后，首次搜索遇到连接被拒会尝试启动服务。Super Pi 等待健康检查通过，再发送搜索请求。本机服务已运行时直接查询。
+Windows 本机实例使用 `http://127.0.0.1:8888`。首次搜索遇到连接被拒时，Super Pi 会尝试启动服务并在健康检查通过后发送搜索请求。本机服务已运行时直接查询。
 
 仍有 Super Pi 会话打开时，受管理的本机搜索服务继续运行，包括其他项目的会话。最后一个 Super Pi 进程正常退出时，服务及其子进程一并关闭。手动启动的服务和远程实例由部署方管理。Windows 强制终止进程时，下一次正常退出会检查遗留的服务。
 
