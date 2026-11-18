@@ -6,6 +6,7 @@ const SCOPE_LABEL = "\n\nScope: ";
 const DELIVERABLE_LABEL = "\nDeliverable: ";
 const STOP_LABEL = "\nStop condition: ";
 const FIELDS = ["scope", "deliverable", "stopCondition"] as const;
+const REQUIRED_ASSIGNMENT = "Define agent, task, scope, deliverable and stopCondition together before launch.";
 
 export const assignmentProperties = {
 	scope: Type.String({ minLength: 1, maxLength: MAX_FIELD_CHARS, description: "Required: exact files, subsystem or question in scope; exclusions where needed. Does not grant file permissions." }),
@@ -22,24 +23,25 @@ export interface Assignment {
 
 /** Admission only: validate the whole bounded batch before discovering or starting children. */
 export function assertAssignments(input: unknown): void {
-	if (!input || typeof input !== "object") throw new Error("Subagent requires a task with scope, deliverable and stopCondition; no task was started.");
+	if (!input || typeof input !== "object") throw new Error(`No subagent was started. ${REQUIRED_ASSIGNMENT}`);
 	const params = input as { tasks?: unknown; chain?: unknown };
 	if (Array.isArray(params.tasks)) {
 		for (let i = 0; i < params.tasks.length; i++) assertAssignment(params.tasks[i], `tasks[${i}]`);
 	} else if (Array.isArray(params.chain)) {
 		for (let i = 0; i < params.chain.length; i++) assertAssignment(params.chain[i], `chain[${i}]`);
-	} else assertAssignment(input, "task");
+	} else assertAssignment(input, "single assignment");
 }
 
 function assertAssignment(value: unknown, label: string): void {
-	const item = value as Assignment | null;
+	const item = value as (Assignment & { agent?: string }) | null;
+	if (typeof item?.agent !== "string" || !item.agent.trim()) throw new Error(`Subagent ${label} requires a registered agent role. ${REQUIRED_ASSIGNMENT} No task was started.`);
+	if (typeof item.task !== "string" || !item.task.trim()) throw new Error(`Subagent ${label} requires a nonblank task objective. ${REQUIRED_ASSIGNMENT} No task was started.`);
 	for (const key of FIELDS) {
 		const field = item?.[key];
 		if (typeof field !== "string" || !field.trim() || field.length > MAX_FIELD_CHARS) {
-			throw new Error(`Subagent ${label}.${key} must be nonblank text of at most ${MAX_FIELD_CHARS} characters; no task was started.`);
+			throw new Error(`Subagent ${label} field ${key} must be nonblank text of at most ${MAX_FIELD_CHARS} characters. ${REQUIRED_ASSIGNMENT} No task was started.`);
 		}
 	}
-	if (!item || typeof item.task !== "string" || !item.task.trim()) throw new Error(`Subagent ${label} requires a nonblank task objective; no task was started.`);
 	assertAssignmentLength(item, item.task);
 }
 

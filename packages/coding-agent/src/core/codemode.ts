@@ -85,7 +85,7 @@ function scriptFailureMessage(error: string, facts: readonly ChildFact[]): strin
 /** Host-local distinction only; ordinary rejection handling is proved by the VM. */
 class ChildToolFailure extends Error {}
 
-function nestedAllowed(tool: AgentTool<any>): boolean {
+export function nestedAllowed(tool: Pick<AgentTool, "orchestration" | "modelOnly" | "interactionBoundary">): boolean {
 	return !tool.orchestration && !tool.modelOnly && !tool.interactionBoundary;
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : "Codemode execution failed"; }

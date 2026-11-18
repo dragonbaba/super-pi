@@ -16,8 +16,9 @@ import { SettingsManager } from "../packages/coding-agent/src/core/settings-mana
 import { DefaultResourceLoader } from "../packages/coding-agent/src/core/resource-loader.ts";
 import { createAgentSession } from "../packages/coding-agent/src/core/sdk.ts";
 import { ALPHA_MODEL, alphaModelRuntime } from "./helpers/alpha-session.ts";
+import { prefixTransport } from "./helpers/provider-prefix-transport.ts";
 
-test("directory replacement persists only applied choices and closes the old runtime", async () => {
+test("directory replacement enforces the new scope, preserves the wire prefix and persists only applied choices", async t => {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "execution-replacement-")));
   const cwd = path.join(root, "project"), assets = path.join(root, "assets"), agentDir = path.join(root, "agent");
   for (const directory of [cwd, assets, agentDir]) fs.mkdirSync(directory);
@@ -32,7 +33,7 @@ test("directory replacement persists only applied choices and closes the old run
       noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
     await loader.reload();
     const result = await createAgentSession({ cwd, agentDir, settingsManager: settings, resourceLoader: loader,
-      sessionManager: target.sessionManager, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), noTools: "all" });
+      sessionManager: target.sessionManager, model: ALPHA_MODEL, modelRuntime: alphaModelRuntime(), tools: ["read", "write"] });
     return { ...result, services: { cwd, agentDir } as any, diagnostics: [] };
   }
   const first = await create({ cwd, agentDir, sessionManager: manager });
@@ -44,10 +45,29 @@ test("directory replacement persists only applied choices and closes the old run
     assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "sandbox-write", directories: [assets] });
     await owner.setPermissionMode("host-write");
     assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [assets] });
-    fs.rmdirSync(assets);
+    const transport = await prefixTransport(t, ALPHA_MODEL);
+    const target = path.join(assets, "existing.txt");
+    fs.writeFileSync(target, "unchanged");
+    const authorizeWrite = () => owner.session.resourceLoader.getExtensions().runtime.nativePermissions!.authorize(
+      { type: "tool_call", toolName: "write", toolCallId: "check-directory", input: { path: target, content: "replacement" } },
+      owner.session.extensionRunner!.createContext(), owner.session.getToolDefinition("write"));
+    (await authorizeWrite()).release();
+    owner.session.agent.streamFunction = transport.stream;
+    await owner.session.prompt("Inspect the current tools");
+    // Removal also works when the granted directory is temporarily missing.
+    const moved = path.join(root, "moved");
+    fs.renameSync(assets, moved);
     await owner.setWorkingDirectories([]);
+    fs.renameSync(moved, assets);
     assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [] });
-    fs.mkdirSync(assets); ignoreDirectories = true;
+    owner.session.agent.streamFunction = transport.stream;
+    await owner.session.prompt("Inspect the current tools again");
+    assert.equal(transport.sent.length, 2);
+    assert.ok(JSON.parse(transport.sent[0]!.prefix).prompt_cache_key);
+    assert.equal(transport.sent[1]!.prefix, transport.sent[0]!.prefix);
+    await assert.rejects(authorizeWrite(), /EXTERNAL_FILE_WRITE_BLOCKED/);
+    assert.equal(fs.readFileSync(target, "utf8"), "unchanged");
+    ignoreDirectories = true;
     await assert.rejects(owner.setWorkingDirectories([assets]), /factory did not apply/);
     assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [] }, "failed replacement cannot save an un-applied directory grant");
   } finally { await owner.dispose(); fs.rmSync(root, { recursive: true }); }

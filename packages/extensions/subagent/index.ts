@@ -1248,6 +1248,7 @@ async function runSingleAgent(
 }
 
 const AGENT_ROLE_DESCRIPTION = "Registered agent role, not a task label. Choose an available role such as planner, reviewer, scout, or worker; put custom names such as audit-lsp in task.";
+const DISCOVER_TASK_CONTROL = 'If neither control is exposed and tool_search is available, use tool_search({query:"subagent_tasks",exact:true}) before requesting background execution.';
 
 const TaskItem = Type.Object({
 	...assignmentProperties,
@@ -1278,7 +1279,7 @@ function subagentParameters(limits: SubagentLimits) { return Type.Object({
 	task: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_TASK_CHARS, description: "Task for single mode" })),
 	tasks: Type.Optional(Type.Array(TaskItem, { minItems: 1, maxItems: limits.maxTasks, description: `Independent parallel tasks; at most ${limits.maxConcurrent} running, remainder queued` })),
 	chain: Type.Optional(Type.Array(ChainItem, { minItems: 1, maxItems: limits.maxTasks, description: "Dependent sequential tasks" })),
-	background: Type.Optional(Type.Boolean({ description: "Omit for foreground execution and a final result. Set true to return task IDs immediately and receive a completion notification. Requires a live TUI/RPC session with the built-in tasks or subagent_tasks tool active. Tasks stop when the session closes." })),
+	background: Type.Optional(Type.Boolean({ description: `Omit for foreground execution and a final result. Set true only in a live TUI/RPC session with the built-in tasks or subagent_tasks control active. ${DISCOVER_TASK_CONTROL} Accepted tasks return IDs and notify on completion. Tasks stop when the session closes.` })),
 	checkpoint: Type.Optional(Type.Boolean({ description: "Opt in to completed context including prompts/tool arguments: 1 MiB / 128 messages, early handoff at 768 KiB / 96 messages. Plan bounded phases before delegation. Persistent session required; no images or hidden reasoning. Storage/corruption errors still stop the task." })),
 	resumeTaskId: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Single mode only: continue a terminal task's checkpoint as a NEW task with a fresh instruction. Requires the same role/workspace identity and current authorization. Does not replay unfinished tools; inspect current files first." })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -1515,14 +1516,16 @@ export default function (pi: ExtensionAPI) {
 	}, { additionalProperties: false });
 	const assertBackgroundContext = (ctx: ExtensionContext, operation: "launch" | "manage"): void => {
 		const retry = operation === "launch"
-			? " No subagent was started. Omit background or set background: false to run in the foreground."
+			? " No subagent was started. If foreground work fits the request, omit background or set background: false. If background is required and unavailable, report the blocker."
 			: "";
 		if (ctx.mode !== "tui" && ctx.mode !== "rpc") throw new Error(`Background subagents require a live TUI or RPC session.${retry}`);
 		if (taskRegistration.controlsAvailable(ctx)) return;
-		if (ctx.getActiveTools().includes("subagent_tasks")) {
+		const activeTools = ctx.getActiveTools();
+		if (activeTools.includes("subagent_tasks")) {
 			for (const tool of pi.getAllTools()) if (tool.name === "subagent_tasks" && tool.parameters === controlParameters) return;
 		}
-		throw new Error(`To use background subagents, activate the built-in tasks or subagent_tasks management tool in this session.${retry}`);
+		const discovery = operation === "launch" && activeTools.includes("tool_search") ? ` ${DISCOVER_TASK_CONTROL}` : "";
+		throw new Error(`To use background subagents, activate the built-in tasks or subagent_tasks management tool in this session.${discovery}${retry}`);
 	};
 	const steerTask = (task: ManagedSubagentTask, text: string, ctx: ExtensionContext): string => {
 		pi.assertExecutionCurrent?.();
@@ -1664,7 +1667,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(parentExecutionTool({
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate tasks to isolated subagents. agent is a registered role (planner/reviewer/scout/worker), never a custom task name; put the objective and relevant evidence in task. Each single task or batch item REQUIRES scope, deliverable and stopCondition. Task plus responsibility fields must fit 16384 characters. Supports single, parallel tasks, sequential chain, and session-owned background execution. ${describeSubagentLimits(limits)} No token, turn or total execution time quotas. Explicit cancellation, session ownership and provider/transport timeouts still apply. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
+		description: `Define each assignment before launch: choose a registered agent role (planner/reviewer/scout/worker), write the objective and known evidence in task, and specify scope, deliverable and stopCondition. For one child pass these five fields directly; for parallel tasks or a sequential chain define them on every item. Calling subagent with the definition starts the work. Omit background for the foreground result. Before setting background:true, check the current top-level tools for an active tasks or subagent_tasks control. ${DISCOVER_TASK_CONTROL} Task plus responsibility fields must fit 16384 characters. ${describeSubagentLimits(limits)} No token, turn or total execution time quotas. Explicit cancellation, session ownership and provider/transport timeouts still apply. ${CHECKPOINT_PLANNING} Current authorization is always required. ${DELEGATION_GUIDANCE}`,
 		parameters: subagentParameters(limits),
 		prepareArguments(input) {
 			assertTaskCount(input, limits);

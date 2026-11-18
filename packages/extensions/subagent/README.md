@@ -66,8 +66,18 @@ Bash filtering is **not** an OS sandbox or a complete shell parser. It blocks co
 ## Usage
 
 ### Single agent
-```
-Use scout to find all authentication code
+
+Define the assignment in the top-level `subagent` call. It starts the child and returns its result in the foreground by default.
+
+```json
+{
+  "agent": "scout",
+  "task": "Trace where an incoming request is authenticated.",
+  "scope": "HTTP request middleware",
+  "deliverable": "Authentication entry point and its caller, with file locations",
+  "stopCondition": "Return once the caller and entry point are identified, or report the missing link",
+  "readOnly": true
+}
 ```
 
 ### Parallel execution
@@ -230,7 +240,12 @@ overlapping calls until the entire chain finishes.
 ## Background tasks
 
 Set `background: true` in a live TUI or RPC session with the built-in
-`tasks` or `subagent_tasks` tool active. Omit `background` or set it to
+`tasks` or `subagent_tasks` tool visible at the top level. Default sessions retain
+the enabled launcher and management controls from the first request. Define
+the assignment and use the exposed launcher directly. If only the
+launcher is active, use `tools.tool_search({query:"subagent_tasks",exact:true})`
+and check that the controller was activated before submitting a background task.
+Omit `background` or set it to
 `false` to wait for the result in the foreground.
 
 ```json
