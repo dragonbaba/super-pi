@@ -11,6 +11,7 @@ interface PaintJob {
 	owner: WeakRef<MessageCodePaint>;
 	generation: number;
 	sources: string[];
+	embeddedLanguages: boolean;
 }
 
 /** The interactive session owns one lazy parser and admits only the latest waiting completion. */
@@ -43,7 +44,7 @@ export class TypeScriptPaintQueue {
 				worker.unref();
 			}
 			this.active = job;
-			this.worker.postMessage({ sources: job.sources, embeddedLanguages: supportsLanguage("xml") });
+			this.worker.postMessage({ sources: job.sources, embeddedLanguages: job.embeddedLanguages });
 		} catch {
 			this.active = undefined;
 		}
@@ -90,6 +91,7 @@ export class MessageCodePaint {
 	private collecting = false;
 	private sources?: string[];
 	private units = 0;
+	private embeddedLanguages?: boolean;
 	private colors?: Map<string, string>;
 	private theme: MarkdownTheme;
 	private readonly queue: TypeScriptPaintQueue;
@@ -105,6 +107,7 @@ export class MessageCodePaint {
 
 	reset(collect: boolean, theme: MarkdownTheme): void {
 		this.generation++;
+		this.embeddedLanguages = undefined;
 		this.collecting = collect;
 		this.sources = undefined;
 		this.units = 0;
@@ -133,7 +136,14 @@ export class MessageCodePaint {
 		this.collecting = false;
 		const sources = this.sources;
 		this.sources = undefined;
-		if (sources?.length) this.queue.submit({ owner: new WeakRef(this), generation: this.generation, sources });
+		if (sources?.length) {
+			this.embeddedLanguages = supportsLanguage("xml");
+			this.queue.submit({ owner: new WeakRef(this), generation: this.generation, sources, embeddedLanguages: this.embeddedLanguages });
+		}
+	}
+
+	refreshGrammar(): void {
+		if (this.embeddedLanguages === false && supportsLanguage("xml")) this.reset(true, this.theme);
 	}
 
 	defer(generation: number): void {

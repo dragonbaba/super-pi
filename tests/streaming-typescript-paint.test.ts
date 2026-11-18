@@ -19,13 +19,43 @@ function message(text: string, stopReason: AssistantMessage["stopReason"]): Assi
 	return { role: "assistant", stopReason, content: [{ type: "text", text }] } as AssistantMessage;
 }
 
-test("streamed TS paint uses parsed blocks, repaints only its completion and survives an identical final body", async () => {
+test("registry readiness invalidates both finished and outstanding eager-only paint", { timeout: 10_000 }, async (t) => {
+	initTheme("dark");
+	const queue = new TypeScriptPaintQueue();
+	const src = message('```tsx\nconst view = <div className="box">text</div>;\n```', "stop");
+	const owners = [new AssistantMessageComponent(), new AssistantMessageComponent()];
+	t.after(() => { owners.length = 0; });
+	const signals = [completion(), completion()];
+	try {
+		for (let i = 0; i < owners.length; i++) {
+			const owner = owners[i]!;
+			owner.enableCodePaint(queue, () => { owner.invalidate(); signals[i]!.resolve(); });
+			owner.updateContent(src, true);
+			owner.updateContent(src, false);
+			owner.render(80);
+			if (i === 0) await signals[0]!.promise;
+		}
+		await loadAllHighlightLanguages();
+		const rich = new AssistantMessageComponent(src).render(80);
+		for (let i = 0; i < owners.length; i++) {
+			signals[i] = completion();
+			owners[i]!.invalidate();
+			owners[i]!.render(80);
+			await signals[i]!.promise;
+			assert.deepEqual(owners[i]!.render(80), rich);
+		}
+	} finally { await queue.close(); }
+});
+
+test("streamed TS paint uses parsed blocks, repaints only its completion and survives an identical final body", { timeout: 10_000 }, async (t) => {
 	initTheme("dark");
 	await loadAllHighlightLanguages();
 	const queue = new TypeScriptPaintQueue();
 	const theme = getMarkdownTheme();
 	const component = new AssistantMessageComponent(undefined, false, theme);
 	const item = new RetainedItem(component, { id: "stream", version: 0 });
+	// The UI retains a mounted item while the worker holds only a weak owner.
+	t.after(() => item.release());
 	const painted = completion();
 	component.enableCodePaint(queue, owner => {
 		assert.equal(owner, component);
@@ -49,10 +79,12 @@ test("streamed TS paint uses parsed blocks, repaints only its completion and sur
 	} finally { await queue.close(); }
 });
 
-test("replaced, aborted and retired completions cannot apply stale colors", async () => {
+test("replaced, aborted and retired completions cannot apply stale colors", { timeout: 10_000 }, async (t) => {
 	initTheme("dark");
 	const queue = new TypeScriptPaintQueue();
 	const component = new AssistantMessageComponent();
+	const item = new RetainedItem(component, { id: "latest", version: 0 });
+	t.after(() => item.release());
 	let applied = 0;
 	const painted = completion();
 	component.enableCodePaint(queue, c => { applied++; c.invalidate(); painted.resolve(); });
