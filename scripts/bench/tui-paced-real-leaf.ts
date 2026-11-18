@@ -399,7 +399,7 @@ async function measureAssistant(
 					: [{ type: "text", text: growing ? body : finalSentinel }],
 				timestamp: index,
 			} as AssistantMessage;
-			if (growing) message.stopReason = "stop";
+			if (growing) message.stopReason = "pending";
 			delivery.publishLatest("message", {
 				type: "message_update",
 				message,

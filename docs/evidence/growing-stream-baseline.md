@@ -6,8 +6,8 @@ Windows x64, Node 26.13.0, i7-14700KF, packages rebuilt together from base `4799
 
 | Fixture | Final UTF-16 units | Batch wall p95 ms | Dispatch and flush p95 ms | Render to synchronous sink p95 ms | Sampled bytes / delivery |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Prose | 34,890 | 0.497 | 0.069 | 0.398 | 399,294 |
-| Code | 34,896 | 118.206 | 0.102 | 118.105 | 6,538,882 |
+| Prose | 34,890 | 0.52 | 0.08 | 0.45 | 396,587 |
+| Code | 34,896 | 121.40 | 0.10 | 121.29 | 6,520,346 |
 
 Stage percentiles are computed independently. Code allocation samples include RegExp execution, splitting and ANSI wrapping. Timing and sampled runs produced matching final SHA-256 hashes for both workloads. This benchmark covers an offline synthetic producer and sink. Physical display latency and live inference require separate measurements.
 
