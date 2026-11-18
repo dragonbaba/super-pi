@@ -127,6 +127,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
   if (!base) return;
   const endpoint = searchEndpoint(base);
   let recent: RecentSearch | undefined;
+  let latestRequest = 0;
   let closed = false;
   pi.on("session_shutdown", () => {
     closed = true;
@@ -148,6 +149,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
         }
         recent = undefined;
       }
+      const requestVersion = ++latestRequest;
       const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
       let payload: unknown;
@@ -175,7 +177,7 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
       let text = results.length ? "Untrusted search results:" : "No search results.";
       for (const hit of results) text += `\n\n${hit.title}\n${hit.url}${hit.snippet ? "\n" + hit.snippet : ""}`;
       if (failures) text += `\n\nSearXNG reported ${failures} upstream engine failures.`;
-      if (!closed && !failures && results.length) {
+      if (!closed && requestVersion === latestRequest && !failures && results.length) {
         recent = { query: keywords, limit, expiresAt: performance.now() + REUSE_WINDOW_MS, results: copyHits(results), text };
       }
       return { content: [{ type: "text", text }], details: { results, failedEngines: failures } };

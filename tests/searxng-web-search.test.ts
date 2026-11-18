@@ -173,6 +173,35 @@ test("a session reuses its recent successful query, with isolated results and ex
   assert.equal(requests, 9);
 });
 
+test("a late search completion cannot overwrite a newer refreshed result", async t => {
+  let signalFirstStarted!: () => void;
+  let releaseFirst!: () => void;
+  const firstStarted = new Promise<void>(resolve => { signalFirstStarted = resolve; });
+  const firstResponseGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let requests = 0;
+  const base = await endpoint(t, async (req, res) => {
+    req.resume();
+    const number = ++requests;
+    if (number === 1) {
+      signalFirstStarted();
+      await firstResponseGate;
+    }
+    res.end(JSON.stringify({ results: [{ title: `Result ${number}`, url: "https://example.org" }] }));
+  });
+  const tool = makeTool(base)!;
+  const first = search(tool, "same query");
+  try {
+    await firstStarted;
+    const refreshed = await search(tool, "same query", undefined, undefined, true);
+    assert.match(body(refreshed.content), /Result 2/);
+  } finally {
+    releaseFirst();
+  }
+  assert.match(body((await first).content), /Result 1/);
+  assert.match(body((await search(tool, "same query")).content), /Result 2/);
+  assert.equal(requests, 2);
+});
+
 test("the normal Codemode dispatcher discovers and runs direct SearXNG search", async t => {
   let requests = 0;
   const base = await endpoint(t, (_req, res) => {
