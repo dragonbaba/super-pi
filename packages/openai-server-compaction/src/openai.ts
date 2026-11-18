@@ -174,7 +174,11 @@ export function applyRemoteHistoryPayloadPatch(params: {
       setOwnProperty(nextPayload, key, params.payload[key]);
     }
   }
-  nextPayload.input = params.explicitHistory;
+  // Codex compaction retains user items and the artifact. The current request
+  // still owns its leading developer instructions, including after a restart.
+  const first = Array.isArray(params.payload.input) ? params.payload.input[0] : undefined;
+  nextPayload.input = isRecord(first) && first.role === "developer"
+    ? [first, ...params.explicitHistory] : params.explicitHistory;
   return nextPayload;
 }
 

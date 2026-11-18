@@ -6,6 +6,7 @@ import { createOpenAICodexTransportOwner, buildOpenAICodexRequestBody } from "..
 import { isRequestBodyTooLarge } from "../packages/ai/src/utils/request-body-size.ts";
 import { codexModel, codexToken, sseFrames, textEvents } from "./helpers/responses-sse-fixture.ts";
 import type { TestContext } from "node:test";
+import { applyRemoteHistoryPayloadPatch } from "../packages/openai-server-compaction/src/openai.ts";
 
 const artifact={type:"compaction",encrypted_content:"wire-artifact"};
 const compactEvents=[{type:"response.output_item.done",output_index:0,item:artifact},{type:"response.completed",response:{id:"compacted",status:"completed",output:[artifact]}}];
@@ -41,6 +42,48 @@ function sockets(t:TestContext){
 const model={...codexModel,contextWindow:1000000};
 const context={messages:[{role:"user" as const,content:"synthetic 中文😀 "+"x".repeat(32768),timestamp:0}]};
 function success():Response{return new Response(sseFrames(textEvents()),{headers:{"content-type":"text/event-stream"}});}
+
+for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) test(id + " preserves stable developer instructions across full, delta and compaction requests", async t => {
+  const f = sockets(t), owner = createOpenAICodexTransportOwner();
+  t.after(() => owner.dispose());
+  const route = { ...model, id, reasoning: true, baseUrl: "https://chatgpt.com/backend-api" };
+  const base = { ...context, systemPrompt: "Stable fixture instructions" };
+  const observed: { instructionsHash: string }[] = [];
+  const options = { apiKey: codexToken(), transport: "websocket-cached" as const, sessionId: "placement", maxRetries: 0, codexRemoteCompaction: true,
+    onEffectiveDispatch: (o: { instructionsHash: string }) => { observed.push(o); } };
+  const first = await owner.stream(route, base, options).result();
+  assert.equal(first.stopReason, "stop", first.errorMessage);
+  const developer = { role: "developer", content: base.systemPrompt };
+  assert.deepEqual(f.bodies[0].input[0], developer);
+  assert.equal(f.bodies[0].instructions, "You are a helpful assistant.");
+  const next = { ...base, messages: [...base.messages, first, { role: "user" as const, content: "Next", timestamp: 1 }] };
+  const second = await owner.stream(route, next, options).result();
+  assert.equal(second.stopReason, "stop", second.errorMessage);
+  assert.equal(f.bodies[1].previous_response_id, first.responseId);
+  assert.equal(f.bodies[1].input.length, 1);
+  assert.equal(observed[1]!.instructionsHash, observed[0]!.instructionsHash);
+  const compactOptions = { ...options, sessionId: "placement-compaction" };
+  const regular = await owner.stream(route, base, compactOptions).result();
+  const compactBody = buildOpenAICodexRequestBody(route, { ...base, messages: [...base.messages, regular] }, compactOptions, compactOptions.sessionId);
+  const compacted = await owner.compact(route, compactBody, compactOptions);
+  assert.deepEqual(compacted.compactionItem, artifact);
+  const patched = (body: unknown) => applyRemoteHistoryPayloadPatch({ payload: body as Record<string, unknown>,
+    explicitHistory: [artifact, { role: "user", content: "Continue" }] });
+  const compatible = buildOpenAICodexRequestBody({ ...route, compat: { supportsDeveloperRole: false } }, base, options, undefined);
+  assert.equal(compatible.instructions, base.systemPrompt);
+  assert.equal(patched(compatible).instructions, base.systemPrompt);
+  assert.deepEqual(patched(compatible).input, [artifact, { role: "user", content: "Continue" }]);
+  const changed = await owner.stream(route, { ...base, systemPrompt: "Changed instructions" }, { ...compactOptions, onPayload: patched }).result();
+  assert.equal(changed.stopReason, "error", "post-compaction delta cannot silently omit changed instructions");
+  const resumed = await owner.stream(route, base, { ...compactOptions, onPayload: patched }).result();
+  assert.equal(resumed.stopReason, "stop", resumed.errorMessage);
+  const last = f.bodies.at(-1);
+  if (last.previous_response_id) assert.deepEqual(last.input, [{ role: "user", content: "Continue" }]);
+  else assert.deepEqual(last.input[0], developer);
+  const other = buildOpenAICodexRequestBody({ ...route, baseUrl: model.baseUrl }, base, options, undefined);
+  assert.equal(other.instructions, base.systemPrompt);
+  assert.equal(buildOpenAICodexRequestBody({ ...route, id: "legacy" }, base, options, undefined).instructions, base.systemPrompt);
+});
 
 for(const compressed of [false,true])test(`Codex SSE observes final body and JSON bytes, compressed=${compressed}`,async t=>{
   if(!compressed){const original=process.getBuiltinModule;t.mock.method(process,"getBuiltinModule",function(id:string){const module=original(id);return id==="node:zlib"?{...module,zstdCompressSync:undefined}:module;});}

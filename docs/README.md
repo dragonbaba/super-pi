@@ -52,6 +52,7 @@
 - [搜索工具解析与重复探测](evidence/search-tool-resolution-2026-11-16.md)：按可执行文件元数据解析 rg/fd，去除版本探测子进程，保留真实搜索验证并指导模型复用环境事实。
 - [子代理执行期限与编排指引](evidence/subagent-lifetime-2026-11-16.md)：移除总执行计时器，保留等待/通信/清理边界；用现有纠偏、检查点和完成通知复用成功成果。
 - [子代理后台接纳与完成唤醒](evidence/subagent-background-admission-2026-11-18.md)：后台条件、前台调用和空闲主代理唤醒验证。
+- [Codex Astra 与 Sol 的指令缓存](evidence/codex-cacheable-instructions.md)记录真实路由对照、续接及压缩回归。
 - [Windows 桌面操作](windows-computer-use.md) 包含驱动配置、按需发现、窗口选择和会话交接。另见[驱动对比与单屏验收](evidence/windows-computer-use-2026-11-19.md)和[早期能力核实](evidence/computer-use-assessment-2026-11-16.md)。
 - [脚本输出与缓存诊断](evidence/session-script-cache-2026-11-16.md)：区分成功命令与截断 JSON 后处理错误，修正记忆查询误激活浏览器；显示记录的缓存用量和响应绑定的客户端变化。
 - [固定工具入口与按需契约](evidence/tool-prefix-guidance-2026-11-16.md)：稳定普通本地/MCP 工具前缀，区分注册名与脚本别名，明确发现状态、当前契约和其他缓存边界；对照 Codex、Claude 与 OpenCode。
