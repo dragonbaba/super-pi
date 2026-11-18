@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { basename, delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { isIP } from "node:net";
 import type { BrowserUseRunOptions, BrowserUseRunResult } from "./runner.ts";
+export { needsWindowsColdStartWorkaround, runWithWindowsColdStart } from "./windows-cold-start.ts";
 
 const EXECUTABLE_NAME = process.platform === "win32" ? "browser-harness.exe" : "browser-harness";
 const IMAGE_PATH_RES = [

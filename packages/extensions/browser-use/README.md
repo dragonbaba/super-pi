@@ -136,6 +136,8 @@ Use `/browser-use status` after `/reload`; it reports the selected executable an
 
 Local Chrome 144+ may require one Allow confirmation for each browser run or newly established debugging connection. Browser Harness 0.1.12+ keeps one pending approval per daemon name instead of replacing its connection on retries. Normal `browser_exec` calls reuse the persistent daemon and must not restart it. Super Pi still enforces the selected 5–300 second outer deadline and cancellation; on Windows its existing process-tree termination can also end a newly spawned pending daemon. This is not an unlimited approval wait. Do not automate the Chrome security prompt or edit Chrome Local State. A zero-prompt setup requires a separate automation profile launched with its own `--user-data-dir` and debugging port; it does not share the default profile's login state. Cloud authentication is optional. Local recordings are explicitly disabled unless the user opts in.
 
+On Windows, Browser Harness 0.1.13 can exit before trying to start a closed browser. Super Pi recognizes that specific default-daemon error before Python starts. If the Windows process check confirms that no supported browser is running, it launches an installed Google Chrome with its normal profile and reconnects once within the original call's time budget. Chrome can then ask for Allow. Established connections need no process check. Named sessions, CDP endpoints and custom browser executables use their existing startup paths. For other daemon errors, use the reported log and `browser-harness --doctor`. See [upstream issue #786](https://github.com/browser-use/browser-harness/issues/786).
+
 ## Verification
 
 From the repository root:

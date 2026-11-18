@@ -24,6 +24,7 @@ import browserExtension, { browserResultText, formatFailure, withOwnedScreenshot
 import { codemodeFailureReason } from "../packages/coding-agent/src/core/codemode-display.ts";
 import { BrowserHarnessVersionGate, browserUrlSafetyError, buildBrowserUseEnvironment, findBrowserUseExecutable } from "../packages/extensions/browser-use/core.ts";
 import { runBrowserUse } from "../packages/extensions/browser-use/runner.ts";
+import { launchChromeIfStopped, needsWindowsColdStartWorkaround, runWithWindowsColdStart } from "../packages/extensions/browser-use/windows-cold-start.ts";
 const { failureRecoveryHint } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/core.ts");
 const { default: toolLoopGuardrails } = await createJiti(import.meta.url).import<any>("../packages/extensions/tool-loop-guardrails/index.ts");
 const definitions = new Map<string, any>();
@@ -187,6 +188,70 @@ test("browser approval failures retain actionable guidance inside the bounded mo
  assert.match(afterApproval, /^\[BROWSER_EXEC_FAILED\] AttributeError: bad script/);
  assert.doesNotMatch(afterApproval, /PERMISSION_REQUIRED/);
  assert.doesNotMatch(formatFailure("ABORTED", earlierHint + "Traceback (most recent call last):\nStopIteration: script failed"), /BROWSER_APPROVAL_PENDING/);
+});
+
+test("browser daemon startup failures point to the log without guessing the cause", () => {
+ const daemonError = "browser-harness: daemon default didn't come up -- check C:\\fixture\\bu-default.log";
+ const message = formatFailure("FAILED", daemonError);
+ assert.match(codemodeFailureReason(message), /Open Chrome if the log reports chrome-not-running/);
+ assert.ok(message.includes(daemonError));
+ assert.match(message, /browser-harness --doctor/);
+ assert.match(message, /wait for the user/);
+ const pending = formatFailure("FAILED", "permission-pending: Chrome approval is pending\n" + daemonError);
+ assert.match(pending, /^\[BROWSER_EXEC_PERMISSION_REQUIRED\]/);
+ const traceback = formatFailure("FAILED", "Traceback (most recent call last):\nRuntimeError: " + daemonError);
+ assert.doesNotMatch(traceback, /browser-harness --doctor/);
+});
+
+test("browser Windows cold start retries startup once within the original call and never replays entered Python", async () => {
+ assert.ok(needsWindowsColdStartWorkaround("0.1.13", {}, "win32"));
+ assert.ok(!needsWindowsColdStartWorkaround("0.1.14", {}, "win32"));
+ assert.ok(!needsWindowsColdStartWorkaround("0.1.13", {}, "linux"));
+ for (const key of ["BU_NAME", "BU_CDP_URL", "BU_CDP_WS", "BU_BROWSER_ID", "BU_AUTOSPAWN", "BH_CHROME_PATH"]) {
+  assert.ok(!needsWindowsColdStartWorkaround("0.1.13", { [key]: "configured" }, "win32"), key);
+ }
+
+ const coldError = "browser-harness: daemon default didn't come up -- check C:\\fixture\\bu-default.log";
+ const marker = "\x1e[super-pi:browser-script-started]\x1e";
+ const options = { command: "harness", code: "print(42)", cwd: "fixture", env: {}, timeoutMs: 5000, maxBytesPerStream: 1000 };
+ const exited = { cleanup: "complete" as const, exitObserved: true, stdout: "", stderr: coldError,
+  exitCode: 1, killed: false, timedOut: false, aborted: false, stdoutBytes: 0, stderrBytes: Buffer.byteLength(coldError),
+  stdoutTruncated: false, stderrTruncated: false };
+ const order: string[] = [];
+ const result = await runWithWindowsColdStart(options, async current => {
+  assert.match(current.code, /_pi_startup_os\.write\(2,/);
+  assert.ok(current.code.endsWith(options.code));
+  if (order.length === 0) { order.push("startup failure"); return { ...exited }; }
+  assert.ok(current.timeoutMs > 0 && current.timeoutMs < options.timeoutMs);
+  order.push("Python");
+  return { ...exited, stderr: marker + "警告", stderrBytes: Buffer.byteLength(marker + "警告"), stdout: "42", stdoutBytes: 2, exitCode: 0 };
+ }, () => order.push("authorize"), async () => { order.push("launch Chrome"); return true; });
+ assert.deepEqual(order, ["startup failure", "launch Chrome", "authorize", "Python"]);
+ assert.equal(result.stderr, "警告");
+ assert.equal(result.stderrBytes, 6);
+ assert.equal(result.stdout, "42");
+
+ for (const rejected of [
+  { ...exited, stderr: marker + coldError, stderrBytes: Buffer.byteLength(marker + coldError) },
+  { ...exited, stdout: "effect", stdoutBytes: 6 },
+  { ...exited, stderr: "permission-blocked: approval pending\n" + coldError },
+  { ...exited, timedOut: true }, { ...exited, stderrTruncated: true },
+  { ...exited, cleanup: "unconfirmed" as const },
+ ]) {
+  await runWithWindowsColdStart(options, async () => rejected, () => assert.fail("unexpected authorization"),
+   async () => assert.fail("must not start a browser when startup failure is unconfirmed"));
+ }
+ const attempts: string[] = [];
+ await runWithWindowsColdStart(options, async () => { attempts.push("harness"); return { ...exited }; },
+  () => {}, async () => { attempts.push("launch"); return true; });
+ assert.deepEqual(attempts, ["harness", "launch", "harness"]);
+
+ for (const image of ["chrome.exe", "msedge.exe", "chromium.exe", "brave.exe", "helium.exe"]) {
+  assert.ok(!await launchChromeIfStopped(options, async probe => {
+   assert.deepEqual(probe.args, ["/FO", "CSV", "/NH"]);
+   return { ...exited, exitCode: 0, stdout: `"node.exe","1"\r\n"${image.toUpperCase()}","42"`, stderr: "", stderrBytes: 0 };
+  }, () => assert.fail("a supported browser is already running"), { SystemRoot: process.cwd() }));
+ }
 });
 
 test("browser partial stdout survives failure and final cause survives both Codemode projections", () => {
@@ -570,6 +635,7 @@ test("browser extension preserves failure details and bounds cleanup without con
   return unconfirmed ? { ...result, cleanup: "unconfirmed", exitObserved: false } : result;
  } };
  const runtime = { findBrowserUseExecutable: async () => ({ command: "fixture-harness" }), browserUrlSafetyError: () => undefined,
+  needsWindowsColdStartWorkaround, runWithWindowsColdStart,
   buildBrowserUseEnvironment: (_env: unknown, workspace: string, session?: string) => ({ BH_AGENT_WORKSPACE: workspace, BU_NAME: session }),
   BrowserHarnessVersionGate: class {
    run: Function; constructor(run: Function) { this.run = run; }
