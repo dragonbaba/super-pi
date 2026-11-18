@@ -8,9 +8,10 @@ import { fileURLToPath } from "node:url";
 test("complete repository default configuration supports Codemode verification and real test-fix-test", async () => {
 	const root = mkdtempSync(join(tmpdir(), "sp-codemode-default-config-"));
 	const cwd = join(root, "work"), agentDir = join(root, "agent"); mkdirSync(cwd); mkdirSync(agentDir);
-	const names = ["HOME", "USERPROFILE", "SP_CODING_AGENT_DIR", "SP_OFFLINE", "SP_SEARXNG_URL"];
+	const names = ["HOME", "USERPROFILE", "LOCALAPPDATA", "SP_CODING_AGENT_DIR", "SP_OFFLINE", "SP_SEARXNG_URL"];
 	const previous = names.map(name => process.env[name]);
 	process.env.HOME = process.env.USERPROFILE = root; process.env.SP_CODING_AGENT_DIR = agentDir; process.env.SP_OFFLINE = "1";
+	process.env.LOCALAPPDATA = root;
 	delete process.env.SP_SEARXNG_URL;
 	const originalFetch = globalThis.fetch;
 	const originalEntry = process.argv[1];

@@ -289,14 +289,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Check if session has existing data to restore
 	const existingSession = sessionManager.buildSessionContext();
-	const hasExistingSession = existingSession.messages.length > 0;
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
+	const hasConversation = existingSession.messages.length > 0;
+	const hasExistingSession = hasConversation || existingSession.model !== null || hasThinkingEntry;
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 
-	// If session has data, try to restore model from it
-	if (!model && hasExistingSession && existingSession.model) {
+	// A model selection can precede the first conversation message.
+	if (!model && existingSession.model) {
 		const restoredModel = modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId);
 		if (restoredModel && modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
 			model = restoredModel;
@@ -578,14 +579,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Restore messages if session has existing data
 	if (hasExistingSession) {
 		agent.state.messages = existingSession.messages;
-		if (!hasThinkingEntry) {
-			sessionManager.appendThinkingLevelChange(thinkingLevel);
-		}
-	} else {
-		// Save initial model and thinking level for new sessions so they can be restored on resume
-		if (model) {
-			sessionManager.appendModelChange(model.provider, model.id);
-		}
+	}
+
+	// Record explicit setup changes even if the first prompt has not been sent.
+	const setupModelOverride = !hasConversation && options.model !== undefined &&
+		(options.model.provider !== existingSession.model?.provider || options.model.id !== existingSession.model?.modelId);
+	if (model && (!hasExistingSession || setupModelOverride)) {
+		sessionManager.appendModelChange(model.provider, model.id);
+	}
+	const setupThinkingOverride = !hasConversation && (setupModelOverride || options.thinkingLevel !== undefined) &&
+		thinkingLevel !== existingSession.thinkingLevel;
+	if (!hasThinkingEntry || setupThinkingOverride) {
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 

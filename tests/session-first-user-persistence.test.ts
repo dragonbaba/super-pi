@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { getConfigDir } from "../packages/coding-agent/src/config.ts";
 import { SessionManager } from "../packages/coding-agent/src/core/session-manager.ts";
+import { RpcClient } from "../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { createOwnedTaskFixture } from "./helpers/owned-task-fixture.ts";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
@@ -25,6 +29,63 @@ test("setup-only sessions leave no file behind", () => withDir(dir => {
 	manager.appendThinkingLevelChange("high");
 	assert.equal(existsSync(manager.getSessionFile()!), false);
 }));
+
+test("CLI startup and in-app resume restore model and reasoning saved before the first message", { timeout: 15000 }, async t => {
+	const owned = createOwnedTaskFixture("resume-model-");
+	t.after(() => owned.cleanup());
+	const cwd = join(owned.root, "work"), agentDir = join(owned.root, "agent"), sessionDir = join(owned.root, "sessions");
+	mkdirSync(cwd);
+	mkdirSync(getConfigDir(agentDir), { recursive: true });
+	const provider = "openai", defaultModel = "gpt-5.4", chosenModel = "gpt-5.4-mini";
+	writeFileSync(join(getConfigDir(agentDir), "settings.json"), JSON.stringify({
+		defaultProvider: provider, defaultModel, defaultThinkingLevel: "low", enabledModels: [`${provider}/${defaultModel}`],
+	}));
+	const manager = SessionManager.create(cwd, sessionDir);
+	manager.appendModelChange(provider, defaultModel);
+	manager.appendModelChange(provider, chosenModel);
+	manager.appendThinkingLevelChange("high");
+	const sessionFile = manager.getSessionFile()!;
+	const saved = [manager.getHeader(), ...manager.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n";
+	// An existing journal may already contain setup entries without a conversation.
+	writeFileSync(sessionFile, saved);
+	const env = { TMP: owned.root, TEMP: owned.root, TMPDIR: owned.root, HOME: owned.root, USERPROFILE: owned.root,
+		LOCALAPPDATA: owned.root, XDG_CONFIG_HOME: owned.root, SP_CODING_AGENT_DIR: agentDir, SP_CODING_AGENT_SESSION_DIR: sessionDir,
+		SP_OFFLINE: "1", OPENAI_API_KEY: "offline-test-placeholder" };
+	const cliPath = fileURLToPath(new URL("../packages/coding-agent/dist/cli.js", import.meta.url));
+	const readState = async (args: string[], switchInProcess = false) => {
+		const client = new RpcClient({ cliPath, cwd, env, args: ["--no-extensions", "--no-mcp", "--no-context-files", ...args] });
+		try {
+			await client.start();
+			if (switchInProcess) {
+				assert.equal((await client.getState()).model?.id, defaultModel);
+				assert.deepEqual(await client.switchSession(sessionFile), { cancelled: false });
+			}
+			return await client.getState();
+		} finally {
+			await client.stop();
+		}
+	};
+	const resumeArgs = ["--session", sessionFile];
+	for (const fromStartup of [true, false]) {
+		const state = await readState(fromStartup ? resumeArgs : ["--no-session"], !fromStartup);
+		assert.equal(state.model?.id, chosenModel);
+		assert.equal(state.thinkingLevel, "high");
+		assert.equal(state.messageCount, 0);
+		assert.equal(readFileSync(sessionFile, "utf8"), saved);
+	}
+
+	const override = "gpt-5.4-nano";
+	const explicit = await readState([...resumeArgs, "--model", `${provider}/${override}`, "--thinking", "medium"]);
+	assert.equal(explicit.model?.id, override);
+	assert.equal(explicit.thinkingLevel, "medium");
+	assert.equal(explicit.messageCount, 0);
+	const journal = SessionManager.open(sessionFile).buildSessionContext();
+	assert.deepEqual(journal.model, { provider, modelId: override });
+	assert.equal(journal.thinkingLevel, "medium");
+	const resumed = await readState(resumeArgs);
+	assert.equal(resumed.model?.id, override);
+	assert.equal(resumed.thinkingLevel, "medium");
+});
 
 // The prompt must survive a first turn that never completes (crash, kill, provider failure).
 test("first user message persists the session before any assistant reply", () => withDir(dir => {

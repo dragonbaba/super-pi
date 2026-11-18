@@ -842,6 +842,7 @@ export async function main(args: string[], options?: MainOptions) {
 			modelPatterns && modelPatterns.length > 0
 				? await resolveModelScope(modelPatterns, modelRuntime, { signal: AbortSignal.timeout(15_000) })
 				: [];
+		const existingSession = sessionManager.buildSessionContext();
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,
@@ -849,7 +850,7 @@ export async function main(args: string[], options?: MainOptions) {
 		} = buildSessionOptions(
 			parsed,
 			scopedModels,
-			sessionManager.buildSessionContext().messages.length > 0,
+			existingSession.messages.length > 0 || existingSession.model !== null,
 			modelRuntime,
 			settingsManager,
 		);

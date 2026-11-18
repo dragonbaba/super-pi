@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@super-pi/coding-agent";
 import { stripVTControlCharacters } from "node:util";
 import { Type } from "typebox";
-import { hasLocalInstallation, LOCAL_SEARCH_ENDPOINT } from "./local-config.ts";
+import { hasLocalInstallation, LOCAL_SEARCH_BASE, LOCAL_SEARCH_ENDPOINT } from "./local-config.ts";
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -120,10 +120,11 @@ function collectHits(rows: unknown[], limit: number): SearchHit[] {
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
-  if (process.platform === "win32" && hasLocalInstallation()) {
+  const hasManagedInstall = process.platform === "win32" && hasLocalInstallation();
+  if (hasManagedInstall) {
     pi.on("session_start", holdManagedSearchOnStart);
   }
-  const base = process.env.SP_SEARXNG_URL?.trim();
+  const base = process.env.SP_SEARXNG_URL?.trim() || (hasManagedInstall ? LOCAL_SEARCH_BASE : undefined);
   if (!base) return;
   const endpoint = searchEndpoint(base);
   let recent: RecentSearch | undefined;

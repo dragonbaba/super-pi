@@ -39,6 +39,7 @@
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。
 - [恢复会话后的当前工具契约](evidence/current-tool-contracts-2026-11-17.md)：历史名称精确查找、停止重复发现、隔离临时快照索引，并保留固定请求前缀与已完成结果。
+- [恢复会话时的模型与本机搜索](evidence/resume-model-and-local-search-2026-11-18.md)记录首条消息前的模型恢复与 Windows 本机搜索自动发现验证。
 - [压缩后的用量校准与请求余量](evidence/compaction-usage-epoch-2026-11-17.md)：校验当前压缩代次的供应商用量，修复连续工具调用和新请求的阈值检查，避免历史参数反复序列化。
 - [CodeMode 存储容量恢复](evidence/codemode-store-recovery-2026-11-17.md)：查看键名和占用、独立清理、失败写入不提交以及成功工具不重放。
 - [后台任务](background-tasks.md)：普通命令与子代理的统一管理、并发上限、取消和会话生命周期。
@@ -62,7 +63,7 @@
 - [LSP](../packages/lsp/README.md)：诊断、source fix 和符号导航的配置与边界；[冷启动导航就绪验证](evidence/post-review-lsp-readiness-2026-11-14.md)说明加载信号、超时标注与源码定义。
 - [LSP 提示与测试稳定性](evidence/lsp-hints-cli-budgets-2026-11-14.md)：完整参数传递链清理、保留 MXC 清理等待、有界启动/关闭预算及动态 read 提示预算断言。
 - [Tool classification](../packages/tool-classification/README.md)：初始工具面、延迟工具搜索和按需激活。
-- [SearXNG 网页搜索](web-search.md) 用环境变量配置自建 JSON API，再通过 `tool_search` 发现 `web_search`。[验证记录](evidence/searxng-web-search-2026-11-18.md)覆盖 Codemode、查询复用和 Windows 多会话退出。
+- [SearXNG 网页搜索](web-search.md) 支持自动连接 Windows 本机实例或手动指定自建 JSON API，再通过 `tool_search` 发现 `web_search`。[验证记录](evidence/searxng-web-search-2026-11-18.md)覆盖 Codemode、查询复用和 Windows 多会话退出。
 - [Dynamic instructions](../packages/dynamic-instructions/README.md)：工作区规则和 Skills catalog 的增量更新。
 - [Goal mode](../packages/goal/README.md)：持续目标、预算、暂停/恢复和实验队列。
 - [Plan mode](../packages/plan-mode/README.md)：只读探索、结构化提问、计划确认和实现交接。
