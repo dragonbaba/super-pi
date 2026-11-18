@@ -224,6 +224,7 @@ export default function mcpBridgeExtension(pi) {
         mode: { type: "string", enum: ["servers", "names", "search"], description: "Defaults to search." },
         query: { type: "string", description: "Capability words, a fully qualified name, or a remote name paired with its server ID." },
         server: { type: "string", description: "Configured server ID from servers mode. Required for names mode." },
+        nameKind: { type: "string", enum: ["raw", "qualified"], description: "Require a verbatim remote name or a fully qualified Pi name when both interpretations exist." },
         exact: { type: "boolean", description: "Require an exact tool name in search mode." },
         offset: { type: "integer", minimum: 0, description: "Use nextOffset from the previous names page." },
         revision: { type: "string", description: "Return the previous names page revision with its nextOffset." },
@@ -252,7 +253,7 @@ export default function mcpBridgeExtension(pi) {
       }
       if (mode === "names" && !args.server) return directoryResult("server_required", "Use mode servers to choose a configured server ID.", { names: [] });
       if (mode === "search" && !query) return directoryResult("query_required", "Supply a query, or use mode servers to browse.", { matches: [] });
-      const scope = discoveryScope(runtime, query, args.server);
+      const scope = discoveryScope(runtime, query, args.server, args.nameKind);
       if (scope.ambiguous) return ambiguousResult(visibleServers(runtime, visibleToolNames(pi.getToolCatalog?.()), scope.ambiguous));
       const server = scope.server;
       if (server !== undefined && !runtime.states.get(server)?.config.enabled) return directoryResult("unknown_server", "Use mode servers to list configured server IDs.", { matches: [] });
@@ -261,9 +262,12 @@ export default function mcpBridgeExtension(pi) {
       const catalog = pi.getToolCatalog?.();
       const eligibleNames = visibleToolNames(catalog);
       if (mode === "names") return listNames(runtime.states.get(server), eligibleNames, args.offset ?? 0, args.revision, generation);
-      const exact = exactTools(runtime, scope.term, server, eligibleNames);
-      if (exact.names.length > 1) return ambiguousResult(exact.owners);
-      const candidates = exact.known || args.exact || scope.term.startsWith("mcp__")
+      const exact = exactTools(runtime, scope.term, server, eligibleNames, args.nameKind);
+      if (exact.names.length > 1) {
+        const servers = [...new Set(exact.owners)];
+        return directoryResult("ambiguous", `Choose a qualified name from ${exact.names.join(", ")} and search with nameKind qualified. Specify server for a shared prefix.`, { servers, choices: exact.names, matches: [] });
+      }
+      const candidates = exact.known || args.exact || args.nameKind || scope.term.startsWith("mcp__")
         ? exact.names : runtime.searchTools(scope.term.slice(0, 200), 8, eligibleNames, server);
       if (candidates.length === 0) return {
         content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}. Use mode servers, then mode names with a server ID to browse the available names.` }],

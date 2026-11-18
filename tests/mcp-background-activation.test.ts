@@ -173,6 +173,22 @@ test("directory pages use current host visibility, never activate, and cold disc
 	assert.equal(f.endpoint.initializes, 1);
 });
 
+test("a remote raw name that equals another tool's qualified name requires disambiguation", async t => {
+	const f = await fixture(t), h = f.host();
+	f.configureServers(["desktop"]);
+	const short = "mcp__desktop__lookup", long = "mcp__desktop__" + short;
+	f.endpoint.tools = ["lookup", short].map(name => ({ name, inputSchema: { type: "object" } }));
+	await h.start();
+	const discover = (args: object) => h.tools.get("mcp_search_tools").execute("discovery", args);
+	const collision = await discover({ server: "desktop", query: short, exact: true });
+	assert.equal(collision.details.status, "ambiguous");
+	assert.deepEqual(collision.details.choices, [short, long]);
+	assert.equal(h.active().includes(short), false);
+	assert.deepEqual((await discover({ server: "desktop", query: short, nameKind: "raw" })).details.matches, [long]);
+	assert.deepEqual((await discover({ server: "desktop", query: short, nameKind: "qualified" })).details.matches, [short]);
+	assert.equal(f.endpoint.calls, 0);
+});
+
 test("exact names win over equally ranked descriptions in either registration order", async t => {
 	const f = await fixture(t);
 	const names = Array.from({ length: 18 }, (_, i) => "action_" + i);

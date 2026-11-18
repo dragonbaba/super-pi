@@ -4,8 +4,8 @@ import { piToolName, piToolServerPrefix } from "./security.js";
 const PAGE_SIZE = 32;
 const WHITESPACE = /\s/u;
 
-export function discoveryScope(runtime, query, server) {
-  if (server !== undefined) return { server, term: query };
+export function discoveryScope(runtime, query, server, nameKind) {
+  if (server !== undefined || nameKind === "raw") return { server, term: query };
   const qualified = query.startsWith("mcp__");
   const split = qualified ? -1 : query.search(WHITESPACE);
   if (!qualified && split < 0) return { term: query };
@@ -65,15 +65,16 @@ export function listNames(state, eligible, offset, revision, generation) {
   return directoryResult("names", `MCP tools for ${id} (${count} visible):\n${names.join("\n")}${next}`, { server: id, names, total: count, nextOffset, revision: current });
 }
 
-export function exactTools(runtime, term, server, eligible) {
+export function exactTools(runtime, term, server, eligible, nameKind) {
   const names = [];
   const owners = [];
-  const config = runtime.toolConfig(term);
-  if (config && (server === undefined || server === config.id)) {
-    if (!eligible || eligible.has(term)) { names.push(term); owners.push(config.id); }
-    return { names, owners, known: true };
+  const config = nameKind === "raw" ? undefined : runtime.toolConfig(term);
+  let known = config !== undefined && (server === undefined || server === config.id);
+  if (known && (!eligible || eligible.has(term))) {
+    names.push(term);
+    owners.push(config.id);
   }
-  let known = false;
+  if (nameKind === "qualified") return { names, owners, known };
   for (const state of runtime.states.values()) {
     const id = state.config.id;
     if (!state.catalogReady || !state.config.enabled || (server !== undefined && server !== id)) continue;
