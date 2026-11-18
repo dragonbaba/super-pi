@@ -30,7 +30,7 @@ Super Pi 可以通过 MCP 在当前交互式 Windows 桌面查找窗口、读取
 
 ## 定位、操作与恢复
 
-- 用 `window_management` 的 `find` 确认标题、进程和句柄，再用 `ui_find` 在该窗口内唯一定位控件。按需用 `ui_read` 获取结果。精确输入优先用控件支持的 `ui_type` value 模式。切换窗口或驱动会话后重新发现目标。
+- 用 `window_management` 的 `find` 确认标题、进程和句柄，再用 `ui_find` 在该窗口内唯一定位控件。按需用 `ui_read` 获取结果。精确输入优先用控件支持的 `ui_type` value 模式。切换窗口或驱动会话后重新发现目标。Windows 记事本的键盘清空校验可能失败。先读回当前文本，确认目标和选择状态，再决定剩余输入。
 - 多步交互可用 `ui_batch`，将步骤序列化为 `steps` JSON 字符串，使用 `stopOnError: true`，按控件状态等待。提交后的步骤失败或取消时，先观察当前状态和已完成的效果，避免重复提交。批次没有回滚语义。
 - 自绘控件可用 `screenshot_control`，指定 `action: "capture"`、`target: "window"`、`windowHandle`、`includeImage: true`、`annotate: false` 和 `outputMode: "inline"`。按同一窗口的相对坐标和预期标题调用 `mouse_control`。窗口移动或缩放后刷新截图。
 - 原生对话框打开后可定位其窗口，核实所属进程，再操作文件名输入框和确认按钮。本机中文系统的 `file_open` 快捷工具曾在对话框实际打开后报告超时。此时应观察对话框。
