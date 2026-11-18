@@ -43,6 +43,16 @@ for (const provider of providers) {
 	});
 }
 
+test("OpenCode Go Google models use the Go inference endpoint", async () => {
+	const fixtures = catalogFixtures();
+	const models = fixtures["https://models.dev/api.json"]["opencode-go"].models;
+	models["gemini-fixture"] = { ...models["gpt-tier-fixture"], provider: { npm: "@ai-sdk/google" } };
+	const catalog = await generateCatalog(fixtures);
+	const model = catalog["opencode-go"]["gemini-fixture"]!;
+	assert.equal(model.api, "google-generative-ai");
+	assert.equal(model.baseUrl, "https://opencode.ai/inference/go/google/v1beta");
+});
+
 test("kimi-coding uses the split CN plan for its kimi.com endpoint", async () => {
 	const fixtures = catalogFixtures();
 	const source = fixtures["https://models.dev/api.json"];

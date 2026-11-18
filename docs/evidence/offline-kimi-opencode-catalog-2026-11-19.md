@@ -4,7 +4,7 @@ Refreshing the catalog removed the Kimi shard referenced by the provider (TS2307
 
 The generator reads the CN plan for the registered kimi.com endpoint and accepts the previous source key for older catalogs. Strict generation fails before publication if the selected source yields no eligible models. OpenCode Go now maps the Google protocol to the existing lazy adapter.
 
-A strict generation in a separate directory yielded six Kimi models. All 38 other provider JSON payload hashes matched the working catalog. The local type check, 41 catalog tests and all 12 offline package builds passed. A dist probe intercepted the Google SDK request to `/zen/go/v1/models/gemini-4-argon:streamGenerateContent` with a synthetic HTTP response. This covers adapter selection and URL construction. No live inference was exercised. The change touches catalog generation and provider setup; no hot path changed.
+A strict generation in a separate directory yielded six Kimi models. All 38 other provider JSON payload hashes matched the working catalog during the Kimi repair. The scoped PR includes those six models and the affected OpenCode Go Gemini entry. The local type check, 42 catalog tests and all 12 offline package builds passed. A dist probe intercepted the Google SDK request to `/inference/go/google/v1beta/models/gemini-4-argon:streamGenerateContent` with a synthetic HTTP response. The generator regression checks the Go Google base URL for future refreshes. No live inference was exercised. The change touches catalog generation and provider setup; no hot path changed. [OpenCode Go endpoints](https://opencode.ai/docs/console/go/#endpoints)
 
 ```powershell
 npm run check

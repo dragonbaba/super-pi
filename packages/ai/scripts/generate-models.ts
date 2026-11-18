@@ -1735,7 +1735,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					baseUrl = variant.basePath;
 				} else if (npm === "@ai-sdk/google") {
 					api = "google-generative-ai";
-					baseUrl = `${variant.basePath}/v1`;
+					baseUrl = variant.provider === "opencode-go" ? "https://opencode.ai/inference/go/google/v1beta" : `${variant.basePath}/v1`;
 				} else if (npm === "@ai-sdk/alibaba") {
 					api = "openai-completions";
 					baseUrl = `${variant.basePath}/v1`;
