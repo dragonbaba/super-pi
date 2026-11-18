@@ -118,10 +118,101 @@ async function fixture(t: TestContext) {
 			search: (query = "lookup", signal?: AbortSignal) => tools.get("mcp_search_tools").execute("search", { query }, signal),
 		};
 	}
-	return { root, agentDir, endpoint, block, host, cleanup, writeConfig };
+	function configureServers(ids: string[]) {
+		const servers: Record<string, unknown> = {};
+		for (const id of ids) servers[id] = { ...config, enabled: id !== "disabled", onDemand: true, maxTools: 128 };
+		writeFileSync(join(agentDir, "config", "mcp.json"), JSON.stringify({ version: 1, servers }));
+	}
+	return { root, agentDir, endpoint, block, host, cleanup, writeConfig, configureServers };
 }
 
 const REMOTE = "mcp__fixture__lookup";
+
+test("directory pages use current host visibility, never activate, and cold discovery starts only the selected server", async t => {
+	const f = await fixture(t);
+	f.configureServers(["desktop", "other", "disabled"]);
+	f.endpoint.tools = Array.from({ length: 70 }, (_, i) => ({ name: "tool_" + (69 - i), inputSchema: { type: "object" } }));
+	const hidden = new Set(["mcp__desktop__tool_69"]);
+	const h = f.host(undefined, undefined, (tools, active) => ({
+		tools: [...tools.values()].filter(tool => !hidden.has(tool.name)), activeTools: active,
+	}));
+	await h.start();
+	const discover = (args: object) => h.tools.get("mcp_search_tools").execute("discovery", args);
+	assert.deepEqual((await discover({ mode: "servers" })).details.servers, ["desktop", "other"]);
+	assert.equal(f.endpoint.initializes, 0);
+	const before = [...h.active()];
+	const page = async (offset = 0, revision?: string) => (await discover({ mode: "names", server: "desktop", offset, revision })).details;
+	const first = await page();
+	assert.equal(first.total, 69);
+	assert.equal(first.names.length, 32);
+	const second = await page(first.nextOffset, first.revision);
+	const last = await page(second.nextOffset, second.revision);
+	assert.equal(last.nextOffset, null);
+	assert.deepEqual([...first.names, ...second.names, ...last.names], f.endpoint.tools.slice(1).map(t => "mcp__desktop__" + t.name));
+	assert.equal(f.endpoint.initializes, 1);
+	assert.deepEqual(h.active(), before);
+	assert.equal(f.endpoint.calls, 0);
+	hidden.add(first.names[0]);
+	assert.equal((await page(first.nextOffset, first.revision)).status, "stale_page");
+	assert.equal((await page(first.nextOffset)).status, "stale_page");
+	assert.equal((await discover({ query: first.names[0] })).details.status, "no_matches");
+	const picked = await discover({ query: "desktop tool_1" });
+	assert.deepEqual(picked.details.activated, ["mcp__desktop__tool_1"]);
+	assert.equal((await discover({ server: "desktop", query: "tool", exact: true })).details.status, "no_matches");
+	assert.equal(f.endpoint.calls, 0);
+	await h.tools.get("mcp__desktop__tool_1").execute("run", {});
+	assert.equal(f.endpoint.calls, 1);
+	h.owner().revoke();
+	await assert.rejects(page(), /boundary changes/);
+	await h.owner().drain();
+	assert.equal((await page(32, first.revision)).status, "stale_page");
+	await h.stop();
+	const warm = f.host(); await warm.start();
+	const cached = await warm.tools.get("mcp_search_tools").execute("directory", { mode: "names", server: "desktop" });
+	assert.equal(cached.details.total, 70);
+	assert.equal(f.endpoint.initializes, 1);
+});
+
+test("exact names win over equally ranked descriptions in either registration order", async t => {
+	const f = await fixture(t);
+	const names = Array.from({ length: 18 }, (_, i) => "action_" + i);
+	const description = names.join(" ");
+	for (const id of ["forward", "reverse"]) {
+		f.writeConfig({ onDemand: true, headers: { "X-Order": id } }, id);
+		const h = f.host();
+		f.endpoint.tools = (id === "reverse" ? [...names].reverse() : names).map(name => ({ name, description, inputSchema: { type: "object" } }));
+		await h.start();
+		for (const name of names) {
+			const canonical = "mcp__" + id + "__" + name;
+			assert.deepEqual((await h.search(id + " " + name)).details.matches, [canonical]);
+			assert.deepEqual((await h.search(canonical)).details.matches, [canonical]);
+		}
+		await h.stop();
+	}
+	assert.equal(f.endpoint.calls, 0);
+});
+
+test("qualified cold names address one owner and normalized or truncated prefix collisions require a server", async t => {
+	const f = await fixture(t), h = f.host();
+	const long = "server12345678901234";
+	f.configureServers(["desktop", "other", "same.id", "same_id", long + "1", long + "2"]);
+	await h.start();
+	const discover = (args: object) => h.tools.get("mcp_search_tools").execute("discovery", args);
+	for (const [prefix, ids] of [["same_id", ["same.id", "same_id"]], [long, [long + "1", long + "2"]]] as const) {
+		const result = await discover({ query: "mcp__" + prefix + "__lookup" });
+		assert.equal(result.details.status, "ambiguous");
+		assert.deepEqual(result.details.servers, ids);
+	}
+	assert.equal(f.endpoint.initializes, 0);
+	assert.deepEqual((await discover({ query: "mcp__desktop__lookup" })).details.activated, ["mcp__desktop__lookup"]);
+	assert.equal(f.endpoint.initializes, 1);
+	await discover({ mode: "names", server: "other" });
+	const both = await discover({ query: "lookup" });
+	assert.deepEqual(both.details.servers, ["desktop", "other"]);
+	assert.deepEqual((await discover({ server: "same.id", query: "mcp__same_id__lookup" })).details.activated, ["mcp__same_id__lookup"]);
+	assert.equal(f.endpoint.initializes, 3);
+	assert.equal(f.endpoint.calls, 0);
+});
 
 test("cold on-demand desktop discovery starts once on an exact server word", async t => {
 	const f = await fixture(t), h = f.host();
@@ -611,11 +702,17 @@ test("cached removed tools are deactivated on reconnect and never execute remote
 	f.endpoint.tools = [];
 	const resumed = f.host(h.manager); await resumed.start();
 	assert.ok(resumed.active().includes(REMOTE));
+	const directory = resumed.tools.get("mcp_search_tools");
+	const page = await directory.execute("cached", { mode: "names", server: "fixture" });
+	assert.deepEqual(page.details.names, [REMOTE]);
 	const result = await resumed.tools.get(REMOTE).execute("removed", {});
 	assert.equal(result.details.mcpError, "protocol-error");
 	assert.equal(f.endpoint.calls, 0);
 	assert.equal(resumed.active().includes(REMOTE), false);
 	assert.match(JSON.stringify(await resumed.search()), /No deferred/);
+	const fresh = await directory.execute("fresh", { mode: "names", server: "fixture" });
+	assert.deepEqual(fresh.details.names, []);
+	assert.notEqual(fresh.details.revision, page.details.revision);
 });
 
 test("disabled servers and earlier session branches do not inherit activation", async t => {
@@ -690,12 +787,14 @@ test("real AgentSession supports same-script discovery/call, reload and persiste
 	session.agent.streamFunction = () => {
 		const first = request++ === 0;
 		const message: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "fixture", model: "fixture", usage: USAGE, timestamp: 1,
-			content: first ? [{ type: "toolCall", id: "mcp-script", name: "codemode", arguments: { code: `await tools.mcp_search_tools({query:"lookup"}); const r=await callTool("${REMOTE}",{}); await show(r.ref);` } }] : [{ type: "text", text: "done" }], stopReason: first ? "toolUse" : "stop" };
+			content: first ? [{ type: "toolCall", id: "mcp-script", name: "codemode", arguments: { code: `text(await tools.mcp_search_tools({mode:"servers"})); text(await tools.mcp_search_tools({mode:"names", server:"fixture"})); await tools.mcp_search_tools({server:"fixture",query:"lookup",exact:true}); const r=await callTool("${REMOTE}",{}); await show(r.ref);` } }] : [{ type: "text", text: "done" }], stopReason: first ? "toolUse" : "stop" };
 		const stream = new AssistantMessageEventStream(); stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message }); return stream;
 	};
 	await session.agent.prompt("fixture");
 	const results = session.agent.state.messages.filter(message => message.role === "toolResult");
 	assert.equal(results.length, 1); assert.equal(results[0]!.isError, false, JSON.stringify(results));
+	assert.match(JSON.stringify(results[0]!.content), /mcp__fixture__lookup/);
+	assert.match(JSON.stringify(results[0]!.content), /Configured MCP servers/);
 	assert.equal(f.endpoint.calls, 1); assert.ok(session.getActiveToolNames().includes(REMOTE));
 	const oldTool = session.getToolDefinition(REMOTE)!;
 	await session.reload(); assert.ok(session.getActiveToolNames().includes(REMOTE));

@@ -3,6 +3,7 @@ import * as PiHost from "@super-pi/coding-agent";
 import { loadMcpConfig } from "./config.js";
 import { checkRuntimeCompatibility } from "./runtime-compat.js";
 import { MAX_ACTIVATED_SCHEMA_BYTES, MAX_SERVERS, sanitizeText } from "./security.js";
+import { directoryResult, discoveryScope, exactTools, listNames, visibleServers } from "./tool-directory.js";
 import { McpRuntimeLifecycle } from "./lifecycle.js";
 import { chooseMcpAction, withMcpAuthProgress } from "./manager.js";
 
@@ -204,15 +205,29 @@ export default function mcpBridgeExtension(pi) {
     },
   });
 
+  const visibleToolNames = catalog => {
+    if (!catalog) return undefined;
+    const names = new Set();
+    for (const tool of catalog.tools) if (tool.available !== false) names.add(tool.name);
+    return names;
+  };
+  const ambiguousResult = servers => directoryResult("ambiguous", `Specify the configured server ID in server. Visible choices: ${servers.join(", ")}`, { servers, matches: [] });
+
   pi.registerTool({
     name: "mcp_search_tools",
     requiresMcp: true,
     label: "MCP tool search",
-    description: "Search tools from configured MCP servers; this does not search the web itself. An empty configuration returns no matches. After activation, use Codemode callTool(name, args) in this script; describeTools([name]) provides the current schema.",
+    description: "Discover configured MCP integrations. Use mode servers to see server IDs, then mode names with server to browse real tool names without activation. Search by capability or exact name to activate. After activation use describeTools([name]) and callTool(name, args) in this script.",
     parameters: {
       type: "object",
-      properties: { query: { type: "string", description: "Words from the desired MCP server, tool, or capability. Include the configured server ID as a separate word for first discovery of an on-demand server (for example, desktop ui_find)." } },
-      required: ["query"],
+      properties: {
+        mode: { type: "string", enum: ["servers", "names", "search"], description: "Defaults to search." },
+        query: { type: "string", description: "Capability words, a fully qualified name, or a remote name paired with its server ID." },
+        server: { type: "string", description: "Configured server ID from servers mode. Required for names mode." },
+        exact: { type: "boolean", description: "Require an exact tool name in search mode." },
+        offset: { type: "integer", minimum: 0, description: "Use nextOffset from the previous names page." },
+        revision: { type: "string", description: "Return the previous names page revision with its nextOffset." },
+      },
       additionalProperties: false,
     },
     async execute(_toolCallId, args, signal) {
@@ -229,21 +244,29 @@ export default function mcpBridgeExtension(pi) {
         throw new Error("[MCP_NOT_READY] MCP runtime is not ready or has stopped. Check /mcp-status before another request.");
       }
       const generation = activationGeneration;
-      const query = typeof args.query === "string" ? args.query.slice(0, 200) : "";
-      await runtime.waitForDiscovery(signal, query);
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      const mode = args.mode ?? "search";
+      if (mode === "servers") {
+        const servers = visibleServers(runtime, visibleToolNames(pi.getToolCatalog?.()));
+        return directoryResult("servers", `Configured MCP servers: ${servers.join(", ")}. Use mode names with a server ID.`, { servers });
+      }
+      if (mode === "names" && !args.server) return directoryResult("server_required", "Use mode servers to choose a configured server ID.", { names: [] });
+      if (mode === "search" && !query) return directoryResult("query_required", "Supply a query, or use mode servers to browse.", { matches: [] });
+      const scope = discoveryScope(runtime, query, args.server);
+      if (scope.ambiguous) return ambiguousResult(visibleServers(runtime, visibleToolNames(pi.getToolCatalog?.()), scope.ambiguous));
+      const server = scope.server;
+      if (server !== undefined && !runtime.states.get(server)?.config.enabled) return directoryResult("unknown_server", "Use mode servers to list configured server IDs.", { matches: [] });
+      if (!scope.qualified || server !== undefined) await runtime.waitForDiscovery(signal, query.slice(0, 200), server);
       if (lifecycle.current !== runtime || generation !== activationGeneration || signal?.aborted) throw new Error("MCP search was cancelled or replaced");
       const catalog = pi.getToolCatalog?.();
-      let eligibleNames;
-      if (catalog) {
-        eligibleNames = new Set();
-        for (const tool of catalog.tools) {
-          if (tool.available !== false) eligibleNames.add(tool.name);
-        }
-      }
-      // An empty modern catalog is authoritative. Filter before either search or schema budgets.
-      const candidates = runtime.searchTools(query, 8, eligibleNames);
+      const eligibleNames = visibleToolNames(catalog);
+      if (mode === "names") return listNames(runtime.states.get(server), eligibleNames, args.offset ?? 0, args.revision, generation);
+      const exact = exactTools(runtime, scope.term, server, eligibleNames);
+      if (exact.names.length > 1) return ambiguousResult(exact.owners);
+      const candidates = exact.known || args.exact || scope.term.startsWith("mcp__")
+        ? exact.names : runtime.searchTools(scope.term.slice(0, 200), 8, eligibleNames, server);
       if (candidates.length === 0) return {
-        content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}. This searches configured, host-visible MCP tools; it does not search public web content or grant authorization.` }],
+        content: [{ type: "text", text: `No deferred MCP tools matched: ${sanitizeText(query, 200)}. Use mode servers, then mode names with a server ID to browse the available names.` }],
         details: { status: "no_matches", matches: [], activated: [], alreadyActive: [], rejected: [] },
       };
       const matches = [];

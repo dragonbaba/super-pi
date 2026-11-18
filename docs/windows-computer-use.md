@@ -26,7 +26,7 @@ Super Pi 可以通过 MCP 在当前交互式 Windows 桌面查找窗口、读取
 }
 ```
 
-配置生效后，在 Codemode 中使用 `tools.mcp_search_tools({query:"desktop window_management"})`。首次发现需要把服务器 ID 作为独立词。已有工具目录可按能力名称搜索，调用时复用会话连接。用返回的工具名执行 `describeTools([name])` 并通过 `callTool(name, args)` 调用。消息所用模型需要支持图像输入才能读图。
+在 Codemode 中调用 `tools.mcp_search_tools({mode:"servers"})` 查看服务 ID，再用 `{mode:"names",server:"desktop"}` 列出桌面工具的完整名称。首次列名会发现所选服务；缓存命中时可直接返回目录。使用 `{server:"desktop",query:"window_management",exact:true}` 或返回的完整名称可精确激活一个工具。已有目录也支持按能力搜索。用返回的工具名执行 `describeTools([name])` 并通过 `callTool(name, args)` 调用。消息所用模型需要支持图像输入才能读图。
 
 ## 定位、操作与恢复
 

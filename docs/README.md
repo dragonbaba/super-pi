@@ -66,7 +66,7 @@
 - [Dynamic instructions](../packages/dynamic-instructions/README.md)：工作区规则和 Skills catalog 的增量更新。
 - [Goal mode](../packages/goal/README.md)：持续目标、预算、暂停/恢复和实验队列。
 - [Plan mode](../packages/plan-mode/README.md)：只读探索、结构化提问、计划确认和实现交接。
-- [MCP bridge](../packages/mcp-bridge/README.md)：stdio、Streamable HTTP、SSE、配置和可信 server 边界。
+- [MCP bridge](../packages/mcp-bridge/README.md)：服务与工具名目录、精确发现、stdio、Streamable HTTP、SSE 和可信 server 边界。
 - [Memory](../packages/memory/README.md)：项目/全局记忆、会话搜索、Skills 和人工审阅的记忆提取流程；普通工具操作的确认方式取决于入口。[审核后扫描竞态与无用符号修复](evidence/post-review-memory-scan-2026-11-13.md)记录后续验证。
 - [记忆添加取消语义](evidence/memory-add-cancellation-2026-11-14.md)：排队与发布前取消、FIFO 保留、提交后的真实结果与索引对账。
 
