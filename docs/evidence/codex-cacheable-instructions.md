@@ -1,6 +1,6 @@
 # Codex Astra 与 Sol 的指令缓存
 
-GPT-6.2 会将顶层 `instructions` 放在缓存断点之后。官方 Codex 路由的 Astra 和 Sol 现在将会话指令发送为首条 developer 消息，顶层保留简短默认指令。旧模型及自定义端点继续使用原有放置方式。[OpenAI 缓存指南](https://developers.openai.com/api/docs/guides/prompt-caching)
+GPT-6.2 会将顶层 `instructions` 放在缓存断点之后。官方 Codex 路由的 Astra 和 Sol 在支持 developer 角色时将会话指令发送为首条 developer 消息，顶层保留简短默认指令。旧模型、自定义端点及显式关闭 developer 角色的配置继续使用顶层字段。[OpenAI 缓存指南](https://developers.openai.com/api/docs/guides/prompt-caching)
 
 在线合成对照通过 Super Pi 的 ModelRuntime 分别调用两个模型。每组使用独立 session ID、相同的 320 行合成词表、三条简短请求及此前的回复。所有回复均为 READY，每轮输出 5 token。
 

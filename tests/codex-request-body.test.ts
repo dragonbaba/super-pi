@@ -69,6 +69,10 @@ for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) test(id + " preserves stable 
   assert.deepEqual(compacted.compactionItem, artifact);
   const patched = (body: unknown) => applyRemoteHistoryPayloadPatch({ payload: body as Record<string, unknown>,
     explicitHistory: [artifact, { role: "user", content: "Continue" }] });
+  const compatible = buildOpenAICodexRequestBody({ ...route, compat: { supportsDeveloperRole: false } }, base, options, undefined);
+  assert.equal(compatible.instructions, base.systemPrompt);
+  assert.equal(patched(compatible).instructions, base.systemPrompt);
+  assert.deepEqual(patched(compatible).input, [artifact, { role: "user", content: "Continue" }]);
   const changed = await owner.stream(route, { ...base, systemPrompt: "Changed instructions" }, { ...compactOptions, onPayload: patched }).result();
   assert.equal(changed.stopReason, "error", "post-compaction delta cannot silently omit changed instructions");
   const resumed = await owner.stream(route, base, { ...compactOptions, onPayload: patched }).result();

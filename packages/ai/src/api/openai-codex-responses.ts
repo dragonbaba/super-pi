@@ -614,7 +614,8 @@ export function buildOpenAICodexRequestBody(
     // These Codex models append top-level instructions after the cacheable input.
     const cacheableInstructions = model.provider === "openai-codex" &&
         (model.id === "gpt-6.2-astra" || model.id === "gpt-6.2-sol") &&
-        capabilities.reasoning.mode !== "none" && resolveCodexUrl(model.baseUrl) === DEFAULT_CODEX_BASE_URL + "/codex/responses";
+        capabilities.reasoning.mode !== "none" && model.compat?.supportsDeveloperRole !== false &&
+        resolveCodexUrl(model.baseUrl) === DEFAULT_CODEX_BASE_URL + "/codex/responses";
     const messages = convertResponsesMessages(model, wireContext, CODEX_TOOL_CALL_PROVIDERS, {
         includeSystemPrompt: cacheableInstructions,
         grammarToolInputProperties,
