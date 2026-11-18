@@ -81,7 +81,7 @@ async function fixture(t: TestContext, options: Pick<CreateAgentSessionOptions, 
 		noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true, extensionFactories: factories });
 	await resources.reload();
 	assert.deepEqual(resources.getExtensions().errors, []);
-	if (bundle) assert.equal(resources.getExtensions().extensions.length, 8 + factories.length);
+	if (bundle) assert.equal(resources.getExtensions().extensions.length, 9 + factories.length);
 	const manager = persist ? SessionManager.create(cwd, join(root, "sessions")) : SessionManager.inMemory(cwd);
 	const { session } = await createAgentSession({ cwd, agentDir, resourceLoader: resources, settingsManager: settings, sessionManager: manager,
 		model: { ...MODEL, input: ["text"] }, modelRuntime: { hasConfiguredAuth: () => true, checkAuth: async () => ({ type: "api_key" }),

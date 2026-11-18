@@ -44,6 +44,7 @@ const POLICY_OWNED_TOOL_NAMES = new Set<string>([
 
 const CATEGORY_ALIASES: Readonly<Record<string, readonly string[]>> = {
   browser: ["browser", "web", "chrome", "page", "screenshot", "浏览器", "网页", "截图"],
+  web_search: ["web_search", "web search", "public web search", "网页搜索", "网络搜索"],
   browser_debug: ["browser_debug", "devtools", "cdp", "chrome devtools", "local preview", "localhost", "browser debugging", "浏览器调试", "本地预览", "本地页面预览", "前端调试"],
   delegation: ["delegation", "delegate", "subagent", "agent", "parallel", "委派", "子代理", "并行"],
   memory: ["memory", "recall", "session", "history", "remember", "记忆", "回忆", "会话", "历史"],
@@ -108,6 +109,7 @@ class BrowserRoutingGuard {
 
 function categoryFor(name: string): string {
   if (name === "browser_exec") return "browser";
+  if (name === "web_search") return "web_search";
   if (name.startsWith("chrome_devtools_")) return "browser_debug";
   if (name === "subagent") return "delegation";
   if (name === "memory" || name === "memory_search" || name === "session_search") return "memory";
@@ -115,6 +117,10 @@ function categoryFor(name: string): string {
   if (name === "mcp_search_tools") return "mcp";
   if (name.startsWith("lsp_")) return "navigation";
   return "other";
+}
+
+function isAvailableWebSearch(tool: ToolCatalogSnapshot["tools"][number]): boolean {
+  return tool.name === "web_search" && tool.available !== false;
 }
 
 function normalizedTerms(query: string): string[] {
@@ -178,10 +184,10 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "tool_search",
     label: "Tool Search",
-    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use exact:true when checking a registered name, especially one from earlier history; this never activates category or description matches. Use when the stable core tools cannot perform the task. Use browser/browser_exec for public-web reading and interaction in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
+    description: "Search registered inactive Pi tools by capability and activate the best matches for this session. Use exact:true when checking a registered name, especially one from earlier history; this never activates category or description matches. Use when the stable core tools cannot perform the task. Use web search for keyword lookup through SearXNG when configured, and browser/browser_exec for reading or interacting with pages in the user's browser. Use browser_debug or a chrome_devtools_* name for local HTML/localhost preview, DOM/JavaScript inspection, UI validation, or an explicitly requested CDP endpoint; these tools can be activated here and may launch an isolated browser. Choose by task and required login/profile, not by which connection failed. Incomplete Browser Harness approval pauses automatic browser switching until user direction; a new CDP profile does not inherit the original login or establish its approval.",
     promptSnippet: "Search and activate conditional tools when the stable core tool pack is insufficient",
     parameters: Type.Object({
-      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: browser for ordinary web work; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, skills, or mcp." }),
+      query: Type.String({ minLength: 1, maxLength: 200, description: "Capability, exact tool name, or category: web search for keyword lookup; browser for page interaction; browser_debug for local preview/DOM/JavaScript/CDP; memory, delegation, skills, or mcp." }),
       exact: Type.Optional(Type.Boolean({ description: "Match only the exact registered name, without category or description matches. Use true to check a name remembered from session history; a missing name cannot be activated." })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12, description: "Maximum tools to activate; defaults to 6." })),
     }, { additionalProperties: false }),
@@ -192,7 +198,6 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
       const requested = exactName === undefined ? requestedCategory(query) : undefined;
       const browserDebug = requested === "browser_debug"
         || (requested === undefined || requested === "browser") && BROWSER_DEBUG_QUERY.test(query);
-      const category = browserDebug ? "browser_debug" : requested;
       const terms = exactName === undefined ? normalizedTerms(query) : EMPTY_TERMS;
       const wordScoreLimit = (terms.length + 1) ** 2;
       const limit = params.limit ?? 6;
@@ -204,6 +209,8 @@ export default function toolClassificationExtension(pi: ExtensionAPI): void {
         details: { query: params.query, matches: [], added: [], rejected: [], blocked: "browser_approval" } as ToolSearchDetails,
       };
       const catalog = readToolCatalog(pi);
+      const category = browserDebug ? "browser_debug"
+        : requested === "web_search" && !catalog.tools.some(isAvailableWebSearch) ? "browser" : requested;
       const active = catalog.activeTools;
       const activeSet = new Set(active);
       for (const tool of catalog.tools) {
