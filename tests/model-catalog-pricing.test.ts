@@ -43,6 +43,27 @@ for (const provider of providers) {
 	});
 }
 
+test("OpenCode Go Google models use the Go inference endpoint", async () => {
+	const fixtures = catalogFixtures();
+	const models = fixtures["https://models.dev/api.json"]["opencode-go"].models;
+	models["gemini-fixture"] = { ...models["gpt-tier-fixture"], provider: { npm: "@ai-sdk/google" } };
+	const catalog = await generateCatalog(fixtures);
+	const model = catalog["opencode-go"]["gemini-fixture"]!;
+	assert.equal(model.api, "google-generative-ai");
+	assert.equal(model.baseUrl, "https://opencode.ai/inference/go/google/v1beta");
+});
+
+test("kimi-coding uses the split CN plan for its kimi.com endpoint", async () => {
+	const fixtures = catalogFixtures();
+	const source = fixtures["https://models.dev/api.json"];
+	const model = source["kimi-for-coding"].models["gpt-tier-fixture"];
+	source["kimi-code-plan-cn"] = { models: { "cn-model": model } };
+	source["kimi-code-plan-global"] = { models: { "global-model": model } };
+	const catalog = await generateCatalog(fixtures);
+	assert.deepEqual(Object.keys(catalog["kimi-coding"]), ["cn-model"]);
+	assert.equal(catalog["kimi-coding"]["cn-model"]!.baseUrl, "https://api.kimi.com/coding");
+});
+
 test("models.dev partial tiers inherit base rates independently and preserve explicit zero", async () => {
 	const catalog = await generateCatalog(catalogFixtures({ ...tieredCost, tiers: [
 		{ tier: { type: "context", size: 100 }, input: 4, cache_read: 0 },

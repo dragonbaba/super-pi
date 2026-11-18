@@ -83,6 +83,14 @@ test("configured keyword search activates SearXNG while browser discovery stays 
   assert.deepEqual((await f.search("browser")).details.added, ["browser_exec"]);
 });
 
+test("Plan keyword lookup routes within its selection even with a configured unselected web search", async () => {
+  const f = searchFixture([{ name: "web_search", description: "configured" }, { name: "browser_exec", description: "browser" }]);
+  f.setActive(["plan_mode_question", "plan_mode_complete", "tool_search", "browser_exec"]);
+  assert.deepEqual((await f.search("web search")).details.alreadyActive, ["browser_exec"]);
+  assert.deepEqual((await f.search("web_search", 1, true)).details.added, []);
+  assert.equal(f.counters.activationCalls, 0);
+});
+
 test("debug words do not override non-browser categories or borrow the browser approval pause", async () => {
   for (const [category, name] of [["memory", "memory_search"], ["delegation", "subagent"], ["skills", "skill_manage"], ["mcp", "mcp_search_tools"], ["navigation", "lsp_navigate"]]) {
     const f = searchFixture([

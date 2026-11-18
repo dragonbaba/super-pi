@@ -591,7 +591,10 @@ test("effective limits are visible before first invocation and enforce preflight
 	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /TUI or RPC.*No subagent was started.*background: false/);
 	h.ctx.mode = "tui";
 	h.ctx.getActiveTools = () => ["subagent"];
+	await assert.rejects(tool.execute("undefined-role", { task: "inspect", ...responsibility, background: true }, undefined, undefined, h.ctx), /requires a registered agent role.*Define agent, task, scope, deliverable and stopCondition/);
 	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /tasks or subagent_tasks management tool.*No subagent was started.*background: false/);
+	h.ctx.getActiveTools = () => ["subagent", "tool_search"];
+	await assert.rejects(h.run({ agent: "scout", task: "x", readOnly: true, background: true }), /tool_search\(\{query:"subagent_tasks",exact:true\}\).*No subagent was started/);
 	assert.match(await h.control("list"), /0\/2 running/);
 	assert.doesNotMatch(await h.control("list"), /[a-f0-9-]{36}-\d+/);
 	assert.match(tool.parameters.properties.background.description, /omit for foreground/i);

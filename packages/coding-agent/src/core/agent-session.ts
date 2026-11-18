@@ -1,6 +1,6 @@
 import { type AttachmentMessage, type ImageSubmission, snapshotImageSubmission, verifyImmutableImage, isDecodedImage, verifySubmittedImage } from "./image-attachments.ts";
 import { createHash } from "node:crypto";
-import { CodemodeController } from "./codemode.ts";
+import { CodemodeController, nestedAllowed } from "./codemode.ts";
 import { withLocalCompactionMaintenance } from "./compaction/normalize-checkpoint.ts";
 import { RequestImageBudget, supportsRequestImageBudgetApi } from "./request-image-budget.ts";
 import { isRequestBodyTooLarge } from "@super-pi/ai";
@@ -2644,6 +2644,7 @@ export class AgentSession {
 		for (const { definition, sourceInfo } of this._toolDefinitions.values()) tools.push({
 			name: definition.name,
 			available: definition.name !== "powershell" || powerShellAvailable,
+			directControl: DIRECT_CONTROL_NAMES.has(definition.name) || !nestedAllowed(definition),
 			description: definition.description,
 			parameters: definition.parameters,
 			supportsManagedBackground: definition.supportsManagedBackground,
@@ -5257,7 +5258,7 @@ export class AgentSession {
 		const gateway = toolRegistry.has(CODEMODE_NAME);
 		for (const tool of toolRegistry.values()) {
 			if (DIRECT_CONTROL_NAMES.has(tool.name)) tool.modelOnly = true;
-			tool.modelExposure = !gateway || tool.orchestration || tool.modelOnly || tool.interactionBoundary ? undefined : "nested";
+			tool.modelExposure = gateway && nestedAllowed(tool) ? "nested" : undefined;
 		}
 		if (this._evidenceLedger) {
 			for (const tool of toolRegistry.values()) {
