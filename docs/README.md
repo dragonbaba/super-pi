@@ -38,6 +38,7 @@
 - [压缩后恢复历史](evidence/resume-compacted-history-2026-11-18.md)：恢复完整当前分支的界面历史，保留摘要、避免重复尾部，并验证归档和模型请求不变。
 - [批量目录保留受保护元数据](evidence/file-batch-protected-retention-2026-11-18.md)：继续普通后代、报告保留路径、校验沙箱回执，并消除旧会话中重复的子调用错误。
 - [CodeMode 输出数据契约](evidence/codemode-output-contract-2026-11-17.md)：执行事实与展示/解析错误分离，原始捕获和 MCP 数据分页，完成项不重放及引用生命周期。
+- [CodeMode 批读示例与模型对照](evidence/codemode-batch-guidance-2026-11-19.md) 记录下一轮可见的正文、部分失败和三文件任务的实测轮次。
 - [CodeMode 独立批量调用](evidence/codemode-independent-batch-2026-11-17.md)：逐项完成、只汇总失败诊断，保留普通权限/取消/调度和成功项不重试。
 - [命令入口与重复预检退役](evidence/command-interface-retirement-2026-11-17.md)：移除重复 rg/Git 前端、参数解析和路径预检，统一使用原生检索与普通 shell。
 - [恢复会话后的当前工具契约](evidence/current-tool-contracts-2026-11-17.md)：历史名称精确查找、停止重复发现、隔离临时快照索引，并保留固定请求前缀与已完成结果。

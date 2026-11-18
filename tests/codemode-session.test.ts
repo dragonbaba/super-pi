@@ -229,6 +229,43 @@ test("an independent missing read cannot cancel a real successful command in bat
 	assert.equal(readFileSync(join(f.cwd, "batch-calls.txt"), "utf8"), "1");
 });
 
+for (const missingReadme of [false, true]) test(`model-facing batch read example shows source in the next turn, missingReadme=${missingReadme}`, async t => {
+	const f = await fixture(t, { tools: ["read"] });
+	writeFileSync(join(f.cwd, "package.json"), '{"name":"fixture-batch-package"}');
+	if (!missingReadme) writeFileSync(join(f.cwd, "README.md"), "fixture-batch-documentation");
+	const [, example] = CODEMODE_DESCRIPTION.split("Example for reading two known files:\n");
+	assert.ok(example);
+	const { wires, results } = await f.run([example]);
+	assert.equal(wires.length, 2);
+	assert.match(wires[0]!.systemPrompt!, /Group known independent reads or checks with batch/);
+	assert.equal(results.length, 1);
+	assert.equal(results[0]!.isError, false);
+	const followup = wires[1]!.messages.find(message => message.role === "toolResult");
+	assert.ok(followup && followup.role === "toolResult");
+	const text = followup.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+	assert.match(text, /fixture-batch-package/);
+	if (missingReadme) {
+		assert.match(text, /CODEMODE_PARTIAL/);
+		assert.match(text, /"failed":1/);
+		assert.match(text, /README\.md/);
+	} else {
+		assert.match(text, /fixture-batch-documentation/);
+	}
+});
+
+test("native file_batch uses the prior script's reads for exact edits of multiple files", async t => {
+	const f = await fixture(t, { tools: ["read", "file_batch"] });
+	writeFileSync(join(f.cwd, "second.txt"), "hello again\n");
+	const { results } = await f.run([
+		'const b=await batch(["file.txt","second.txt"].map(path=>({tool:"read",args:{path}}))); for(const {result} of b.results) await show(result.ref);',
+		'const paths=["file.txt","second.txt"], oldText="hello", newText="bye"; await tools.file_batch({operations:paths.map(path=>({operation:"edit",path,edits:[{oldText,newText}]}))});',
+	]);
+	assert.equal(results.length, 2);
+	for (const result of results) assert.equal(result.isError, false, JSON.stringify(result.content));
+	assert.equal(readFileSync(join(f.cwd, "file.txt"), "utf8"), "bye\nworld\n");
+	assert.equal(readFileSync(join(f.cwd, "second.txt"), "utf8"), "bye again\n");
+});
+
 test("bundled discovery exposes native searches and retires the duplicate command frontend", async t => {
 	const f = await fixture(t, {}, [toolClassification], true);
 	assert.equal(f.session.getAllTools().some(tool => tool.name === "structured_readonly_command"), false);
