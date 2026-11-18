@@ -30,6 +30,8 @@ npm run --silent -- bench:tui-paced-tool-leaf
 npm run --silent -- bench:tui-assistant-leaf-allocations -- --updates 20000 --warmup 5000 --structural-updates 100000
 npm run --silent -- bench:tui-assistant-leaf-multiprocess -- --processes 5 --updates 20000 --warmup 5000
 npm run --silent -- bench:tui-paced-assistant-leaf
+node --expose-gc scripts/bench/tui-paced-real-leaf.ts --growing --timing-only
+node --expose-gc scripts/bench/tui-paced-real-leaf.ts --growing
 npm run --silent -- bench:tui-markdown-incremental-wrap
 npm run --silent -- bench:tui-paced-streamed-tool-args
 npm run --silent -- bench:tui-frame-queue
