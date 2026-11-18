@@ -52,24 +52,39 @@ test("CLI startup and in-app resume restore model and reasoning saved before the
 		LOCALAPPDATA: owned.root, XDG_CONFIG_HOME: owned.root, SP_CODING_AGENT_DIR: agentDir, SP_CODING_AGENT_SESSION_DIR: sessionDir,
 		SP_OFFLINE: "1", OPENAI_API_KEY: "offline-test-placeholder" };
 	const cliPath = fileURLToPath(new URL("../packages/coding-agent/dist/cli.js", import.meta.url));
-	for (const fromStartup of [true, false]) {
-		const client = new RpcClient({ cliPath, cwd, env, args: ["--no-extensions", "--no-mcp", "--no-context-files",
-			...(fromStartup ? ["--session", sessionFile] : ["--no-session"])] });
+	const readState = async (args: string[], switchInProcess = false) => {
+		const client = new RpcClient({ cliPath, cwd, env, args: ["--no-extensions", "--no-mcp", "--no-context-files", ...args] });
 		try {
 			await client.start();
-			if (!fromStartup) {
+			if (switchInProcess) {
 				assert.equal((await client.getState()).model?.id, defaultModel);
 				assert.deepEqual(await client.switchSession(sessionFile), { cancelled: false });
 			}
-			const state = await client.getState();
-			assert.equal(state.model?.id, chosenModel);
-			assert.equal(state.thinkingLevel, "high");
-			assert.equal(state.messageCount, 0);
+			return await client.getState();
 		} finally {
 			await client.stop();
 		}
+	};
+	const resumeArgs = ["--session", sessionFile];
+	for (const fromStartup of [true, false]) {
+		const state = await readState(fromStartup ? resumeArgs : ["--no-session"], !fromStartup);
+		assert.equal(state.model?.id, chosenModel);
+		assert.equal(state.thinkingLevel, "high");
+		assert.equal(state.messageCount, 0);
 		assert.equal(readFileSync(sessionFile, "utf8"), saved);
 	}
+
+	const override = "gpt-5.4-nano";
+	const explicit = await readState([...resumeArgs, "--model", `${provider}/${override}`, "--thinking", "medium"]);
+	assert.equal(explicit.model?.id, override);
+	assert.equal(explicit.thinkingLevel, "medium");
+	assert.equal(explicit.messageCount, 0);
+	const journal = SessionManager.open(sessionFile).buildSessionContext();
+	assert.deepEqual(journal.model, { provider, modelId: override });
+	assert.equal(journal.thinkingLevel, "medium");
+	const resumed = await readState(resumeArgs);
+	assert.equal(resumed.model?.id, override);
+	assert.equal(resumed.thinkingLevel, "medium");
 });
 
 // The prompt must survive a first turn that never completes (crash, kill, provider failure).
