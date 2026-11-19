@@ -13,7 +13,7 @@ import { inspectNativeShellMutations, type NativeShellMutations } from "./shell-
 import { classifyHostShellCommand, findNonReadOnlyShellSegment, HOST_SHELL_FILE_COMMANDS, HOST_SHELL_OTHER, HOST_SHELL_READ_ONLY,
     HOST_SHELL_RULE_ALLOWED, type HostShellCommandClass, shellRuleVerdict, suggestShellRules } from "./shell-policy/readonly-command.ts";
 import { type ProjectPermissionRule, type ProjectPermissionStore, RULE_ALLOW, RULE_ASK, RULE_DENY,
-    RULE_NONE } from "./project-permissions.ts";
+    ProjectRuleSet, RULE_NONE } from "./project-permissions.ts";
 import { ShellAnalysisOwner } from "./shell-policy/shell-analysis.ts";
 import { prepareShellCwd } from "./tools/shell-cwd.ts";
 import { attachPermissionPathApproval, mutationRequestHash, type PermissionPathApproval } from "./files/file-invocation.ts";
@@ -39,7 +39,7 @@ export interface ExecutionPermissionRule {
 }
 export interface ExecutionPermissions { approval?: "interactive" | "never"; rules?: ExecutionPermissionRule[]; }
 /** `outside`: a host tier accepted a path outside every workspace; host-restricted asks for it. */
-interface ResolvedPolicyPaths { paths: string[]; workspaces: string[]; outside: boolean; }
+interface ResolvedPolicyPaths { paths: string[]; workspaces: string[]; outside: boolean; metadataWrite?: boolean; }
 export interface PermissionRefusal {
     readonly key: string;
     readonly source: "legacy" | "explicit";
@@ -57,6 +57,10 @@ export interface AutoReviewDenial {
     readonly reason: string;
 }
 /** Recent Auto denials kept for `/permissions auto`, like Codex `/approve`. */
+const AUTO_GIT_OPERATIONS = new ProjectRuleSet([
+    { tool: "bash", command: "git *", decision: "ask" },
+    { tool: "powershell", command: "git *", decision: "ask" },
+]);
 const MAX_AUTO_DENIALS = 10;
 const MUTATIONS = new Set(["edit", "write", "copy", "delete", "move", "file_batch"]);
 const SEARCHES = new Set(["grep", "find", "ls"]);
@@ -284,12 +288,12 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         if (ctx.hasUI) ctx.ui.notify(message, "error");
         throw new Error(code + message);
     }
-    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更", enforceMutationRoots = true, roles?: readonly ("read" | "unlink" | undefined)[]): Promise<ResolvedPolicyPaths> {
+    private async paths(ctx: ExtensionContext, targets: readonly string[], mutation: boolean, operation = "变更", enforceMutationRoots = true, roles?: readonly ("read" | "unlink" | "write-file" | undefined)[]): Promise<ResolvedPolicyPaths> {
         const check = this.guard(ctx), output: string[] = [], host = isHostPermissionMode(this.mode);
         if (!mutation && targets.length > 35) throw new Error(BLOCKED + "Too many observation paths");
         if (!targets.length) return { paths: output, workspaces: [], outside: false };
         const workspaces = [await realpath(ctx.cwd)], unavailable: string[] = []; check();
-        let outside = false;
+        let outside = false, metadataWrite = false;
         for (const directory of this.directories) {
             let canonical: string | undefined;
             try { canonical = await realpath(directory); } catch { /* Keep unavailable grants closed without disabling unrelated host paths. */ }
@@ -326,6 +330,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             if (mutation && !reading && enforceMutationRoots) {
                 const result = assessCanonicalMutationPath(workspaces, canonical, metadata);
                 for (const violation of result.violations) {
+                    if ((this.mode === "host-write" || this.mode === "host-auto") && roles?.[index] === "write-file" &&
+                        (violation === "workspace_git_root" || violation === "workspace_sp_root")) {
+                        metadataWrite = true;
+                        continue;
+                    }
                     if (violation !== "workspace_escape" || !host) {
                         this.refuse(ctx, BLOCKED, `禁止 ${operation}：${canonical}\n受保护或工作区外目标（${violation}）。操作未执行，请明确告知用户。`);
                     }
@@ -342,7 +351,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 output.push(canonical);
             }
         }
-        return { paths: output, workspaces, outside };
+        return { paths: output, workspaces, outside, metadataWrite };
     }
     private async assessShellMutations(ctx: ExtensionContext, resolved: ResolvedPolicyPaths, shell: NativeShellMutations) {
         const check = this.guard(ctx), operations: { operation: string }[] = [];
@@ -573,7 +582,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const plan = this.runtime.executionBoundary.getToolSelectionMode() === "plan";
         if (plan && (mutation || event.toolName === "browser_exec"))
             throw new Error(BLOCKED + "Plan mode does not authorize execution or mutations");
-        const input = event.input as Record<string, any>, targets: string[] = [], targetRoles: ("read" | "unlink" | undefined)[] = [];
+        const input = event.input as Record<string, any>, targets: string[] = [], targetRoles: ("read" | "unlink" | "write-file" | undefined)[] = [];
         const fileMutation = isFileMutationOperation(event.toolName);
         if (fileMutation) validateFileMutationTargets(event.toolName, input);
         if (plan && (event.toolName === "bash" || event.toolName === "powershell")) {
@@ -591,6 +600,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const shellCwd = hostShell ? shellBinding?.canonical ?? await realpath(ctx.cwd) : undefined; check();
         let shell: NativeShellMutations | undefined, shellClass: HostShellCommandClass = HOST_SHELL_OTHER;
         const shellRules = shellTool && typeof input?.command === "string" && project?.hasShellRules(event.toolName === "powershell") ? project : undefined;
+        let reviewGit = false;
         let projectVerdict = project ? project.toolDecision(event.toolName) : RULE_NONE;
         if (hostShell) {
             const tool = event.toolName as "bash" | "powershell";
@@ -599,6 +609,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             try {
                 shell = inspectNativeShellMutations(tool, input, shellCwd!, this.epoch, owner);
                 if (restricted && owner) shellClass = classifyHostShellCommand(tool, input.command, owner, shellRules);
+                if (this.mode === "host-auto" && shellClass !== HOST_SHELL_READ_ONLY && shellClass !== HOST_SHELL_RULE_ALLOWED)
+                    reviewGit = shellRuleVerdict(tool, input.command, AUTO_GIT_OPERATIONS, owner) === RULE_ASK;
                 if (shellRules) projectVerdict = Math.max(projectVerdict, shellRuleVerdict(tool, input.command, shellRules, owner));
             } finally { owner?.release(); }
         } else if (shellRules) projectVerdict = Math.max(projectVerdict, shellRuleVerdict(event.toolName as "bash" | "powershell", input.command, shellRules));
@@ -609,10 +621,11 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
                 const item = fileMutationItem(event.toolName, input, index), operation = fileMutationItemOperation(event.toolName, input, index);
                 targets.push(this.environment === "trusted-host" && (operation === "write" || operation === "edit") && typeof item.path === "string"
                     ? resolveToolPath(ctx.cwd, item.path) : item.path);
-                targetRoles.push(operation === "copy" ? "read" : operation === "delete" ? "unlink" : undefined);
+                targetRoles.push(operation === "copy" ? "read" : operation === "delete" ? "unlink" : operation === "write" || operation === "edit" ? "write-file" : undefined);
                 if (item.destination !== undefined) { targets.push(item.destination); targetRoles.push(undefined); }
             }
         } else if (event.toolName === "lsp_fix") {
+            targetRoles.push("write-file");
             targets.push(resolve(ctx.cwd, typeof input.root === "string" && input.root.trim() ? input.root : ".", input.path));
         } else if (SEARCHES.has(event.toolName)) targets.push(input.path ?? ".");
         else if (mutation || event.toolName === "read") {
@@ -639,7 +652,8 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         const projectToolAllow = project?.toolDecision(event.toolName) === RULE_ALLOW;
         const session = ctx.sessionManager.getSessionId();
         const invocationKey = this.autoReview && !mutation ? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
-        let reviewRisk = mutation || shell !== undefined || definition?.mcpDestructive === true || event.review === true;
+        const externalRead = resolved?.outside === true && (event.toolName === "read" || SEARCHES.has(event.toolName));
+        let reviewRisk = externalRead || reviewGit || mutation || shell !== undefined || definition?.mcpDestructive === true || event.review === true;
         // Remember selected risk through the existing bounded denial/retry owners. Dropping only
         // review metadata must not make the same rejected call ordinary or bypass a reviewed retry.
         if (!reviewRisk && invocationKey !== undefined) {
@@ -709,7 +723,7 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
             }
         } else keys.push(invocationKey ?? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]));
         if (decision === "deny" || keys.some(key => this.denied.has(key))) throw new Error(BLOCKED + "Explicitly denied operation");
-        if (host?.externalOverwrite) {
+        if (this.mode === "host-restricted" && host?.externalOverwrite) {
             void this.runtime.executionBoundary.pauseForUser();
             this.refuse(ctx, "[EXTERNAL_FILE_WRITE_BLOCKED] ",
                 `禁止覆盖或编辑工作区外已有文件：${host.externalOverwrite}\n操作未执行。当前整轮任务已暂停，请告知用户并等待下一步指令。`);
@@ -717,21 +731,21 @@ export class SessionExecutionPolicy implements SessionEntryVisitor {
         // Cheap denials and D5 precede preflight. A single approval then sees the
         // complete metadata inventory; ready/effects still require the final grant.
         const describePreparation = fileMutation ? await prepareFiles?.(paths) : undefined; check();
-        if (host?.ask) decision = "ask";
+        if (this.mode === "host-auto" && (reviewGit || resolved?.metadataWrite || host?.externalOverwrite || resolved?.outside && reviewRisk)) decision = "ask";
+        if (host?.ask && (this.mode !== "host-write" || shell?.uncertain || deletes(event.toolName, input, shell))) decision = "ask";
         // Like Codex, a declared destructive MCP tool asks even when its other hints look harmless.
         // A rule naming the tool or its server is the user's explicit standing approval.
         const destructiveMcp = decision === "allow" && definition?.mcpDestructive === true && !explicitUserCommand && !this.namedAllow(event.toolName, definition)
             && !projectToolAllow;
         if (destructiveMcp) decision = "ask";
         // host-auto: the session model reviews selected risks; explicit ask
-        // rules and deletes outside the workspaces stay with the user, as does a tripped breaker.
+        // rules stay with the user, as does a tripped breaker.
         // A review without a verdict asks the user instead.
         let unreviewed: string | undefined;
         const preparedDetails = decision === "ask" ? describePreparation?.() : undefined;
         // The retry grant identity hashes the whole invocation, batch-level arguments such as `dryRun` included.
         const grant = decision === "ask" && this.autoReview && reviewRisk ? invocationKey ?? fingerprint([session, event.toolName, invocationFingerprint(event.toolName, input)]) : undefined;
         if (grant !== undefined && !this.autoReview!.tripped && this.approval !== "never"
-            && !((resolved ?? delegated)?.outside === true && deletes(event.toolName, input, shell))
             && projectVerdict !== RULE_ASK && !await this.ruleAsks(event.toolName, input, paths, ctx.cwd, definition)) {
             check();
             const verdict = await this.autoApprove(ctx, event.toolName, `${event.toolName} (${this.environment})\ncwd: ${ctx.cwd}\n`

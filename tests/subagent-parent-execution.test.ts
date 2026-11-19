@@ -39,7 +39,7 @@ test.after(async () => {
   owned.cleanup();
 });
 
-async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-write" | "read-only" | "sandbox-write" = "host-write", extensionFactories = [subagent]) {
+async function fixture(t: test.TestContext, environment?: "trusted-host" | "sandbox", hasUI = true, shellCommandPrefix?: string, mode: "host-restricted" | "host-write" | "read-only" | "sandbox-write" = "host-write", extensionFactories = [subagent]) {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), cwd = join(root, "project 中文 space");
   await fs.mkdir(cwd); await fs.writeFile(join(cwd, "sample.txt"), "marker\n");
   await fs.writeFile(join(agentDir, "config", "settings.json"), JSON.stringify({ executionEnvironment: environment, compaction: { enabled: false },
@@ -333,7 +333,7 @@ test("real CLI children inherit explicit host mode across all global defaults an
   }
 });
 
-test("real child external delete asks parent, protected delete refuses, and D6 asks for agent modification", { timeout: 60000 }, async t => {
+test("real child external delete asks parent, protected delete refuses, and full host permits explicit agent file edits", { timeout: 60000 }, async t => {
   const f = await fixture(t), outside = join(f.root, "delete.txt"), config = join(agentDir, "note.txt");
   await fs.writeFile(outside, "delete owned fixture"); await fs.writeFile(config, "old");
   const result = await f.run(`console.log(await tools.delete({path:${JSON.stringify(outside)}})); console.log(await callTool("delete", {path:${JSON.stringify(f.cwd)}}, {allowFailure:true})); console.log(await callTool("file_batch", {operations:[{operation:"write",path:${JSON.stringify(join(agentDir, "config", "auth.json"))},mode:"overwrite",content:"forbidden"}]}, {allowFailure:true})); await tools.read({path:${JSON.stringify(config)}}); console.log(await tools.write({path:${JSON.stringify(config)},content:"changed"})); console.log(await tools.bash({command:"printf 'relay cwd\\n'; pwd"}));`, "writer");
@@ -344,7 +344,7 @@ test("real child external delete asks parent, protected delete refuses, and D6 a
   assert.equal(shell?.isError, false, JSON.stringify(shell)); assert.match(JSON.stringify(shell.content), /project 中文 space/);
   assert.match(JSON.stringify(entries.find(entry => entry.event === "result" && entry.name === "codemode")?.content), /authentication storage/);
   await assert.rejects(fs.stat(outside), { code: "ENOENT" }); assert.equal(await fs.readFile(config, "utf8"), "changed");
-  assert.equal(f.dialogs, 2); assert.match(f.notices.join("\n"), /操作未执行/);
+  assert.equal(f.dialogs, 1); assert.match(f.notices.join("\n"), /操作未执行/);
   assert.equal(f.runtime.executionBoundary.requiresUserInput, false);
 });
 
@@ -395,7 +395,7 @@ test("a real child stops before effects when parent approval UI is unavailable",
 });
 
 test("assigned cwd is not a new workspace: real child D5 pauses parent and preserves the initiating reason", { timeout: 60000 }, async t => {
-  const f = await fixture(t), childCwd = join(f.root, "assigned outside"); await fs.mkdir(childCwd);
+  const f = await fixture(t, undefined, true, undefined, "host-restricted"), childCwd = join(f.root, "assigned outside"); await fs.mkdir(childCwd);
   const existing = join(childCwd, "existing.txt"); await fs.writeFile(existing, "unchanged");
   const result = await f.run('console.log(await tools.write({path:"new.txt",content:"completed"})); await tools.write({path:"existing.txt",content:"forbidden"}); await tools.write({path:"after.txt",content:"no"});', "writer", childCwd);
   assert.equal(await fs.readFile(existing, "utf8"), "unchanged"); assert.equal(await fs.readFile(join(childCwd, "new.txt"), "utf8"), "completed");

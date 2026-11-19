@@ -26,13 +26,13 @@ test.after(() => { for (const [index,key] of ["TMP","TEMP","TMPDIR"].entries()) 
   if(oldTemps[index]===undefined) delete process.env[key];else process.env[key]=oldTemps[index];
 } owned.cleanup(); });
 
-async function fixture(t:test.TestContext, orchestration=false) {
+async function fixture(t:test.TestContext, orchestration=false, mode: "host-restricted" | "host-write" = "host-write") {
   const root=await fs.realpath(await fs.mkdtemp(join(owned.root,"case-"))), cwd=join(root,"project space"), outside=join(root,"outside"), added=join(root,"added");
   for(const directory of [cwd,outside,added]) await fs.mkdir(directory);
   const runtime=createExtensionRuntime(), manager=orchestration?SessionManager.create(cwd,join(root,"sessions")):SessionManager.inMemory(cwd), events=createEventBus();
   const tasks=orchestration?runtime.nativeTasks=new SessionTasks(runtime,events):undefined;
   runtime.appendEntry=(type,data) => {manager.appendCustomEntry(type,data);};
-  const policy=runtime.nativePermissions=new SessionExecutionPolicy(runtime,"trusted-host",{rules:[{tool:"*",decision:"allow"}]},"host-write",[added]);
+  const policy=runtime.nativePermissions=new SessionExecutionPolicy(runtime,"trusted-host",{rules:[{tool:"*",decision:"allow"}]},mode,[added]);
   const runner=new ExtensionRunner([],runtime,cwd,manager,{} as never);
   const agent=new Agent({streamFn:() => {throw new Error("offline fixture");},beforeToolCall:({toolCall,args,parentToolCallId}) =>
     runner.emitToolCall({type:"tool_call",toolName:toolCall.name,toolCallId:toolCall.id,parentToolCallId,input:args} as any)});
@@ -98,7 +98,7 @@ test("native shell approval precedes actual deletion, cancellation retries, and 
 });
 
 test("existing mutation evidence distinguishes external writes from reads and refuses sensitive deletion",async t=>{
-  const f=await fixture(t), file=join(f.outside,"existing.txt");await fs.writeFile(file,"original");
+  const f=await fixture(t,false,"host-restricted"), file=join(f.outside,"existing.txt");await fs.writeFile(file,"original");
   await assert.rejects(f.authorize("bash","printf changed > "+quote("bash",file)),/EXTERNAL_FILE_WRITE_BLOCKED/);
   assert.equal(await fs.readFile(file,"utf8"),"original");assert.equal(f.dialogs.length,0);assert.equal(f.notices.length,1);
   await f.resume();
@@ -125,7 +125,7 @@ test("PowerShell backslash paths keep their separators before native authorizati
 });
 
 test("native authorization reads PowerShell file cmdlets and cmd /c operands like rm and redirection",{skip:process.platform!=="win32"},async t=>{
-  const f=await fixture(t);await fs.writeFile(join(f.outside,"existing.txt"),"original");await fs.writeFile(join(f.outside,"a,b.txt"),"original");
+  const f=await fixture(t,false,"host-restricted");await fs.writeFile(join(f.outside,"existing.txt"),"original");await fs.writeFile(join(f.outside,"a,b.txt"),"original");
   // After Claude Code's PowerShell scope checks: cmdlet writers and cmd deletions use the existing outside-path rules.
   // Named parameters bind before positionals, a quoted comma stays in one path, a list continues across
   // words, a copy into a directory writes the source name there, and New-Item -Name joins its Path.
@@ -201,7 +201,7 @@ test("CodeMode children and managed background commands share the same native ap
 });
 
 test("native evidence preserves independent writes and does not treat search scope as overwrite",async t=>{
-  const f=await fixture(t), file=join(f.outside,"evidence.txt");await fs.writeFile(file,"original");
+  const f=await fixture(t,false,"host-restricted"), file=join(f.outside,"evidence.txt");await fs.writeFile(file,"original");
   const target=quote("bash",file);
   await t.test("write then delete keeps the write decision",async()=>{
     await assert.rejects(f.authorize("bash","printf changed > "+target+"; rm "+target),/EXTERNAL_FILE_WRITE_BLOCKED/);

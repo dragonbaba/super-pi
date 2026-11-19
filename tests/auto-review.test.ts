@@ -232,16 +232,18 @@ test("risk-selective Auto preserves saved shell-prefix allows and their workspac
   assert.equal(await f.decide("bash", { command: "npm test --ask > log.txt" }), "asked");
   assert.match(await f.decide("bash", { command: "npm test --deny > log.txt" }), /Explicitly denied/);
   const outside = path.join(f.outside, "log.txt"); await fs.writeFile(outside, "keep");
-  assert.match(await f.decide("bash", { command: `npm test > ${outside.replaceAll("\\", "/")}` }), /EXTERNAL_FILE_WRITE_BLOCKED/);
+  assert.equal(await f.decide("bash", { command: `npm test > ${outside.replaceAll("\\", "/")}` }), "denied");
   assert.equal(await fs.readFile(outside, "utf8"), "keep");
-  assert.equal(f.requests.length, 0); assert.equal(f.dialogs.length, 1);
+  assert.equal(f.requests.length, 1); assert.equal(f.dialogs.length, 1);
 });
 
 test("risk-selective Auto reviews native file changes before they can execute", async t => {
-  const f = await fixture(t, "host-auto", ["DENY: review the requested change"]);
-  const target = path.join(f.root, "existing.txt"); await fs.writeFile(target, "original");
+  const f = await fixture(t, "host-auto", ["DENY: review the requested change", "APPROVE: update the selected document"]);
+  const target = path.join(f.outside, "existing.txt"); await fs.writeFile(target, "original");
   assert.equal(await f.decide("edit", { path: target, edits: [{ oldText: "original", newText: "changed" }] }), "denied");
   assert.equal(f.requests.length, 1); assert.equal(await fs.readFile(target, "utf8"), "original");
+  assert.equal(await f.decide("edit", { path: target, edits: [{ oldText: "original", newText: "approved revision" }] }), "allow");
+  assert.equal(f.requests.length, 2); assert.equal(f.dialogs.length, 0);
 });
 
 test("risk-selective Auto honors the main model's explicit review request", async t => {
@@ -264,11 +266,11 @@ test("risk-selective Auto retains an exact call's selected risk when its review 
 });
 
 test("risk-selective Auto preserves external read authorization and explicit denials", async t => {
-  const f = await fixture(t, "host-auto", ["DENY: must not be called"], { rules: [{ tool: "forbidden", decision: "deny" }] });
+  const f = await fixture(t, "host-auto", ["APPROVE: inspect the requested external file"], { rules: [{ tool: "forbidden", decision: "deny" }] });
   const outside = path.join(f.outside, "read.txt"); await fs.writeFile(outside, "outside");
-  assert.equal(await f.decide("read", { path: outside }), "asked");
+  assert.equal(await f.decide("read", { path: outside }), "allow");
   assert.match(await f.decide("forbidden", {}, true), /Explicitly denied/);
-  assert.equal(f.requests.length, 0); assert.equal(f.dialogs.length, 1);
+  assert.equal(f.requests.length, 1); assert.equal(f.dialogs.length, 0);
 });
 
 test("risk-selective Auto reviews declared destructive MCP calls and recognized shell mutations", async t => {
@@ -315,23 +317,23 @@ test("auto review keeps the latest user instruction after tool history fills eit
 });
 
 test("risk-selected Auto retains explicit asks, outside deletion, breaker and exact retry ownership", async t => {
-  const f = await fixture(t, "host-auto", ["APPROVE: the user asked for tests", "DENY: pushes without being asked"],
+  const f = await fixture(t, "host-auto", ["APPROVE: the user asked for tests", "DENY: pushes without being asked", "APPROVE: remove the selected file"],
     { rules: [{ tool: "bash", command: "git push --force", decision: "ask" }] });
   // Ordinary reads never ask. The main model can request review of an opaque command.
   assert.equal(await f.decide("bash", { command: "git status" }), "allow");
   assert.equal(f.requests.length, 0);
   assert.equal(await f.decide("bash", { command: "npm test" }, true), "allow");
   assert.equal(f.requests.length, 1); assert.match(f.requests[0]!, /"command": "npm test"/); assert.match(f.requests[0]!, /<transcript>/);
-  assert.equal(await f.decide("bash", { command: "git push" }, true), "denied");
+  assert.equal(await f.decide("bash", { command: "git push" }), "denied");
   assert.equal(f.dialogs.length, 0);
   assert.match(f.notes.join("\n"), /Auto 审查批准：bash — the user asked for tests/);
   assert.doesNotMatch(f.notes.join("\n"), /Auto 审查拒绝/, "the tool error already presents the rejection; do not also render a warning");
 
-  // The user's own ask rule and a delete outside the workspaces are never answered by the reviewer.
+  // Explicit ask rules stay with the user. An external delete receives a model verdict.
   assert.equal(await f.decide("bash", { command: "git push --force" }, true), "asked");
   await fs.writeFile(path.join(f.outside, "b.txt"), "b");
-  assert.equal(await f.decide("bash", { command: `rm ${path.join(f.outside, "b.txt").replaceAll("\\", "/")}` }), "asked");
-  assert.equal(f.requests.length, 2); assert.equal(f.dialogs.length, 2);
+  assert.equal(await f.decide("bash", { command: `rm ${path.join(f.outside, "b.txt").replaceAll("\\", "/")}` }), "allow");
+  assert.equal(f.requests.length, 3); assert.equal(f.dialogs.length, 1);
 
   // A review without a verdict is not a denial: the user is asked, and the breaker does not count it.
   const g = await fixture(t, "host-auto", ["maybe", "DENY: no", "DENY: no", "DENY: no"]);
