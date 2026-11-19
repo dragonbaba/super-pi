@@ -95,6 +95,7 @@ type _AiAssistantMessageFieldsAccountedFor = Assert<
 		| "model"
 		| "responseModel"
 		| "responseId"
+		| "codexRequestTrace" // Local request diagnostics stay server-side.
 		| "diagnostics"
 		| "usage"
 		| "stopReason"

@@ -62,6 +62,13 @@ for (const id of ["gpt-6.2-astra", "gpt-6.2-sol"]) test(id + " preserves stable 
   assert.equal(f.bodies[1].previous_response_id, first.responseId);
   assert.equal(f.bodies[1].input.length, 1);
   assert.equal(observed[1]!.instructionsHash, observed[0]!.instructionsHash);
+  assert.equal(first.codexRequestTrace?.history, "unavailable");
+  assert.deepEqual(second.codexRequestTrace, { transport: "websocket-delta", instructions: "leading-developer", history: "prefix-retained", adapterBuild: "source" });
+  const rewritten = { ...next, messages: [{ ...base.messages[0]!, content: "Edited prior user message" }, ...next.messages.slice(1)] };
+  const replay = await owner.stream(route, rewritten, options).result();
+  assert.equal(replay.stopReason, "stop", replay.errorMessage);
+  assert.deepEqual(replay.codexRequestTrace, { transport: "websocket-full", instructions: "leading-developer", history: "changed", firstChangedItem: 2, adapterBuild: "source" });
+  assert.ok(!f.frames.some(frame => frame.includes("codexRequestTrace")), "local diagnostics never enter the provider request");
   const compactOptions = { ...options, sessionId: "placement-compaction" };
   const regular = await owner.stream(route, base, compactOptions).result();
   const compactBody = buildOpenAICodexRequestBody(route, { ...base, messages: [...base.messages, regular] }, compactOptions, compactOptions.sessionId);
@@ -100,6 +107,7 @@ for(const compressed of [false,true])test(`Codex SSE observes final body and JSO
       return success();
     }}).result();
   assert.equal(result.stopReason,"stop",result.errorMessage);assert.equal(uploads,1);assert.equal(observed.length,1);
+  assert.equal(result.codexRequestTrace?.transport, "sse"); assert.equal(result.codexRequestTrace?.history, "unavailable");
 });
 
 for(const body of [null,JSON.stringify({error:{code:"request_too_large",message:"request_too_large"}})])test(`Codex HTTP 413 is not replayed, bodyless=${body===null}`,async t=>{

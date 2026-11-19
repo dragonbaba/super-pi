@@ -1,3 +1,5 @@
+import { CODEX_ADAPTER_BUILD } from "./codex-adapter-build.ts";
+import type { CodexRequestTrace } from "../types.ts";
 import type * as NodeOs from "node:os";
 import type * as NodeZlib from "node:zlib";
 import type {
@@ -563,6 +565,7 @@ function streamOwned(owner: CodexTransportOwner, model: Model<"openai-codex-resp
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
             recordSuccessfulDispatch(owner, cacheSessionId, body, body, sseHeaders, "sse", responseItems, model, options, output.responseId);
             options.signal?.throwIfAborted();
+            output.codexRequestTrace = requestTrace(body, "sse");
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
         }
@@ -1807,6 +1810,9 @@ function leadingDeveloperItem(body: RequestBody) {
     const first = body.input?.[0];
     return first && "role" in first && first.role === "developer" ? first : undefined;
 }
+function requestTrace(body: RequestBody, transport: CodexRequestTrace["transport"]): CodexRequestTrace {
+    return { adapterBuild: CODEX_ADAPTER_BUILD, transport, instructions: leadingDeveloperItem(body) ? "leading-developer" : body.instructions ? "top-level" : "absent", history: "unavailable" };
+}
 function effectiveCodexInstructions(body: RequestBody) {
     const developer = leadingDeveloperItem(body);
     return developer ? [body.instructions ?? null, developer] : body.instructions ?? null;
@@ -1968,12 +1974,14 @@ function convertAssistantResponseItems(
     }
     return responseItems;
 }
-function getCachedWebSocketInputDelta(body: RequestBody, continuation: CachedWebSocketContinuationState): ResponseInput | undefined {
+function getCachedWebSocketInputDelta(body: RequestBody, continuation: CachedWebSocketContinuationState, trace: CodexRequestTrace): ResponseInput | undefined {
     if (!requestBodiesMatchExceptInput(body, continuation.lastRequestBody)) {
+        trace.history = "settings-changed";
         return undefined;
     }
     const currentInput = body.input ?? [];
     if (continuation.compactionBoundary) {
+        trace.history = "compaction";
         const responseItems = continuation.lastResponseItems;
         let matchedBoundary;
         const lastStart = currentInput.length - responseItems.length;
@@ -1986,15 +1994,19 @@ function getCachedWebSocketInputDelta(body: RequestBody, continuation: CachedWeb
         }
         return matchedBoundary === undefined ? undefined : currentInput.slice(matchedBoundary);
     }
-    const baseline = [...(continuation.lastRequestBody.input ?? []), ...continuation.lastResponseItems];
-    if (currentInput.length < baseline.length) {
-        return undefined;
+    const previous = continuation.lastRequestBody.input ?? [];
+    const response = continuation.lastResponseItems;
+    const length = previous.length + response.length;
+    for (let i = 0; i < length; i++) {
+        const prior = i < previous.length ? previous[i] : response[i - previous.length];
+        if (i >= currentInput.length || !jsonValuesEqual(currentInput[i] ?? null, prior ?? null)) {
+            trace.history = "changed";
+            trace.firstChangedItem = i + 1;
+            return undefined;
+        }
     }
-    const prefix = currentInput.slice(0, baseline.length);
-    if (!responseInputsEqual(prefix, baseline)) {
-        return undefined;
-    }
-    return currentInput.slice(baseline.length);
+    trace.history = "prefix-retained";
+    return currentInput.slice(length);
 }
 const NO_RESPONSE_CONTINUATION_MATCH = -1;
 const AMBIGUOUS_RESPONSE_CONTINUATION_MATCH = -2;
@@ -2074,7 +2086,7 @@ function getCompactionWebSocketInputDelta(
         return undefined;
     return currentInput.slice(boundary);
 }
-function buildCachedWebSocketRequestBody(entry: CachedWebSocketConnection, body: RequestBody): RequestBody {
+function buildCachedWebSocketRequestBody(entry: CachedWebSocketConnection, body: RequestBody, trace: CodexRequestTrace): RequestBody {
     const continuation = entry.continuation;
     if (!continuation) {
         return body;
@@ -2084,7 +2096,7 @@ function buildCachedWebSocketRequestBody(entry: CachedWebSocketConnection, body:
         !isJsonCompatiblePlainData(continuation.lastResponseItems)) {
         throw new InvalidContinuationPayloadError();
     }
-    const delta = getCachedWebSocketInputDelta(body, continuation);
+    const delta = getCachedWebSocketInputDelta(body, continuation, trace);
     if (!delta || !continuation.lastResponseId) {
         if (continuation.compactionBoundary) {
             throw new PostCompactionContinuationError();
@@ -2139,7 +2151,8 @@ async function processWebSocketStream(owner: CodexTransportOwner,
     try {
         options?.signal?.throwIfAborted();
         owner.assertCurrent();
-        const requestBody = useCachedContext && entry ? buildCachedWebSocketRequestBody(entry, fullBody) : fullBody;
+        const trace = requestTrace(fullBody, "websocket-full");
+        const requestBody = useCachedContext && entry ? buildCachedWebSocketRequestBody(entry, fullBody, trace) : fullBody;
         const stats = cacheSessionId ? getOrCreateWebSocketDebugStats(owner, cacheSessionId) : undefined;
         if (stats) {
             stats.requests++;
@@ -2182,8 +2195,10 @@ async function processWebSocketStream(owner: CodexTransportOwner,
         }
         else {
             const responseItems = convertAssistantResponseItems(model, output, grammarToolInputProperties);
-            recordSuccessfulDispatch(owner, cacheSessionId, fullBody, requestBody, headers, requestBody.previous_response_id ? "websocket-delta" : "websocket-full", responseItems, model, options, output.responseId);
+            trace.transport = requestBody.previous_response_id ? "websocket-delta" : "websocket-full";
+            recordSuccessfulDispatch(owner, cacheSessionId, fullBody, requestBody, headers, trace.transport, responseItems, model, options, output.responseId);
             options?.signal?.throwIfAborted();
+            output.codexRequestTrace = trace;
             if (useCachedContext && entry && output.responseId) {
                 entry.continuation = {
                     lastRequestBody: fullBody,

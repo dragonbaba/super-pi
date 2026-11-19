@@ -7,7 +7,7 @@ import { Container } from "@super-pi/tui";
 import { AgentSession } from "../packages/coding-agent/src/core/agent-session.ts";
 import { collectCacheOverlapEstimates, computeCacheOverlapTotals, detectCacheOverlapEstimate } from "../packages/coding-agent/src/core/cache-stats.ts";
 import { SessionManager, type SessionEntry } from "../packages/coding-agent/src/core/session-manager.ts";
-import { getCacheTurnProfile } from "../packages/coding-agent/src/core/cache-turn-profile.ts";
+import { getCacheTurnProfile, latestCodexRequestSummary } from "../packages/coding-agent/src/core/cache-turn-profile.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { FooterComponent } from "../packages/coding-agent/src/modes/interactive/components/footer.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
@@ -84,6 +84,15 @@ test("zero, invalid usage and failed responses cut the comparison segment", () =
 		assert.equal(detectCacheOverlapEstimate(history, current), undefined);
 		assert.equal(detectCacheOverlapEstimate([...history, ...entries(current)], message(40_000)), undefined);
 	}
+});
+
+test("only the current branch response supplies persisted Codex request diagnostics", () => {
+	const trace = { adapterBuild: "a".repeat(64), transport: "websocket-full", instructions: "top-level", history: "changed", firstChangedItem: 7 } as const;
+	const assistant = { ...message(500), api: "openai-codex-responses", codexRequestTrace: trace } as const;
+	assert.match(latestCodexRequestSummary(entries(assistant))!, /history changed at input item 7, adapter a{16}$/);
+	assert.equal(latestCodexRequestSummary(entries(assistant, message(600))), undefined);
+	assert.equal(latestCodexRequestSummary([...entries(assistant), { type: "compaction" } as SessionEntry]), undefined);
+	assert.equal(latestCodexRequestSummary(entries({ ...assistant, codexRequestTrace: { ...trace, adapterBuild: "\\x1b[31m" } })), undefined);
 });
 
 test("compaction and branch summaries reset bounds; tools leave valid observations intact", () => {

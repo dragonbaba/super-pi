@@ -536,7 +536,17 @@ export interface UserMessage {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
+/** Client-side facts about a completed Codex request. Input positions are one-based. */
+export interface CodexRequestTrace {
+	adapterBuild: string;
+	transport: "sse" | "websocket-full" | "websocket-delta";
+	instructions: "leading-developer" | "top-level" | "absent";
+	history: "unavailable" | "settings-changed" | "compaction" | "prefix-retained" | "changed";
+	firstChangedItem?: number;
+}
+
 export interface AssistantMessage {
+	codexRequestTrace?: CodexRequestTrace;
 	role: "assistant";
 	content: (TextContent | ThinkingContent | ToolCall)[];
 	api: Api;
