@@ -6,6 +6,7 @@
 import { Container, getKeybindings, matchesKey, RELEASE_COMPONENT_RENDER_CACHE, Spacer, Text, type TUI, wrapTextWithAnsi, truncateToWidth } from "@super-pi/tui";
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
+import { sanitizeDialogText, sanitizeDialogChoice } from "./selector-text.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
@@ -218,12 +219,6 @@ export class ExtensionSelectorComponent extends Container {
 	}
 }
 
-// Keep newlines for inspection, escape terminal/control and bidi instructions.
-function sanitizeDialogText(value: string): string {
-	return value.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g,
-		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
 function ignoreClosedDialog(): void {}
 
 function detailWindowBoundary(value: string, page: number): number {
@@ -234,8 +229,4 @@ function detailWindowBoundary(value: string, page: number): number {
   if (current >= 0xdc00 && current <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) offset--;
  }
  return offset;
-}
-
-function sanitizeDialogChoice(value: string): string {
- return sanitizeDialogText(value).replace(/\n/g, "\\n");
 }

@@ -147,6 +147,8 @@ import { EarendilAnnouncementComponent } from "./components/earendil-announcemen
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
+import { InteractionPanel } from "./components/interaction-panel.ts";
+import { sanitizeDialogChoice, sanitizeDialogText } from "./components/selector-text.ts";
 import { FooterComponent, formatTokens } from "./components/footer.ts";
 import { formatKeyText, keyDisplayText, keyHint, keyText, rawKeyHint } from "./components/keybinding-hints.ts";
 import { LoginDialogComponent } from "./components/login-dialog.ts";
@@ -755,7 +757,7 @@ export class InteractiveMode {
 	private extensionSelectorOverlay: OverlayHandle | undefined;
  private extensionSelectorCancel: (() => void) | undefined;
 	private extensionInputCancel: (() => void) | undefined;
-	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
+	private extensionSelector: ExtensionSelectorComponent | InteractionPanel | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private activeLoginDialog: LoginDialogComponent | undefined = undefined;
@@ -3041,7 +3043,7 @@ export class InteractiveMode {
 				return;
 			}
 			let settled = false;
-			let component: ExtensionSelectorComponent | undefined;
+			let component: ExtensionSelectorComponent | InteractionPanel | undefined;
 			const finish = (value?: string) => {
 				if (settled) return;
 				settled = true;
@@ -3055,12 +3057,21 @@ export class InteractiveMode {
 			const onAbort = () => finish();
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			try {
-				component = new ExtensionSelectorComponent(title, options, finish, onAbort,
-					{ tui: this.ui, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
+				if (opts?.kind === "question") {
+					let body = theme.bold(sanitizeDialogText(title));
+					if (opts.details) body += "\n" + theme.fg("muted", sanitizeDialogText(opts.details));
+					component = new InteractionPanel(body, options.map(sanitizeDialogChoice), this.ui.terminal,
+						index => finish(index === undefined ? undefined : options[index]));
+				} else {
+					component = new ExtensionSelectorComponent(title, options, finish, onAbort,
+						{ tui: this.ui, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
+				}
 				this.extensionSelector = component;
 				this.extensionSelectorCancel = onAbort;
 				this.programStatus?.setBlocked("extension-dialog", blockedKind, statusTitle);
-    if (opts?.details !== undefined) {
+    if (opts?.kind === "question") {
+     this.extensionSelectorOverlay = this.ui.showOverlay(component, { width: 88, maxHeight: "100%", anchor: "bottom-center" });
+    } else if (opts?.details !== undefined) {
      // A full-terminal overlay is outside the shrinkable fullscreen editor dock.
      // Its actual allocation equals the terminal dimensions used by the selector.
      this.extensionSelectorOverlay = this.ui.showOverlay(component, { width: "100%", maxHeight: "100%", margin: 0 });
@@ -4048,8 +4059,8 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/session") {
-				this.handleSessionCommand();
 				this.editor.setText("");
+				await this.handleSessionCommand();
 				return;
 			}
 			if (text === "/changelog") {
@@ -8249,7 +8260,7 @@ export class InteractiveMode {
 		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }
 	}
 
-	private handleSessionCommand(): void {
+	private async handleSessionCommand(): Promise<void> {
 		const stats = this.session.getSessionStats();
 		const sessionName = this.sessionManager.getSessionName();
 		const entries = this.sessionManager.getEntries();
@@ -8312,9 +8323,9 @@ export class InteractiveMode {
 			}
 		}
 
-		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(info, 1, 0));
-		this.ui.requestRender();
+		await this.showExtensionCustom<void>((tui, _theme, _bindings, done) =>
+			new InteractionPanel(info.trimEnd(), [], tui.terminal, () => done()),
+		{ overlay: true, overlayOptions: { width: 88, maxHeight: "100%" } });
 	}
 
 	private handleChangelogCommand(): void {
