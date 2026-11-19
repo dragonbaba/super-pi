@@ -112,7 +112,7 @@ test("verified content is immutable; changed content/question invalidates and ol
 });
 
 test("nine-image queue stays paused after cancelled question; /new is a reachable cancellation path", async () => {
-	let calls = 0, shown!: () => void, cancel!: () => void;
+	let calls = 0, shown!: () => void;
 	const visible = new Promise<void>(resolve => { shown = resolve; });
 	const runtime = alphaModelRuntime(model => { calls++; return response(model, [{ type: "toolCall", id: "q", name: "ask_user", arguments: { question: "Choose", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] } }]); });
 	const { createAskUserToolDefinition } = await import("../packages/coding-agent/src/core/tools/ask-user.ts");
@@ -120,11 +120,16 @@ test("nine-image queue stays paused after cancelled question; /new is a reachabl
 	try {
 		await f.mode.init();
 		const runner = f.session.extensionRunner;
-		runner.setUIContext({ ...runner.getUIContext(), select: async () => { shown(); return new Promise(resolve => { cancel = () => resolve(undefined); }); } }, "tui");
+		const hostUI = runner.getUIContext();
+		runner.setUIContext({ ...hostUI, questionPage(page, opts) {
+			const pending = hostUI.questionPage!(page, opts);
+			shown();
+			return pending;
+		} }, "tui");
 		const run = f.session.prompt("question"); await visible;
 		const image = { type: "image" as const, data: pngFixture(8, 8).toString("base64"), mimeType: "image/png" };
 		await f.session.followUp("five", Array(5).fill(image)); await f.session.followUp("four", Array(4).fill(image));
-		cancel(); await run; assert.equal(calls, 1);
+		f.input.write("\x1b"); await run; assert.equal(calls, 1);
 		const before = JSON.stringify([f.session.getFollowUpMessages(), [...(f.session as any)._queuedImageMessages.values()]]);
 		f.input.write("\x1b[1;3A"); await turn();
 		assert.equal(JSON.stringify([f.session.getFollowUpMessages(), [...(f.session as any)._queuedImageMessages.values()]]), before); assert.equal(calls, 1);
