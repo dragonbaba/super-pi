@@ -156,6 +156,8 @@ export type {
 	ExtensionRuntime,
 	ExtensionShortcut,
 	ExtensionUIContext,
+	QuestionPage,
+	QuestionPageResult,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,

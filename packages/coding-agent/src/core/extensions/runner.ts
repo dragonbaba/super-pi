@@ -1548,6 +1548,7 @@ export class ExtensionRunner {
 		const ui = Object.create(ctx.ui) as ExtensionUIContext;
 		const originalUI = ctx.ui;
 		ui.editor = rejectUncancellableToolCallUI;
+		ui.questionPage = undefined; // Tool hooks use the deadline-aware select/input methods.
 		ui.custom = rejectUncancellableToolCallUI;
 		const descriptors = Object.getOwnPropertyDescriptors(ctx);
 		descriptors.signal = { value: deadline.controller.signal };

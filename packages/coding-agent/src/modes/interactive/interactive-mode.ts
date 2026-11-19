@@ -2926,6 +2926,10 @@ export class InteractiveMode {
 
 	private createExtensionUIContext(extensionUiGeneration = this.extensionUiGeneration): ExtensionUIContext {
 		return {
+			questionPage: (page, opts) => this.extensionUiGeneration !== extensionUiGeneration
+				? Promise.resolve(undefined)
+				: this.openExtensionSelector({ ...opts, kind: "question" }, "question", page.title,
+					(finish) => InteractionPanel.forQuestion(page, this.ui.terminal, finish)),
 			select: (title, options, opts) => this.extensionUiGeneration !== extensionUiGeneration
 				? Promise.resolve(undefined)
 				: this.showExtensionSelector(title, options, opts, opts?.kind),
@@ -3038,6 +3042,24 @@ export class InteractiveMode {
 		blockedKind: "question" | "permission" = "question",
 		statusTitle = title,
 	): Promise<string | undefined> {
+		return this.openExtensionSelector<string>(opts, blockedKind, statusTitle, (finish, onAbort) => {
+			if (opts?.kind === "question") {
+				let body = theme.bold(sanitizeDialogText(title));
+				if (opts.details) body += "\n" + theme.fg("muted", sanitizeDialogText(opts.details));
+				return new InteractionPanel(body, options.map(sanitizeDialogChoice), this.ui.terminal,
+					index => finish(index === undefined ? undefined : options[index]));
+			}
+			return new ExtensionSelectorComponent(title, options, finish, onAbort,
+				{ tui: this.ui, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
+		});
+	}
+
+	private openExtensionSelector<T>(
+		opts: ExtensionUISelectOptions | undefined,
+		blockedKind: "question" | "permission",
+		statusTitle: string,
+		create: (finish: (value?: T) => void, cancel: () => void) => ExtensionSelectorComponent | InteractionPanel,
+	): Promise<T | undefined> {
 		if (!opts?.signal?.aborted) this.dismissSessionInfo();
 		return new Promise((resolve, reject) => {
 			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
@@ -3046,7 +3068,7 @@ export class InteractiveMode {
 			}
 			let settled = false;
 			let component: ExtensionSelectorComponent | InteractionPanel | undefined;
-			const finish = (value?: string) => {
+			const finish = (value?: T) => {
 				if (settled) return;
 				settled = true;
 				opts?.signal?.removeEventListener("abort", onAbort);
@@ -3059,15 +3081,7 @@ export class InteractiveMode {
 			const onAbort = () => finish();
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 			try {
-				if (opts?.kind === "question") {
-					let body = theme.bold(sanitizeDialogText(title));
-					if (opts.details) body += "\n" + theme.fg("muted", sanitizeDialogText(opts.details));
-					component = new InteractionPanel(body, options.map(sanitizeDialogChoice), this.ui.terminal,
-						index => finish(index === undefined ? undefined : options[index]));
-				} else {
-					component = new ExtensionSelectorComponent(title, options, finish, onAbort,
-						{ tui: this.ui, details: opts?.details, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() });
-				}
+				component = create(finish, onAbort);
 				this.extensionSelector = component;
 				this.extensionSelectorCancel = onAbort;
 				this.programStatus?.setBlocked("extension-dialog", blockedKind, statusTitle);

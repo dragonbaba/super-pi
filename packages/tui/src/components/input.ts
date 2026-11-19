@@ -41,9 +41,9 @@ export class Input implements Component, Focusable {
 		return this.value;
 	}
 
-	setValue(value: string): void {
+	setValue(value: string, cursor = this.cursor): void {
 		this.value = value;
-		this.cursor = Math.min(this.cursor, value.length);
+		this.cursor = Math.max(0, Math.min(cursor, value.length));
 	}
 
 	handleInput(data: string): void {

@@ -15,6 +15,7 @@ import * as imagePatterns from "../packages/coding-agent/src/utils/image-input-r
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
 import { createAskUserToolDefinition } from "../packages/coding-agent/src/core/tools/ask-user.ts";
+import { readQuestionPageWithDialogs } from "../packages/coding-agent/src/core/tools/question-dialogs.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import auxiliaryVision from "../packages/extensions/auxiliary-vision/index.ts";
 import { loadConfig } from "../packages/extensions/auxiliary-vision/core.ts";
@@ -519,6 +520,87 @@ test("question overlay wraps choices, releases its frame, and renders the answer
 	assert.doesNotMatch(transcript, /ask_user|"id"|hold/);
 });
 
+test("multi-question Esc preserves first-page input and restores both drafts before a single submit", async () => {
+	const ui = new TuiAltScreen(new FakeTerminal(58, 16));
+	const mode = Object.assign(Object.create(InteractiveMode.prototype), { ui }) as any;
+	const ctx = { hasUI: true, sessionManager: { getSessionId: () => "s" }, ui: mode.createExtensionUIContext() } as any;
+	const tool = createAskUserToolDefinition();
+	const questions = [{ id: "scope", question: "修改范围" }, { id: "format", question: "提交方式", options: [
+		{ id: "single", label: "一次提交" }, { id: "split", label: "拆分提交" }] }];
+	const abort = new AbortController();
+	const waiting = tool.execute("q", { questions }, abort.signal, undefined, ctx);
+	function frame(): string { return mode.extensionSelector.render(58).join("\n"); }
+	function key(data: string): void { frame(); mode.extensionSelector.handleInput(data); }
+	try {
+		assert.match(frame(), /1\/2/);
+		key("a"); key("\x1b");
+		assert.match(frame(), /1\/2/);
+		key("b"); key("\r"); await turn();
+		assert.match(frame(), /2\/2/); assert.match(frame(), /3\. 自定义回答/);
+		key("\x1b[B"); key("\x1b[B"); key("x"); key("\x1b"); await turn();
+		assert.match(frame(), /1\/2/);
+		key("c"); key("\r"); await turn();
+		assert.match(frame(), /提交全部答案/);
+		key("y"); key("\r");
+		const result = await waiting;
+		assert.deepEqual(JSON.parse((result.content[0] as { text: string }).text), { answers: [
+			{ questionId: "scope", text: "abc" }, { questionId: "format", text: "xy" }] });
+		assert.equal(mode.extensionSelector, undefined);
+	} finally { abort.abort(); }
+	const interrupted = new AbortController();
+	const next = tool.execute("next", { questions }, interrupted.signal, undefined, ctx);
+	key("\x1b"); assert.match(frame(), /1\/2/);
+	interrupted.abort();
+	assert.deepEqual((await next).details, { status: "user_input_cancelled" });
+	assert.equal(mode.extensionSelector, undefined);
+	const cancelled = tool.execute("cancel", { questions }, undefined, undefined, ctx);
+	key("\x03");
+	assert.deepEqual((await cancelled).details, { status: "user_input_cancelled" });
+	const single = tool.execute("single", { question: "范围" }, undefined, undefined, ctx);
+	key("\x1b");
+	assert.deepEqual((await single).details, { status: "user_input_cancelled" });
+});
+
+test("default legacy RPC selection retains the active answer when a text draft also exists", async () => {
+	const ui = { select: async (_title: string, choices: string[]) => choices[0], input: async (): Promise<string> => { throw new Error("unexpected edit"); } };
+	for (const selected of [0, 1, 2]) {
+		const page = { title: "First?", index: 0, count: 2, options: ["1. A", "2. B"], selected, text: "my draft" };
+		assert.deepEqual(await readQuestionPageWithDialogs(ui, page), { back: false, selected, text: "my draft" });
+	}
+});
+
+test("RPC-compatible select/input pages return one group result after backtracking", async () => {
+	const f = await fixture(false, false);
+	const runner = f.session.extensionRunner;
+	const choices = [{ id: "a", label: "A" }, { id: "b", label: "B" }];
+	const questions = [{ id: "first", question: "First?", options: choices }, { id: "second", question: "Second?", options: choices }];
+	let calls = 0, selects = 0;
+	const sequence = [undefined, "2. B", undefined, "default", "自定义回答…"];
+	runner.setUIContext({ ...runner.getUIContext(),
+		questionPage(page, opts) { return readQuestionPageWithDialogs(this, page, opts?.signal, true); },
+		select: async (title, options) => {
+			assert.equal(calls, 1);
+			assert.match(title, selects === 2 || selects === 4 ? /2\/2/ : /1\/2/);
+			assert.equal(options.at(-1), "自定义回答…");
+			assert.ok(selects < sequence.length);
+			const choice = sequence[selects++];
+			return choice === "default" ? options[0] : choice;
+		},
+		input: async () => "my answer",
+	}, "rpc");
+	f.session.agent.streamFunction = model => response(model, ++calls === 1
+		? [{ type: "toolCall", id: "group", name: "ask_user", arguments: { questions } }]
+		: [{ type: "text", text: "done" }]);
+	try {
+		await f.session.prompt("Choose two settings.");
+		assert.equal(calls, 2);
+		const results = f.session.agent.state.messages.filter(m => m.role === "toolResult" && m.toolCallId === "group");
+		assert.equal(results.length, 1);
+		assert.deepEqual(JSON.parse((results[0] as any).content[0].text), { answers: [
+			{ questionId: "first", id: "b", text: "B" }, { questionId: "second", text: "my answer" }] });
+	} finally { f.close(); }
+});
+
 test("ask_user exposes bounded guidance and waits for a submitted text answer", async () => {
 	const f = await fixture(false, false);
 	let answer!: (value?: string) => void;
@@ -532,7 +614,7 @@ test("ask_user exposes bounded guidance and waits for a submitted text answer", 
 	} }, "tui");
 	const tool = f.session.agent.state.tools.find(candidate => candidate.name === "ask_user") as any;
 	assert.equal(tool?.interactionBoundary, true);
-	assert.match(f.session.agent.state.systemPrompt, /Ask one bounded question and wait for an explicit user answer/);
+	assert.match(f.session.agent.state.systemPrompt, /group independent decisions and wait for the answers/);
 	assert.match(f.session.agent.state.systemPrompt, /call ask_user and wait for its result/);
 	try {
 		f.session.agent.streamFunction = model => {

@@ -91,6 +91,8 @@ export type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionUISelectOptions,
+	QuestionPage,
+	QuestionPageResult,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,

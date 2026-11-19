@@ -12,6 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
+import { readQuestionPageWithDialogs } from "../../core/tools/question-dialogs.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionError,
@@ -101,6 +102,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	 * Create an extension UI context that uses the RPC protocol.
 	 */
 	const createExtensionUIContext = (): ExtensionUIContext => ({
+		questionPage(page, opts) {
+			return readQuestionPageWithDialogs(this, page, opts?.signal, true);
+		},
 		select: (title, options, opts) =>
 			createRpcDialogPromise(pendingExtensionRequests, output, opts, undefined, { method: "select", title: formatRpcApprovalTitle(title, opts?.details), options }, (r) =>
 				"cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined,

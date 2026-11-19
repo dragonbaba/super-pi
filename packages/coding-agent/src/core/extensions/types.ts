@@ -142,11 +142,27 @@ export interface WorkingIndicatorOptions {
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
 
-/**
- * UI context for extensions to request interactive UI.
- * Each mode (interactive, RPC, print) provides its own implementation.
- */
+/** Options are numbered display labels. The index after the last option selects free text. */
+export interface QuestionPage {
+	title: string;
+	description?: string;
+	options: string[];
+	index: number;
+	count: number;
+	selected: number;
+	text: string;
+}
+
+export interface QuestionPageResult {
+	back: boolean;
+	selected: number;
+	text: string;
+}
+
+/** UI context provided by the active interactive, RPC or print host. */
 export interface ExtensionUIContext {
+	/** Optional native question editor. Older clients can use select/input dialogs. */
+	questionPage?(page: QuestionPage, opts?: ExtensionUIDialogOptions): Promise<QuestionPageResult | undefined>;
 	/** Show a selector and return the user's choice. */
 	select(title: string, options: string[], opts?: ExtensionUISelectOptions): Promise<string | undefined>;
 
