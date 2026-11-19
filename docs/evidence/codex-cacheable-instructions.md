@@ -11,6 +11,8 @@ GPT-6.2 会将顶层 `instructions` 放在缓存断点之后。官方 Codex 路�
 | Sol | 顶层 | 3,552 | 3,567 / 3,582 | 0 / 0 |
 | Sol | 首条 developer 消息 | 3,562 | 121 / 136 | 3,456 / 3,456 |
 
-Astra 在编译后的候选实现上复测得到相同用量。本次为单一合成负载，每个位置和模型各一条三轮对话。服务端路由、负载及真实指令长度会影响结果。
+Astra 在编译后的候选实现上复测得到相同用量。旧启动器与包含指令放置修复的本地构建也复现了表中的 Astra 数字。本次为单一合成负载，服务端路由、负载及真实指令长度会影响结果。
+
+`/session` 显示当前分支最近一次 Codex 响应使用的适配器指纹、传输方式、指令位置及历史比较结果。指纹取自编译后的适配器文件，源文件执行时显示 `source`。WebSocket 能复用上一请求时，比较上轮输入及其响应项；若前缀变化，位置从第 1 项算起。SSE 或新连接缺少基线时显示 `unavailable`，旧会话没有该字段。服务端缓存用量以响应返回的 usage 为准。
 
 发送边界测试覆盖首次完整请求、WebSocket 增量、原生压缩、压缩后指令变化、原始端点兼容性。压缩历史保留当前请求的 developer 前缀；从旧会话恢复时使用当前会话生成的指令。运行 `node --import tsx --test tests/codex-request-body.test.ts tests/codex-transport-owner.test.ts tests/effective-dispatch.test.ts tests/provider-contract/openai-compaction-lifecycle.contract.test.ts`。
