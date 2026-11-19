@@ -43,8 +43,8 @@ test("directory replacement enforces the new scope, preserves the wire prefix an
     assert.equal((await owner.setWorkingDirectories([assets])).cancelled, false);
     assert.equal(previous.diagnostics.closed, true);
     assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "sandbox-write", directories: [assets] });
-    await owner.setPermissionMode("host-write");
-    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [assets] });
+    await owner.setPermissionMode("host-restricted");
+    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-restricted", directories: [assets] });
     const transport = await prefixTransport(t, ALPHA_MODEL);
     const target = path.join(assets, "existing.txt");
     fs.writeFileSync(target, "unchanged");
@@ -59,7 +59,7 @@ test("directory replacement enforces the new scope, preserves the wire prefix an
     fs.renameSync(assets, moved);
     await owner.setWorkingDirectories([]);
     fs.renameSync(moved, assets);
-    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [] });
+    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-restricted", directories: [] });
     owner.session.agent.streamFunction = transport.stream;
     await owner.session.prompt("Inspect the current tools again");
     assert.equal(transport.sent.length, 2);
@@ -69,7 +69,7 @@ test("directory replacement enforces the new scope, preserves the wire prefix an
     assert.equal(fs.readFileSync(target, "utf8"), "unchanged");
     ignoreDirectories = true;
     await assert.rejects(owner.setWorkingDirectories([assets]), /factory did not apply/);
-    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-write", directories: [] }, "failed replacement cannot save an un-applied directory grant");
+    assert.deepEqual(loadSessionExecutionProfile(agentDir, manager), { mode: "host-restricted", directories: [] }, "failed replacement cannot save an un-applied directory grant");
   } finally { await owner.dispose(); fs.rmSync(root, { recursive: true }); }
 });
 

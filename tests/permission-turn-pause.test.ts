@@ -31,7 +31,7 @@ async function fixture(t: test.TestContext, customTools: ToolDefinition[] = []) 
   const cwd = join(root, "project space"), agentDir = join(root, "agent"), outside = join(root, "existing.txt");
   await fs.mkdir(cwd); await fs.mkdir(agentDir); await fs.writeFile(outside, "unchanged");
   const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, executionPermissions: { rules: [{ tool: "*", decision: "allow" }] } });
-  settings.setPermissionModeForSession("host-write");
+  settings.setPermissionModeForSession("host-restricted");
   const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager: settings, noExtensions: true,
     noContextFiles: true, noSkills: true, noPromptTemplates: true, noThemes: true });
   await resources.reload(); assert.deepEqual(resources.getExtensions().errors, []);

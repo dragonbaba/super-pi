@@ -25,13 +25,13 @@ test.after(() => {
   owned.cleanup();
 });
 
-async function fixture(t: test.TestContext, config: ExecutionPermissions = {}) {
+async function fixture(t: test.TestContext, config: ExecutionPermissions = {}, mode: "host-write" | "host-restricted" = "host-write") {
   const root = await fs.realpath(await fs.mkdtemp(join(owned.root, "case-"))), workspace = join(root, "workspace"), outside = join(root, "outside"), added = join(root, "added");
   for (const path of [workspace, outside, added]) await fs.mkdir(path);
   const runtime = createExtensionRuntime(), manager = SessionManager.inMemory(workspace);
   runtime.appendEntry = (type, data) => { manager.appendCustomEntry(type, data); };
   runtime.appendFileEntry = (type, data) => manager.appendCustomEntry(type, data);
-  const owner = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "trusted-host", config, "host-write", [added]);
+  const owner = runtime.nativePermissions = new SessionExecutionPolicy(runtime, "trusted-host", config, mode, [added]);
   const files = runtime.nativeFiles = new SessionFiles(runtime, createEventBus()); files.setCompatibilityBoundary(owner);
   const definitions: Record<string, any> = { read: createReadToolDefinition(workspace) }; files.install(definitions);
   const dialogs: string[] = [], notices: string[] = [];
@@ -142,7 +142,7 @@ test("critical targets notify model and user, including redirected metadata; ord
 });
 
 test("external existing write/edit/LSP and mixed batches are blocked; previews and new files remain possible", async t => {
-  const f = await fixture(t), target = join(f.outside, "existing.txt"); await fs.writeFile(target, "unchanged");
+  const f = await fixture(t, {}, "host-restricted"), target = join(f.outside, "existing.txt"); await fs.writeFile(target, "unchanged");
   for (const tool of ["write", "edit", "lsp_fix"]) {
     await assert.rejects(f.owner.authorize(f.event(tool, { path: target, content: "forbidden", edits: [], write: true }), f.ctx), /EXTERNAL_FILE_WRITE_BLOCKED/);
     await f.resume();
@@ -155,6 +155,23 @@ test("external existing write/edit/LSP and mixed batches are blocked; previews a
   assert.equal(await fs.readFile(target, "utf8"), "unchanged"); assert.deepEqual(f.owner.listRefusals(f.ctx), []); assert.equal(f.dialogs.length, 0);
   (await f.owner.authorize(f.event("file_batch", { ...input, dryRun: true }), f.ctx)).release();
   assert.equal((await f.call("write", { path: join(f.outside, "created.txt"), content: "new" })).isError, false);
+  assert.equal(f.dialogs.length, 2, "restricted host asks for the batch preview and new external write");
+});
+
+test("full host edits a sibling worktree task and writes explicit workspace metadata without a prompt", async t => {
+  const f = await fixture(t);
+  const task = join(f.outside, "T-0026.md");
+  await fs.writeFile(task, "before");
+  await f.read(task);
+  const result = await f.call("edit", { path: task, edits: [{ oldText: "before", newText: "after" }] });
+  assert.equal(result.isError, false, JSON.stringify(result));
+  assert.equal(await fs.readFile(task, "utf8"), "after");
+  for (const directory of [".sp", ".git"]) {
+    await fs.mkdir(join(f.workspace, directory));
+    const path = join(f.workspace, directory, "note");
+    assert.equal((await f.call("write", { path, content: "metadata" })).isError, false);
+    assert.equal(await fs.readFile(path, "utf8"), "metadata");
+  }
   assert.equal(f.dialogs.length, 0);
 });
 
@@ -184,13 +201,13 @@ test("a batch binds every approved canonical path across the dialog", async t =>
   } finally { await fs.unlink(link); }
 });
 
-test("agent directory modifications ask even inside add-dir; deletes refuse, explicit deny still wins", async t => {
+test("full host writes agent configuration without a path prompt; deletes refuse, explicit deny still wins", async t => {
   const f = await fixture(t), agent = join(f.added, "agent"); await fs.mkdir(agent);
   const previous = process.env.SP_CODING_AGENT_DIR; process.env.SP_CODING_AGENT_DIR = agent;
   try {
     await fs.writeFile(join(agent, "config.json"), "{}");
     (await f.owner.authorize(f.event("write", { path: join(agent, "config.json"), content: "{}" }), f.ctx)).release();
-    assert.equal(f.dialogs.length, 1); assert.match(f.dialogs[0], /agent 自身目录/);
+    assert.equal(f.dialogs.length, 0);
     await assert.rejects(f.owner.authorize(f.event("delete", { path: join(agent, "config.json") }), f.ctx), /agent 自身目录/);
     assert.equal(f.notices.length, 1);
     const denied = await fixture(t, { rules: [{ tool: "write", decision: "deny" }] });

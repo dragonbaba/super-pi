@@ -114,7 +114,11 @@ test("native LSP write grants bind root, exact input and lifetime; preview remai
     input.root = ".";
     assert.throws(() => invocation.consume(input, "test-call", "lsp_fix"), /changed after authorization/);
     invocation.release();
-    await assert.rejects(f.owner.authorize(f.event("lsp_fix", { root: ".sp", path: "config.ts", write: true }), f.ctx), /workspace_sp_root/);
+    const metadataEdit = { root: ".sp", path: "config.ts", write: true };
+    const metadataInvocation = await f.owner.authorize(f.event("lsp_fix", metadataEdit), f.ctx);
+    const metadataGrant = consumePermissionPathApproval(metadataEdit, "test-call", "lsp_fix")!;
+    assert.equal(metadataGrant.canonicalTarget, path.join(await fs.realpath(path.join(f.root, ".sp")), "config.ts"));
+    metadataInvocation.release();
     f.runtime.executionBoundary.register("plan-fixture", { revoke() {}, async drain() {}, toolSelectionMode: () => "plan" });
     await assert.rejects(f.owner.authorize(f.event("lsp_fix", { ...input, root: "src" }), f.ctx), /Plan mode/);
     const preview = { ...input, root: "src", write: false };
