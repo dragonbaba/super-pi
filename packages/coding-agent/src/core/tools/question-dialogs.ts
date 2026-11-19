@@ -11,16 +11,21 @@ export async function readQuestionPageWithDialogs(
 	const dismissed = backOnDismiss && page.count > 1 ? back : undefined;
 	let selected = page.options.length;
 	if (page.options.length || page.text) {
-		const choices = [...page.options];
+		const keepText = page.text ? `沿用已填写的回答：${page.text}` : undefined;
+		const savedOption = page.selected > 0 ? page.options[page.selected] : undefined;
+		const keepOption = savedOption === undefined ? undefined : `沿用已选方案：${savedOption}`;
+		const defaultChoice = page.selected === page.options.length ? keepText : keepOption;
+		// Legacy select requests have no initial-index field. Enter accepts the first row.
+		const choices = defaultChoice ? [defaultChoice, ...page.options] : [...page.options];
 		if (page.index > 0) choices.push("← 上一题");
-		const keep = page.text ? `沿用已填写的回答：${page.text}` : undefined;
-		if (keep) choices.push(keep);
+		if (keepText && keepText !== defaultChoice) choices.push(keepText);
 		choices.push("自定义回答…");
 		const value = await ui.select(title, choices, { kind: "question", details: page.description, signal });
 		if (signal?.aborted) return undefined;
 		if (value === undefined) return dismissed;
 		if (value === "← 上一题") return back;
-		if (value === keep) return { back: false, selected, text: page.text };
+		if (value === keepOption) return { back: false, selected: page.selected, text: page.text };
+		if (value === keepText) return { back: false, selected, text: page.text };
 		if (value !== "自定义回答…") {
 			selected = page.options.indexOf(value);
 			if (selected < 0) return undefined;

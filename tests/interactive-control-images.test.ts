@@ -561,13 +561,21 @@ test("multi-question Esc preserves first-page input and restores both drafts bef
 	assert.deepEqual((await single).details, { status: "user_input_cancelled" });
 });
 
+test("default legacy RPC selection retains the active answer when a text draft also exists", async () => {
+	const ui = { select: async (_title: string, choices: string[]) => choices[0], input: async (): Promise<string> => { throw new Error("unexpected edit"); } };
+	for (const selected of [0, 1, 2]) {
+		const page = { title: "First?", index: 0, count: 2, options: ["1. A", "2. B"], selected, text: "my draft" };
+		assert.deepEqual(await readQuestionPageWithDialogs(ui, page), { back: false, selected, text: "my draft" });
+	}
+});
+
 test("RPC-compatible select/input pages return one group result after backtracking", async () => {
 	const f = await fixture(false, false);
 	const runner = f.session.extensionRunner;
 	const choices = [{ id: "a", label: "A" }, { id: "b", label: "B" }];
 	const questions = [{ id: "first", question: "First?", options: choices }, { id: "second", question: "Second?", options: choices }];
 	let calls = 0, selects = 0;
-	const sequence = [undefined, "1. A", undefined, "2. B", "自定义回答…"];
+	const sequence = [undefined, "2. B", undefined, "default", "自定义回答…"];
 	runner.setUIContext({ ...runner.getUIContext(),
 		questionPage(page, opts) { return readQuestionPageWithDialogs(this, page, opts?.signal, true); },
 		select: async (title, options) => {
@@ -575,7 +583,8 @@ test("RPC-compatible select/input pages return one group result after backtracki
 			assert.match(title, selects === 2 || selects === 4 ? /2\/2/ : /1\/2/);
 			assert.equal(options.at(-1), "自定义回答…");
 			assert.ok(selects < sequence.length);
-			return sequence[selects++];
+			const choice = sequence[selects++];
+			return choice === "default" ? options[0] : choice;
 		},
 		input: async () => "my answer",
 	}, "rpc");
