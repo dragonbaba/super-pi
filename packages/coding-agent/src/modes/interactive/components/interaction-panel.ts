@@ -1,6 +1,9 @@
-import { getKeybindings, isKeyRelease, isKeyRepeat, truncateToWidth, wrapTextWithAnsi, type TUI } from "@super-pi/tui";
+import { getKeybindings, Input, isKeyRelease, isKeyRepeat, matchesKey, truncateToWidth, wrapTextWithAnsi, type TUI } from "@super-pi/tui";
+import type { QuestionPage, QuestionPageResult } from "../../../core/extensions/types.ts";
+import { MAX_QUESTION_ANSWER_LENGTH } from "../../../core/tools/question-dialogs.ts";
+import { sanitizeDialogChoice, sanitizeDialogText } from "./selector-text.ts";
 import { theme } from "../theme/theme.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 /** A temporary, keyboard-focused overlay. Content is prepared by its caller at open time. */
 export class InteractionPanel {
@@ -9,8 +12,19 @@ export class InteractionPanel {
 	private width = -1;
 	private height = -1;
 	private revealChoice = false;
+	private page?: QuestionPage;
+	private finishPage?: (result?: QuestionPageResult) => void;
+	private input?: Input;
+	private hasFocus = false;
+	get focused(): boolean { return this.hasFocus; }
+	set focused(value: boolean) {
+		this.hasFocus = value;
+		if (this.input) this.input.focused = value;
+		this.frame = undefined;
+	}
+	private get editing(): boolean { return !!this.page && this.selected === this.page.options.length; }
 	private get contentRows(): number {
-		return Math.max(0, this.height - (this.height >= 4 ? 2 : 1));
+		return Math.max(0, this.height - (this.height >= 4 ? 2 : 1) - (this.editing ? 1 : 0));
 	}
 	private starts: number[] = [];
 	private lines: string[] = [];
@@ -25,6 +39,27 @@ export class InteractionPanel {
 		this.choices = choices;
 		this.terminal = terminal;
 		this.done = done;
+	}
+
+	static forQuestion(page: QuestionPage, terminal: TUI["terminal"], done: (result?: QuestionPageResult) => void): InteractionPanel {
+		const progress = page.count > 1 ? theme.fg("dim", `${page.index + 1}/${page.count}  `) : "";
+		let body = progress + theme.bold(sanitizeDialogText(page.title));
+		if (page.description) body += "\n" + theme.fg("muted", sanitizeDialogText(page.description));
+		const choices = page.options.map(sanitizeDialogChoice);
+		if (choices.length) choices.push(`${choices.length + 1}. 自定义回答…`);
+		const panel = new InteractionPanel(body, choices, terminal, () => done());
+		panel.page = page;
+		panel.finishPage = done;
+		panel.selected = page.selected;
+		panel.input = new Input();
+		panel.input.setValue(page.text, page.text.length);
+		return panel;
+	}
+
+	private submitPage(back: boolean): void {
+		const text = this.input!.getValue();
+		if (!back && this.editing && (!text.trim() || text.length > MAX_QUESTION_ANSWER_LENGTH)) return;
+		this.finishPage?.({ back, selected: this.selected, text });
 	}
 
 	invalidate(): void {
@@ -70,9 +105,17 @@ export class InteractionPanel {
 			else if (i >= firstChoice) row = "  " + row;
 			frame.push(truncateToWidth(" " + row, width));
 		}
-		let help = this.choices.length ? "↑↓ 选择  " + keyHint("tui.select.confirm", "确认") + "  " : "";
+		if (this.editing && height > 1) frame.push(this.input!.render(width)[0]!);
+		const multi = this.page !== undefined && this.page.count > 1;
+		const confirm = multi ? (this.page!.index + 1 === this.page!.count ? "提交全部答案" : "下一题") : "确认";
+		let help = this.choices.length ? "↑↓ 选择  " : "";
+		if (this.choices.length || this.page) help += keyHint("tui.select.confirm", confirm) + "  ";
 		if (this.lines.length > available) help += "PgUp/PgDn 翻页  ";
-		frame.push(truncateToWidth(" " + keyHint("tui.select.cancel", "关闭") + "  " + help.trimEnd(), width));
+		if (!multi) help += keyHint("tui.select.cancel", "关闭");
+		else if (this.page!.index > 0) help += rawKeyHint("Esc", "上一题");
+		if (this.editing && !this.input!.getValue().trim()) help = "请输入自定义回答  " + help;
+		if (this.editing && this.input!.getValue().length > MAX_QUESTION_ANSWER_LENGTH) help = `回答最多 ${MAX_QUESTION_ANSWER_LENGTH} 字符  ` + help;
+		frame.push(truncateToWidth(" " + help.trimEnd(), width));
 		this.frame = frame;
 		return frame;
 	}
@@ -80,6 +123,11 @@ export class InteractionPanel {
 	handleInput(data: string): void {
 		if (!this.done || isKeyRelease(data)) return;
 		const kb = getKeybindings();
+		const multi = this.page !== undefined && this.page.count > 1;
+		if (multi && (matchesKey(data, "escape") || matchesKey(data, "shift+tab"))) {
+			if (this.page!.index > 0 && !isKeyRepeat(data)) this.submitPage(true);
+			return;
+		}
 		if (kb.matches(data, "tui.select.cancel")) return this.cancel();
 		const down = kb.matches(data, "tui.select.down");
 		const up = kb.matches(data, "tui.select.up");
@@ -87,18 +135,21 @@ export class InteractionPanel {
 			this.selected = Math.max(0, Math.min(this.choices.length - 1, this.selected + (down ? 1 : -1)));
 			this.revealChoice = true;
 			this.frame = undefined;
-		} else if (kb.matches(data, "tui.select.confirm") && this.choices.length && !isKeyRepeat(data)) {
+		} else if (kb.matches(data, "tui.select.confirm") && (this.choices.length || this.page) && !isKeyRepeat(data)) {
+			if (this.editing && this.height >= 2) return this.submitPage(false);
 			const start = this.starts[this.selected];
 			if (start === undefined || this.height < 2) return;
 			if (start < this.top || start >= this.top + this.contentRows) {
 				this.revealChoice = true;
 				this.frame = undefined;
-			} else this.done(this.selected);
+			} else if (this.page) this.submitPage(false);
+			else this.done(this.selected);
 		} else {
 			const page = Math.max(1, this.contentRows);
 			if (kb.matches(data, "tui.select.pageUp")) this.top -= page;
 			else if (kb.matches(data, "tui.select.pageDown")) this.top += page;
 			else if (up || down) this.top += down ? 1 : -1;
+			else if (this.editing) this.input!.handleInput(data);
 			else return;
 			this.frame = undefined;
 		}
@@ -108,6 +159,9 @@ export class InteractionPanel {
 
 	dispose(): void {
 		this.done = undefined;
+		this.page = undefined;
+		this.finishPage = undefined;
+		this.input = undefined;
 		this.body = "";
 		this.choices = [];
 		this.lines = [];
