@@ -785,6 +785,7 @@ export class InteractiveMode {
 	private modelLookupGeneration = 0;
 	private modelLookupTimedOutGeneration = 0;
 	private activeExtensionCustomCancel: (() => void) | undefined = undefined;
+	private sessionInfoCancel?: () => void;
 	private extensionTerminalInputSubscriptions = new Set<{
 		handler: (data: string) => { consume?: boolean; data?: string } | undefined;
 		unsubscribe: () => void;
@@ -3037,6 +3038,7 @@ export class InteractiveMode {
 		blockedKind: "question" | "permission" = "question",
 		statusTitle = title,
 	): Promise<string | undefined> {
+		if (!opts?.signal?.aborted) this.dismissSessionInfo();
 		return new Promise((resolve, reject) => {
 			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
@@ -3144,6 +3146,7 @@ export class InteractiveMode {
 		placeholder?: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
+		if (!opts?.signal?.aborted) this.dismissSessionInfo();
 		return new Promise((resolve, reject) => {
 			if (opts?.signal?.aborted || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel || this.activeSelectorToken) {
 				resolve(undefined);
@@ -3432,6 +3435,7 @@ export class InteractiveMode {
 	 * Show a multi-line editor for extensions (with Ctrl+G support).
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
+		this.dismissSessionInfo();
   if (this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeExtensionCustomCancel) return Promise.resolve(undefined);
 		return new Promise((resolve) => {
 			this.extensionEditor = new ExtensionEditorComponent(
@@ -8260,7 +8264,12 @@ export class InteractiveMode {
 		} catch (error) { this.showError(error instanceof Error ? error.message : String(error)); }
 	}
 
+	private dismissSessionInfo(): void {
+		if (this.sessionInfoCancel && this.sessionInfoCancel === this.activeExtensionCustomCancel) this.cancelActiveExtensionCustom();
+	}
+
 	private async handleSessionCommand(): Promise<void> {
+		if (this.activeExtensionCustomCancel || this.extensionSelector || this.extensionInput || this.extensionEditor || this.activeSelectorToken) return;
 		const stats = this.session.getSessionStats();
 		const sessionName = this.sessionManager.getSessionName();
 		const entries = this.sessionManager.getEntries();
@@ -8323,9 +8332,16 @@ export class InteractiveMode {
 			}
 		}
 
-		await this.showExtensionCustom<void>((tui, _theme, _bindings, done) =>
+		const closed = this.showExtensionCustom<void>((tui, _theme, _bindings, done) =>
 			new InteractionPanel(info.trimEnd(), [], tui.terminal, () => done()),
 		{ overlay: true, overlayOptions: { width: 88, maxHeight: "100%" } });
+		const cancel = this.activeExtensionCustomCancel;
+		this.sessionInfoCancel = cancel;
+		try {
+			await closed;
+		} finally {
+			if (this.sessionInfoCancel === cancel) this.sessionInfoCancel = undefined;
+		}
 	}
 
 	private handleChangelogCommand(): void {

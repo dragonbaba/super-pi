@@ -129,6 +129,33 @@ function uiFixture(messages: AssistantMessage[]) {
 }
 function plain(chat: Container): string { return chat.render(200).join("\n").replace(/\x1b\[[0-9;]*m/g, ""); }
 
+test("an incoming question or permission request dismisses statistics and keeps its own answer", async () => {
+	for (const kind of ["question", "permission"]) {
+		const { mode, chat, footer } = uiFixture([]);
+		try {
+			let hides = 0;
+			mode.editor = { getText: () => "" };
+			mode.ui.terminal = { rows: 24, columns: 88 };
+			mode.ui.showOverlay = () => ({ hide() { hides++; } });
+			const stats = mode.handleSessionCommand();
+			await Promise.resolve();
+			const answer = mode.showExtensionSelector("Continue?", ["Yes", "No"], { kind, details: "Scope" }, kind);
+			assert.ok(mode.extensionSelector, "the incoming dialog must open");
+			await stats;
+			assert.equal(hides, 1);
+			await mode.handleSessionCommand();
+			const dialog = mode.extensionSelector;
+			dialog.render(88);
+			dialog.handleInput("\x1b[B");
+			dialog.render(88);
+			dialog.handleInput("\r");
+			assert.equal(await answer, "No");
+			assert.equal(hides, 2);
+			assert.equal(chat.children.length, 0);
+		} finally { footer.dispose(); }
+	}
+});
+
 test("session overlay shows weighted rates and closes on Escape without adding transcript rows", async () => {
 	const { manager, mode, chat, footer } = uiFixture([message(0, 10_000)]);
 	try {
