@@ -13,6 +13,8 @@ import { response } from "./helpers/selected-integration-fixture.ts";
 import { ImageAttachmentDraft, draftAttachmentText, parseImagePaths, localImagePath, attachmentLabel, attachmentDescription, snapshotImageSubmission } from "../packages/coding-agent/src/core/image-attachments.ts";
 import * as imagePatterns from "../packages/coding-agent/src/utils/image-input-regex.ts";
 import { InteractiveMode } from "../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
+import { ToolExecutionComponent } from "../packages/coding-agent/src/modes/interactive/components/tool-execution.ts";
+import { createAskUserToolDefinition } from "../packages/coding-agent/src/core/tools/ask-user.ts";
 import { initTheme } from "../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import auxiliaryVision from "../packages/extensions/auxiliary-vision/index.ts";
 import { loadConfig } from "../packages/extensions/auxiliary-vision/core.ts";
@@ -482,6 +484,39 @@ test("SDK tools, excludeTools and noTools keep ask_user disabled when requested"
 			finally { session.dispose(); await session.waitForSessionLeaseRelease(); }
 		}
 	} finally { f.close(); }
+});
+
+test("question overlay wraps choices, releases its frame, and renders the answer as human text", async () => {
+	const terminal = new FakeTerminal(32, 10);
+	const ui = new TuiAltScreen(terminal);
+	const mode = Object.assign(Object.create(InteractiveMode.prototype), { ui }) as any;
+	const tool = createAskUserToolDefinition();
+	const args = { question: "如何处理当前分支？", description: "远端尚未合并。", options: [
+		{ id: "publish", label: "发布变更" }, { id: "hold", label: "保留现状，继续检查工作区改动" }] };
+	const waiting = tool.execute("q", args, undefined, undefined, {
+		hasUI: true, sessionManager: { getSessionId: () => "session" }, ui: {
+			select: (title: string, choices: string[], opts: unknown) => mode.showExtensionSelector(title, choices, opts),
+		},
+	} as any);
+	const panel = mode.extensionSelector;
+	const initial = panel.render(32);
+	assert.equal(initial, panel.render(32), "idle redraw reuses the same frame");
+	assert.doesNotMatch(initial.join("\n"), /publish|hold|ask_user/);
+	panel.handleInput("\x1b[B");
+	const narrow = panel.render(16);
+	assert.ok(narrow.length <= terminal.rows);
+	assert.match(narrow.join("\n"), /› 2\./);
+	panel.handleInput("\r");
+	const result = await waiting;
+	assert.deepEqual(JSON.parse((result.content[0] as { text: string }).text), { id: "hold", text: args.options[1]!.label });
+	assert.equal(mode.extensionSelector, undefined);
+	assert.deepEqual(panel.render(32), [], "dismissal releases the frame and text");
+	const card = new ToolExecutionComponent("ask_user", "q", args, {}, undefined, ui, process.cwd());
+	card.updateResult(result);
+	const transcript = card.render(90).join("\n");
+	assert.match(transcript, /如何处理当前分支/);
+	assert.match(transcript, /保留现状，继续检查工作区改动/);
+	assert.doesNotMatch(transcript, /ask_user|"id"|hold/);
 });
 
 test("ask_user exposes bounded guidance and waits for a submitted text answer", async () => {

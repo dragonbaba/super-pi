@@ -129,15 +129,55 @@ function uiFixture(messages: AssistantMessage[]) {
 }
 function plain(chat: Container): string { return chat.render(200).join("\n").replace(/\x1b\[[0-9;]*m/g, ""); }
 
-test("optional notice and session command explicitly label bounds and preserve token-weighted rates", () => {
+test("an incoming question or permission request dismisses statistics and keeps its own answer", async () => {
+	for (const kind of ["question", "permission"]) {
+		const { mode, chat, footer } = uiFixture([]);
+		try {
+			let hides = 0;
+			mode.editor = { getText: () => "" };
+			mode.ui.terminal = { rows: 24, columns: 88 };
+			mode.ui.showOverlay = () => ({ hide() { hides++; } });
+			const stats = mode.handleSessionCommand();
+			await Promise.resolve();
+			const answer = mode.showExtensionSelector("Continue?", ["Yes", "No"], { kind, details: "Scope" }, kind);
+			assert.ok(mode.extensionSelector, "the incoming dialog must open");
+			await stats;
+			assert.equal(hides, 1);
+			await mode.handleSessionCommand();
+			const dialog = mode.extensionSelector;
+			dialog.render(88);
+			dialog.handleInput("\x1b[B");
+			dialog.render(88);
+			dialog.handleInput("\r");
+			assert.equal(await answer, "No");
+			assert.equal(hides, 2);
+			assert.equal(chat.children.length, 0);
+		} finally { footer.dispose(); }
+	}
+});
+
+test("session overlay shows weighted rates and closes on Escape without adding transcript rows", async () => {
 	const { manager, mode, chat, footer } = uiFixture([message(0, 10_000)]);
 	try {
 		const current = message(90_000);
 		mode.maybeShowCacheMissNotice(current);
 		assert.equal(chat.children.length, 0, "10k bound is below optional notice threshold");
 		manager.appendMessage(current);
-		mode.handleSessionCommand();
-		const output = plain(chat);
+		let panel: { render(width: number): string[]; handleInput(data: string): void } | undefined;
+		mode.editor = { getText: () => "" };
+		mode.ui.terminal = { rows: 48, columns: 88 };
+		mode.ui.showOverlay = (component: typeof panel) => {
+			panel = component;
+			return { hide() { panel = undefined; } };
+		};
+		const closed = mode.handleSessionCommand();
+		await Promise.resolve();
+		assert.ok(panel);
+		const output = panel.render(88).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+		panel.handleInput("\x1b");
+		await closed;
+		assert.equal(panel, undefined);
+		assert.equal(chat.children.length, 0);
 		assert.match(output, /Cached: 10,000 \(10\.0%\)/);
 		assert.match(output, /Current branch, same-route follow-ups: 1/);
 		assert.match(output, /Uncached input \(tokens\): median 90,000, p95 90,000/);
