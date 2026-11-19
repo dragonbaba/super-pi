@@ -3,5 +3,6 @@ export const ANSI_STRING_PATTERN = /\x1B[PX^_][\s\S]*?(?:\x1B\\|\x9C|$)/gu;
 export const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/gu;
 export const ANSI_ESCAPE_PATTERN = /\x1B[@-_]/gu;
 export const CONTROL_PATTERN = /[\x00-\x1F\x7F-\x9F]/gu;
+export const DIALOG_CONTROL_PATTERN = /[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g;
 export const WHITESPACE_PATTERN = /\s+/gu;
 export const UI_LINE_BREAK_PATTERN = /\r?\n/u;

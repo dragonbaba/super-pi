@@ -4,22 +4,21 @@ import {
   ANSI_OSC_PATTERN,
   ANSI_STRING_PATTERN,
   CONTROL_PATTERN,
+  DIALOG_CONTROL_PATTERN,
   WHITESPACE_PATTERN,
 } from "./selector-regex.ts";
 
 export const MAX_UI_FIELD = 180;
 export const MAX_UI_ERROR = 500;
 
-const DIALOG_CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g;
-const NEWLINE = /\n/g;
 function escapeDialogControl(character: string): string {
 	return "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0");
 }
 export function sanitizeDialogText(value: string): string {
-	return value.replace(DIALOG_CONTROL, escapeDialogControl);
+	return value.replace(DIALOG_CONTROL_PATTERN, escapeDialogControl);
 }
 export function sanitizeDialogChoice(value: string): string {
-	return sanitizeDialogText(value).replace(NEWLINE, "\\n");
+	return sanitizeDialogText(value).replaceAll("\n", "\\n");
 }
 
 export function unknownSessionText(value: unknown): string {
