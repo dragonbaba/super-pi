@@ -110,6 +110,7 @@
 - [Hot-path allocation contract](performance/hot-path-allocation-contract.md)：provider、工具、交互、渲染和大结果路径的修改要求。
 - [Tool-result presentation](performance/phase5b-budgeted-model-view.md)：显式启用的结果展示流程；模型 Token 预算投影还需配置正整数 `budgetTokens`，没有生产默认预算。
 - [Token estimator](performance/phase5a-token-estimator.md)：估算口径与限制。
+- [CodeMode 卡片构造实测](evidence/codemode-card-construction-2026-11-19.md) 记录默认树省去的组件、内存占用和历史渲染验证。
 - [TUI responsiveness](performance/tool-progress-tui-responsiveness.md)：进度、背压和取消的设计记录。
 - [源码贡献检查](testing.md)：check、build:offline 和完整 test；test:hot 等子集用于定向验证，不在完整测试前重复执行。
 

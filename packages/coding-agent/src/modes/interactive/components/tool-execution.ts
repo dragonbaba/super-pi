@@ -760,8 +760,8 @@ export class ToolExecutionComponent extends Container {
 	private codemodeTree?: CodemodeTreeComponent;
 	private codemodeDiscovery?: Text;
 	private contentBox: Box;
-	private contentText: Text;
-	private selfRenderContainer: Container;
+	private contentText?: Text;
+	private selfRenderContainer?: Container;
 	private callRendererComponent?: Component;
 	private resultRendererComponent?: Component;
 	private rendererState: any = {};
@@ -844,7 +844,6 @@ export class ToolExecutionComponent extends Container {
 		this.argsGeneration = undefined;
 		this.argsSemanticJson = undefined;
 		this.toolDefinition = toolDefinition;
-		this.builtInToolDefinition = getBuiltInToolDefinition(cwd, toolName as ToolName);
 		this.showImages = options.showImages ?? true;
 		this.outputPad = options.outputPad ?? 1;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
@@ -857,12 +856,7 @@ export class ToolExecutionComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Always create all shell variants. contentBox is used for default renderer-based composition.
-		// selfRenderContainer is used when the tool renders its own framing.
-		// contentText is reserved for generic fallback rendering when no tool definition exists.
 		this.contentBox = new Box(this.outputPad, 1, toolPendingBackground);
-		this.contentText = new Text("", this.outputPad, 1, toolPendingBackground);
-		this.selfRenderContainer = new Container();
 
 		if (toolName === "codemode" && !options.rendererOverride) {
 			this.codemodeTree = new CodemodeTreeComponent(this.renderContextRefreshResult);
@@ -870,10 +864,15 @@ export class ToolExecutionComponent extends Container {
 			this.contentBox.addChild(this.codemodeTree);
 			this.contentBox.addChild(this.codemodeDiscovery);
 			this.addChild(this.contentBox);
-		} else if (this.hasRendererDefinition()) {
-			this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
 		} else {
-			this.addChild(this.contentText);
+			this.builtInToolDefinition = getBuiltInToolDefinition(cwd, toolName as ToolName);
+			if (!this.hasRendererDefinition()) {
+				this.contentText = new Text("", this.outputPad, 1, toolPendingBackground);
+				this.addChild(this.contentText);
+			} else {
+				this.selfRenderContainer = new Container();
+				this.addChild(this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox);
+			}
 		}
 
 		this.updateDisplay();
@@ -1256,7 +1255,7 @@ export class ToolExecutionComponent extends Container {
 		if (this.outputPad === outputPad) return;
 		this.outputPad = outputPad;
 		this.contentBox.setPaddingX(outputPad);
-		this.contentText.setPaddingX(outputPad);
+		this.contentText?.setPaddingX(outputPad);
 		for (const image of this.imageComponents) image.setPaddingX(outputPad);
 		this.callRendererDirty = true;
 		this.updateDisplay();
@@ -1409,7 +1408,7 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 
-		if (this.hasRendererDefinition() && this.getRenderShell() === "self") {
+		if (this.selfRenderContainer && this.getRenderShell() === "self") {
 			const contentLines = this.selfRenderContainer.render(width);
 			if (contentLines.length === 0 && this.imageComponents.length === 0) {
 				return [];
@@ -1450,7 +1449,7 @@ export class ToolExecutionComponent extends Container {
 		let hasContent = false;
 		this.hideComponent = false;
 		if (this.hasRendererDefinition()) {
-			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer : this.contentBox;
+			const renderContainer = this.getRenderShell() === "self" ? this.selfRenderContainer! : this.contentBox;
 			if (renderContainer instanceof Box) {
 				renderContainer.setBgFn(bgFn);
 			}
@@ -1520,8 +1519,8 @@ export class ToolExecutionComponent extends Container {
 				hasContent = true;
 			}
 		} else {
-			this.contentText.setCustomBgFn(bgFn);
-			this.contentText.setText(this.formatToolExecution());
+			this.contentText!.setCustomBgFn(bgFn);
+			this.contentText!.setText(this.formatToolExecution());
 			hasContent = true;
 		}
 		this.refreshImageTree();
